@@ -1,0 +1,91 @@
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background-color: #0f172a;
+  color: #e5e7eb;
+}
+
+.dashboard {
+  padding: 20px;
+}
+
+h1 {
+  margin-bottom: 20px;
+}
+
+.filters {
+  display: flex;
+  gap: 15px;
+  margin-bottom: 20px;
+}
+
+input, select {
+  padding: 10px;
+  background: #111827;
+  color: #e5e7eb;
+  border: 1px solid #1f2933;
+  border-radius: 6px;
+}
+
+/* KPI cards */
+.cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 15px;
+  margin-bottom: 20px;
+}
+
+.card {
+  background: #111827;
+  padding: 20px;
+  text-align: center;
+  border-radius: 10px;
+  font-size: 14px;
+  border: 1px solid #1f2933;
+}
+
+.card span {
+  font-size: 28px;
+  font-weight: bold;
+}
+
+.card.open span { color: orange; }
+.card.retest span { color: yellow; }
+.card.closed span { color: lightgreen; }
+
+/* ✅ TABLE WITH PROPER BORDERS */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #111827;
+  border: 1px solid #1f2933;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+thead th {
+  background: #020617;
+  padding: 12px;
+  border: 1px solid #1f2933;
+  text-align: left;
+}
+
+tbody td {
+  padding: 12px;
+  border: 1px solid #1f2933;
+}
+
+tbody tr:nth-child(even) {
+  background-color: #0b1220;
+}
+
+tbody tr:hover {
+  background-color: #1e293b;
+  cursor: pointer;
+}
+
+tbody td[colspan] {
+  text-align: center;
+  color: #9ca3af;
+  font-style: italic;
+}
