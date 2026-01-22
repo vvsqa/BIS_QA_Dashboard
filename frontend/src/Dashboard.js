@@ -27,6 +27,39 @@ ChartJS.register(
 
 const BACKEND_URL = "http://127.0.0.1:8000";
 
+// Status to Team Mapping
+const STATUS_TEAM_MAPPING = {
+  'NEW': 'BIS',
+  'Ready For Development': 'DEV',
+  'Quote Required': 'BIS',
+  'Closed': 'Completed',
+  'Backlog—Unranked': 'BIS',
+  'Moved to Live': 'BIS',
+  'Technical Review': 'DEV',
+  'Approved for Live': 'DEV',
+  'Live - awaiting fixes': 'DEV',
+  'Express Lane Review': 'DEV',
+  'In Progress': 'DEV',
+  'Start Code Review': 'DEV',
+  'Quote': 'BIS',
+  'QC Testing': 'QA',
+  'Under Review': 'BIS',
+  'Code Review Failed': 'DEV',
+  'QC Review Fail': 'DEV',
+  'Pending Quote Approval': 'BIS',
+  'BIS Testing': 'BIS - QA',
+  'Planning': 'BIS',
+  'Testing In Progress': 'BIS - QA',
+  'Code Review Passed': 'DEV',
+  'QC Testing in Progress': 'QA',
+  'QC Testing Hold': 'QA',
+  'Hold/Pending': 'BIS',
+  'Design Review': 'BIS',
+  'Ready for Design': 'BIS',
+  'Design In Progress': 'BIS',
+  'Tested - Awaiting Fixes': 'DEV'
+};
+
 // Speedometer Gauge Component
 function SpeedometerGauge({ value, label, maxValue = 100, theme = 'dark' }) {
   const percentage = Math.min((value / maxValue) * 100, 100);
@@ -152,6 +185,23 @@ function Dashboard() {
 
   const [bugs, setBugs] = useState([]);
   const [deferredBugs, setDeferredBugs] = useState([]);
+  const [testRailSummary, setTestRailSummary] = useState({
+    total_test_cases: 0,
+    total_test_results: 0,
+    status_counts: { Passed: 0, Failed: 0, Blocked: 0, Retest: 0, Untested: 0 },
+    test_plans_count: 0,
+    test_runs_count: 0,
+    test_plan_name: null
+  });
+  const [testCases, setTestCases] = useState([]);
+  const [testStatusData, setTestStatusData] = useState(null);
+  const [testRuns, setTestRuns] = useState([]);
+  const [expandedTestCasesSection, setExpandedTestCasesSection] = useState(true);
+  
+  // Ticket Tracking state
+  const [ticketTracking, setTicketTracking] = useState(null);
+  const [expandedTicketTracking, setExpandedTicketTracking] = useState(true);
+  
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -166,7 +216,9 @@ function Dashboard() {
   const [expandedBugLists, setExpandedBugLists] = useState({
     'open-bugs': true,
     'deferred-bugs': true,
+    'test-cases': true,
   });
+  const [expandedOtherTestRuns, setExpandedOtherTestRuns] = useState(true);
 
   const maximizeChart = (chartId) => {
     setMaximizedChart(chartId);
@@ -387,14 +439,15 @@ function Dashboard() {
     try {
       const baseUrl = `${BACKEND_URL}/bugs`;
       const envParam = `environment=${environment}`;
-      const ticketParam = `ticket_id=${ticketId}`;
+      const ticketParam = `ticket_id=${parseInt(ticketId)}`;
       
       console.log('Loading ticket data for Ticket ID:', ticketId, 'Environment:', environment);
       
       const [
         summaryRes, bugsRes, ticketInfoRes, severityRes, priorityRes, metricsRes,
         assigneeRes, authorRes, moduleRes, featureRes, browserOsRes, platformRes,
-        ageRes, resolutionRes, reopenedRes, deferredRes
+        ageRes, resolutionRes, reopenedRes, deferredRes, testRailSummaryRes, testCasesRes, testStatusRes, testRunsRes,
+        ticketTrackingRes
       ] = await Promise.all([
         fetch(`${baseUrl}/summary?${ticketParam}&${envParam}`).catch(err => {
           console.error('Failed to fetch summary:', err);
@@ -460,6 +513,26 @@ function Dashboard() {
           console.error('Failed to fetch deferred-bugs:', err);
           return { ok: false, status: 500 };
         }),
+        fetch(`${BACKEND_URL}/testrail/summary?${ticketParam}`).catch(err => {
+          console.error('Failed to fetch testrail-summary:', err);
+          return { ok: false, status: 500 };
+        }),
+        fetch(`${BACKEND_URL}/testrail/test-cases?${ticketParam}`).catch(err => {
+          console.error('Failed to fetch testrail-test-cases:', err);
+          return { ok: false, status: 500 };
+        }),
+        fetch(`${BACKEND_URL}/testrail/status-breakdown?${ticketParam}`).catch(err => {
+          console.error('Failed to fetch testrail-status-breakdown:', err);
+          return { ok: false, status: 500 };
+        }),
+        fetch(`${BACKEND_URL}/testrail/test-runs?${ticketParam}`).catch(err => {
+          console.error('Failed to fetch testrail-test-runs:', err);
+          return { ok: false, status: 500 };
+        }),
+        fetch(`${BACKEND_URL}/ticket-tracking/${parseInt(ticketId)}`).catch(err => {
+          console.error('Failed to fetch ticket-tracking:', err);
+          return { ok: false, status: 500 };
+        }),
       ]);
 
       if (!summaryRes.ok) {
@@ -475,27 +548,51 @@ function Dashboard() {
       const [
         summaryData, bugsData, severityBreakdown, priorityBreakdown, metricsData,
         assigneeBreakdown, authorBreakdown, moduleBreakdown, featureBreakdown,
-        browserOsBreakdown, platformBreakdown, ageAnalysis, resolutionTime, reopenedAnalysis, deferredBugsData
+        browserOsBreakdown, platformBreakdown, ageAnalysis, resolutionTime, reopenedAnalysis, deferredBugsData,
+        testRailSummaryData, testCasesData, testStatusBreakdownData, testRunsData, ticketTrackingData
       ] = await Promise.all([
         summaryRes.json(),
-        bugsRes.ok ? bugsRes.json() : [],
-        severityRes.ok ? severityRes.json() : null,
-        priorityRes.ok ? priorityRes.json() : null,
-        metricsRes.ok ? metricsRes.json() : null,
-        assigneeRes.ok ? assigneeRes.json() : null,
-        authorRes.ok ? authorRes.json() : null,
-        moduleRes.ok ? moduleRes.json() : null,
-        featureRes.ok ? featureRes.json() : null,
-        browserOsRes.ok ? browserOsRes.json() : null,
-        platformRes.ok ? platformRes.json() : null,
-        ageRes.ok ? ageRes.json() : null,
-        resolutionRes.ok ? resolutionRes.json() : null,
-        reopenedRes.ok ? reopenedRes.json() : null,
-        deferredRes.ok ? deferredRes.json() : [],
+        bugsRes.ok ? bugsRes.json() : Promise.resolve([]),
+        severityRes.ok ? severityRes.json() : Promise.resolve(null),
+        priorityRes.ok ? priorityRes.json() : Promise.resolve(null),
+        metricsRes.ok ? metricsRes.json() : Promise.resolve(null),
+        assigneeRes.ok ? assigneeRes.json() : Promise.resolve(null),
+        authorRes.ok ? authorRes.json() : Promise.resolve(null),
+        moduleRes.ok ? moduleRes.json() : Promise.resolve(null),
+        featureRes.ok ? featureRes.json() : Promise.resolve(null),
+        browserOsRes.ok ? browserOsRes.json() : Promise.resolve(null),
+        platformRes.ok ? platformRes.json() : Promise.resolve(null),
+        ageRes.ok ? ageRes.json() : Promise.resolve(null),
+        resolutionRes.ok ? resolutionRes.json() : Promise.resolve(null),
+        reopenedRes.ok ? reopenedRes.json() : Promise.resolve(null),
+        deferredRes.ok ? deferredRes.json() : Promise.resolve([]),
+        testRailSummaryRes.ok ? testRailSummaryRes.json().catch(() => ({
+          total_test_cases: 0,
+          total_test_results: 0,
+          status_counts: { Passed: 0, Failed: 0, Blocked: 0, Retest: 0, Untested: 0 },
+          test_plans_count: 0,
+          test_runs_count: 0,
+          test_plan_name: null
+        })) : Promise.resolve({
+          total_test_cases: 0,
+          total_test_results: 0,
+          status_counts: { Passed: 0, Failed: 0, Blocked: 0, Retest: 0, Untested: 0 },
+          test_plans_count: 0,
+          test_runs_count: 0,
+          test_plan_name: null
+        }),
+        testCasesRes.ok ? testCasesRes.json() : Promise.resolve([]),
+        testStatusRes.ok ? testStatusRes.json() : Promise.resolve(null),
+        testRunsRes.ok ? testRunsRes.json() : Promise.resolve([]),
+        ticketTrackingRes.ok ? ticketTrackingRes.json() : Promise.resolve(null),
       ]);
 
       console.log('Summary data loaded:', summaryData);
       console.log('Bugs loaded:', bugsData?.length || 0);
+      console.log('TestRail Summary Data:', testRailSummaryData);
+      console.log('Test Runs Data:', testRunsData);
+      console.log('TestRail Summary:', testRailSummaryData);
+      console.log('Test Runs:', testRunsData);
 
       // Handle ticket info separately to avoid breaking if it fails
       let ticketInfoData = { ticket_title: "", platform: "Web" };
@@ -530,6 +627,24 @@ function Dashboard() {
       setResolutionTimeData(resolutionTime);
       setReopenedData(reopenedAnalysis);
       setDeferredBugs(deferredBugsData || []);
+      const finalTestRailSummary = testRailSummaryData || {
+        total_test_cases: 0,
+        total_test_results: 0,
+        status_counts: { Passed: 0, Failed: 0, Blocked: 0, Retest: 0, Untested: 0 },
+        test_plans_count: 0,
+        test_runs_count: 0,
+        test_plan_name: null
+      };
+      console.log('Final TestRail Summary to set:', finalTestRailSummary);
+      console.log('Total test cases count:', finalTestRailSummary.total_test_cases);
+      setTestRailSummary(finalTestRailSummary);
+      setTestCases(testCasesData || []);
+      setTestStatusData(testStatusBreakdownData);
+      setTestRuns(testRunsData || []);
+      
+      // Set ticket tracking data
+      console.log('Ticket Tracking Data:', ticketTrackingData);
+      setTicketTracking(ticketTrackingData);
 
     } catch (err) {
       console.error('Error loading bugs:', err);
@@ -579,6 +694,132 @@ function Dashboard() {
     return {
       labels: severityData.statuses,
       datasets,
+    };
+  };
+
+  // TestRail Status Chart Data
+  const getTestStatusChartData = () => {
+    if (!testStatusData || !testStatusData.status_distribution) return null;
+
+    const statusColors = {
+      "Passed": "rgba(34, 197, 94, 0.95)",
+      "Failed": "rgba(239, 68, 68, 0.95)",
+      "Blocked": "rgba(245, 158, 11, 0.95)",
+      "Retest": "rgba(139, 92, 246, 0.95)",
+      "Untested": "rgba(107, 114, 128, 0.95)",
+    };
+
+    const statusBorders = {
+      "Passed": "rgba(22, 163, 74, 1)",
+      "Failed": "rgba(185, 28, 28, 1)",
+      "Blocked": "rgba(217, 119, 6, 1)",
+      "Retest": "rgba(124, 58, 237, 1)",
+      "Untested": "rgba(75, 85, 99, 1)",
+    };
+
+    const labels = Object.keys(testStatusData.status_distribution).filter(
+      k => testStatusData.status_distribution[k] > 0
+    );
+    const values = labels.map(k => testStatusData.status_distribution[k]);
+    const bgColors = labels.map(k => statusColors[k] || statusColors["Untested"]);
+    const borderColors = labels.map(k => statusBorders[k] || statusBorders["Untested"]);
+
+    return {
+      labels,
+      datasets: [{
+        data: values,
+        backgroundColor: bgColors,
+        borderColor: borderColors,
+        borderWidth: 3,
+        hoverOffset: 15,
+        offset: 5,
+      }],
+    };
+  };
+
+  // Test Run Comparison Bar Chart Data
+  const getTestRunComparisonData = () => {
+    if (!testRuns || testRuns.length === 0) return null;
+
+    // Take up to 5 most recent runs for comparison
+    const runsToShow = testRuns.slice(0, 5);
+    const labels = runsToShow.map((run, idx) => 
+      run.name ? (run.name.length > 20 ? run.name.substring(0, 20) + '...' : run.name) : `Run ${idx + 1}`
+    );
+
+    return {
+      labels,
+      datasets: [
+        {
+          label: 'Passed',
+          data: runsToShow.map(r => r.status_counts?.Passed || 0),
+          backgroundColor: 'rgba(34, 197, 94, 0.85)',
+          borderColor: 'rgba(22, 163, 74, 1)',
+          borderWidth: 2,
+          borderRadius: 6,
+        },
+        {
+          label: 'Failed',
+          data: runsToShow.map(r => r.status_counts?.Failed || 0),
+          backgroundColor: 'rgba(239, 68, 68, 0.85)',
+          borderColor: 'rgba(185, 28, 28, 1)',
+          borderWidth: 2,
+          borderRadius: 6,
+        },
+        {
+          label: 'Blocked',
+          data: runsToShow.map(r => r.status_counts?.Blocked || 0),
+          backgroundColor: 'rgba(245, 158, 11, 0.85)',
+          borderColor: 'rgba(217, 119, 6, 1)',
+          borderWidth: 2,
+          borderRadius: 6,
+        },
+        {
+          label: 'Untested',
+          data: runsToShow.map(r => r.status_counts?.Untested || 0),
+          backgroundColor: 'rgba(107, 114, 128, 0.85)',
+          borderColor: 'rgba(75, 85, 99, 1)',
+          borderWidth: 2,
+          borderRadius: 6,
+        },
+      ],
+    };
+  };
+
+  // Test Pass Rate Data (for each run)
+  const getTestPassRateData = () => {
+    if (!testRuns || testRuns.length === 0) return null;
+
+    const runsToShow = testRuns.slice(0, 6);
+    const labels = runsToShow.map((run, idx) => 
+      run.name ? (run.name.length > 15 ? run.name.substring(0, 15) + '...' : run.name) : `Run ${idx + 1}`
+    );
+
+    const passRates = runsToShow.map(run => {
+      const total = (run.status_counts?.Passed || 0) + (run.status_counts?.Failed || 0) + 
+                    (run.status_counts?.Blocked || 0) + (run.status_counts?.Untested || 0);
+      if (total === 0) return 0;
+      return ((run.status_counts?.Passed || 0) / total * 100).toFixed(1);
+    });
+
+    return {
+      labels,
+      datasets: [{
+        label: 'Pass Rate %',
+        data: passRates,
+        backgroundColor: passRates.map(rate => 
+          rate >= 80 ? 'rgba(34, 197, 94, 0.85)' : 
+          rate >= 50 ? 'rgba(245, 158, 11, 0.85)' : 
+          'rgba(239, 68, 68, 0.85)'
+        ),
+        borderColor: passRates.map(rate => 
+          rate >= 80 ? 'rgba(22, 163, 74, 1)' : 
+          rate >= 50 ? 'rgba(217, 119, 6, 1)' : 
+          'rgba(185, 28, 28, 1)'
+        ),
+        borderWidth: 2,
+        borderRadius: 8,
+      }],
     };
   };
 
@@ -1153,6 +1394,57 @@ function Dashboard() {
         data: null,
         options: null,
         type: 'list'
+      },
+      'test-status': {
+        title: 'Test Status Distribution',
+        data: getTestStatusChartData(),
+        options: modalPieChartOptions,
+        type: 'doughnut'
+      },
+      'test-run-comparison': {
+        title: 'Test Run Comparison',
+        data: getTestRunComparisonData(),
+        options: {
+          ...modalBarChartOptions,
+          plugins: {
+            ...modalBarChartOptions.plugins,
+            legend: {
+              display: true,
+              position: 'top',
+              labels: {
+                color: 'var(--text-primary)',
+                usePointStyle: true,
+                padding: 20,
+                font: { family: "'Inter', sans-serif", size: 13 }
+              }
+            }
+          }
+        },
+        type: 'bar'
+      },
+      'pass-rate': {
+        title: 'Pass Rate by Test Run',
+        data: getTestPassRateData(),
+        options: {
+          ...modalBarChartOptions,
+          plugins: {
+            ...modalBarChartOptions.plugins,
+            legend: { display: false }
+          },
+          scales: {
+            ...modalBarChartOptions.scales,
+            y: {
+              ...modalBarChartOptions.scales?.y,
+              max: 100,
+              ticks: {
+                color: 'var(--text-secondary)',
+                font: { family: "'Inter', sans-serif", size: 12 },
+                callback: (val) => val + '%'
+              }
+            }
+          }
+        },
+        type: 'bar'
       }
     };
 
@@ -1201,6 +1493,14 @@ function Dashboard() {
             </svg>
             All Bugs Dashboard
           </Link>
+          <Link to="/tickets" className={`nav-item ${location.pathname === '/tickets' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="3" width="18" height="18" rx="2"/>
+              <path d="M3 9h18"/>
+              <path d="M9 21V9"/>
+            </svg>
+            Tickets Overview
+          </Link>
         </nav>
       </aside>
 
@@ -1245,11 +1545,11 @@ function Dashboard() {
             <div className="filter-group">
               <label className="filter-label">Ticket ID</label>
               <div className="ticket-input-wrapper">
-                <input
-                  type="number"
-                  placeholder="Enter Ticket ID"
-                  value={ticketId}
-                  onChange={(e) => setTicketId(e.target.value)}
+        <input
+          type="number"
+          placeholder="Enter Ticket ID"
+          value={ticketId}
+          onChange={(e) => setTicketId(e.target.value)}
                   className="ticket-input"
                 />
                 {ticketId && (
@@ -1267,17 +1567,17 @@ function Dashboard() {
             </div>
             <div className="filter-group">
               <label className="filter-label">Environment</label>
-              <select
-                value={environment}
-                onChange={(e) => setEnvironment(e.target.value)}
+        <select
+          value={environment}
+          onChange={(e) => setEnvironment(e.target.value)}
                 className="env-select"
-              >
-                <option>All</option>
-                <option>Staging</option>
-                <option>Pre-production</option>
-                <option>Production</option>
-                <option>BIS Testing (Pre)</option>
-              </select>
+        >
+          <option>All</option>
+          <option>Staging</option>
+          <option>Pre-production</option>
+          <option>Production</option>
+          <option>BIS Testing (Pre)</option>
+        </select>
             </div>
             <button 
               className="refresh-btn" 
@@ -1292,9 +1592,9 @@ function Dashboard() {
                 <path d="M18 6L6 18M6 6l12 12"/>
               </svg>
               Clear
-            </button>
+        </button>
           </div>
-        </div>
+      </div>
 
         {/* Error Message */}
         {error && (
@@ -1313,7 +1613,19 @@ function Dashboard() {
             <div className="ticket-info">
               <div className="ticket-id-group">
                 <span className="ticket-label">Ticket</span>
-                <span className="ticket-id">#{ticketId}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                  <span className="ticket-id">#{ticketId}</span>
+                  {testRailSummary && testRailSummary.test_plan_name && (
+                    <span className="ticket-plan-name">
+                      {testRailSummary.test_plan_name}
+                    </span>
+                  )}
+                  {testRailSummary && testRailSummary.total_test_cases > 0 && (
+                    <span className="ticket-test-cases-count">
+                      {testRailSummary.total_test_cases} Test Cases
+                    </span>
+                  )}
+        </div>
               </div>
             </div>
             <div className="ticket-meta">
@@ -1322,6 +1634,343 @@ function Dashboard() {
             </div>
           </div>
         )}
+
+        {/* Ticket Tracking Section - Management View (Top Priority) */}
+        {ticketTracking && (() => {
+          // Calculate ETA status
+          const isTicketClosed = ticketTracking.status?.toLowerCase().includes('closed') || 
+                                 ticketTracking.status?.toLowerCase().includes('moved to live') ||
+                                 ticketTracking.status?.toLowerCase().includes('completed');
+          const hasEta = ticketTracking.eta && ticketTracking.eta !== null;
+          const etaDate = hasEta ? new Date(ticketTracking.eta) : null;
+          const today = new Date();
+          today.setHours(0, 0, 0, 0);
+          const etaPassed = etaDate && etaDate < today;
+          const daysUntilEta = etaDate ? Math.ceil((etaDate - today) / (1000 * 60 * 60 * 24)) : null;
+          const daysPastEta = etaDate && etaPassed ? Math.abs(daysUntilEta) : 0;
+          
+          // Calculate QA vs Actual Dev comparison
+          const actualDevHours = ticketTracking.actual_dev_hours || 0;
+          const actualQaHours = ticketTracking.actual_qa_hours || 0;
+          let qaVsDevDiff = null;
+          let qaVsDevLabel = '';
+          if (actualDevHours > 0 && actualQaHours > 0) {
+            const diffPercent = ((actualQaHours - actualDevHours) / actualDevHours) * 100;
+            qaVsDevDiff = diffPercent;
+            if (diffPercent > 0) {
+              qaVsDevLabel = `${Math.abs(diffPercent).toFixed(0)}% higher than Dev`;
+            } else if (diffPercent < 0) {
+              qaVsDevLabel = `${Math.abs(diffPercent).toFixed(0)}% lower than Dev`;
+            } else {
+              qaVsDevLabel = 'Equal to Dev time';
+            }
+          }
+
+          // Calculate Overall Ticket Health Score (0-100)
+          let healthScore = 100;
+          let healthStatus = 'Excellent';
+          let healthColor = 'green';
+          let healthIssues = [];
+
+          // Factor 1: ETA Status (30 points)
+          if (isTicketClosed) {
+            healthScore += 0; // Already closed, no penalty
+            healthIssues.push('✅ Ticket closed');
+          } else if (!hasEta) {
+            healthScore -= 20; // Missing ETA is concerning
+            healthIssues.push('⚠️ ETA not provided');
+          } else if (etaPassed) {
+            const penalty = Math.min(daysPastEta * 2, 30); // Max 30 point penalty
+            healthScore -= penalty;
+            healthIssues.push(`🚨 ${daysPastEta} day${daysPastEta !== 1 ? 's' : ''} past ETA`);
+          } else if (daysUntilEta <= 3) {
+            healthScore -= 10; // Urgent deadline approaching
+            healthIssues.push(`⏰ ${daysUntilEta} day${daysUntilEta !== 1 ? 's' : ''} to ETA`);
+          } else {
+            healthIssues.push(`📅 ${daysUntilEta} day${daysUntilEta !== 1 ? 's' : ''} to ETA`);
+          }
+
+          // Factor 2: Dev Time Variance (25 points)
+          const devEstimate = ticketTracking.dev_estimate_hours || 0;
+          if (devEstimate > 0 && actualDevHours > 0) {
+            const devVariance = ticketTracking.dev_deviation || 0;
+            if (devVariance > 0) {
+              const overrunPercent = (devVariance / devEstimate) * 100;
+              const penalty = Math.min(overrunPercent * 0.25, 25); // Max 25 point penalty
+              healthScore -= penalty;
+              healthIssues.push(`🔴 Dev ${devVariance.toFixed(1)}h over budget (${overrunPercent.toFixed(0)}% overrun)`);
+            } else if (devVariance < 0) {
+              healthScore += 5; // Bonus for being under budget
+              healthIssues.push(`🟢 Dev ${Math.abs(devVariance).toFixed(1)}h under budget`);
+            }
+          }
+
+          // Factor 3: QA Time Variance (25 points)
+          const qaEstimate = ticketTracking.qa_estimate_hours || 0;
+          if (qaEstimate > 0 && actualQaHours > 0) {
+            const qaVariance = ticketTracking.qa_deviation || 0;
+            if (qaVariance > 0) {
+              const overrunPercent = (qaVariance / qaEstimate) * 100;
+              const penalty = Math.min(overrunPercent * 0.25, 25); // Max 25 point penalty
+              healthScore -= penalty;
+              healthIssues.push(`🔴 QA ${qaVariance.toFixed(1)}h over budget (${overrunPercent.toFixed(0)}% overrun)`);
+            } else if (qaVariance < 0) {
+              healthScore += 5; // Bonus for being under budget
+              healthIssues.push(`🟢 QA ${Math.abs(qaVariance).toFixed(1)}h under budget`);
+            }
+          }
+
+          // Factor 4: QA vs Dev Efficiency (20 points)
+          if (actualDevHours > 0 && actualQaHours > 0) {
+            const qaRatio = (actualQaHours / actualDevHours) * 100;
+            // Ideal QA ratio is 30-50% of dev time
+            if (qaRatio > 80) {
+              healthScore -= 15; // QA taking too long relative to dev
+              healthIssues.push(`⚠️ QA time is ${qaRatio.toFixed(0)}% of Dev (high)`);
+            } else if (qaRatio < 20) {
+              healthScore -= 10; // QA might be rushed
+              healthIssues.push(`⚠️ QA time is ${qaRatio.toFixed(0)}% of Dev (low)`);
+            } else {
+              healthScore += 5; // Good balance
+              healthIssues.push(`✅ QA time is ${qaRatio.toFixed(0)}% of Dev (optimal)`);
+            }
+          }
+
+          // Clamp health score between 0 and 100
+          healthScore = Math.max(0, Math.min(100, healthScore));
+
+          // Determine health status and color
+          if (healthScore >= 85) {
+            healthStatus = 'Excellent';
+            healthColor = 'green';
+          } else if (healthScore >= 70) {
+            healthStatus = 'Good';
+            healthColor = 'blue';
+          } else if (healthScore >= 55) {
+            healthStatus = 'Fair';
+            healthColor = 'amber';
+          } else if (healthScore >= 40) {
+            healthStatus = 'Poor';
+            healthColor = 'orange';
+          } else {
+            healthStatus = 'Critical';
+            healthColor = 'red';
+          }
+
+          // Get responsible team for current status
+          const currentStatus = ticketTracking.status || 'N/A';
+          const responsibleTeam = STATUS_TEAM_MAPPING[currentStatus] || 'Unknown';
+
+          return (
+          <div className="management-tracking-panel">
+            <div className="tracking-header">
+              <div className="tracking-title-row">
+                <h2 className="tracking-main-title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                    <path d="M3 9h18"/>
+                    <path d="M9 21V9"/>
+                  </svg>
+                  Project Tracking
+                </h2>
+                <div className="tracking-status-badge-large">
+                  {/* Ticket Status - Prominent on Left */}
+                  <div className="ticket-status-highlight">
+                    <div className="status-label-text">Status</div>
+                    <div className={`status-pill-large ${ticketTracking.status?.toLowerCase().replace(/\s+/g, '-') || 'unknown'}`}>
+                      {ticketTracking.status || 'N/A'}
+                    </div>
+                    <div className="responsible-team-badge">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+                        <circle cx="9" cy="7" r="4"/>
+                        <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+                      </svg>
+                      <span className="team-label">Responsible:</span>
+                      <span className={`team-name team-${responsibleTeam.toLowerCase().replace(/\s+/g, '-').replace(/\//g, '-')}`}>
+                        {responsibleTeam}
+                      </span>
+                    </div>
+        </div>
+
+                  {/* ETA Display Logic */}
+                  {!hasEta ? (
+                    <span className="eta-badge eta-missing blink-warning">
+                      ⚠️ ETA Not Provided
+                    </span>
+                  ) : isTicketClosed ? (
+                    <span className="eta-badge eta-completed">
+                      ETA: {etaDate.toLocaleDateString()}
+                    </span>
+                  ) : etaPassed ? (
+                    <span className="eta-badge eta-overdue blink-danger">
+                      🚨 {daysPastEta} day{daysPastEta !== 1 ? 's' : ''} past ETA ({etaDate.toLocaleDateString()})
+                    </span>
+                  ) : (
+                    <span className={`eta-badge ${daysUntilEta <= 3 ? 'eta-urgent' : 'eta-normal'}`}>
+                      {daysUntilEta === 0 ? '⏰ ETA Today!' : `📅 ${daysUntilEta} day${daysUntilEta !== 1 ? 's' : ''} to ETA`}
+                    </span>
+                  )}
+                </div>
+              </div>
+        </div>
+
+            <div className="tracking-content">
+              {/* Time Metrics Row */}
+              <div className="time-metrics-row">
+                {/* Development Time */}
+                <div className="time-block dev-block">
+                  <div className="time-block-header">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M16 18l2-2v-8a2 2 0 00-2-2H8a2 2 0 00-2 2v8l2 2"/>
+                      <path d="M12 6V2M8 22h8M12 18v4"/>
+                    </svg>
+                    <span>Development Time</span>
+                  </div>
+                  <div className="time-values">
+                    <div className="time-item">
+                      <span className="time-label">Time Planned</span>
+                      <span className="time-number">{ticketTracking.dev_estimate_hours || 0}h</span>
+                    </div>
+                    <div className="time-item">
+                      <span className="time-label">Time Spent</span>
+                      <span className="time-number">{ticketTracking.actual_dev_hours || 0}h</span>
+                    </div>
+                    <div className="time-item deviation">
+                      <span className="time-label">Variance</span>
+                      {ticketTracking.dev_deviation !== null && ticketTracking.dev_deviation !== undefined ? (
+                        <span className={`deviation-value ${ticketTracking.dev_deviation > 0 ? 'negative blink-danger' : 'positive'}`}>
+                          {ticketTracking.dev_deviation > 0 ? '+' : ''}{ticketTracking.dev_deviation}h
+                        </span>
+                      ) : (
+                        <span className="deviation-value neutral">-</span>
+                      )}
+                    </div>
+        </div>
+      </div>
+
+                {/* QA Time */}
+                <div className="time-block qa-block">
+                  <div className="time-block-header">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M9 11l3 3L22 4"/>
+                      <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                    </svg>
+                    <span>QA Testing Time</span>
+                  </div>
+                  <div className="time-values">
+                    <div className="time-item">
+                      <span className="time-label">Time Planned</span>
+                      <span className="time-number">{ticketTracking.qa_estimate_hours || 0}h</span>
+                    </div>
+                    <div className="time-item">
+                      <span className="time-label">Time Spent</span>
+                      <span className="time-number">{ticketTracking.actual_qa_hours || 0}h</span>
+                    </div>
+                    <div className="time-item deviation">
+                      <span className="time-label">Variance</span>
+                      {ticketTracking.qa_deviation !== null && ticketTracking.qa_deviation !== undefined ? (
+                        <span className={`deviation-value ${ticketTracking.qa_deviation > 0 ? 'negative blink-danger' : 'positive'}`}>
+                          {ticketTracking.qa_deviation > 0 ? '+' : ''}{ticketTracking.qa_deviation}h
+                        </span>
+                      ) : (
+                        <span className="deviation-value neutral">-</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* QA vs Dev Comparison */}
+                <div className="time-block comparison-block">
+                  <div className="time-block-header">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M18 20V10M12 20V4M6 20v-6"/>
+                    </svg>
+                    <span>QA vs Dev Comparison</span>
+                  </div>
+                  <div className="comparison-value">
+                    {actualQaHours > 0 && actualDevHours > 0 ? (
+                      <>
+                        <span className={`ratio-number ${qaVsDevDiff > 0 ? 'higher' : qaVsDevDiff < 0 ? 'lower' : ''}`}>
+                          {qaVsDevDiff > 0 ? '↑' : qaVsDevDiff < 0 ? '↓' : '='} {Math.abs(qaVsDevDiff).toFixed(0)}%
+                        </span>
+                        <span className="ratio-label">{qaVsDevLabel}</span>
+                        <span className="ratio-detail">QA: {actualQaHours}h vs Dev: {actualDevHours}h</span>
+                      </>
+                    ) : (
+                      <span className="ratio-label">Insufficient data</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Team Section */}
+              <div className="team-section">
+                <div className="team-group">
+                  <div className="team-group-header">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+                      <circle cx="9" cy="7" r="4"/>
+                      <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+                    </svg>
+                    <span>Developers Worked</span>
+                  </div>
+                  <div className="team-members">
+                    {ticketTracking.developers && ticketTracking.developers.length > 0 ? (
+                      ticketTracking.developers.map((dev, idx) => (
+                        <span key={idx} className="member-chip developer">{dev}</span>
+                      ))
+                    ) : (
+                      <span className="no-members">No developers assigned</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="team-group">
+                  <div className="team-group-header">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M9 11l3 3L22 4"/>
+                      <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                    </svg>
+                    <span>QA Team</span>
+                  </div>
+                  <div className="team-members">
+                    {ticketTracking.qc_testers && ticketTracking.qc_testers.length > 0 ? (
+                      ticketTracking.qc_testers.map((tester, idx) => (
+                        <span key={idx} className="member-chip qa">{tester}</span>
+                      ))
+                    ) : (
+                      <span className="no-members">No QA assigned</span>
+                    )}
+                  </div>
+                </div>
+
+                {ticketTracking.current_assignee && (
+                  <div className="team-group">
+                    <div className="team-group-header">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="7" r="4"/>
+                        <path d="M5.5 21v-2a6.5 6.5 0 0113 0v2"/>
+                      </svg>
+                      <span>Currently Assigned To</span>
+                    </div>
+                    <div className="team-members">
+                      <span className="member-chip current">{ticketTracking.current_assignee}</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Last Updated */}
+              {ticketTracking.updated_on && (
+                <div className="tracking-footer">
+                  Last synced: {new Date(ticketTracking.updated_on).toLocaleString()}
+                </div>
+              )}
+            </div>
+          </div>
+          );
+        })()}
 
         {/* Stats Grid */}
         <div className="stats-grid">
@@ -1396,6 +2045,59 @@ function Dashboard() {
           </div>
         </div>
 
+        {/* Most Recent Test Run Status - Above Open Bugs */}
+        {testRuns && testRuns.length > 0 && (() => {
+          const mostRecentRun = testRuns[0]; // Already sorted by created_on desc
+          return (
+            <div className="test-run-panel recent-run" style={{ marginTop: '24px', marginBottom: '24px' }}>
+              <div className="panel-header">
+                <h3 className="panel-title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                  </svg>
+                  Most Recent Test Run: {mostRecentRun.name || `Test Run #${mostRecentRun.run_id}`}
+                </h3>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <span className="table-count">
+                    {mostRecentRun.unique_test_cases} cases, {mostRecentRun.total_tests} executions
+                  </span>
+                  {mostRecentRun.created_on && (
+                    <span className="meta-badge" style={{ fontSize: '11px' }}>
+                      {new Date(mostRecentRun.created_on).toLocaleDateString()}
+                    </span>
+                  )}
+                </div>
+              </div>
+              <div className="test-run-stats">
+                <div className="test-run-stat-item">
+                  <span className="test-run-stat-value" style={{ color: 'var(--accent-green)' }}>
+                    {mostRecentRun.status_counts?.Passed || 0}
+                  </span>
+                  <span className="test-run-stat-label">Passed</span>
+                </div>
+                <div className="test-run-stat-item">
+                  <span className="test-run-stat-value" style={{ color: 'var(--accent-red)' }}>
+                    {mostRecentRun.status_counts?.Failed || 0}
+                  </span>
+                  <span className="test-run-stat-label">Failed</span>
+                </div>
+                <div className="test-run-stat-item">
+                  <span className="test-run-stat-value" style={{ color: 'var(--accent-amber)' }}>
+                    {mostRecentRun.status_counts?.Blocked || 0}
+                  </span>
+                  <span className="test-run-stat-label">Blocked</span>
+                </div>
+                <div className="test-run-stat-item">
+                  <span className="test-run-stat-value" style={{ color: '#6b7280' }}>
+                    {mostRecentRun.status_counts?.Untested || 0}
+                  </span>
+                  <span className="test-run-stat-label">Untested</span>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* Bug Table - Moved to top */}
         <div className="table-panel">
           <div className="panel-header">
@@ -1427,31 +2129,31 @@ function Dashboard() {
           </div>
           {expandedBugLists['open-bugs'] && (
           <div className="table-wrapper">
-            <table>
-              <thead>
-                <tr>
+      <table>
+        <thead>
+          <tr>
                   <th>Bug ID</th>
-                  <th>Status</th>
-                  <th>Severity</th>
+            <th>Status</th>
+            <th>Severity</th>
                   <th>Priority</th>
-                  <th>Assignee</th>
-                  <th>Subject</th>
-                </tr>
-              </thead>
-              <tbody>
-                {bugs.length === 0 && !loading && (
-                  <tr>
+            <th>Assignee</th>
+            <th>Subject</th>
+          </tr>
+        </thead>
+        <tbody>
+          {bugs.length === 0 && !loading && (
+            <tr>
                     <td colSpan="6" className="empty-state">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                         <path d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"/>
                       </svg>
                       <span>No open bugs found. Enter a Ticket ID to load data.</span>
                     </td>
-                  </tr>
-                )}
+            </tr>
+          )}
 
-                {bugs.map((bug) => (
-                  <tr key={bug.bug_id}>
+          {bugs.map((bug) => (
+            <tr key={bug.bug_id}>
                     <td className="bug-id">#{bug.bug_id}</td>
                     <td>
                       <span className={`badge status ${bug.status?.toLowerCase().replace(/\s+/g, '-')}`}>
@@ -1466,10 +2168,10 @@ function Dashboard() {
                     <td>{bug.priority || "—"}</td>
                     <td className="assignee">{bug.assignee || "Unassigned"}</td>
                     <td className="subject">{bug.subject}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            </tr>
+          ))}
+        </tbody>
+      </table>
           </div>
           )}
         </div>
@@ -1696,6 +2398,291 @@ function Dashboard() {
             </div>
           </div>
         </div>
+
+        {/* Test Case Summary Cards - Collapsible Section Before Team Performance */}
+        {testRailSummary && testRailSummary.total_test_cases > 0 && (
+          <div className="widgets-section" style={{ marginTop: '32px' }}>
+            <div className="section-header" style={{ cursor: 'pointer' }} onClick={() => setExpandedTestCasesSection(!expandedTestCasesSection)}>
+              <h2 className="section-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 11l3 3L22 4"/>
+                  <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                </svg>
+                Test Case Status Summary
+              </h2>
+              <button className="section-toggle" title={expandedTestCasesSection ? 'Collapse' : 'Expand'}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={expandedTestCasesSection ? 'expanded' : ''}>
+                  <path d="M6 9l6 6 6-6"/>
+                </svg>
+              </button>
+            </div>
+            {expandedTestCasesSection && (
+              <div className="section-content">
+                <div className="stats-grid">
+                  <div className="stat-card gradient-cyan">
+                    <div className="stat-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M9 11l3 3L22 4"/>
+                        <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                      </svg>
+                    </div>
+                    <div className="stat-content">
+                      <span className="stat-value">{testRailSummary.total_test_cases}</span>
+                      <span className="stat-label">Total Test Cases</span>
+                    </div>
+                    <div className="stat-trend">Unique cases</div>
+                  </div>
+
+                  <div className="stat-card gradient-green">
+                    <div className="stat-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
+                        <path d="M22 4L12 14.01l-3-3"/>
+                      </svg>
+                    </div>
+                    <div className="stat-content">
+                      <span className="stat-value">{testRailSummary.status_counts.Passed || 0}</span>
+                      <span className="stat-label">Passed</span>
+                    </div>
+                    <div className="stat-trend positive">Success</div>
+                  </div>
+
+                  <div className="stat-card gradient-red">
+                    <div className="stat-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M15 9l-6 6M9 9l6 6"/>
+                      </svg>
+                    </div>
+                    <div className="stat-content">
+                      <span className="stat-value">{testRailSummary.status_counts.Failed || 0}</span>
+                      <span className="stat-label">Failed</span>
+                    </div>
+                    <div className="stat-trend negative">Needs attention</div>
+                  </div>
+
+                  <div className="stat-card gradient-orange">
+                    <div className="stat-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="3" y="3" width="18" height="18" rx="2"/>
+                        <path d="M12 8v8M8 12h8"/>
+                      </svg>
+                    </div>
+                    <div className="stat-content">
+                      <span className="stat-value">{testRailSummary.status_counts.Blocked || 0}</span>
+                      <span className="stat-label">Blocked</span>
+                    </div>
+                    <div className="stat-trend">Cannot test</div>
+                  </div>
+
+                  <div className="stat-card gradient-gray">
+                    <div className="stat-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M12 6v6l4 2"/>
+                      </svg>
+                    </div>
+                    <div className="stat-content">
+                      <span className="stat-value">{testRailSummary.status_counts.Untested || 0}</span>
+                      <span className="stat-label">Untested</span>
+                    </div>
+                    <div className="stat-trend">Pending</div>
+                  </div>
+                </div>
+
+                {/* Test Status Chart */}
+                {testStatusData && testStatusData.status_distribution && Object.values(testStatusData.status_distribution).some(v => v > 0) && (
+                  <div className="charts-row" style={{ marginTop: '20px' }}>
+                    <div className="chart-panel">
+                      <div className="panel-header">
+                        <h3 className="panel-title">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <circle cx="12" cy="12" r="10"/>
+                            <path d="M12 2a10 10 0 0110 10"/>
+                          </svg>
+                          Test Status Distribution
+                        </h3>
+                        <button 
+                          className="chart-maximize-btn"
+                          onClick={() => maximizeChart('test-status')}
+                          title="Maximize chart"
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="chart-container pie-chart">
+                        <Doughnut data={getTestStatusChartData()} options={pieChartOptions} />
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+
+        {/* Other Test Runs Section - After Test Case Summary */}
+        {testRuns && testRuns.length > 1 && (
+          <div className="widgets-section" style={{ marginTop: '32px' }}>
+            <div className="section-header" style={{ cursor: 'pointer' }} onClick={() => setExpandedOtherTestRuns(!expandedOtherTestRuns)}>
+              <h2 className="section-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M9 11l3 3L22 4"/>
+                  <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                </svg>
+                Other Test Runs ({testRuns.length - 1})
+              </h2>
+              <button className="section-toggle" title={expandedOtherTestRuns ? 'Collapse' : 'Expand'}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={expandedOtherTestRuns ? 'expanded' : ''}>
+                  <path d="M6 9l6 6 6-6"/>
+                </svg>
+              </button>
+            </div>
+            {expandedOtherTestRuns && (
+              <div className="section-content">
+                {/* Test Run Comparison Charts */}
+                <div className="charts-row" style={{ marginBottom: '24px' }}>
+                  {/* Test Run Comparison Bar Chart */}
+                  {getTestRunComparisonData() && (
+                    <div className="chart-panel large">
+                      <div className="panel-header">
+                        <h3 className="panel-title">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M18 20V10M12 20V4M6 20v-6"/>
+                          </svg>
+                          Test Run Comparison
+                        </h3>
+                        <button 
+                          className="chart-maximize-btn"
+                          onClick={(e) => { e.stopPropagation(); maximizeChart('test-run-comparison'); }}
+                          title="Maximize chart"
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="chart-container bar-chart">
+                        <Bar data={getTestRunComparisonData()} options={{
+                          ...barChartOptions,
+                          plugins: {
+                            ...barChartOptions.plugins,
+                            legend: {
+                              display: true,
+                              position: 'top',
+                              labels: {
+                                color: 'var(--text-secondary)',
+                                usePointStyle: true,
+                                padding: 15,
+                                font: { family: "'Inter', sans-serif", size: 11 }
+                              }
+                            }
+                          }
+                        }} />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Pass Rate Chart */}
+                  {getTestPassRateData() && (
+                    <div className="chart-panel">
+                      <div className="panel-header">
+                        <h3 className="panel-title">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                          </svg>
+                          Pass Rate by Run
+                        </h3>
+                        <button 
+                          className="chart-maximize-btn"
+                          onClick={(e) => { e.stopPropagation(); maximizeChart('pass-rate'); }}
+                          title="Maximize chart"
+                        >
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/>
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="chart-container bar-chart">
+                        <Bar data={getTestPassRateData()} options={{
+                          ...barChartOptions,
+                          plugins: {
+                            ...barChartOptions.plugins,
+                            legend: { display: false }
+                          },
+                          scales: {
+                            ...barChartOptions.scales,
+                            y: {
+                              ...barChartOptions.scales?.y,
+                              max: 100,
+                              ticks: {
+                                ...barChartOptions.scales?.y?.ticks,
+                                callback: (val) => val + '%'
+                              }
+                            }
+                          }
+                        }} />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Individual Test Runs */}
+                {testRuns.slice(1).map((run) => (
+                  <div key={run.run_id} className="test-run-panel" style={{ marginBottom: '16px' }}>
+                    <div className="panel-header">
+                      <h3 className="panel-title">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
+                        </svg>
+                        {run.name || `Test Run #${run.run_id}`}
+                      </h3>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <span className="table-count">
+                          {run.unique_test_cases} cases, {run.total_tests} executions
+                        </span>
+                        {run.created_on && (
+                          <span className="meta-badge" style={{ fontSize: '11px' }}>
+                            {new Date(run.created_on).toLocaleDateString()}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="test-run-stats">
+                      <div className="test-run-stat-item">
+                        <span className="test-run-stat-value" style={{ color: 'var(--accent-green)' }}>
+                          {run.status_counts.Passed || 0}
+                        </span>
+                        <span className="test-run-stat-label">Passed</span>
+                      </div>
+                      <div className="test-run-stat-item">
+                        <span className="test-run-stat-value" style={{ color: 'var(--accent-red)' }}>
+                          {run.status_counts.Failed || 0}
+                        </span>
+                        <span className="test-run-stat-label">Failed</span>
+                      </div>
+                      <div className="test-run-stat-item">
+                        <span className="test-run-stat-value" style={{ color: 'var(--accent-amber)' }}>
+                          {run.status_counts.Blocked || 0}
+                        </span>
+                        <span className="test-run-stat-label">Blocked</span>
+                      </div>
+                      <div className="test-run-stat-item">
+                        <span className="test-run-stat-value" style={{ color: '#6b7280' }}>
+                          {run.status_counts.Untested || 0}
+                        </span>
+                        <span className="test-run-stat-label">Untested</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Team Performance Section */}
         {summary.total_bugs > 0 && (
