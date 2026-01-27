@@ -1,5 +1,6 @@
-import { useState, useEffect } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -12,6 +13,7 @@ import {
 } from "chart.js";
 import { Bar, Doughnut } from "react-chartjs-2";
 import ChartDataLabels from 'chartjs-plugin-datalabels';
+import { formatDisplayDate, formatDisplayDateTime } from "./dateUtils";
 import "./dashboard.css";
 
 ChartJS.register(
@@ -147,6 +149,8 @@ function SpeedometerGauge({ value, label, maxValue = 100, theme = 'dark' }) {
 
 function Dashboard() {
   const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [theme, setTheme] = useState(() => {
     try {
       const savedTheme = localStorage.getItem('dashboard-theme');
@@ -155,8 +159,17 @@ function Dashboard() {
       return 'dark';
     }
   });
-  const [ticketId, setTicketId] = useState("");
+  
+  // Read ticket ID from URL params on load
+  const [ticketId, setTicketId] = useState(() => {
+    const urlTicketId = searchParams.get('ticket');
+    return urlTicketId || "";
+  });
+  
+  // Employee data for name lookups
+  const [employeeMap, setEmployeeMap] = useState({});
   const [environment, setEnvironment] = useState("All");
+  const [platform, setPlatform] = useState("All");
   const [ticketInfo, setTicketInfo] = useState({ ticket_title: "", platform: "Web" });
 
   const [summary, setSummary] = useState({
@@ -202,8 +215,24 @@ function Dashboard() {
   const [ticketTracking, setTicketTracking] = useState(null);
   const [expandedTicketTracking, setExpandedTicketTracking] = useState(true);
   
+  // Employees for team classification
+  const [employeeTeamMap, setEmployeeTeamMap] = useState({});
+  
+  // Full employee data for lead lookup
+  const [allEmployees, setAllEmployees] = useState([]);
+  
+  // Team leads (derived from ticket team members) - arrays to support multiple leads
+  const [teamLeads, setTeamLeads] = useState({ dev_leads: [], qa_leads: [] });
+  
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  
+  // Ticket autocomplete state
+  const [ticketSuggestions, setTicketSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [ticketInputValue, setTicketInputValue] = useState("");
+  const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
+  const ticketInputRef = useRef(null);
 
   // Maximize/minimize state for charts
   const [maximizedChart, setMaximizedChart] = useState(null);
@@ -244,6 +273,65 @@ function Dashboard() {
       ...prev,
       [listId]: !prev[listId]
     }));
+  };
+
+  // Fetch ticket suggestions for autocomplete
+  const fetchTicketSuggestions = useCallback(async (query) => {
+    if (!query || query.length < 1) {
+      setTicketSuggestions([]);
+      return;
+    }
+    
+    try {
+      const response = await fetch(`${BACKEND_URL}/tickets/search?query=${encodeURIComponent(query)}`);
+      if (response.ok) {
+        const data = await response.json();
+        setTicketSuggestions(data);
+      }
+    } catch (err) {
+      console.error('Error fetching ticket suggestions:', err);
+      setTicketSuggestions([]);
+    }
+  }, []);
+
+  // Debounced ticket search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchTicketSuggestions(ticketInputValue);
+    }, 200);
+    
+    return () => clearTimeout(timer);
+  }, [ticketInputValue, fetchTicketSuggestions]);
+
+  // Handle ticket selection from dropdown
+  const handleTicketSelect = (ticket) => {
+    setTicketId(String(ticket.ticket_id));
+    setTicketInputValue(String(ticket.ticket_id));
+    setShowSuggestions(false);
+    setSearchParams({ ticket: String(ticket.ticket_id) });
+  };
+
+  // Handle input change for ticket autocomplete
+  const handleTicketInputChange = (value) => {
+    // Only allow numeric input
+    const numericValue = value.replace(/[^0-9]/g, '');
+    setTicketInputValue(numericValue);
+    setShowSuggestions(numericValue.length > 0);
+    
+    // Update dropdown position while typing
+    if (ticketInputRef.current) {
+      const rect = ticketInputRef.current.getBoundingClientRect();
+      setDropdownPosition({
+        top: rect.bottom + 4,
+        left: rect.left,
+        width: rect.width
+      });
+    }
+    
+    // Clear the actual ticketId if input is cleared
+    if (!numericValue) {
+      handleTicketIdChange("");
+    }
   };
 
   // Theme toggle handler - set theme on mount and when it changes
@@ -288,6 +376,38 @@ function Dashboard() {
     });
   };
 
+  // Classify a person's team - returns 'DEV', 'QA', or 'BIS Team'
+  const classifyPerson = (name) => {
+    if (!name) return 'Unknown';
+    const normalizedName = name.trim().toLowerCase();
+    if (employeeTeamMap[normalizedName]) {
+      const team = employeeTeamMap[normalizedName];
+      if (team === 'DEVELOPMENT') return 'DEV';
+      if (team === 'QA') return 'QA';
+      return team;
+    }
+    // Not in employee database = BIS Team (client)
+    return 'BIS Team';
+  };
+
+  // Segregate team members by their team type
+  const segregateTeamMembers = (members) => {
+    if (!members || members.length === 0) return { dev: [], qa: [], bis: [] };
+    
+    const dev = [];
+    const qa = [];
+    const bis = [];
+    
+    members.forEach(member => {
+      const team = classifyPerson(member);
+      if (team === 'DEV') dev.push(member);
+      else if (team === 'QA') qa.push(member);
+      else bis.push(member);
+    });
+    
+    return { dev, qa, bis };
+  };
+
   // Test backend connection on mount
   useEffect(() => {
     const testConnection = async () => {
@@ -316,6 +436,149 @@ function Dashboard() {
     window.addEventListener('keydown', handleEsc);
     return () => window.removeEventListener('keydown', handleEsc);
   }, [maximizedChart]);
+
+  // Load employees for name click functionality and lead lookup
+  useEffect(() => {
+    const loadEmployees = async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/employees`);
+        if (res.ok) {
+          const data = await res.json();
+          // Store all employee data for lead lookup
+          setAllEmployees(data);
+          
+          // Create a map of employee names (lowercase) to their employee_id
+          const empMap = {};
+          const teamMap = {};
+          data.forEach(emp => {
+            const nameLower = emp.name.toLowerCase();
+            empMap[nameLower] = emp.employee_id;
+            teamMap[nameLower] = emp.team; // Store team info
+          });
+          setEmployeeMap(empMap);
+          setEmployeeTeamMap(teamMap);
+        }
+      } catch (err) {
+        console.error('Failed to load employees for name lookup:', err);
+      }
+    };
+    loadEmployees();
+  }, []);
+
+  // Derive team leads from ticket team members
+  useEffect(() => {
+    if (!ticketId || ticketId.trim() === '' || !ticketTracking || allEmployees.length === 0) {
+      // Clear team leads when no ticket is selected or no data
+      setTeamLeads({ dev_leads: [], qa_leads: [] });
+      return;
+    }
+    
+    // Helper function to find employee by name (case-insensitive)
+    const findEmployee = (name) => {
+      if (!name) return null;
+      const normalizedName = name.trim().toLowerCase();
+      return allEmployees.find(emp => emp.name.toLowerCase() === normalizedName);
+    };
+    
+    // Helper to find lead info from employee data
+    const findLeadInfo = (leadName) => {
+      if (!leadName) return null;
+      const leadEmployee = findEmployee(leadName);
+      if (leadEmployee) {
+        return {
+          employee_id: leadEmployee.employee_id,
+          name: leadEmployee.name,
+          email: leadEmployee.email,
+          role: leadEmployee.role
+        };
+      }
+      // Lead exists but not in our employee database
+      return { name: leadName, employee_id: null, email: null, role: null };
+    };
+    
+    // Collect all unique DEV leads from developers working on this ticket
+    const devLeadsMap = new Map(); // Use Map to avoid duplicates by name
+    const developers = ticketTracking.developers || [];
+    for (const devName of developers) {
+      const devEmployee = findEmployee(devName);
+      if (devEmployee && devEmployee.team === 'DEVELOPMENT' && devEmployee.lead) {
+        const leadInfo = findLeadInfo(devEmployee.lead);
+        if (leadInfo && !devLeadsMap.has(leadInfo.name.toLowerCase())) {
+          devLeadsMap.set(leadInfo.name.toLowerCase(), leadInfo);
+        }
+      }
+    }
+    
+    // Collect all unique QA leads from QA testers working on this ticket
+    const qaLeadsMap = new Map();
+    const qaTesters = ticketTracking.qc_testers || [];
+    for (const qaName of qaTesters) {
+      const qaEmployee = findEmployee(qaName);
+      if (qaEmployee && qaEmployee.team === 'QA' && qaEmployee.lead) {
+        const leadInfo = findLeadInfo(qaEmployee.lead);
+        if (leadInfo && !qaLeadsMap.has(leadInfo.name.toLowerCase())) {
+          qaLeadsMap.set(leadInfo.name.toLowerCase(), leadInfo);
+        }
+      }
+    }
+    
+    setTeamLeads({ 
+      dev_leads: Array.from(devLeadsMap.values()), 
+      qa_leads: Array.from(qaLeadsMap.values()) 
+    });
+  }, [ticketId, ticketTracking, allEmployees]);
+
+  // Sync URL params with ticket ID
+  useEffect(() => {
+    const urlTicketId = searchParams.get('ticket');
+    if (urlTicketId && urlTicketId !== ticketId) {
+      setTicketId(urlTicketId);
+      setTicketInputValue(urlTicketId);
+    }
+  }, [searchParams]);
+
+  // Update URL when ticket ID changes (from input)
+  const handleTicketIdChange = (newTicketId) => {
+    setTicketId(newTicketId);
+    if (newTicketId) {
+      setSearchParams({ ticket: newTicketId });
+    } else {
+      // Clear URL params
+      setSearchParams({});
+      // Clear all related data when ticket ID is cleared
+      setBugs([]);
+      setDeferredBugs([]);
+      setTicketTracking(null);
+      setTeamLeads({ dev_leads: [], qa_leads: [] });
+      setTestRailSummary({
+        total_test_cases: 0,
+        total_test_results: 0,
+        status_counts: { Passed: 0, Failed: 0, Blocked: 0, Retest: 0, Untested: 0 },
+        test_plans_count: 0,
+        test_runs_count: 0,
+        test_plan_name: null
+      });
+      setTestRuns([]);
+      setTestStatusData(null);
+      setError("");
+    }
+  };
+
+  // Navigate to employee profile if they exist
+  const handleNameClick = useCallback((name) => {
+    if (!name) return;
+    const normalizedName = name.toLowerCase().trim();
+    const employeeId = employeeMap[normalizedName];
+    if (employeeId) {
+      navigate(`/employees/${employeeId}`);
+    }
+  }, [employeeMap, navigate]);
+
+  // Check if a name is a valid employee (for styling clickable names)
+  const isValidEmployee = useCallback((name) => {
+    if (!name) return false;
+    return !!employeeMap[name.toLowerCase().trim()];
+  }, [employeeMap]);
 
   // Auto-load data when ticket ID or environment changes
   useEffect(() => {
@@ -439,15 +702,16 @@ function Dashboard() {
     try {
       const baseUrl = `${BACKEND_URL}/bugs`;
       const envParam = `environment=${environment}`;
+      const platformParam = `platform=${platform}`;
       const ticketParam = `ticket_id=${parseInt(ticketId)}`;
       
-      console.log('Loading ticket data for Ticket ID:', ticketId, 'Environment:', environment);
+      console.log('Loading ticket data for Ticket ID:', ticketId, 'Environment:', environment, 'Platform:', platform);
       
       const [
         summaryRes, bugsRes, ticketInfoRes, severityRes, priorityRes, metricsRes,
         assigneeRes, authorRes, moduleRes, featureRes, browserOsRes, platformRes,
         ageRes, resolutionRes, reopenedRes, deferredRes, testRailSummaryRes, testCasesRes, testStatusRes, testRunsRes,
-        ticketTrackingRes
+        ticketTrackingRes, employeesRes
       ] = await Promise.all([
         fetch(`${baseUrl}/summary?${ticketParam}&${envParam}`).catch(err => {
           console.error('Failed to fetch summary:', err);
@@ -481,35 +745,35 @@ function Dashboard() {
           console.error('Failed to fetch author-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/module-breakdown?${ticketParam}&${envParam}`).catch(err => {
+        fetch(`${baseUrl}/module-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch module-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/feature-breakdown?${ticketParam}&${envParam}`).catch(err => {
+        fetch(`${baseUrl}/feature-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch feature-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/browser-os-breakdown?${ticketParam}&${envParam}`).catch(err => {
+        fetch(`${baseUrl}/browser-os-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch browser-os-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/platform-breakdown?${ticketParam}&${envParam}`).catch(err => {
+        fetch(`${baseUrl}/platform-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch platform-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/age-analysis?${ticketParam}&${envParam}`).catch(err => {
+        fetch(`${baseUrl}/age-analysis?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch age-analysis:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/resolution-time?${ticketParam}&${envParam}`).catch(err => {
+        fetch(`${baseUrl}/resolution-time?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch resolution-time:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/reopened-analysis?${ticketParam}&${envParam}`).catch(err => {
+        fetch(`${baseUrl}/reopened-analysis?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch reopened-analysis:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/deferred-bugs?${ticketParam}&${envParam}`).catch(err => {
+        fetch(`${baseUrl}/deferred-bugs?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch deferred-bugs:', err);
           return { ok: false, status: 500 };
         }),
@@ -533,6 +797,10 @@ function Dashboard() {
           console.error('Failed to fetch ticket-tracking:', err);
           return { ok: false, status: 500 };
         }),
+        fetch(`${BACKEND_URL}/employees`).catch(err => {
+          console.error('Failed to fetch employees:', err);
+          return { ok: false, status: 500 };
+        }),
       ]);
 
       if (!summaryRes.ok) {
@@ -549,7 +817,7 @@ function Dashboard() {
         summaryData, bugsData, severityBreakdown, priorityBreakdown, metricsData,
         assigneeBreakdown, authorBreakdown, moduleBreakdown, featureBreakdown,
         browserOsBreakdown, platformBreakdown, ageAnalysis, resolutionTime, reopenedAnalysis, deferredBugsData,
-        testRailSummaryData, testCasesData, testStatusBreakdownData, testRunsData, ticketTrackingData
+        testRailSummaryData, testCasesData, testStatusBreakdownData, testRunsData, ticketTrackingData, employeesData
       ] = await Promise.all([
         summaryRes.json(),
         bugsRes.ok ? bugsRes.json() : Promise.resolve([]),
@@ -585,6 +853,7 @@ function Dashboard() {
         testStatusRes.ok ? testStatusRes.json() : Promise.resolve(null),
         testRunsRes.ok ? testRunsRes.json() : Promise.resolve([]),
         ticketTrackingRes.ok ? ticketTrackingRes.json() : Promise.resolve(null),
+        employeesRes.ok ? employeesRes.json() : Promise.resolve([]),
       ]);
 
       console.log('Summary data loaded:', summaryData);
@@ -645,6 +914,17 @@ function Dashboard() {
       // Set ticket tracking data
       console.log('Ticket Tracking Data:', ticketTrackingData);
       setTicketTracking(ticketTrackingData);
+      
+      // Build employee team map for name classification
+      if (employeesData && Array.isArray(employeesData)) {
+        const teamMap = {};
+        employeesData.forEach(emp => {
+          if (emp.name) {
+            teamMap[emp.name.trim().toLowerCase()] = emp.team || 'UNKNOWN';
+          }
+        });
+        setEmployeeTeamMap(teamMap);
+      }
 
     } catch (err) {
       console.error('Error loading bugs:', err);
@@ -1501,6 +1781,49 @@ function Dashboard() {
             </svg>
             Tickets Overview
           </Link>
+          <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+            </svg>
+            Employees
+          </Link>
+          <Link to="/calendar" className={`nav-item ${location.pathname === '/calendar' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+              <line x1="16" y1="2" x2="16" y2="6"/>
+              <line x1="8" y1="2" x2="8" y2="6"/>
+              <line x1="3" y1="10" x2="21" y2="10"/>
+            </svg>
+            Calendar
+          </Link>
+          <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/>
+              <rect x="9" y="3" width="6" height="4" rx="1"/>
+              <path d="M9 12h6"/>
+              <path d="M9 16h6"/>
+            </svg>
+            Task Planning
+          </Link>
+          <Link to="/comparison" className={`nav-item ${location.pathname === '/comparison' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M18 20V10"/>
+              <path d="M12 20V4"/>
+              <path d="M6 20v-6"/>
+            </svg>
+            Plan vs Actual
+          </Link>
+          <Link to="/reports" className={`nav-item ${location.pathname === '/reports' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="16" y1="13" x2="8" y2="13"/>
+              <line x1="16" y1="17" x2="8" y2="17"/>
+            </svg>
+            Reports
+          </Link>
         </nav>
       </aside>
 
@@ -1517,6 +1840,12 @@ function Dashboard() {
         {/* Top Header with Bugs Count */}
         <header className="top-header">
           <div className="header-left">
+            <img 
+              src="/techversant-logo.png" 
+              alt="Techversant Infotech" 
+              className="company-logo"
+            />
+            <div className="header-divider"></div>
             <h1 className="page-title">QA Dashboard</h1>
             {summary.total_bugs > 0 && (
               <div className="bugs-count-header">
@@ -1525,18 +1854,6 @@ function Dashboard() {
               </div>
             )}
           </div>
-          {/* RAG Status - Compact on Right */}
-          {summary.total_bugs > 0 && (
-            <div className="rag-status-compact" style={{ '--rag-color': ragStatus.color }}>
-              <div className="rag-compact-indicator" style={{ backgroundColor: ragStatus.color }}>
-                <span className="rag-compact-text">{ragStatus.status}</span>
-              </div>
-              <div className="rag-compact-info">
-                <span className="rag-compact-label">{ragStatus.label}</span>
-                <span className="rag-compact-score">{ragStatus.score}/100</span>
-              </div>
-            </div>
-          )}
         </header>
 
         {/* Filter Section - Compact */}
@@ -1544,24 +1861,85 @@ function Dashboard() {
           <div className="filter-controls">
             <div className="filter-group">
               <label className="filter-label">Ticket ID</label>
-              <div className="ticket-input-wrapper">
-        <input
-          type="number"
-          placeholder="Enter Ticket ID"
-          value={ticketId}
-          onChange={(e) => setTicketId(e.target.value)}
+              <div className="ticket-input-wrapper ticket-autocomplete" ref={ticketInputRef}>
+                <input
+                  type="text"
+                  placeholder="Search or enter Ticket ID"
+                  value={ticketInputValue || ticketId}
+                  onChange={(e) => handleTicketInputChange(e.target.value)}
+                  onFocus={() => {
+                    if (ticketInputValue || ticketId) {
+                      fetchTicketSuggestions(ticketInputValue || ticketId);
+                      setShowSuggestions(true);
+                    }
+                    // Update dropdown position
+                    if (ticketInputRef.current) {
+                      const rect = ticketInputRef.current.getBoundingClientRect();
+                      setDropdownPosition({
+                        top: rect.bottom + window.scrollY + 4,
+                        left: rect.left + window.scrollX,
+                        width: rect.width
+                      });
+                    }
+                  }}
+                  onBlur={() => {
+                    // Delay hiding to allow click on suggestion
+                    setTimeout(() => setShowSuggestions(false), 200);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && (ticketInputValue || ticketId)) {
+                      handleTicketIdChange(ticketInputValue || ticketId);
+                      setShowSuggestions(false);
+                    }
+                    if (e.key === 'Escape') {
+                      setShowSuggestions(false);
+                    }
+                  }}
                   className="ticket-input"
                 />
-                {ticketId && (
+                {(ticketId || ticketInputValue) && (
                   <button
                     className="clear-btn"
-                    onClick={() => setTicketId("")}
+                    onClick={() => {
+                      handleTicketIdChange("");
+                      setTicketInputValue("");
+                      setShowSuggestions(false);
+                    }}
                     title="Clear Ticket ID"
                   >
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                       <path d="M18 6L6 18M6 6l12 12"/>
                     </svg>
                   </button>
+                )}
+                {showSuggestions && ticketSuggestions.length > 0 && createPortal(
+                  <div 
+                    className="ticket-suggestions-dropdown"
+                    style={{
+                      position: 'fixed',
+                      top: dropdownPosition.top,
+                      left: dropdownPosition.left,
+                      width: dropdownPosition.width,
+                    }}
+                  >
+                    {ticketSuggestions.map((ticket) => (
+                      <div
+                        key={ticket.ticket_id}
+                        className="ticket-suggestion-item"
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          handleTicketSelect(ticket);
+                        }}
+                      >
+                        <span className="suggestion-id">#{ticket.ticket_id}</span>
+                        <span className="suggestion-title">{ticket.title}</span>
+                        {ticket.status && (
+                          <span className="suggestion-status">{ticket.status}</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>,
+                  document.body
                 )}
               </div>
             </div>
@@ -1582,8 +1960,9 @@ function Dashboard() {
             <button 
               className="refresh-btn" 
               onClick={() => {
-                setTicketId("");
+                handleTicketIdChange("");
                 setEnvironment("All");
+                setPlatform("All");
               }}
               disabled={loading}
               title="Clear data"
@@ -1773,6 +2152,38 @@ function Dashboard() {
                   </svg>
                   Project Tracking
                 </h2>
+                <button 
+                  className="export-pdf-btn"
+                  onClick={async () => {
+                    try {
+                      const response = await fetch(`${BACKEND_URL}/reports/ticket/${ticketId}`);
+                      if (!response.ok) throw new Error('Failed to generate report');
+                      const blob = await response.blob();
+                      const url = window.URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `Ticket_Report_${ticketId}.pdf`;
+                      document.body.appendChild(a);
+                      a.click();
+                      window.URL.revokeObjectURL(url);
+                      a.remove();
+                    } catch (err) {
+                      console.error('Failed to export PDF:', err);
+                      alert('Failed to generate PDF report');
+                    }
+                  }}
+                  title="Export ticket data as PDF"
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                    <polyline points="14,2 14,8 20,8"/>
+                    <line x1="16" y1="13" x2="8" y2="13"/>
+                    <line x1="16" y1="17" x2="8" y2="17"/>
+                  </svg>
+                  Export PDF
+                </button>
+              </div>
+              <div className="tracking-status-row">
                 <div className="tracking-status-badge-large">
                   {/* Ticket Status - Prominent on Left */}
                   <div className="ticket-status-highlight">
@@ -1793,6 +2204,12 @@ function Dashboard() {
                     </div>
         </div>
 
+                  {/* RAG Status Badge */}
+                  <div className={`rag-status-badge rag-${healthColor}`}>
+                    <div className="rag-score">{Math.round(healthScore)}</div>
+                    <div className="rag-label">{healthStatus}</div>
+                  </div>
+
                   {/* ETA Display Logic */}
                   {!hasEta ? (
                     <span className="eta-badge eta-missing blink-warning">
@@ -1800,11 +2217,11 @@ function Dashboard() {
                     </span>
                   ) : isTicketClosed ? (
                     <span className="eta-badge eta-completed">
-                      ETA: {etaDate.toLocaleDateString()}
+                      ETA: {formatDisplayDate(etaDate)}
                     </span>
                   ) : etaPassed ? (
                     <span className="eta-badge eta-overdue blink-danger">
-                      🚨 {daysPastEta} day{daysPastEta !== 1 ? 's' : ''} past ETA ({etaDate.toLocaleDateString()})
+                      🚨 {daysPastEta} day{daysPastEta !== 1 ? 's' : ''} past ETA ({formatDisplayDate(etaDate)})
                     </span>
                   ) : (
                     <span className={`eta-badge ${daysUntilEta <= 3 ? 'eta-urgent' : 'eta-normal'}`}>
@@ -1813,7 +2230,7 @@ function Dashboard() {
                   )}
                 </div>
               </div>
-        </div>
+            </div>
 
             <div className="tracking-content">
               {/* Time Metrics Row */}
@@ -1830,7 +2247,11 @@ function Dashboard() {
                   <div className="time-values">
                     <div className="time-item">
                       <span className="time-label">Time Planned</span>
-                      <span className="time-number">{ticketTracking.dev_estimate_hours || 0}h</span>
+                      {(!ticketTracking.dev_estimate_hours || ticketTracking.dev_estimate_hours === 0) && !isTicketClosed ? (
+                        <span className="time-number estimate-missing blink-warning">Not Provided</span>
+                      ) : (
+                        <span className="time-number">{ticketTracking.dev_estimate_hours || 0}h</span>
+                      )}
                     </div>
                     <div className="time-item">
                       <span className="time-label">Time Spent</span>
@@ -1838,13 +2259,24 @@ function Dashboard() {
                     </div>
                     <div className="time-item deviation">
                       <span className="time-label">Variance</span>
-                      {ticketTracking.dev_deviation !== null && ticketTracking.dev_deviation !== undefined ? (
-                        <span className={`deviation-value ${ticketTracking.dev_deviation > 0 ? 'negative blink-danger' : 'positive'}`}>
-                          {ticketTracking.dev_deviation > 0 ? '+' : ''}{ticketTracking.dev_deviation}h
-                        </span>
-                      ) : (
-                        <span className="deviation-value neutral">-</span>
-                      )}
+                      {(() => {
+                        const devEstimate = ticketTracking.dev_estimate_hours || 0;
+                        const devActual = ticketTracking.actual_dev_hours || 0;
+                        // If no estimate, variance = actual hours (treating estimate as 0)
+                        const variance = devActual - devEstimate;
+                        const hasNoEstimate = devEstimate === 0 && devActual > 0;
+                        
+                        if (devActual === 0 && devEstimate === 0) {
+                          return <span className="deviation-value neutral">-</span>;
+                        }
+                        
+                        return (
+                          <span className={`deviation-value ${variance > 0 ? 'negative blink-danger' : variance < 0 ? 'positive' : 'neutral'} ${hasNoEstimate ? 'no-estimate' : ''}`}>
+                            {variance > 0 ? '+' : ''}{variance}h
+                            {hasNoEstimate && <span className="variance-note"> (no est.)</span>}
+                          </span>
+                        );
+                      })()}
                     </div>
         </div>
       </div>
@@ -1861,7 +2293,11 @@ function Dashboard() {
                   <div className="time-values">
                     <div className="time-item">
                       <span className="time-label">Time Planned</span>
-                      <span className="time-number">{ticketTracking.qa_estimate_hours || 0}h</span>
+                      {(!ticketTracking.qa_estimate_hours || ticketTracking.qa_estimate_hours === 0) && !isTicketClosed ? (
+                        <span className="time-number estimate-missing blink-warning">Not Provided</span>
+                      ) : (
+                        <span className="time-number">{ticketTracking.qa_estimate_hours || 0}h</span>
+                      )}
                     </div>
                     <div className="time-item">
                       <span className="time-label">Time Spent</span>
@@ -1869,13 +2305,24 @@ function Dashboard() {
                     </div>
                     <div className="time-item deviation">
                       <span className="time-label">Variance</span>
-                      {ticketTracking.qa_deviation !== null && ticketTracking.qa_deviation !== undefined ? (
-                        <span className={`deviation-value ${ticketTracking.qa_deviation > 0 ? 'negative blink-danger' : 'positive'}`}>
-                          {ticketTracking.qa_deviation > 0 ? '+' : ''}{ticketTracking.qa_deviation}h
-                        </span>
-                      ) : (
-                        <span className="deviation-value neutral">-</span>
-                      )}
+                      {(() => {
+                        const qaEstimate = ticketTracking.qa_estimate_hours || 0;
+                        const qaActual = ticketTracking.actual_qa_hours || 0;
+                        // If no estimate, variance = actual hours (treating estimate as 0)
+                        const variance = qaActual - qaEstimate;
+                        const hasNoEstimate = qaEstimate === 0 && qaActual > 0;
+                        
+                        if (qaActual === 0 && qaEstimate === 0) {
+                          return <span className="deviation-value neutral">-</span>;
+                        }
+                        
+                        return (
+                          <span className={`deviation-value ${variance > 0 ? 'negative blink-danger' : variance < 0 ? 'positive' : 'neutral'} ${hasNoEstimate ? 'no-estimate' : ''}`}>
+                            {variance > 0 ? '+' : ''}{variance}h
+                            {hasNoEstimate && <span className="variance-note"> (no est.)</span>}
+                          </span>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -1904,46 +2351,143 @@ function Dashboard() {
                 </div>
               </div>
 
+              {/* Team Leads Section */}
+              {ticketId && ticketTracking && (teamLeads.dev_leads?.length > 0 || teamLeads.qa_leads?.length > 0) && (
+                <div className="team-leads-section">
+                  {teamLeads.dev_leads?.length > 0 && (
+                    <div className="team-lead-card dev-lead">
+                      <span className="lead-label">DEV Lead{teamLeads.dev_leads.length > 1 ? 's' : ''}</span>
+                      <div className="lead-names">
+                        {teamLeads.dev_leads.map((lead, idx) => (
+                          <span 
+                            key={idx}
+                            className="lead-name clickable-name"
+                            onClick={() => handleNameClick(lead.name)}
+                            style={{ cursor: isValidEmployee(lead.name) ? 'pointer' : 'default' }}
+                          >
+                            {lead.name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {teamLeads.qa_leads?.length > 0 && (
+                    <div className="team-lead-card qa-lead">
+                      <span className="lead-label">QA Lead{teamLeads.qa_leads.length > 1 ? 's' : ''}</span>
+                      <div className="lead-names">
+                        {teamLeads.qa_leads.map((lead, idx) => (
+                          <span 
+                            key={idx}
+                            className="lead-name clickable-name"
+                            onClick={() => handleNameClick(lead.name)}
+                            style={{ cursor: isValidEmployee(lead.name) ? 'pointer' : 'default' }}
+                          >
+                            {lead.name}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Team Section */}
               <div className="team-section">
-                <div className="team-group">
-                  <div className="team-group-header">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
-                      <circle cx="9" cy="7" r="4"/>
-                      <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
-                    </svg>
-                    <span>Developers Worked</span>
-                  </div>
-                  <div className="team-members">
-                    {ticketTracking.developers && ticketTracking.developers.length > 0 ? (
-                      ticketTracking.developers.map((dev, idx) => (
-                        <span key={idx} className="member-chip developer">{dev}</span>
-                      ))
-                    ) : (
-                      <span className="no-members">No developers assigned</span>
-                    )}
-                  </div>
-                </div>
+                {/* Developers - Only show internal DEV team members */}
+                {(() => {
+                  const devSegregated = segregateTeamMembers(ticketTracking.developers || []);
+                  const hasDevs = devSegregated.dev.length > 0;
+                  
+                  return (
+                    <div className="team-group">
+                      <div className="team-group-header">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+                          <circle cx="9" cy="7" r="4"/>
+                          <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+                        </svg>
+                        <span>DEV Team</span>
+                      </div>
+                      <div className="team-members">
+                        {hasDevs ? (
+                          devSegregated.dev.map((dev, idx) => (
+                            <span 
+                              key={idx} 
+                              className={`member-chip developer ${isValidEmployee(dev) ? 'clickable' : ''}`}
+                              onClick={() => handleNameClick(dev)}
+                              style={isValidEmployee(dev) ? { cursor: 'pointer' } : {}}
+                            >{dev}</span>
+                          ))
+                        ) : (
+                          <span className="no-members">No DEV team members</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
 
-                <div className="team-group">
-                  <div className="team-group-header">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                      <path d="M9 11l3 3L22 4"/>
-                      <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
-                    </svg>
-                    <span>QA Team</span>
-                  </div>
-                  <div className="team-members">
-                    {ticketTracking.qc_testers && ticketTracking.qc_testers.length > 0 ? (
-                      ticketTracking.qc_testers.map((tester, idx) => (
-                        <span key={idx} className="member-chip qa">{tester}</span>
-                      ))
-                    ) : (
-                      <span className="no-members">No QA assigned</span>
-                    )}
-                  </div>
-                </div>
+                {/* QA Team - Only show internal QA team members */}
+                {(() => {
+                  const qaSegregated = segregateTeamMembers(ticketTracking.qc_testers || []);
+                  const hasQa = qaSegregated.qa.length > 0;
+                  
+                  return (
+                    <div className="team-group">
+                      <div className="team-group-header">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M9 11l3 3L22 4"/>
+                          <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
+                        </svg>
+                        <span>QA Team</span>
+                      </div>
+                      <div className="team-members">
+                        {hasQa ? (
+                          qaSegregated.qa.map((tester, idx) => (
+                            <span 
+                              key={idx} 
+                              className={`member-chip qa ${isValidEmployee(tester) ? 'clickable' : ''}`}
+                              onClick={() => handleNameClick(tester)}
+                              style={isValidEmployee(tester) ? { cursor: 'pointer' } : {}}
+                            >{tester}</span>
+                          ))
+                        ) : (
+                          <span className="no-members">No QA team members</span>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* BIS Team (Client) - Show all BIS members with real names after QA */}
+                {(() => {
+                  const devSegregated = segregateTeamMembers(ticketTracking.developers || []);
+                  const qaSegregated = segregateTeamMembers(ticketTracking.qc_testers || []);
+                  // Combine all BIS members from both dev and QA lists
+                  const allBisMembers = [...new Set([...devSegregated.bis, ...qaSegregated.bis])];
+                  
+                  return allBisMembers.length > 0 && (
+                    <div className="team-group">
+                      <div className="team-group-header">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                          <path d="M2 17l10 5 10-5"/>
+                          <path d="M2 12l10 5 10-5"/>
+                        </svg>
+                        <span>BIS Team (Client)</span>
+                      </div>
+                      <div className="team-members">
+                        {allBisMembers.map((member, idx) => (
+                          <span 
+                            key={idx} 
+                            className={`member-chip bis-team ${isValidEmployee(member) ? 'clickable' : ''}`}
+                            onClick={() => handleNameClick(member)}
+                            style={isValidEmployee(member) ? { cursor: 'pointer' } : {}}
+                          >{member}</span>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {ticketTracking.current_assignee && (
                   <div className="team-group">
@@ -1955,7 +2499,14 @@ function Dashboard() {
                       <span>Currently Assigned To</span>
                     </div>
                     <div className="team-members">
-                      <span className="member-chip current">{ticketTracking.current_assignee}</span>
+                      <span 
+                        className={`member-chip ${classifyPerson(ticketTracking.current_assignee) === 'DEV' ? 'developer' : classifyPerson(ticketTracking.current_assignee) === 'QA' ? 'qa' : 'bis-team'} ${isValidEmployee(ticketTracking.current_assignee) ? 'clickable' : ''}`}
+                        onClick={() => handleNameClick(ticketTracking.current_assignee)}
+                        style={isValidEmployee(ticketTracking.current_assignee) ? { cursor: 'pointer' } : {}}
+                      >
+                        {ticketTracking.current_assignee}
+                        {classifyPerson(ticketTracking.current_assignee) === 'BIS Team' && ' (BIS)'}
+                      </span>
                     </div>
                   </div>
                 )}
@@ -1964,7 +2515,7 @@ function Dashboard() {
               {/* Last Updated */}
               {ticketTracking.updated_on && (
                 <div className="tracking-footer">
-                  Last synced: {new Date(ticketTracking.updated_on).toLocaleString()}
+                  Last synced: {formatDisplayDateTime(ticketTracking.updated_on)}
                 </div>
               )}
             </div>
@@ -2063,7 +2614,7 @@ function Dashboard() {
                   </span>
                   {mostRecentRun.created_on && (
                     <span className="meta-badge" style={{ fontSize: '11px' }}>
-                      {new Date(mostRecentRun.created_on).toLocaleDateString()}
+                      {formatDisplayDate(mostRecentRun.created_on)}
                     </span>
                   )}
                 </div>
@@ -2646,7 +3197,7 @@ function Dashboard() {
                         </span>
                         {run.created_on && (
                           <span className="meta-badge" style={{ fontSize: '11px' }}>
-                            {new Date(run.created_on).toLocaleDateString()}
+                            {formatDisplayDate(run.created_on)}
                           </span>
                         )}
                       </div>

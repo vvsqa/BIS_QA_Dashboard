@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useState, useEffect, useCallback } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -12,6 +12,7 @@ import {
 } from "chart.js";
 import { Bar, Doughnut } from "react-chartjs-2";
 import ChartDataLabels from 'chartjs-plugin-datalabels';
+import { useTableSort, SortableHeader } from "./useTableSort";
 import "./dashboard.css";
 
 ChartJS.register(
@@ -99,6 +100,7 @@ function SpeedometerGauge({ value, label, maxValue = 100, theme = 'dark' }) {
 
 function AllBugsDashboard() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [theme, setTheme] = useState(() => {
     try {
       const savedTheme = localStorage.getItem('dashboard-theme');
@@ -108,6 +110,7 @@ function AllBugsDashboard() {
     }
   });
   const [environment, setEnvironment] = useState("All");
+  const [employeeMap, setEmployeeMap] = useState({});
 
   const [summary, setSummary] = useState({
     total_bugs: 0,
@@ -132,6 +135,13 @@ function AllBugsDashboard() {
   const [ageData, setAgeData] = useState(null);
   const [resolutionTimeData, setResolutionTimeData] = useState(null);
   const [reopenedData, setReopenedData] = useState(null);
+  
+  // New extended Redmine data states
+  const [timeTrackingData, setTimeTrackingData] = useState(null);
+  const [slaData, setSlaData] = useState(null);
+  const [lifecycleData, setLifecycleData] = useState(null);
+  const [completionData, setCompletionData] = useState(null);
+  const [teamSummaryData, setTeamSummaryData] = useState(null);
 
   const [bugs, setBugs] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -144,6 +154,9 @@ function AllBugsDashboard() {
     'technical-breakdown': true,
     'temporal-analysis': true,
     'additional-metrics': true,
+    'time-tracking': true,
+    'sla-analysis': true,
+    'lifecycle-analysis': true,
   });
 
   const maximizeChart = (chartId) => {
@@ -296,7 +309,8 @@ function AllBugsDashboard() {
       const [
         summaryRes, severityRes, priorityRes, metricsRes,
         assigneeRes, authorRes, moduleRes, featureRes, browserOsRes, platformRes,
-        ageRes, resolutionRes, reopenedRes
+        ageRes, resolutionRes, reopenedRes,
+        timeTrackingRes, slaRes, lifecycleRes, completionRes, teamSummaryRes
       ] = await Promise.all([
         fetch(`${baseUrl}/all-summary?${envParam}`).catch(err => {
           console.error('Failed to fetch all-summary:', err);
@@ -350,6 +364,27 @@ function AllBugsDashboard() {
           console.error('Failed to fetch reopened-analysis:', err);
           return { ok: false, status: 500 };
         }),
+        // New extended endpoints
+        fetch(`${baseUrl}/time-tracking?${envParam}`).catch(err => {
+          console.error('Failed to fetch time-tracking:', err);
+          return { ok: false, status: 500 };
+        }),
+        fetch(`${baseUrl}/sla-analysis?${envParam}`).catch(err => {
+          console.error('Failed to fetch sla-analysis:', err);
+          return { ok: false, status: 500 };
+        }),
+        fetch(`${baseUrl}/lifecycle-analysis?${envParam}`).catch(err => {
+          console.error('Failed to fetch lifecycle-analysis:', err);
+          return { ok: false, status: 500 };
+        }),
+        fetch(`${baseUrl}/completion-progress?${envParam}`).catch(err => {
+          console.error('Failed to fetch completion-progress:', err);
+          return { ok: false, status: 500 };
+        }),
+        fetch(`${baseUrl}/team-summary?${envParam}`).catch(err => {
+          console.error('Failed to fetch team-summary:', err);
+          return { ok: false, status: 500 };
+        }),
       ]);
 
       if (!summaryRes.ok) {
@@ -361,7 +396,8 @@ function AllBugsDashboard() {
       const [
         summaryData, severityBreakdown, priorityBreakdown, metricsData,
         assigneeBreakdown, authorBreakdown, moduleBreakdown, featureBreakdown,
-        browserOsBreakdown, platformBreakdown, ageAnalysis, resolutionTime, reopenedAnalysis
+        browserOsBreakdown, platformBreakdown, ageAnalysis, resolutionTime, reopenedAnalysis,
+        timeTracking, slaAnalysis, lifecycleAnalysis, completionProgress, teamSummary
       ] = await Promise.all([
         summaryRes.json(),
         severityRes.ok ? severityRes.json() : null,
@@ -376,6 +412,11 @@ function AllBugsDashboard() {
         ageRes.ok ? ageRes.json() : null,
         resolutionRes.ok ? resolutionRes.json() : null,
         reopenedRes.ok ? reopenedRes.json() : null,
+        timeTrackingRes.ok ? timeTrackingRes.json() : null,
+        slaRes.ok ? slaRes.json() : null,
+        lifecycleRes.ok ? lifecycleRes.json() : null,
+        completionRes.ok ? completionRes.json() : null,
+        teamSummaryRes.ok ? teamSummaryRes.json() : null,
       ]);
 
       console.log('Summary data loaded:', summaryData);
@@ -414,6 +455,13 @@ function AllBugsDashboard() {
       setAgeData(ageAnalysis);
       setResolutionTimeData(resolutionTime);
       setReopenedData(reopenedAnalysis);
+      
+      // Set new extended data
+      setTimeTrackingData(timeTracking);
+      setSlaData(slaAnalysis);
+      setLifecycleData(lifecycleAnalysis);
+      setCompletionData(completionProgress);
+      setTeamSummaryData(teamSummary);
 
     } catch (err) {
       console.error('Error loading bugs:', err);
@@ -457,6 +505,49 @@ function AllBugsDashboard() {
     loadBugs();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [environment]);
+
+  // Load employees for name click functionality
+  useEffect(() => {
+    const loadEmployees = async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/employees`);
+        if (res.ok) {
+          const data = await res.json();
+          const empMap = {};
+          data.forEach(emp => {
+            empMap[emp.name.toLowerCase()] = emp.employee_id;
+          });
+          setEmployeeMap(empMap);
+        }
+      } catch (err) {
+        console.error('Failed to load employees for name lookup:', err);
+      }
+    };
+    loadEmployees();
+  }, []);
+
+  // Navigate to employee profile if they exist
+  const handleNameClick = useCallback((name) => {
+    if (!name) return;
+    const normalizedName = name.toLowerCase().trim();
+    const employeeId = employeeMap[normalizedName];
+    if (employeeId) {
+      navigate(`/employees/${employeeId}`);
+    }
+  }, [employeeMap, navigate]);
+
+  // Check if a name is a valid employee
+  const isValidEmployee = useCallback((name) => {
+    if (!name) return false;
+    return !!employeeMap[name.toLowerCase().trim()];
+  }, [employeeMap]);
+
+  // Navigate to ticket dashboard with ticket ID
+  const handleTicketClick = useCallback((ticketId) => {
+    if (ticketId) {
+      navigate(`/?ticket=${ticketId}`);
+    }
+  }, [navigate]);
 
   // Chart data helper functions (same as Dashboard)
   const getBarChartData = () => {
@@ -623,28 +714,80 @@ function AllBugsDashboard() {
   };
 
   // Helper functions for new widget charts (same as Dashboard)
+  // Team color mapping for charts
+  const getTeamColor = (team, opacity = 0.85) => {
+    switch (team) {
+      case 'DEV': return `rgba(59, 130, 246, ${opacity})`; // Blue
+      case 'QA': return `rgba(34, 197, 94, ${opacity})`; // Green
+      case 'BIS Team': return `rgba(249, 115, 22, ${opacity})`; // Orange
+      default: return `rgba(156, 163, 175, ${opacity})`; // Gray
+    }
+  };
+
+  const getTeamBorderColor = (team) => {
+    switch (team) {
+      case 'DEV': return 'rgba(37, 99, 235, 1)'; // Blue
+      case 'QA': return 'rgba(22, 163, 74, 1)'; // Green
+      case 'BIS Team': return 'rgba(234, 88, 12, 1)'; // Orange
+      default: return 'rgba(107, 114, 128, 1)'; // Gray
+    }
+  };
+
   const getAssigneeChartData = () => {
     if (!assigneeData) return null;
     const assignees = Object.entries(assigneeData)
       .sort((a, b) => (b[1].total || 0) - (a[1].total || 0))
       .slice(0, 15) // Limit to top 15 for better visibility
       .map(([name]) => name);
-    const openData = assignees.map(a => assigneeData[a].open || 0);
-    const closedData = assignees.map(a => assigneeData[a].closed || 0);
+    
+    // Get team colors for each assignee
+    const teamColors = assignees.map(a => getTeamColor(assigneeData[a]?.team || 'Unknown'));
+    const teamBorderColors = assignees.map(a => getTeamBorderColor(assigneeData[a]?.team || 'Unknown'));
+    
+    const totalData = assignees.map(a => assigneeData[a].total || 0);
+    
     return {
-      labels: assignees,
+      labels: assignees.map(a => `${a} (${assigneeData[a]?.team || 'Unknown'})`),
+      datasets: [
+        {
+          label: 'Total Bugs',
+          data: totalData,
+          backgroundColor: teamColors,
+          borderColor: teamBorderColors,
+          borderWidth: 2,
+          borderRadius: 6,
+        }
+      ]
+    };
+  };
+
+  // Team-segregated assignee chart (grouped by team)
+  const getTeamAssigneeChartData = () => {
+    if (!teamSummaryData) return null;
+    
+    const teams = ['DEV', 'QA', 'BIS Team'];
+    const teamTotals = teams.map(team => teamSummaryData[team]?.total_bugs || 0);
+    const teamOpen = teams.map(team => teamSummaryData[team]?.open || 0);
+    const teamClosed = teams.map(team => teamSummaryData[team]?.closed || 0);
+    
+    return {
+      labels: teams,
       datasets: [
         {
           label: 'Open',
-          data: openData,
+          data: teamOpen,
           backgroundColor: 'rgba(239, 68, 68, 0.85)',
           borderColor: 'rgba(185, 28, 28, 1)',
+          borderWidth: 2,
+          borderRadius: 6,
         },
         {
           label: 'Closed',
-          data: closedData,
+          data: teamClosed,
           backgroundColor: 'rgba(34, 197, 94, 0.85)',
           borderColor: 'rgba(22, 163, 74, 1)',
+          borderWidth: 2,
+          borderRadius: 6,
         }
       ]
     };
@@ -654,13 +797,17 @@ function AllBugsDashboard() {
     if (!authorData) return null;
     const authors = Object.keys(authorData).sort((a, b) => authorData[b].total - authorData[a].total).slice(0, 10);
     const totals = authors.map(a => authorData[a].total);
+    
+    // Get team colors for each author
+    const teamColors = authors.map(a => getTeamColor(authorData[a]?.team || 'Unknown'));
+    const teamBorderColors = authors.map(a => getTeamBorderColor(authorData[a]?.team || 'Unknown'));
     return {
-      labels: authors,
+      labels: authors.map(a => `${a} (${authorData[a]?.team || 'Unknown'})`),
       datasets: [{
         label: 'Bugs Reported',
         data: totals,
-        backgroundColor: 'rgba(34, 197, 94, 0.85)',
-        borderColor: 'rgba(22, 163, 74, 1)',
+        backgroundColor: teamColors,
+        borderColor: teamBorderColors,
         borderWidth: 2,
         borderRadius: 6,
       }]
@@ -1028,6 +1175,12 @@ function AllBugsDashboard() {
 
   const maximizedChartConfig = getMaximizedChart();
 
+  // Table sorting for bugs
+  const { sortedData: sortedBugs, sortConfig: bugsSortConfig, handleSort: handleBugsSort } = useTableSort(bugs, {
+    defaultSortKey: 'bug_id',
+    defaultSortDirection: 'desc'
+  });
+
   return (
     <div className="dashboard">
       {/* Sidebar */}
@@ -1075,6 +1228,40 @@ function AllBugsDashboard() {
               <path d="M9 21V9"/>
             </svg>
             Tickets Overview
+          </Link>
+          <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+            </svg>
+            Employees
+          </Link>
+          <Link to="/calendar" className={`nav-item ${location.pathname === '/calendar' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="4" width="18" height="18" rx="2"/>
+              <path d="M16 2v4M8 2v4M3 10h18"/>
+            </svg>
+            Calendar
+          </Link>
+          <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+            </svg>
+            Task Planning
+          </Link>
+          <Link to="/comparison" className={`nav-item ${location.pathname === '/comparison' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 3v18h18"/>
+              <path d="M18 9l-5 5-4-4-3 3"/>
+            </svg>
+            Plan vs Actual
+          </Link>
+          <Link to="/reports" className={`nav-item ${location.pathname === '/reports' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            Reports
           </Link>
         </nav>
       </aside>
@@ -1132,6 +1319,12 @@ function AllBugsDashboard() {
         {/* Top Header */}
         <header className="top-header">
           <div className="header-left">
+            <img 
+              src="/techversant-logo.png" 
+              alt="Techversant Infotech" 
+              className="company-logo"
+            />
+            <div className="header-divider"></div>
             <h1 className="page-title">All Bugs Dashboard</h1>
             <p className="page-subtitle">Aggregate bug tracking & analysis</p>
           </div>
@@ -1831,6 +2024,326 @@ function AllBugsDashboard() {
           </div>
         )}
 
+        {/* Time Tracking & Variance Section */}
+        {summary.total_bugs > 0 && timeTrackingData && (
+          <div className="widgets-section">
+            <div className="section-header">
+              <h2 className="section-title">Time Tracking & Variance</h2>
+              <button 
+                className="section-toggle"
+                onClick={() => toggleSection('time-tracking')}
+                title={expandedSections['time-tracking'] ? 'Collapse section' : 'Expand section'}
+              >
+                <svg 
+                  viewBox="0 0 24 24" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  strokeWidth="2"
+                  className={expandedSections['time-tracking'] ? 'expanded' : ''}
+                >
+                  <path d="M6 9l6 6 6-6"/>
+                </svg>
+              </button>
+            </div>
+            {expandedSections['time-tracking'] && (
+            <div className="widgets-grid">
+              {/* Not Estimated Warning Card */}
+              <div className={`stat-card ${timeTrackingData.not_estimated_percent > 30 ? 'gradient-red' : 'gradient-orange'}`}>
+                <div className="stat-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                    <path d="M12 9v4M12 17h.01"/>
+                  </svg>
+                </div>
+                <div className="stat-content">
+                  <span className="stat-value">{timeTrackingData.not_estimated_count || 0}</span>
+                  <span className="stat-label">NOT ESTIMATED</span>
+                </div>
+                <div className="stat-trend negative">
+                  {timeTrackingData.not_estimated_percent?.toFixed(1) || 0}% of bugs
+                </div>
+              </div>
+
+              {/* Estimate vs Actual Card */}
+              <div className="stat-card gradient-blue">
+                <div className="stat-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 6v6l4 2"/>
+                  </svg>
+                </div>
+                <div className="stat-content">
+                  <span className="stat-value">{timeTrackingData.total_estimated_hours || 0}h</span>
+                  <span className="stat-label">Total Estimated</span>
+                </div>
+                <div className="stat-details">
+                  <div>Spent: {timeTrackingData.total_spent_hours || 0}h</div>
+                  <div className={`variance-text ${timeTrackingData.overall_variance_percent > 10 ? 'negative' : 'positive'}`}>
+                    Variance: {timeTrackingData.overall_variance_percent > 0 ? '+' : ''}{timeTrackingData.overall_variance_percent?.toFixed(1) || 0}%
+                  </div>
+                </div>
+              </div>
+
+              {/* Variance Distribution Chart */}
+              <div className="chart-panel">
+                <div className="panel-header">
+                  <h3 className="panel-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M18 20V10M12 20V4M6 20v-6"/>
+                    </svg>
+                    Variance Distribution
+                  </h3>
+                </div>
+                <div className="variance-bars">
+                  <div className="variance-bar-item">
+                    <span className="variance-label">Under Estimate</span>
+                    <div className="variance-bar-track">
+                      <div className="variance-bar-fill green" style={{ width: `${(timeTrackingData.variance_distribution?.under_estimate / timeTrackingData.estimated_count * 100) || 0}%` }}></div>
+                    </div>
+                    <span className="variance-count">{timeTrackingData.variance_distribution?.under_estimate || 0}</span>
+                  </div>
+                  <div className="variance-bar-item">
+                    <span className="variance-label">On Track (±10%)</span>
+                    <div className="variance-bar-track">
+                      <div className="variance-bar-fill blue" style={{ width: `${(timeTrackingData.variance_distribution?.on_track / timeTrackingData.estimated_count * 100) || 0}%` }}></div>
+                    </div>
+                    <span className="variance-count">{timeTrackingData.variance_distribution?.on_track || 0}</span>
+                  </div>
+                  <div className="variance-bar-item">
+                    <span className="variance-label">Over Estimate</span>
+                    <div className="variance-bar-track">
+                      <div className="variance-bar-fill red" style={{ width: `${(timeTrackingData.variance_distribution?.over_estimate / timeTrackingData.estimated_count * 100) || 0}%` }}></div>
+                    </div>
+                    <span className="variance-count">{timeTrackingData.variance_distribution?.over_estimate || 0}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Top Variances List */}
+              <div className="chart-panel">
+                <div className="panel-header">
+                  <h3 className="panel-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                      <path d="M12 9v4M12 17h.01"/>
+                    </svg>
+                    Top Variance Bugs
+                  </h3>
+                </div>
+                <div className="top-issues-list">
+                  {timeTrackingData.top_variances?.slice(0, 5).map((bug, index) => (
+                    <div key={bug.bug_id} className="top-issue-item">
+                      <span className="issue-rank">#{bug.bug_id}</span>
+                      <span className="issue-name">{bug.subject}</span>
+                      <span className={`badge variance ${bug.variance_status}`}>
+                        {bug.variance_percent > 0 ? '+' : ''}{bug.variance_percent}%
+                      </span>
+                    </div>
+                  ))}
+                  {(!timeTrackingData.top_variances || timeTrackingData.top_variances.length === 0) && (
+                    <div className="chart-empty">No variance data</div>
+                  )}
+                </div>
+              </div>
+            </div>
+            )}
+          </div>
+        )}
+
+        {/* SLA/Due Date Analysis Section */}
+        {summary.total_bugs > 0 && slaData && (
+          <div className="widgets-section">
+            <div className="section-header">
+              <h2 className="section-title">SLA & Due Date Analysis</h2>
+              <button 
+                className="section-toggle"
+                onClick={() => toggleSection('sla-analysis')}
+                title={expandedSections['sla-analysis'] ? 'Collapse section' : 'Expand section'}
+              >
+                <svg 
+                  viewBox="0 0 24 24" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  strokeWidth="2"
+                  className={expandedSections['sla-analysis'] ? 'expanded' : ''}
+                >
+                  <path d="M6 9l6 6 6-6"/>
+                </svg>
+              </button>
+            </div>
+            {expandedSections['sla-analysis'] && (
+            <div className="widgets-grid">
+              {/* SLA Compliance Rate */}
+              <div className={`stat-card ${slaData.sla_compliance_rate >= 70 ? 'gradient-green' : slaData.sla_compliance_rate >= 50 ? 'gradient-amber' : 'gradient-red'}`}>
+                <div className="stat-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
+                    <path d="M22 4L12 14.01l-3-3"/>
+                  </svg>
+                </div>
+                <div className="stat-content">
+                  <span className="stat-value">{slaData.sla_compliance_rate?.toFixed(1) || 0}%</span>
+                  <span className="stat-label">SLA Compliance</span>
+                </div>
+                <div className="stat-trend">
+                  {slaData.on_time_count || 0} on time / {slaData.overdue_count || 0} overdue
+                </div>
+              </div>
+
+              {/* Overdue Count */}
+              <div className="stat-card gradient-red">
+                <div className="stat-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 8v4l2 2"/>
+                  </svg>
+                </div>
+                <div className="stat-content">
+                  <span className="stat-value">{slaData.overdue_count || 0}</span>
+                  <span className="stat-label">Overdue Bugs</span>
+                </div>
+                <div className="stat-trend negative">Needs immediate attention</div>
+              </div>
+
+              {/* No Due Date */}
+              <div className="stat-card gradient-gray">
+                <div className="stat-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <rect x="3" y="4" width="18" height="18" rx="2"/>
+                    <path d="M16 2v4M8 2v4M3 10h18"/>
+                  </svg>
+                </div>
+                <div className="stat-content">
+                  <span className="stat-value">{slaData.no_due_date_count || 0}</span>
+                  <span className="stat-label">No Due Date</span>
+                </div>
+                <div className="stat-trend">Missing deadline info</div>
+              </div>
+
+              {/* Overdue Bugs List */}
+              <div className="chart-panel">
+                <div className="panel-header">
+                  <h3 className="panel-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+                      <path d="M12 9v4M12 17h.01"/>
+                    </svg>
+                    Overdue Bugs
+                  </h3>
+                </div>
+                <div className="top-issues-list">
+                  {slaData.overdue_bugs?.slice(0, 5).map((bug, index) => (
+                    <div key={bug.bug_id} className="top-issue-item">
+                      <span className="issue-rank">#{bug.bug_id}</span>
+                      <span className="issue-name">{bug.subject}</span>
+                      <span className="badge severity critical">{bug.days_overdue}d overdue</span>
+                    </div>
+                  ))}
+                  {(!slaData.overdue_bugs || slaData.overdue_bugs.length === 0) && (
+                    <div className="chart-empty">No overdue bugs!</div>
+                  )}
+                </div>
+              </div>
+            </div>
+            )}
+          </div>
+        )}
+
+        {/* Bug Lifecycle Section */}
+        {summary.total_bugs > 0 && lifecycleData && (
+          <div className="widgets-section">
+            <div className="section-header">
+              <h2 className="section-title">Bug Lifecycle Analysis</h2>
+              <button 
+                className="section-toggle"
+                onClick={() => toggleSection('lifecycle-analysis')}
+                title={expandedSections['lifecycle-analysis'] ? 'Collapse section' : 'Expand section'}
+              >
+                <svg 
+                  viewBox="0 0 24 24" 
+                  fill="none" 
+                  stroke="currentColor" 
+                  strokeWidth="2"
+                  className={expandedSections['lifecycle-analysis'] ? 'expanded' : ''}
+                >
+                  <path d="M6 9l6 6 6-6"/>
+                </svg>
+              </button>
+            </div>
+            {expandedSections['lifecycle-analysis'] && (
+            <div className="widgets-grid">
+              {/* Average Lifecycle */}
+              <div className="stat-card gradient-purple">
+                <div className="stat-icon">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M12 6v6l4 2"/>
+                  </svg>
+                </div>
+                <div className="stat-content">
+                  <span className="stat-value">{lifecycleData.avg_creation_to_close_days || 0}</span>
+                  <span className="stat-label">Avg Days to Close</span>
+                </div>
+                <div className="stat-details">
+                  <div>Min: {lifecycleData.min_lifecycle_days || 0}d</div>
+                  <div>Max: {lifecycleData.max_lifecycle_days || 0}d</div>
+                  <div>Median: {lifecycleData.median_lifecycle_days || 0}d</div>
+                </div>
+              </div>
+
+              {/* Lifecycle Distribution Chart */}
+              <div className="chart-panel" style={{ gridColumn: 'span 2' }}>
+                <div className="panel-header">
+                  <h3 className="panel-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M18 20V10M12 20V4M6 20v-6"/>
+                    </svg>
+                    Resolution Time Distribution
+                  </h3>
+                </div>
+                <div className="lifecycle-distribution">
+                  {lifecycleData.creation_close_distribution && Object.entries(lifecycleData.creation_close_distribution).map(([bucket, count]) => (
+                    <div key={bucket} className="lifecycle-bar-item">
+                      <span className="lifecycle-label">{bucket} days</span>
+                      <div className="lifecycle-bar-track">
+                        <div 
+                          className="lifecycle-bar-fill" 
+                          style={{ 
+                            width: `${(count / lifecycleData.total_closed_bugs * 100) || 0}%`,
+                            backgroundColor: bucket === '30+' ? '#ef4444' : bucket.includes('15') ? '#f59e0b' : '#22c55e'
+                          }}
+                        ></div>
+                      </div>
+                      <span className="lifecycle-count">{count}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Completion Progress */}
+              {completionData && (
+                <div className="stat-card gradient-cyan">
+                  <div className="stat-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
+                      <path d="M22 4L12 14.01l-3-3"/>
+                    </svg>
+                  </div>
+                  <div className="stat-content">
+                    <span className="stat-value">{completionData.avg_completion_percent?.toFixed(0) || 0}%</span>
+                    <span className="stat-label">Avg Completion</span>
+                  </div>
+                  <div className="stat-details">
+                    <div>Not Started: {completionData.bugs_not_started || 0}</div>
+                    <div>Near Complete: {completionData.near_completion || 0}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+            )}
+          </div>
+        )}
+
         {/* Bug Table */}
         <div className="table-panel">
           <div className="panel-header">
@@ -1841,23 +2354,23 @@ function AllBugsDashboard() {
               </svg>
               Open Bugs (New, Assigned to Dev, Fixed, Reopened)
             </h3>
-            <span className="table-count">{bugs.length} open bugs</span>
+            <span className="table-count">{sortedBugs.length} open bugs</span>
           </div>
           <div className="table-wrapper">
             <table>
               <thead>
                 <tr>
-                  <th>Bug ID</th>
-                  <th>Ticket ID</th>
-                  <th>Status</th>
-                  <th>Severity</th>
-                  <th>Priority</th>
-                  <th>Assignee</th>
-                  <th>Subject</th>
+                  <SortableHeader columnKey="bug_id" onSort={handleBugsSort} sortConfig={bugsSortConfig}>Bug ID</SortableHeader>
+                  <SortableHeader columnKey="ticket_id" onSort={handleBugsSort} sortConfig={bugsSortConfig}>Ticket ID</SortableHeader>
+                  <SortableHeader columnKey="status" onSort={handleBugsSort} sortConfig={bugsSortConfig}>Status</SortableHeader>
+                  <SortableHeader columnKey="severity" onSort={handleBugsSort} sortConfig={bugsSortConfig}>Severity</SortableHeader>
+                  <SortableHeader columnKey="priority" onSort={handleBugsSort} sortConfig={bugsSortConfig}>Priority</SortableHeader>
+                  <SortableHeader columnKey="assignee" onSort={handleBugsSort} sortConfig={bugsSortConfig}>Assignee</SortableHeader>
+                  <SortableHeader columnKey="subject" onSort={handleBugsSort} sortConfig={bugsSortConfig}>Subject</SortableHeader>
                 </tr>
               </thead>
               <tbody>
-                {bugs.length === 0 && !loading && (
+                {sortedBugs.length === 0 && !loading && (
                   <tr>
                     <td colSpan="7" className="empty-state">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
@@ -1868,10 +2381,20 @@ function AllBugsDashboard() {
                   </tr>
                 )}
 
-                {bugs.map((bug) => (
+                {sortedBugs.map((bug) => (
                   <tr key={bug.bug_id}>
                     <td className="bug-id">#{bug.bug_id}</td>
-                    <td className="bug-id">#{bug.ticket_id || '—'}</td>
+                    <td className="bug-id">
+                      {bug.ticket_id ? (
+                        <span 
+                          className="clickable-ticket"
+                          onClick={() => handleTicketClick(bug.ticket_id)}
+                          style={{ cursor: 'pointer', color: '#6366f1' }}
+                        >
+                          #{bug.ticket_id}
+                        </span>
+                      ) : '—'}
+                    </td>
                     <td>
                       <span className={`badge status ${bug.status?.toLowerCase().replace(/\s+/g, '-')}`}>
                         {bug.status}
@@ -1883,7 +2406,15 @@ function AllBugsDashboard() {
                       </span>
                     </td>
                     <td>{bug.priority || "—"}</td>
-                    <td className="assignee">{bug.assignee || "Unassigned"}</td>
+                    <td className="assignee">
+                      <span 
+                        className={isValidEmployee(bug.assignee) ? 'clickable-name' : ''}
+                        onClick={() => handleNameClick(bug.assignee)}
+                        style={isValidEmployee(bug.assignee) ? { cursor: 'pointer', color: '#6366f1' } : {}}
+                      >
+                        {bug.assignee || "Unassigned"}
+                      </span>
+                    </td>
                     <td className="subject">{bug.subject}</td>
                   </tr>
                 ))}

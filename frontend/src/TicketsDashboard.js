@@ -1,6 +1,8 @@
-import { useState, useEffect } from "react";
-import { Link, useLocation } from "react-router-dom";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Bar, Doughnut } from "react-chartjs-2";
+import { useTableSort, SortableHeader } from "./useTableSort";
+import { formatDisplayDate, formatDisplayDateTime, formatDisplayDateWithDay } from "./dateUtils";
 import "./dashboard.css";
 
 const BACKEND_URL = "http://127.0.0.1:8000";
@@ -52,6 +54,7 @@ const TEAM_COLORS = {
 
 function TicketsDashboard() {
   const location = useLocation();
+  const navigate = useNavigate();
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState(null);
@@ -63,11 +66,25 @@ function TicketsDashboard() {
   const [activeView, setActiveView] = useState('overview'); // overview, team, assignee, ticket-list, analysis
   const [ticketListFilter, setTicketListFilter] = useState(null); // {type: 'status'|'team'|'assignee'|'age', value: string, label: string}
   const [filteredTickets, setFilteredTickets] = useState([]);
+  const [employeeMap, setEmployeeMap] = useState({});
+  
+  // Selected ticket for timesheet view
+  const [selectedTicketId, setSelectedTicketId] = useState(null);
+  const [ticketTimesheetEntries, setTicketTimesheetEntries] = useState([]);
+  const [loadingTimesheet, setLoadingTimesheet] = useState(false);
   
   // Time Analysis state
   const [timeAnalysis, setTimeAnalysis] = useState(null);
   const [analysisPeriod, setAnalysisPeriod] = useState('last_week');
   const [expandedAnalysisSections, setExpandedAnalysisSections] = useState({}); // All collapsed by default
+  
+  // Sync state
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(null);
+  const [lastSyncResult, setLastSyncResult] = useState(null);
+  
+  // Ref for timesheet section scrolling
+  const timesheetSectionRef = useRef(null);
 
   const toggleAnalysisSection = (teamKey) => {
     setExpandedAnalysisSections(prev => ({
@@ -130,14 +147,171 @@ function TicketsDashboard() {
     setMaximizedChart(null);
   };
 
+  // Fetch sync status on mount
+  const fetchSyncStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/ticket-tracking/sync-status`);
+      if (res.ok) {
+        const data = await res.json();
+        setSyncStatus(data);
+      }
+    } catch (err) {
+      console.error('Failed to fetch sync status:', err);
+    }
+  }, []);
+
+  // Sync latest TicketReport from Downloads
+  const handleSyncNow = async () => {
+    setSyncing(true);
+    setLastSyncResult(null);
+    try {
+      const res = await fetch(`${BACKEND_URL}/ticket-tracking/sync-latest`, { method: 'POST' });
+      const data = await res.json();
+      setLastSyncResult(data);
+      
+      if (data.success) {
+        // Refresh the data
+        loadOverview();
+        fetchSyncStatus();
+      }
+    } catch (err) {
+      setLastSyncResult({ success: false, message: err.message });
+    } finally {
+      setSyncing(false);
+      // Clear result message after 5 seconds
+      setTimeout(() => setLastSyncResult(null), 5000);
+    }
+  };
+
+  useEffect(() => {
+    fetchSyncStatus();
+  }, [fetchSyncStatus]);
+
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     localStorage.setItem('theme', theme);
   }, [theme]);
 
+  // Check for ticket query parameter
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const ticketId = params.get('ticket');
+    if (ticketId) {
+      setSelectedTicketId(ticketId);
+      loadTicketTimesheetEntries(ticketId);
+    } else {
+      setSelectedTicketId(null);
+      setTicketTimesheetEntries([]);
+    }
+  }, [location.search]);
+
+  // Load timesheet entries for a specific ticket
+  const loadTicketTimesheetEntries = async (ticketId) => {
+    setLoadingTimesheet(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/calendar/ticket/${ticketId}/timesheet`);
+      if (res.ok) {
+        const data = await res.json();
+        setTicketTimesheetEntries(data.entries || []);
+      } else {
+        setTicketTimesheetEntries([]);
+      }
+    } catch (err) {
+      console.error('Failed to load timesheet entries:', err);
+      setTicketTimesheetEntries([]);
+    } finally {
+      setLoadingTimesheet(false);
+    }
+  };
+
+  // Auto-scroll to timesheet section when entries are loaded
+  useEffect(() => {
+    if (selectedTicketId && !loadingTimesheet && timesheetSectionRef.current) {
+      // Small delay to ensure DOM is updated
+      const timer = setTimeout(() => {
+        if (timesheetSectionRef.current) {
+          timesheetSectionRef.current.scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'start' 
+          });
+        }
+      }, 500);
+      return () => clearTimeout(timer);
+    }
+  }, [selectedTicketId, loadingTimesheet, ticketTimesheetEntries.length]);
+
+  // Clear ticket selection
+  const clearTicketSelection = () => {
+    setSelectedTicketId(null);
+    setTicketTimesheetEntries([]);
+    navigate('/tickets', { replace: true });
+  };
+
   useEffect(() => {
     loadOverview();
   }, []);
+
+  // Search for ticket in overview when both overview and ticket query param are available
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const ticketId = params.get('ticket');
+    if (ticketId && overview) {
+      const allTickets = Object.values(overview.team_tickets || {}).flat();
+      const foundTicket = allTickets.find(t => String(t.ticket_id) === String(ticketId));
+      if (foundTicket) {
+        setFilteredTickets([foundTicket]);
+        setTicketListFilter({ 
+          type: 'ticket-id', 
+          value: ticketId, 
+          label: `Ticket #${ticketId}` 
+        });
+        setActiveView('ticket-list');
+      }
+    }
+  }, [overview, location.search]);
+
+  // Load employees for name click functionality
+  useEffect(() => {
+    const loadEmployees = async () => {
+      try {
+        const res = await fetch(`${BACKEND_URL}/employees`);
+        if (res.ok) {
+          const data = await res.json();
+          const empMap = {};
+          data.forEach(emp => {
+            empMap[emp.name.toLowerCase()] = emp.employee_id;
+          });
+          setEmployeeMap(empMap);
+        }
+      } catch (err) {
+        console.error('Failed to load employees:', err);
+      }
+    };
+    loadEmployees();
+  }, []);
+
+  // Navigate to employee profile if they exist
+  const handleNameClick = useCallback((name) => {
+    if (!name) return;
+    const normalizedName = name.toLowerCase().trim();
+    const employeeId = employeeMap[normalizedName];
+    if (employeeId) {
+      navigate(`/employees/${employeeId}`);
+    }
+  }, [employeeMap, navigate]);
+
+  // Check if a name is a valid employee
+  const isValidEmployee = useCallback((name) => {
+    if (!name) return false;
+    return !!employeeMap[name.toLowerCase().trim()];
+  }, [employeeMap]);
+
+  // Navigate to ticket dashboard with ticket ID
+  const handleTicketClick = useCallback((ticketId) => {
+    if (ticketId) {
+      navigate(`/?ticket=${ticketId}`);
+    }
+  }, [navigate]);
 
   const loadOverview = async () => {
     setLoading(true);
@@ -451,6 +625,35 @@ function TicketsDashboard() {
     }
   };
 
+  // Table sorting for ETA alerts
+  const { sortedData: sortedOverdue, sortConfig: overdueSortConfig, handleSort: handleOverdueSort } = useTableSort(etaAlerts?.overdue || [], {
+    defaultSortKey: 'days_overdue',
+    defaultSortDirection: 'desc'
+  });
+
+  const { sortedData: sortedDueThisWeek, sortConfig: dueThisWeekSortConfig, handleSort: handleDueThisWeekSort } = useTableSort(etaAlerts?.due_this_week || [], {
+    defaultSortKey: 'days_until_eta',
+    defaultSortDirection: 'asc'
+  });
+
+  // Table sorting for team details
+  const { sortedData: sortedTeamTickets, sortConfig: teamSortConfig, handleSort: handleTeamSort } = useTableSort(teamDetails?.tickets || [], {
+    defaultSortKey: 'ticket_id',
+    defaultSortDirection: 'desc'
+  });
+
+  // Table sorting for assignee details
+  const { sortedData: sortedAssigneeTickets, sortConfig: assigneeSortConfig, handleSort: handleAssigneeSort } = useTableSort(assigneeDetails?.tickets || [], {
+    defaultSortKey: 'ticket_id',
+    defaultSortDirection: 'desc'
+  });
+
+  // Table sorting for filtered tickets list
+  const { sortedData: sortedFilteredTickets, sortConfig: filteredSortConfig, handleSort: handleFilteredSort } = useTableSort(filteredTickets, {
+    defaultSortKey: 'ticket_id',
+    defaultSortDirection: 'desc'
+  });
+
   return (
     <div className="dashboard tickets-dashboard" data-theme={theme}>
       {/* Sidebar */}
@@ -491,14 +694,14 @@ function TicketsDashboard() {
               <rect x="3" y="14" width="7" height="7" rx="1"/>
               <rect x="14" y="14" width="7" height="7" rx="1"/>
             </svg>
-            Ticket Dashboard
+            Dashboard
           </Link>
           <Link to="/all-bugs" className={`nav-item ${location.pathname === '/all-bugs' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <circle cx="12" cy="12" r="10"/>
               <path d="M12 8v4l2 2"/>
             </svg>
-            All Bugs Dashboard
+            All Bugs
           </Link>
           <Link to="/tickets" className={`nav-item ${location.pathname === '/tickets' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -506,7 +709,41 @@ function TicketsDashboard() {
               <path d="M3 9h18"/>
               <path d="M9 21V9"/>
             </svg>
-            Tickets Overview
+            Tickets
+          </Link>
+          <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+              <circle cx="9" cy="7" r="4"/>
+              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+            </svg>
+            Employees
+          </Link>
+          <Link to="/calendar" className={`nav-item ${location.pathname === '/calendar' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <rect x="3" y="4" width="18" height="18" rx="2"/>
+              <path d="M16 2v4M8 2v4M3 10h18"/>
+            </svg>
+            Calendar
+          </Link>
+          <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
+            </svg>
+            Task Planning
+          </Link>
+          <Link to="/comparison" className={`nav-item ${location.pathname === '/comparison' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 3v18h18"/>
+              <path d="M18 9l-5 5-4-4-3 3"/>
+            </svg>
+            Plan vs Actual
+          </Link>
+          <Link to="/reports" className={`nav-item ${location.pathname === '/reports' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+            </svg>
+            Reports
           </Link>
         </nav>
       </aside>
@@ -524,6 +761,12 @@ function TicketsDashboard() {
         {/* Top Header */}
         <header className="top-header">
           <div className="header-left">
+            <img 
+              src="/techversant-logo.png" 
+              alt="Techversant Infotech" 
+              className="company-logo"
+            />
+            <div className="header-divider"></div>
             <h1 className="page-title">Tickets Overview</h1>
             <p className="page-subtitle">Management Dashboard - Team & Status Tracking</p>
           </div>
@@ -551,6 +794,34 @@ function TicketsDashboard() {
                 </svg>
                 Time Analysis
               </button>
+            </div>
+            
+            {/* Sync Button */}
+            <div className="sync-controls">
+              <button 
+                className={`sync-btn ${syncing ? 'syncing' : ''}`}
+                onClick={handleSyncNow}
+                disabled={syncing}
+                title={syncStatus?.latest_download ? `Latest: ${syncStatus.latest_download}` : 'Sync from Downloads'}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={syncing ? 'spinning' : ''}>
+                  <path d="M21 12a9 9 0 11-9-9"/>
+                  <path d="M21 3v6h-6"/>
+                </svg>
+                {syncing ? 'Syncing...' : 'Sync Now'}
+              </button>
+              {syncStatus?.last_db_update && (
+                <span className="sync-status-text" title={`Last sync: ${formatDisplayDateTime(syncStatus.last_db_update)}`}>
+                  Updated: {formatDisplayDate(syncStatus.last_db_update)}
+                </span>
+              )}
+              {lastSyncResult && (
+                <span className={`sync-result ${lastSyncResult.success ? 'success' : 'error'}`}>
+                  {lastSyncResult.success 
+                    ? `✓ ${lastSyncResult.imported} new, ${lastSyncResult.updated} updated`
+                    : `✗ ${lastSyncResult.message}`}
+                </span>
+              )}
             </div>
           </div>
         </header>
@@ -1043,15 +1314,15 @@ function TicketsDashboard() {
                       <table className="alerts-table">
                         <thead>
                           <tr>
-                            <th>Ticket</th>
-                            <th>Status</th>
-                            <th>Team</th>
-                            <th>Assignee</th>
-                            <th>Days Overdue</th>
+                            <SortableHeader columnKey="ticket_id" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Ticket</SortableHeader>
+                            <SortableHeader columnKey="status" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Status</SortableHeader>
+                            <SortableHeader columnKey="team" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Team</SortableHeader>
+                            <SortableHeader columnKey="assignee" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Assignee</SortableHeader>
+                            <SortableHeader columnKey="days_overdue" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Days Overdue</SortableHeader>
                           </tr>
                         </thead>
                         <tbody>
-                          {etaAlerts.overdue.slice(0, 10).map(ticket => (
+                          {sortedOverdue.slice(0, 10).map(ticket => (
                             <tr key={ticket.ticket_id}>
                               <td>
                                 <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
@@ -1077,15 +1348,15 @@ function TicketsDashboard() {
                       <table className="alerts-table">
                         <thead>
                           <tr>
-                            <th>Ticket</th>
-                            <th>Status</th>
-                            <th>Team</th>
-                            <th>Assignee</th>
-                            <th>Days Until ETA</th>
+                            <SortableHeader columnKey="ticket_id" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Ticket</SortableHeader>
+                            <SortableHeader columnKey="status" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Status</SortableHeader>
+                            <SortableHeader columnKey="team" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Team</SortableHeader>
+                            <SortableHeader columnKey="assignee" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Assignee</SortableHeader>
+                            <SortableHeader columnKey="days_until_eta" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Days Until ETA</SortableHeader>
                           </tr>
                         </thead>
                         <tbody>
-                          {etaAlerts.due_this_week.slice(0, 10).map(ticket => (
+                          {sortedDueThisWeek.slice(0, 10).map(ticket => (
                             <tr key={ticket.ticket_id}>
                               <td>
                                 <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
@@ -1195,18 +1466,18 @@ function TicketsDashboard() {
                 <table className="tickets-table">
                   <thead>
                     <tr>
-                      <th>Ticket ID</th>
-                      <th>Status</th>
-                      <th>Assignee</th>
-                      <th>ETA</th>
-                      <th>Dev Est.</th>
-                      <th>Dev Actual</th>
-                      <th>QA Est.</th>
-                      <th>QA Actual</th>
+                      <SortableHeader columnKey="ticket_id" onSort={handleTeamSort} sortConfig={teamSortConfig}>Ticket ID</SortableHeader>
+                      <SortableHeader columnKey="status" onSort={handleTeamSort} sortConfig={teamSortConfig}>Status</SortableHeader>
+                      <SortableHeader columnKey="assignee" onSort={handleTeamSort} sortConfig={teamSortConfig}>Assignee</SortableHeader>
+                      <SortableHeader columnKey="eta" onSort={handleTeamSort} sortConfig={teamSortConfig}>ETA</SortableHeader>
+                      <SortableHeader columnKey="dev_estimate" onSort={handleTeamSort} sortConfig={teamSortConfig}>Dev Est.</SortableHeader>
+                      <SortableHeader columnKey="dev_actual" onSort={handleTeamSort} sortConfig={teamSortConfig}>Dev Actual</SortableHeader>
+                      <SortableHeader columnKey="qa_estimate" onSort={handleTeamSort} sortConfig={teamSortConfig}>QA Est.</SortableHeader>
+                      <SortableHeader columnKey="qa_actual" onSort={handleTeamSort} sortConfig={teamSortConfig}>QA Actual</SortableHeader>
                     </tr>
                   </thead>
                   <tbody>
-                    {teamDetails.tickets.map(ticket => (
+                    {sortedTeamTickets.map(ticket => (
                       <tr key={ticket.ticket_id}>
                         <td>
                           <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
@@ -1214,8 +1485,16 @@ function TicketsDashboard() {
                           </Link>
                         </td>
                         <td><span className="status-badge">{ticket.status}</span></td>
-                        <td>{ticket.assignee}</td>
-                        <td>{ticket.eta ? new Date(ticket.eta).toLocaleDateString() : '-'}</td>
+                        <td>
+                          <span 
+                            className={isValidEmployee(ticket.assignee) ? 'clickable-name' : ''}
+                            onClick={() => handleNameClick(ticket.assignee)}
+                            style={isValidEmployee(ticket.assignee) ? { cursor: 'pointer', color: '#6366f1' } : {}}
+                          >
+                            {ticket.assignee}
+                          </span>
+                        </td>
+                        <td>{formatDisplayDate(ticket.eta)}</td>
                         <td>{ticket.dev_estimate || '-'}h</td>
                         <td>{ticket.dev_actual || '-'}h</td>
                         <td>{ticket.qa_estimate || '-'}h</td>
@@ -1235,7 +1514,16 @@ function TicketsDashboard() {
             <div className="detail-header">
               <div className="assignee-avatar large">{selectedAssignee.charAt(0).toUpperCase()}</div>
               <div>
-                <h2 className="assignee-title">{selectedAssignee}</h2>
+                <h2 
+                  className={`assignee-title ${isValidEmployee(selectedAssignee) ? 'clickable-name' : ''}`}
+                  onClick={() => handleNameClick(selectedAssignee)}
+                  style={isValidEmployee(selectedAssignee) ? { cursor: 'pointer' } : {}}
+                >
+                  {selectedAssignee}
+                  {isValidEmployee(selectedAssignee) && (
+                    <span style={{ fontSize: '14px', marginLeft: '8px', opacity: 0.7 }}>→ View Profile</span>
+                  )}
+                </h2>
                 <span className="detail-count">{assigneeDetails.total_tickets} Tickets Assigned</span>
               </div>
             </div>
@@ -1274,18 +1562,18 @@ function TicketsDashboard() {
                 <table className="tickets-table">
                   <thead>
                     <tr>
-                      <th>Ticket ID</th>
-                      <th>Status</th>
-                      <th>Team</th>
-                      <th>ETA</th>
-                      <th>Dev Est.</th>
-                      <th>Dev Actual</th>
-                      <th>QA Est.</th>
-                      <th>QA Actual</th>
+                      <SortableHeader columnKey="ticket_id" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Ticket ID</SortableHeader>
+                      <SortableHeader columnKey="status" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Status</SortableHeader>
+                      <SortableHeader columnKey="team" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Team</SortableHeader>
+                      <SortableHeader columnKey="eta" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>ETA</SortableHeader>
+                      <SortableHeader columnKey="dev_estimate" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Dev Est.</SortableHeader>
+                      <SortableHeader columnKey="dev_actual" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Dev Actual</SortableHeader>
+                      <SortableHeader columnKey="qa_estimate" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>QA Est.</SortableHeader>
+                      <SortableHeader columnKey="qa_actual" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>QA Actual</SortableHeader>
                     </tr>
                   </thead>
                   <tbody>
-                    {assigneeDetails.tickets.map(ticket => (
+                    {sortedAssigneeTickets.map(ticket => (
                       <tr key={ticket.ticket_id}>
                         <td>
                           <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
@@ -1294,7 +1582,7 @@ function TicketsDashboard() {
                         </td>
                         <td><span className="status-badge">{ticket.status}</span></td>
                         <td><span className={`team-badge team-${ticket.team.toLowerCase().replace(/\s+/g, '-')}`}>{ticket.team}</span></td>
-                        <td>{ticket.eta ? new Date(ticket.eta).toLocaleDateString() : '-'}</td>
+                        <td>{formatDisplayDate(ticket.eta)}</td>
                         <td>{ticket.dev_estimate || '-'}h</td>
                         <td>{ticket.dev_actual || '-'}h</td>
                         <td>{ticket.qa_estimate || '-'}h</td>
@@ -1320,27 +1608,27 @@ function TicketsDashboard() {
               <table className="tickets-table">
                 <thead>
                   <tr>
-                    <th>Ticket ID</th>
-                    <th>Status</th>
-                    <th>Team</th>
-                    <th>Assignee</th>
-                    <th>Age (Days)</th>
-                    <th>ETA</th>
-                    <th>Dev Est.</th>
-                    <th>Dev Actual</th>
-                    <th>QA Est.</th>
-                    <th>QA Actual</th>
+                    <SortableHeader columnKey="ticket_id" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Ticket ID</SortableHeader>
+                    <SortableHeader columnKey="status" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Status</SortableHeader>
+                    <SortableHeader columnKey="team" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Team</SortableHeader>
+                    <SortableHeader columnKey="assignee" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Assignee</SortableHeader>
+                    <SortableHeader columnKey="age_days" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Age (Days)</SortableHeader>
+                    <SortableHeader columnKey="eta" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>ETA</SortableHeader>
+                    <SortableHeader columnKey="dev_estimate" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Dev Est.</SortableHeader>
+                    <SortableHeader columnKey="dev_actual" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Dev Actual</SortableHeader>
+                    <SortableHeader columnKey="qa_estimate" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>QA Est.</SortableHeader>
+                    <SortableHeader columnKey="qa_actual" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>QA Actual</SortableHeader>
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredTickets.length === 0 ? (
+                  {sortedFilteredTickets.length === 0 ? (
                     <tr>
                       <td colSpan="10" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
                         No tickets found
                       </td>
                     </tr>
                   ) : (
-                    filteredTickets.map(ticket => (
+                    sortedFilteredTickets.map(ticket => (
                       <tr key={ticket.ticket_id}>
                         <td>
                           <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
@@ -1355,7 +1643,7 @@ function TicketsDashboard() {
                             {ticket.age_days || 0} days
                           </span>
                         </td>
-                        <td>{ticket.eta ? new Date(ticket.eta).toLocaleDateString() : '-'}</td>
+                        <td>{formatDisplayDate(ticket.eta)}</td>
                         <td>{ticket.dev_estimate || '-'}h</td>
                         <td>{ticket.dev_actual || '-'}h</td>
                         <td>{ticket.qa_estimate || '-'}h</td>
@@ -1677,6 +1965,111 @@ function TicketsDashboard() {
                   <path d="M18 9l-5 5-4-4-3 3"/>
                 </svg>
                 <p>Select a time period to view analysis</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Ticket Timesheet Entries Section */}
+        {selectedTicketId && (
+          <div className="ticket-timesheet-section" ref={timesheetSectionRef}>
+            <div className="timesheet-header">
+              <div className="timesheet-title-group">
+                <h2 className="timesheet-title">
+                  <span className="ticket-badge">#{selectedTicketId}</span>
+                  Timesheet Entries
+                </h2>
+                <span className="timesheet-count">
+                  {ticketTimesheetEntries.length} entries found
+                </span>
+              </div>
+              <button className="close-timesheet-btn" onClick={clearTicketSelection}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M18 6L6 18M6 6l12 12"/>
+                </svg>
+                Close
+              </button>
+            </div>
+
+            {loadingTimesheet ? (
+              <div className="timesheet-loading">
+                <div className="loading-spinner"></div>
+                <span>Loading timesheet entries...</span>
+              </div>
+            ) : ticketTimesheetEntries.length > 0 ? (
+              <>
+                {/* Summary Stats */}
+                <div className="timesheet-summary">
+                  <div className="timesheet-stat">
+                    <span className="stat-value">
+                      {ticketTimesheetEntries.reduce((sum, e) => sum + (e.hours_logged || 0), 0).toFixed(1)}h
+                    </span>
+                    <span className="stat-label">Total Hours</span>
+                  </div>
+                  <div className="timesheet-stat">
+                    <span className="stat-value">
+                      {[...new Set(ticketTimesheetEntries.map(e => e.employee_name))].length}
+                    </span>
+                    <span className="stat-label">Contributors</span>
+                  </div>
+                  <div className="timesheet-stat">
+                    <span className="stat-value">
+                      {[...new Set(ticketTimesheetEntries.map(e => e.date))].length}
+                    </span>
+                    <span className="stat-label">Days Worked</span>
+                  </div>
+                </div>
+
+                {/* Timesheet Table */}
+                <div className="timesheet-table-wrapper">
+                  <table className="timesheet-table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Employee</th>
+                        <th>Team</th>
+                        <th>Hours</th>
+                        <th>Task Description</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ticketTimesheetEntries
+                        .sort((a, b) => new Date(b.date) - new Date(a.date))
+                        .map((entry, idx) => (
+                          <tr key={idx}>
+                            <td className="date-cell">
+                              {formatDisplayDateWithDay(entry.date)}
+                            </td>
+                            <td className="employee-cell">
+                              <span 
+                                className={employeeMap[entry.employee_name?.toLowerCase()] ? 'clickable-name' : ''}
+                                onClick={() => handleNameClick(entry.employee_name)}
+                              >
+                                {entry.employee_name}
+                              </span>
+                            </td>
+                            <td>
+                              <span className={`team-badge team-${(entry.team || 'unknown').toLowerCase()}`}>
+                                {entry.team || 'Unknown'}
+                              </span>
+                            </td>
+                            <td className="hours-cell">
+                              <span className="hours-value">{parseFloat(entry.hours_logged || 0).toFixed(1)}h</span>
+                            </td>
+                            <td className="desc-cell">{entry.task_description || '-'}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : (
+              <div className="timesheet-empty">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <rect x="3" y="4" width="18" height="18" rx="2"/>
+                  <path d="M16 2v4M8 2v4M3 10h18"/>
+                </svg>
+                <p>No timesheet entries found for ticket #{selectedTicketId}</p>
               </div>
             )}
           </div>

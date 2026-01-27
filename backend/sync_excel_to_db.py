@@ -32,7 +32,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 from database import SessionLocal
-from models import TicketTracking
+from models import TicketTracking, TicketStatusHistory
 
 # Configuration
 IMPORTS_FOLDER = os.getenv("IMPORTS_FOLDER", os.path.join(os.path.dirname(__file__), "imports"))
@@ -265,7 +265,12 @@ def import_excel_file(filepath):
                     record.ticket_id = ticket_id
                     imported += 1
                 
-                # Update fields based on column mapping
+                # Capture previous status for history tracking
+                previous_status = existing.status if existing else None
+                previous_updated_on = existing.updated_on if existing else None
+                
+                # Build a dict of new values first
+                new_values = {}
                 for col_idx, db_field in column_map.items():
                     if col_idx >= len(row):
                         continue
@@ -275,13 +280,39 @@ def import_excel_file(filepath):
                     if db_field == 'ticket_id':
                         continue  # Already handled
                     elif db_field == 'eta':
-                        setattr(record, db_field, parse_datetime_value(value))
+                        new_values[db_field] = parse_datetime_value(value)
                     elif db_field in ('dev_estimate_hours', 'actual_dev_hours', 'qa_estimate_hours', 'actual_qa_hours'):
-                        setattr(record, db_field, parse_float(value))
+                        new_values[db_field] = parse_float(value)
                     else:
-                        setattr(record, db_field, parse_string(value))
+                        new_values[db_field] = parse_string(value)
+                
+                # Apply new values to record
+                for db_field, value in new_values.items():
+                    setattr(record, db_field, value)
                 
                 record.updated_on = datetime.now()
+                
+                # Track status change if status has changed
+                new_status = new_values.get('status')
+                if new_status and new_status != previous_status:
+                    # Calculate duration in previous status (if we have previous data)
+                    duration_hours = None
+                    if previous_status and previous_updated_on:
+                        duration_seconds = (datetime.now() - previous_updated_on).total_seconds()
+                        duration_hours = round(duration_seconds / 3600, 2)
+                    
+                    # Create status history record
+                    history = TicketStatusHistory(
+                        ticket_id=ticket_id,
+                        previous_status=previous_status,
+                        new_status=new_status,
+                        changed_on=datetime.now(),
+                        current_assignee=new_values.get('current_assignee'),
+                        qc_tester=new_values.get('qc_tester'),
+                        duration_in_previous_status=duration_hours,
+                        source='sync'
+                    )
+                    db.add(history)
                 
                 if not existing:
                     db.add(record)

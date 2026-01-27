@@ -17,6 +17,10 @@ backend/.env
 backend/.env.local
 backend/.env.*.local
 
+# Google OAuth credentials (CRITICAL - contains OAuth secrets)
+backend/config/token.json
+backend/config/oauth2_credentials.json
+
 # Database files
 *.db
 *.sqlite

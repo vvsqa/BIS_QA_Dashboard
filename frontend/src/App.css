@@ -5,6 +5,62 @@ body {
   color: #e5e7eb;
 }
 
+/* Light mode text readability */
+[data-theme="light"] body {
+  background-color: #f0f4f8;
+  color: #1e293b;
+}
+
+[data-theme="light"] .card {
+  background: #ffffff;
+  color: #1e293b;
+  border: 1px solid #e2e8f0;
+}
+
+[data-theme="light"] .card span {
+  color: #1e293b;
+}
+
+[data-theme="light"] .card.open span { color: #d97706; }
+[data-theme="light"] .card.retest span { color: #f59e0b; }
+[data-theme="light"] .card.closed span { color: #16a34a; }
+
+[data-theme="light"] table {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  color: #1e293b;
+}
+
+[data-theme="light"] thead th {
+  background: #f8fafc;
+  color: #1e293b;
+  border: 1px solid #e2e8f0;
+}
+
+[data-theme="light"] tbody td {
+  color: #1e293b;
+  border: 1px solid #e2e8f0;
+}
+
+[data-theme="light"] tbody tr:nth-child(even) {
+  background-color: #f8fafc;
+}
+
+[data-theme="light"] tbody tr:hover {
+  background-color: #f1f5f9;
+}
+
+[data-theme="light"] input,
+[data-theme="light"] select {
+  background: #ffffff;
+  color: #1e293b;
+  border: 1px solid #e2e8f0;
+}
+
+[data-theme="light"] tbody td[colspan] {
+  color: #64748b;
+}
+
 .dashboard {
   padding: 20px;
 }
