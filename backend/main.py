@@ -1,14 +1,16 @@
-from fastapi import FastAPI, Query, HTTPException, UploadFile, File, Body
+from fastapi import FastAPI, Query, HTTPException, UploadFile, File, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 from sqlalchemy import func, or_
 from datetime import datetime, timedelta, date
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from collections import defaultdict
 from pydantic import BaseModel
 import tempfile
 import os
+import shutil
 
 from database import SessionLocal
 from models import (
@@ -107,6 +109,12 @@ class KPIRatingCreate(BaseModel):
 
 app = FastAPI()
 
+# Static uploads (employee photos)
+UPLOADS_ROOT = os.path.join(os.path.dirname(__file__), "uploads")
+PROFILE_PHOTO_DIR = os.path.join(UPLOADS_ROOT, "profile_photos")
+os.makedirs(PROFILE_PHOTO_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOADS_ROOT), name="uploads")
+
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
@@ -114,6 +122,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 # Startup and shutdown events for auto-sync scheduler
@@ -122,20 +131,20 @@ async def startup_event():
     """Start the Google Sheets auto-sync scheduler on application startup."""
     try:
         if start_auto_sync():
-            print("✓ Google Sheets auto-sync started")
+            print("[OK] Google Sheets auto-sync started")
         else:
-            print("ℹ Google Sheets auto-sync is disabled (set SHEETS_AUTO_SYNC=true to enable)")
+            print("[INFO] Google Sheets auto-sync is disabled (set SHEETS_AUTO_SYNC=true to enable)")
     except Exception as e:
-        print(f"⚠ Failed to start auto-sync: {e}")
+        print(f"[WARNING] Failed to start auto-sync: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Stop the scheduler on application shutdown."""
     try:
         stop_auto_sync()
-        print("✓ Google Sheets auto-sync stopped")
+        print("[OK] Google Sheets auto-sync stopped")
     except Exception as e:
-        print(f"⚠ Error stopping auto-sync: {e}")
+        print(f"[WARNING] Error stopping auto-sync: {e}")
 
 
 # ===== TEAM CLASSIFICATION HELPER =====
@@ -2598,7 +2607,7 @@ def list_employees(
     db: Session = SessionLocal()
     try:
         query = db.query(Employee)
-        
+
         if is_active is not None:
             query = query.filter(Employee.is_active == is_active)
         if team:
@@ -2683,8 +2692,8 @@ def export_all_employees(
             bottom=Side(style='thin')
         )
         
-        # Headers - Basic profile columns + Additional mapping columns
-        headers = [
+        # Base headers - fixed profile columns
+        base_headers = [
             "Employee ID",
             "Name",
             "Email",
@@ -2695,16 +2704,37 @@ def export_all_employees(
             "Category",
             "Employment Status",
             "Reporting To (Lead)",
+            "Reporting Manager",
+            "Previous Experience",
             "Experience (Years)",
-            "Active Status",
-            # Additional columns for mapping
-            "Column 1",
-            "Column 2",
-            "Column 3",
-            "Column 4",
-            "Column 5",
-            "Notes"
+            "Active Status"
         ]
+        
+        # Collect all unique dynamic column names from all employees' mapping_data
+        dynamic_columns = set()
+        for emp in employees:
+            if emp.mapping_data:
+                for key in emp.mapping_data.keys():
+                    dynamic_columns.add(key)
+        
+        # Sort dynamic columns for consistent ordering
+        # Put standard columns first (Column 1-5, Notes), then any custom columns alphabetically
+        standard_dynamic = ["Column 1", "Column 2", "Column 3", "Column 4", "Column 5", "Notes"]
+        custom_columns = sorted([c for c in dynamic_columns if c not in standard_dynamic])
+        
+        # Build ordered list of dynamic columns
+        ordered_dynamic_columns = []
+        for col in standard_dynamic:
+            if col in dynamic_columns:
+                ordered_dynamic_columns.append(col)
+        ordered_dynamic_columns.extend(custom_columns)
+        
+        # If no dynamic columns exist, add default empty columns for user to fill
+        if not ordered_dynamic_columns:
+            ordered_dynamic_columns = ["Column 1", "Column 2", "Column 3", "Notes"]
+        
+        # Combine headers
+        headers = base_headers + ordered_dynamic_columns
         
         ws.append(headers)
         
@@ -2716,10 +2746,15 @@ def export_all_employees(
             cell.alignment = Alignment(horizontal='center', vertical='center')
             cell.border = border_style
         
+        # Number of base columns (for styling)
+        num_base_cols = len(base_headers)
+        
         # Add employee data
         for emp in employees:
             # Get existing mapping data if available
             mapping = emp.mapping_data or {}
+            
+            # Build base row data
             row = [
                 emp.employee_id or "",
                 emp.name or "",
@@ -2731,15 +2766,16 @@ def export_all_employees(
                 emp.category or "",
                 emp.employment_status or "Ongoing Employee",
                 emp.lead or "",
+                emp.manager or "",
+                round(emp.previous_experience, 1) if emp.previous_experience is not None else "",
                 calculate_experience_years(emp.date_of_joining),
-                "Active" if emp.is_active else "Inactive",
-                mapping.get("Column 1", "") or "",
-                mapping.get("Column 2", "") or "",
-                mapping.get("Column 3", "") or "",
-                mapping.get("Column 4", "") or "",
-                mapping.get("Column 5", "") or "",
-                mapping.get("Notes", "") or ""
+                "Active" if emp.is_active else "Inactive"
             ]
+            
+            # Add dynamic column values
+            for col_name in ordered_dynamic_columns:
+                row.append(mapping.get(col_name, "") or "")
+            
             ws.append(row)
             
             # Style data row
@@ -2748,11 +2784,11 @@ def export_all_employees(
                 cell.border = border_style
                 if col_idx == 6:  # Date column
                     cell.alignment = Alignment(horizontal='left')
-                elif col_idx >= 13:  # Additional mapping columns
+                elif col_idx > num_base_cols:  # Dynamic/mapping columns
                     cell.fill = PatternFill(start_color="FFFACD", end_color="FFFACD", fill_type="solid")  # Light yellow
         
-        # Adjust column widths
-        column_widths = {
+        # Adjust column widths - base columns
+        base_column_widths = {
             'A': 15,  # Employee ID
             'B': 30,  # Name
             'C': 30,  # Email
@@ -2762,19 +2798,22 @@ def export_all_employees(
             'G': 15,  # Team
             'H': 15,  # Category
             'I': 20,  # Employment Status
-            'J': 25,  # Reporting To
-            'K': 15,  # Experience
-            'L': 15,  # Active Status
-            'M': 20,  # Column 1
-            'N': 20,  # Column 2
-            'O': 20,  # Column 3
-            'P': 20,  # Column 4
-            'Q': 20,  # Column 5
-            'R': 30   # Notes
+            'J': 25,  # Reporting To (Lead)
+            'K': 25,  # Reporting Manager
+            'L': 18,  # Previous Experience
+            'M': 15,  # Experience (Years)
+            'N': 15   # Active Status
         }
         
-        for col, width in column_widths.items():
+        for col, width in base_column_widths.items():
             ws.column_dimensions[col].width = width
+        
+        # Set width for dynamic columns (starting from column N onwards)
+        from openpyxl.utils import get_column_letter
+        for i, col_name in enumerate(ordered_dynamic_columns):
+            col_letter = get_column_letter(num_base_cols + 1 + i)
+            # Notes column gets extra width
+            ws.column_dimensions[col_letter].width = 30 if col_name == "Notes" else 20
         
         # Freeze header row
         ws.freeze_panes = 'A2'
@@ -2872,23 +2911,38 @@ def import_employee_mapping_data(
         # Read headers to find column indices
         headers = [cell.value for cell in ws[1]]
         
+        # Define base profile columns that should NOT be treated as mapping data
+        base_profile_columns = {
+            "employee id", "name", "email", "role", "location",
+            "date of joining", "team", "category", "employment status",
+            "reporting to (lead)", "reporting to", "lead", "reporting manager", "manager",
+            "experience (years)", "experience", "active status", "active", "status",
+            "user role", "user_role", "password", "login password"
+        }
+        
         # Find column indices
         col_indices = {}
+        dynamic_columns = {}  # Store dynamic column name -> index mapping
+        
         for idx, header in enumerate(headers, 1):
-            if header == "Employee ID":
+            header_str = str(header).strip() if header else ""
+            header_lower = header_str.lower()
+            
+            if header_str == "Employee ID":
                 col_indices["employee_id"] = idx
-            elif header == "Column 1":
-                col_indices["column1"] = idx
-            elif header == "Column 2":
-                col_indices["column2"] = idx
-            elif header == "Column 3":
-                col_indices["column3"] = idx
-            elif header == "Column 4":
-                col_indices["column4"] = idx
-            elif header == "Column 5":
-                col_indices["column5"] = idx
-            elif header == "Notes":
-                col_indices["notes"] = idx
+            elif header_lower in ["previous experience", "previous_experience", "prev experience", "prev exp"]:
+                col_indices["previous_experience"] = idx
+            elif header_lower in ["reporting to (lead)", "reporting to", "lead", "reporting lead"]:
+                col_indices["lead"] = idx
+            elif header_lower in ["reporting manager", "manager", "reporting to (manager)"]:
+                col_indices["manager"] = idx
+            elif header_lower in ["user role", "user_role", "access role"]:
+                col_indices["user_role"] = idx
+            elif header_lower in ["password", "login password"]:
+                col_indices["password"] = idx
+            elif header_str and header_lower not in base_profile_columns:
+                # This is a dynamic/mapping column - store with original name
+                dynamic_columns[header_str] = idx
         
         if "employee_id" not in col_indices:
             raise HTTPException(status_code=400, detail="Employee ID column not found in Excel file")
@@ -2912,32 +2966,45 @@ def import_employee_mapping_data(
                 not_found.append(employee_id)
                 continue
             
-            # Extract mapping data
+            # Extract mapping data from all dynamic columns
             mapping_data = {}
-            if "column1" in col_indices:
-                val = row[col_indices["column1"] - 1].value
+            for col_name, col_idx in dynamic_columns.items():
+                val = row[col_idx - 1].value
                 if val is not None and str(val).strip():
-                    mapping_data["Column 1"] = str(val).strip()
-            if "column2" in col_indices:
-                val = row[col_indices["column2"] - 1].value
-                if val is not None and str(val).strip():
-                    mapping_data["Column 2"] = str(val).strip()
-            if "column3" in col_indices:
-                val = row[col_indices["column3"] - 1].value
-                if val is not None and str(val).strip():
-                    mapping_data["Column 3"] = str(val).strip()
-            if "column4" in col_indices:
-                val = row[col_indices["column4"] - 1].value
-                if val is not None and str(val).strip():
-                    mapping_data["Column 4"] = str(val).strip()
-            if "column5" in col_indices:
-                val = row[col_indices["column5"] - 1].value
-                if val is not None and str(val).strip():
-                    mapping_data["Column 5"] = str(val).strip()
-            if "notes" in col_indices:
-                val = row[col_indices["notes"] - 1].value
-                if val is not None and str(val).strip():
-                    mapping_data["Notes"] = str(val).strip()
+                    mapping_data[col_name] = str(val).strip()
+            
+            # Update previous_experience if column exists
+            if "previous_experience" in col_indices:
+                val = row[col_indices["previous_experience"] - 1].value
+                if val is not None:
+                    try:
+                        # Try to convert to float
+                        prev_exp = float(val)
+                        employee.previous_experience = prev_exp
+                    except (ValueError, TypeError):
+                        # If conversion fails, skip this value
+                        pass
+            
+            # Update lead if column exists
+            if "lead" in col_indices:
+                val = row[col_indices["lead"] - 1].value
+                if val is not None:
+                    lead_value = str(val).strip()
+                    if lead_value:
+                        employee.lead = lead_value
+                    else:
+                        employee.lead = None
+            
+            # Update manager if column exists
+            if "manager" in col_indices:
+                val = row[col_indices["manager"] - 1].value
+                if val is not None:
+                    manager_value = str(val).strip()
+                    if manager_value:
+                        employee.manager = manager_value
+                    else:
+                        employee.manager = None
+
             
             # Update employee mapping_data (set to None if empty dict to clear old data)
             employee.mapping_data = mapping_data if mapping_data else None
@@ -3018,7 +3085,7 @@ def get_employee(employee_id: str):
         
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
-        
+
         # Calculate experience metrics
         techversant_exp = calculate_experience_years(employee.date_of_joining)
         bis_exp = calculate_bis_experience(employee.bis_introduced_date) if employee.category == "BILLED" else None
@@ -3074,7 +3141,7 @@ def export_employee_profile(employee_id: str):
         
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
-        
+
         # Create workbook
         wb = openpyxl.Workbook()
         
@@ -3426,7 +3493,7 @@ def create_employee(employee: EmployeeCreate):
 
 @app.put("/employees/{employee_id}")
 def update_employee(employee_id: str, updates: EmployeeUpdate):
-    """Update an employee"""
+    """Update an employee and cascade updates to related records"""
     db: Session = SessionLocal()
     try:
         employee = db.query(Employee).filter(
@@ -3439,6 +3506,11 @@ def update_employee(employee_id: str, updates: EmployeeUpdate):
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
         
+        # Store old values for cascading updates
+        old_name = employee.name
+        old_lead = employee.lead
+        old_manager = employee.manager
+        
         update_data = updates.dict(exclude_unset=True)
         for field, value in update_data.items():
             if value is not None:
@@ -3446,15 +3518,140 @@ def update_employee(employee_id: str, updates: EmployeeUpdate):
                     value = value.upper()
                 setattr(employee, field, value)
         
+        new_name = employee.name
+        new_lead = employee.lead
+        new_manager = employee.manager
+        
+        # Cascade updates to related records
+        update_count = 0
+        
+        # If employee name changed, update all employees who have this person as lead or manager
+        if 'name' in update_data and old_name and new_name and old_name != new_name:
+            # Update employees where this person is the lead
+            lead_reportees = db.query(Employee).filter(
+                Employee.lead.ilike(f"%{old_name}%")
+            ).all()
+            for reportee in lead_reportees:
+                # Replace old name with new name in lead field
+                if reportee.lead and old_name in reportee.lead:
+                    reportee.lead = reportee.lead.replace(old_name, new_name)
+                    update_count += 1
+            
+            # Update employees where this person is the manager
+            manager_reportees = db.query(Employee).filter(
+                Employee.manager.ilike(f"%{old_name}%")
+            ).all()
+            for reportee in manager_reportees:
+                # Replace old name with new name in manager field
+                if reportee.manager and old_name in reportee.manager:
+                    reportee.manager = reportee.manager.replace(old_name, new_name)
+                    update_count += 1
+            
+            # Update WeeklyPlan.planned_by
+            weekly_plans = db.query(WeeklyPlan).filter(
+                WeeklyPlan.planned_by.ilike(f"%{old_name}%")
+            ).all()
+            for plan in weekly_plans:
+                if plan.planned_by and old_name in plan.planned_by:
+                    plan.planned_by = plan.planned_by.replace(old_name, new_name)
+                    update_count += 1
+            
+            # Update PlannedTask.assigned_by
+            planned_tasks = db.query(PlannedTask).filter(
+                PlannedTask.assigned_by.ilike(f"%{old_name}%")
+            ).all()
+            for task in planned_tasks:
+                if task.assigned_by and old_name in task.assigned_by:
+                    task.assigned_by = task.assigned_by.replace(old_name, new_name)
+                    update_count += 1
+        
+        # If lead field changed, update all employees who have the same lead value
+        # This ensures consistency when a lead name is corrected
+        if 'lead' in update_data and old_lead and new_lead and old_lead != new_lead:
+            # Only update if the old lead exactly matches (to avoid partial matches)
+            employees_with_same_lead = db.query(Employee).filter(
+                Employee.lead == old_lead,
+                Employee.employee_id != employee.employee_id  # Don't update the employee being edited
+            ).all()
+            for emp in employees_with_same_lead:
+                emp.lead = new_lead
+                update_count += 1
+        
+        # If manager field changed, update all employees who have the same manager value
+        # This ensures consistency when a manager name is corrected
+        if 'manager' in update_data and old_manager and new_manager and old_manager != new_manager:
+            # Only update if the old manager exactly matches (to avoid partial matches)
+            employees_with_same_manager = db.query(Employee).filter(
+                Employee.manager == old_manager,
+                Employee.employee_id != employee.employee_id  # Don't update the employee being edited
+            ).all()
+            for emp in employees_with_same_manager:
+                emp.manager = new_manager
+                update_count += 1
+        
         employee.updated_on = datetime.utcnow()
         db.commit()
         
-        return {"message": "Employee updated successfully"}
+        message = f"Employee updated successfully"
+        if update_count > 0:
+            message += f". Updated {update_count} related record(s)."
+        
+        return {"message": message, "related_records_updated": update_count}
     except HTTPException:
         raise
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/employees/{employee_id}/photo")
+async def upload_employee_photo(
+    employee_id: str,
+    request: Request,
+    file: UploadFile = File(...)
+):
+    """Upload and save employee profile photo."""
+    db: Session = SessionLocal()
+    try:
+        employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+
+        if not file.content_type or not file.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="Invalid file type. Please upload an image.")
+
+        filename = file.filename or ""
+        ext = os.path.splitext(filename)[1].lower()
+        allowed_exts = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+        if ext and ext not in allowed_exts:
+            raise HTTPException(status_code=400, detail="Unsupported image format.")
+
+        if not ext:
+            content_map = {
+                "image/jpeg": ".jpg",
+                "image/png": ".png",
+                "image/webp": ".webp",
+                "image/gif": ".gif"
+            }
+            ext = content_map.get(file.content_type, ".jpg")
+
+        timestamp = int(datetime.utcnow().timestamp())
+        safe_filename = f"{employee_id}_{timestamp}{ext}"
+        file_path = os.path.join(PROFILE_PHOTO_DIR, safe_filename)
+
+        with open(file_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        base_url = str(request.base_url).rstrip("/")
+        photo_url = f"{base_url}/uploads/profile_photos/{safe_filename}"
+
+        employee.photo_url = photo_url
+        employee.updated_on = datetime.utcnow()
+        db.commit()
+
+        return {"photo_url": photo_url}
     finally:
         db.close()
 
@@ -3532,7 +3729,7 @@ def get_employee_performance(
         
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
-        
+
         start_date, end_date = get_date_range(period)
         employee_name = employee.name
         is_dev = employee.team == "DEVELOPMENT"
@@ -3853,7 +4050,7 @@ def get_employee_timesheet_summary(
         
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
-        
+
         start_date, end_date = get_date_range(period)
         
         query = db.query(Timesheet).filter(
@@ -3912,7 +4109,7 @@ def get_employee_rag_history(employee_id: str):
         
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
-        
+
         is_dev = employee.team == "DEVELOPMENT"
         employee_name = employee.name
         
@@ -4048,6 +4245,9 @@ def get_employee_goals(employee_id: str):
     """Get goals, strengths, and improvements for an employee"""
     db: Session = SessionLocal()
     try:
+        employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
         goals = db.query(EmployeeGoal).filter(
             EmployeeGoal.employee_id == employee_id
         ).order_by(EmployeeGoal.created_on.desc()).all()
@@ -4087,6 +4287,9 @@ def create_employee_goal(employee_id: str, goal: GoalCreate):
     """Create a new goal, strength, or improvement"""
     db: Session = SessionLocal()
     try:
+        employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
         new_goal = EmployeeGoal(
             employee_id=employee_id,
             goal_type=goal.goal_type,
@@ -4161,7 +4364,7 @@ def delete_goal(goal_id: int):
 
 @app.get("/employees/{employee_id}/reportees")
 def get_employee_reportees(employee_id: str):
-    """Get direct reportees for a lead/manager"""
+    """Get direct and indirect reportees for a lead/manager"""
     db: Session = SessionLocal()
     try:
         employee = db.query(Employee).filter(
@@ -4173,20 +4376,58 @@ def get_employee_reportees(employee_id: str):
         
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
-        
-        # Find employees where this person is the lead
-        reportees = db.query(Employee).filter(
+
+        # Find direct reportees - employees where this person is the lead
+        direct_reportees = db.query(Employee).filter(
             Employee.lead.ilike(f"%{employee.name}%"),
-            Employee.is_active == True
+            Employee.is_active == True,
+            Employee.employee_id != employee.employee_id  # Exclude self
         ).order_by(Employee.name).all()
         
-        return [{
-            "employee_id": emp.employee_id,
-            "name": emp.name,
-            "role": emp.role,
-            "team": emp.team,
-            "email": emp.email
-        } for emp in reportees]
+        # Find indirect reportees - employees where this person is the manager but NOT the lead
+        indirect_reportees = db.query(Employee).filter(
+            Employee.manager.ilike(f"%{employee.name}%"),
+            ~Employee.lead.ilike(f"%{employee.name}%"),  # Not already a direct reportee
+            Employee.is_active == True,
+            Employee.employee_id != employee.employee_id  # Exclude self
+        ).order_by(Employee.name).all()
+        
+        # Also get employees reporting to the direct reportees (for managers)
+        # These are people whose lead reports to this manager
+        manager_indirect = []
+        for direct in direct_reportees:
+            # Find people who report to this direct reportee
+            sub_reportees = db.query(Employee).filter(
+                Employee.lead.ilike(f"%{direct.name}%"),
+                Employee.is_active == True,
+                Employee.employee_id != direct.employee_id
+            ).all()
+            for sub in sub_reportees:
+                if sub.employee_id not in [d.employee_id for d in direct_reportees]:
+                    if sub.employee_id not in [m.employee_id for m in manager_indirect]:
+                        manager_indirect.append(sub)
+        
+        return {
+            "direct_reportees": [{
+                "employee_id": emp.employee_id,
+                "name": emp.name,
+                "role": emp.role,
+                "team": emp.team,
+                "email": emp.email,
+                "category": emp.category
+            } for emp in direct_reportees],
+            "indirect_reportees": [{
+                "employee_id": emp.employee_id,
+                "name": emp.name,
+                "role": emp.role,
+                "team": emp.team,
+                "email": emp.email,
+                "category": emp.category,
+                "reports_to": emp.lead
+            } for emp in indirect_reportees + manager_indirect],
+            "total_direct": len(direct_reportees),
+            "total_indirect": len(indirect_reportees) + len(manager_indirect)
+        }
     finally:
         db.close()
 
@@ -4245,6 +4486,10 @@ def get_employee_reviews(employee_id: str):
     """Get all reviews for an employee"""
     db: Session = SessionLocal()
     try:
+        employee = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+
         reviews = db.query(EmployeeReview).filter(
             EmployeeReview.employee_id == employee_id
         ).order_by(EmployeeReview.review_date.desc()).all()
@@ -4573,7 +4818,7 @@ def get_employee_kpis(employee_id: str):
         
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
-        
+
         if not employee.role:
             return []  # No role means no KPIs
         
@@ -4628,7 +4873,7 @@ def get_employee_kpi_ratings(employee_id: str, quarter: Optional[str] = None):
         
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
-        
+
         # Get current year and quarter if not specified
         if not quarter:
             now = datetime.now()
@@ -4754,7 +4999,10 @@ def get_employee_kpi_ratings(employee_id: str, quarter: Optional[str] = None):
 
 
 @app.post("/employees/{employee_id}/kpi-ratings")
-def submit_kpi_ratings(employee_id: str, ratings: List[KPIRatingCreate]):
+def submit_kpi_ratings(
+    employee_id: str,
+    ratings: List[KPIRatingCreate]
+):
     """Submit KPI ratings for an employee for a quarter"""
     db: Session = SessionLocal()
     try:
@@ -4767,7 +5015,7 @@ def submit_kpi_ratings(employee_id: str, ratings: List[KPIRatingCreate]):
         
         if not employee:
             raise HTTPException(status_code=404, detail="Employee not found")
-        
+
         # Parse quarter to get year and quarter number
         quarter = ratings[0].quarter if ratings else None
         if not quarter:
@@ -5575,7 +5823,11 @@ def get_weekly_calendar(
         # Get list of employees (filtered by team and category)
         emp_query = db.query(Employee).filter(Employee.is_active == True)
         if team.upper() != "ALL":
-            emp_query = emp_query.filter(Employee.team == team.upper())
+            # Map "DEV" to "DEVELOPMENT" for Employee table (Employee.team uses "DEVELOPMENT", not "DEV")
+            employee_team_filter = team.upper()
+            if employee_team_filter == "DEV":
+                employee_team_filter = "DEVELOPMENT"
+            emp_query = emp_query.filter(Employee.team == employee_team_filter)
         if category.upper() != "ALL":
             # Use case-insensitive exact match for category
             # Match both "BILLED" and "UN-BILLED" (with or without hyphen)
@@ -5773,6 +6025,7 @@ def get_monthly_calendar(
         
         for holiday in holidays_query:
             month_holidays[holiday.holiday_date.isoformat()] = {
+                "date": holiday.holiday_date.isoformat(),
                 "name": holiday.holiday_name,
                 "category": holiday.category,
                 "day_name": holiday.day_name
@@ -5781,7 +6034,11 @@ def get_monthly_calendar(
         # Get all active employees from the Employee master table (filtered by team and category)
         emp_query = db.query(Employee).filter(Employee.is_active == True)
         if team.upper() != "ALL":
-            emp_query = emp_query.filter(Employee.team == team.upper())
+            # Map "DEV" to "DEVELOPMENT" for Employee table (Employee.team uses "DEVELOPMENT", not "DEV")
+            employee_team_filter = team.upper()
+            if employee_team_filter == "DEV":
+                employee_team_filter = "DEVELOPMENT"
+            emp_query = emp_query.filter(Employee.team == employee_team_filter)
         if category.upper() != "ALL":
             # Use case-insensitive exact match for category
             # Match both "BILLED" and "UN-BILLED" (with or without hyphen)
@@ -6168,7 +6425,7 @@ def get_team_leaves(
             month_end = date(month_start.year + 1, 1, 1) - timedelta(days=1)
         else:
             month_end = date(month_start.year, month_start.month + 1, 1) - timedelta(days=1)
-        
+
         # Query leaves
         query = db.query(LeaveEntry).filter(
             LeaveEntry.date >= month_start,
@@ -6248,7 +6505,11 @@ def get_weekly_plan(
         # Get employees
         emp_query = db.query(Employee).filter(Employee.is_active == True)
         if team.upper() != "ALL":
-            emp_query = emp_query.filter(Employee.team == team.upper())
+            # Map "DEV" to "DEVELOPMENT" for Employee table (Employee.team uses "DEVELOPMENT", not "DEV")
+            employee_team_filter = team.upper()
+            if employee_team_filter == "DEV":
+                employee_team_filter = "DEVELOPMENT"
+            emp_query = emp_query.filter(Employee.team == employee_team_filter)
         employees = emp_query.all()
         
         # Build response
@@ -6331,7 +6592,7 @@ def create_planned_task(task: PlannedTaskCreate):
             ).first()
             if employee:
                 employee_id = employee.employee_id
-        
+
         new_task = PlannedTask(
             employee_id=employee_id,
             employee_name=task.employee_name,

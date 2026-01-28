@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { TicketExternalLink } from "./ticketUtils";
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -26,7 +27,7 @@ ChartJS.register(
   ChartDataLabels
 );
 
-const BACKEND_URL = "http://127.0.0.1:8000";
+const BACKEND_URL = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
 
 // Speedometer Gauge Component (same as Dashboard)
 function SpeedometerGauge({ value, label, maxValue = 100, theme = 'dark' }) {
@@ -2386,12 +2387,15 @@ function AllBugsDashboard() {
                     <td className="bug-id">#{bug.bug_id}</td>
                     <td className="bug-id">
                       {bug.ticket_id ? (
-                        <span 
-                          className="clickable-ticket"
-                          onClick={() => handleTicketClick(bug.ticket_id)}
-                          style={{ cursor: 'pointer', color: '#6366f1' }}
-                        >
-                          #{bug.ticket_id}
+                        <span>
+                          <span 
+                            className="clickable-ticket"
+                            onClick={() => handleTicketClick(bug.ticket_id)}
+                            style={{ cursor: 'pointer', color: '#6366f1' }}
+                          >
+                            #{bug.ticket_id}
+                          </span>
+                          <TicketExternalLink ticketId={bug.ticket_id} />
                         </span>
                       ) : '—'}
                     </td>

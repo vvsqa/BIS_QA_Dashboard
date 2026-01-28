@@ -3,9 +3,12 @@ import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Bar, Doughnut } from "react-chartjs-2";
 import { useTableSort, SortableHeader } from "./useTableSort";
 import { formatDisplayDate, formatDisplayDateTime, formatDisplayDateWithDay } from "./dateUtils";
+import { TicketExternalLink } from "./ticketUtils";
+import html2canvas from 'html2canvas';
+import jsPDF from 'jspdf';
 import "./dashboard.css";
 
-const BACKEND_URL = "http://127.0.0.1:8000";
+const BACKEND_URL = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
 
 // Status to Team Mapping
 const STATUS_TEAM_MAPPING = {
@@ -85,6 +88,8 @@ function TicketsDashboard() {
   
   // Ref for timesheet section scrolling
   const timesheetSectionRef = useRef(null);
+  // Ref for PDF export
+  const pdfExportRef = useRef(null);
 
   const toggleAnalysisSection = (teamKey) => {
     setExpandedAnalysisSections(prev => ({
@@ -312,6 +317,68 @@ function TicketsDashboard() {
       navigate(`/?ticket=${ticketId}`);
     }
   }, [navigate]);
+
+  // Export to PDF function
+  const exportToPDF = async () => {
+    if (!pdfExportRef.current) {
+      alert('Unable to export: Content not found');
+      return;
+    }
+
+    setLoading(true);
+    
+    try {
+      // Get the element to export
+      const element = pdfExportRef.current;
+      
+      // Store original scroll position
+      const originalScrollY = window.scrollY;
+      
+      // Scroll to top
+      window.scrollTo(0, 0);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      
+      // Capture with html2canvas
+      const canvas = await html2canvas(element, {
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: theme === 'dark' ? '#1a1a1a' : '#ffffff',
+        logging: false
+      });
+      
+      // Restore scroll
+      window.scrollTo(0, originalScrollY);
+      
+      // Get image dimensions
+      const imgWidth = canvas.width;
+      const imgHeight = canvas.height;
+      
+      // Create PDF in landscape orientation
+      const pdf = new jsPDF({
+        orientation: 'landscape',
+        unit: 'px',
+        format: [imgWidth, imgHeight]
+      });
+      
+      // Add the captured image to PDF
+      const imgData = canvas.toDataURL('image/png');
+      pdf.addImage(imgData, 'PNG', 0, 0, imgWidth, imgHeight);
+      
+      // Generate filename
+      const timestamp = new Date().toISOString().slice(0, 19).replace(/[:.]/g, '-');
+      const filename = `Tickets_Dashboard_${timestamp}.pdf`;
+      
+      // Save the PDF
+      pdf.save(filename);
+      
+    } catch (error) {
+      console.error('PDF Export Error:', error);
+      alert('Failed to export PDF. Error: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const loadOverview = async () => {
     setLoading(true);
@@ -749,7 +816,7 @@ function TicketsDashboard() {
       </aside>
 
       {/* Main Content */}
-      <main className="main-content">
+      <main className="main-content" ref={pdfExportRef}>
         {/* Loading Indicator */}
         {loading && (
           <div className="loading-indicator">
@@ -823,6 +890,21 @@ function TicketsDashboard() {
                 </span>
               )}
             </div>
+
+            {/* Export PDF Button */}
+            <button 
+              className="export-pdf-btn"
+              onClick={exportToPDF}
+              title="Export current view as PDF"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                <polyline points="14,2 14,8 20,8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+              </svg>
+              Export PDF
+            </button>
           </div>
         </header>
         {/* Breadcrumb */}
@@ -1328,6 +1410,7 @@ function TicketsDashboard() {
                                 <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
                                   #{ticket.ticket_id}
                                 </Link>
+                                <TicketExternalLink ticketId={ticket.ticket_id} />
                               </td>
                               <td><span className="status-badge">{ticket.status}</span></td>
                               <td><span className={`team-badge team-${ticket.team.toLowerCase().replace(/\s+/g, '-')}`}>{ticket.team}</span></td>
@@ -1362,6 +1445,7 @@ function TicketsDashboard() {
                                 <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
                                   #{ticket.ticket_id}
                                 </Link>
+                                <TicketExternalLink ticketId={ticket.ticket_id} />
                               </td>
                               <td><span className="status-badge">{ticket.status}</span></td>
                               <td><span className={`team-badge team-${ticket.team.toLowerCase().replace(/\s+/g, '-')}`}>{ticket.team}</span></td>
@@ -1483,6 +1567,7 @@ function TicketsDashboard() {
                           <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
                             #{ticket.ticket_id}
                           </Link>
+                          <TicketExternalLink ticketId={ticket.ticket_id} />
                         </td>
                         <td><span className="status-badge">{ticket.status}</span></td>
                         <td>
@@ -1579,6 +1664,7 @@ function TicketsDashboard() {
                           <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
                             #{ticket.ticket_id}
                           </Link>
+                          <TicketExternalLink ticketId={ticket.ticket_id} />
                         </td>
                         <td><span className="status-badge">{ticket.status}</span></td>
                         <td><span className={`team-badge team-${ticket.team.toLowerCase().replace(/\s+/g, '-')}`}>{ticket.team}</span></td>
@@ -1634,6 +1720,7 @@ function TicketsDashboard() {
                           <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
                             #{ticket.ticket_id}
                           </Link>
+                          <TicketExternalLink ticketId={ticket.ticket_id} />
                         </td>
                         <td><span className="status-badge">{ticket.status}</span></td>
                         <td><span className={`team-badge team-${(ticket.team || 'Unknown').toLowerCase().replace(/\s+/g, '-')}`}>{ticket.team || 'Unknown'}</span></td>
@@ -1977,6 +2064,7 @@ function TicketsDashboard() {
               <div className="timesheet-title-group">
                 <h2 className="timesheet-title">
                   <span className="ticket-badge">#{selectedTicketId}</span>
+                  <TicketExternalLink ticketId={selectedTicketId} />
                   Timesheet Entries
                 </h2>
                 <span className="timesheet-count">

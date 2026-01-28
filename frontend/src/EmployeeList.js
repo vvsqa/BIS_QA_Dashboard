@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTableSort, SortableHeader } from './useTableSort';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
 
 function EmployeeList() {
   const navigate = useNavigate();
@@ -344,12 +344,12 @@ function EmployeeList() {
                 <SortableHeader columnKey="employee_id" onSort={handleSort} sortConfig={sortConfig}>ID</SortableHeader>
                 <SortableHeader columnKey="name" onSort={handleSort} sortConfig={sortConfig}>Name</SortableHeader>
                 <SortableHeader columnKey="role" onSort={handleSort} sortConfig={sortConfig}>Role</SortableHeader>
-                <SortableHeader columnKey="team" onSort={handleSort} sortConfig={sortConfig}>Team</SortableHeader>
-                <SortableHeader columnKey="category" onSort={handleSort} sortConfig={sortConfig}>Category</SortableHeader>
-                <SortableHeader columnKey="employment_status" onSort={handleSort} sortConfig={sortConfig}>Status</SortableHeader>
-                <SortableHeader columnKey="lead" onSort={handleSort} sortConfig={sortConfig}>Lead</SortableHeader>
-                <SortableHeader columnKey="experience_years" onSort={handleSort} sortConfig={sortConfig}>Experience</SortableHeader>
-                <th>Actions</th>
+                <SortableHeader columnKey="team" onSort={handleSort} sortConfig={sortConfig} className="align-center">Team</SortableHeader>
+                <SortableHeader columnKey="category" onSort={handleSort} sortConfig={sortConfig} className="align-center">Category</SortableHeader>
+                <SortableHeader columnKey="employment_status" onSort={handleSort} sortConfig={sortConfig} className="align-center">Status</SortableHeader>
+                <SortableHeader columnKey="lead" onSort={handleSort} sortConfig={sortConfig} className="align-center">Lead</SortableHeader>
+                <SortableHeader columnKey="experience_years" onSort={handleSort} sortConfig={sortConfig} className="align-center">Experience</SortableHeader>
+                <th className="align-center">Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -358,18 +358,18 @@ function EmployeeList() {
                   <td className="emp-id">{emp.employee_id}</td>
                   <td className="emp-name">{emp.name}</td>
                   <td className="emp-role">{emp.role}</td>
-                  <td className={`emp-team ${emp.team?.toLowerCase()}`}>{emp.team}</td>
-                  <td className={`emp-category ${emp.category?.toLowerCase().replace('-', '')}`}>
+                  <td className={`emp-team ${emp.team?.toLowerCase()} align-center`}>{emp.team}</td>
+                  <td className={`emp-category ${emp.category?.toLowerCase().replace('-', '')} align-center`}>
                     {emp.category}
                   </td>
-                  <td>
+                  <td className="emp-status align-center">
                     <span className={`employment-status-badge ${emp.employment_status === 'Resigned' ? 'resigned' : 'ongoing'}`}>
                       {emp.employment_status || 'Ongoing Employee'}
                     </span>
                   </td>
-                  <td className="emp-lead">{emp.lead}</td>
-                  <td className="emp-exp">{emp.experience_years}y</td>
-                  <td className="emp-actions">
+                  <td className="emp-lead align-center">{emp.lead}</td>
+                  <td className="emp-exp align-center">{emp.experience_years}y</td>
+                  <td className="emp-actions align-center">
                     <button 
                       className="btn-view"
                       onClick={(e) => {

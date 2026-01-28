@@ -2453,6 +2453,10 @@ thead th {
   transition: all 0.2s ease;
 }
 
+.sortable-header.align-center > div {
+  justify-content: center;
+}
+
 .sortable-header:hover {
   background: var(--bg-secondary) !important;
   color: var(--text-primary) !important;
@@ -4416,6 +4420,23 @@ tbody tr:last-child td {
 
 .ticket-link:hover {
   text-decoration: underline;
+}
+
+.ticket-external-link {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+
+.ticket-external-link:hover {
+  color: var(--accent-blue);
+}
+
+.ticket-external-link svg {
+  width: 14px;
+  height: 14px;
 }
 
 .status-badge {
@@ -6587,6 +6608,11 @@ tbody tr:last-child td {
   font-size: 14px;
   color: var(--text-primary);
   border-bottom: 1px solid var(--border-color);
+}
+
+.emp-table th.align-center,
+.emp-table td.align-center {
+  text-align: center;
 }
 
 .emp-table tbody tr {
@@ -9932,6 +9958,30 @@ tbody tr:last-child td {
 
 [data-theme="light"] .reportee-item:hover {
   background: var(--bg-tertiary);
+}
+
+.reportee-category {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  font-weight: 600;
+}
+
+.reportee-category.billed {
+  background: rgba(34, 197, 94, 0.2);
+  color: #22c55e;
+}
+
+.reportee-category.un-billed {
+  background: rgba(249, 115, 22, 0.2);
+  color: #f97316;
+}
+
+.reportee-reports-to {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-style: italic;
 }
 
 /* KPI Overall Rating Card */

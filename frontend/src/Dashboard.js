@@ -14,6 +14,7 @@ import {
 import { Bar, Doughnut } from "react-chartjs-2";
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { formatDisplayDate, formatDisplayDateTime } from "./dateUtils";
+import { TicketExternalLink } from "./ticketUtils";
 import "./dashboard.css";
 
 ChartJS.register(
@@ -27,7 +28,7 @@ ChartJS.register(
   ChartDataLabels
 );
 
-const BACKEND_URL = "http://127.0.0.1:8000";
+const BACKEND_URL = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
 
 // Status to Team Mapping
 const STATUS_TEAM_MAPPING = {
@@ -1994,6 +1995,7 @@ function Dashboard() {
                 <span className="ticket-label">Ticket</span>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
                   <span className="ticket-id">#{ticketId}</span>
+                  <TicketExternalLink ticketId={ticketId} />
                   {testRailSummary && testRailSummary.test_plan_name && (
                     <span className="ticket-plan-name">
                       {testRailSummary.test_plan_name}

@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatAPIDate, formatDisplayDate, formatDateRange, formatTime } from './dateUtils';
+import { TicketExternalLink } from './ticketUtils';
 import './CalendarModule.css';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
 
 // Helper function to format date as YYYY-MM-DD (for API calls)
 const formatDate = formatAPIDate;
@@ -75,8 +76,16 @@ function CalendarModule() {
         url = `${API_BASE}/calendar/monthly?team=${team}&category=${category}&month=${monthStr}`;
       }
       
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Failed to fetch calendar data');
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch calendar data: ${response.status} ${errorText}`);
+      }
       const data = await response.json();
       setCalendarData(data);
     } catch (err) {
@@ -416,6 +425,7 @@ function CalendarModule() {
                                             : entry.task_description)
                                         : entry.ticket_id || 'Task')}
                                 </span>
+                                {isTicket && <TicketExternalLink ticketId={entry.ticket_id} />}
                                 <span className="ticket-hours">{parseFloat(entry.hours || 0).toFixed(1)}h</span>
                               </div>
                             );
@@ -516,6 +526,30 @@ function CalendarModule() {
     // Short day names for headers
     const shortDayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
+    // Holiday map (prefer API holidays list; fallback to first employee's day metadata)
+    const holidayInfoByDay = {};
+    if (calendarData?.holidays?.length) {
+      calendarData.holidays.forEach((holiday) => {
+        if (holiday?.date) {
+          holidayInfoByDay[holiday.date] = holiday;
+        }
+      });
+    } else if (calendarData?.employees?.length) {
+      const firstEmpDays = calendarData.employees[0]?.days || {};
+      calendarDays.forEach((day) => {
+        if (!day) return;
+        const dayKey = formatDate(day);
+        const info = firstEmpDays[dayKey];
+        if (info?.is_holiday) {
+          holidayInfoByDay[dayKey] = info;
+        }
+      });
+    }
+
+    const dayColWidth = 52;
+    const dayColGap = 6;
+    const rowTemplate = `180px 50px 50px 50px repeat(${calendarDays.length}, ${dayColWidth}px)`;
+
     return (
       <div className="calendar-monthly">
         {/* Summary cards */}
@@ -546,7 +580,10 @@ function CalendarModule() {
             {/* Sticky Header Row */}
             <div className="monthly-calendar-grid">
               {/* Header Row */}
-              <div className="monthly-row header-row">
+              <div
+                className="monthly-row header-row"
+                style={{ gridTemplateColumns: rowTemplate, columnGap: `${dayColGap}px` }}
+              >
                 <div className="employee-col header-cell">Employee</div>
                 <div className="stats-col header-cell">Avg</div>
                 <div className="stats-col header-cell">Days</div>
@@ -555,8 +592,15 @@ function CalendarModule() {
                   if (!day) return <div key={idx} className="day-col header-cell empty"></div>;
                   const dayOfWeek = (day.getDay() + 6) % 7; // Monday = 0
                   const isWeekend = day.getDay() === 0 || day.getDay() === 6;
+                  const dayKey = formatDate(day);
+                  const holidayInfo = holidayInfoByDay[dayKey];
+                  const isHoliday = !!holidayInfo;
                   return (
-                    <div key={idx} className={`day-col header-cell ${isWeekend ? 'weekend' : ''}`}>
+                    <div
+                      key={idx}
+                      className={`day-col header-cell ${isWeekend ? 'weekend' : ''} ${isHoliday ? 'holiday' : ''}`}
+                      title={isHoliday ? `${formatDisplayDate(day)} - ${holidayInfo.name || holidayInfo.holiday_name}` : formatDisplayDate(day)}
+                    >
                       <span className="day-name-short">{shortDayNames[dayOfWeek]}</span>
                       <span className="day-number">{day.getDate()}</span>
                     </div>
@@ -566,7 +610,11 @@ function CalendarModule() {
               
               {/* Employee Data Rows */}
               {calendarData.employees.map((emp, idx) => (
-                <div key={idx} className="monthly-row data-row">
+                <div
+                  key={idx}
+                  className="monthly-row data-row"
+                  style={{ gridTemplateColumns: rowTemplate, columnGap: `${dayColGap}px` }}
+                >
                   <div className="employee-col">
                     <span 
                       className="employee-name clickable"
@@ -595,15 +643,22 @@ function CalendarModule() {
                     const dayDate = new Date(day);
                     dayDate.setHours(0, 0, 0, 0);
                     const isPastDate = dayDate <= today;
-                    const isWeekend = day.getDay() === 0 || day.getDay() === 6;
+                    const isWeekend = dayData?.is_weekend !== undefined
+                      ? dayData.is_weekend
+                      : (day.getDay() === 0 || day.getDay() === 6);
+                    const holidayInfo = holidayInfoByDay[dayKey];
+                    const isHoliday = dayData?.is_holiday || !!holidayInfo;
+                    const isWorkingDay = dayData?.is_working_day !== undefined
+                      ? dayData.is_working_day
+                      : (!isWeekend && !isHoliday);
                     
                     // Future dates - show with distinct style
                     if (!isPastDate) {
                       return (
                         <div 
                           key={dayIdx} 
-                          className={`day-col heatmap-cell future ${isWeekend ? 'weekend' : ''}`}
-                          title={`${formatDisplayDate(day)} - Future date`}
+                          className={`day-col heatmap-cell future ${isWeekend ? 'weekend' : ''} ${isHoliday ? 'holiday' : ''}`}
+                          title={`${formatDisplayDate(day)} - ${isHoliday ? (holidayInfo?.name || dayData?.holiday_name || 'Holiday') : 'Future date'}`}
                         >
                           <span className="future-icon">-</span>
                         </div>
@@ -630,10 +685,10 @@ function CalendarModule() {
                     const isHalfDayLeave = hasLeave && leaveType.toLowerCase().includes('half');
                     
                     // Low hours detection (below 7 hours without any leave)
-                    const isLowHoursNoLeave = !hasLeave && !isWeekend && displayHours > 0 && displayHours < 7;
+                    const isLowHoursNoLeave = !hasLeave && isWorkingDay && displayHours > 0 && displayHours < 7;
                     
-                    // No entries for past date - highlight with warning
-                    if (hasNoEntries && !isWeekend) {
+                    // No entries for past date - highlight with warning (only working days)
+                    if (hasNoEntries && isWorkingDay) {
                       return (
                         <div 
                           key={dayIdx} 
@@ -689,7 +744,7 @@ function CalendarModule() {
                     return (
                       <div 
                         key={dayIdx} 
-                        className={`day-col heatmap-cell ${getHoursColorClass(displayHours)} ${isWeekend ? 'weekend' : ''}`}
+                        className={`day-col heatmap-cell ${getHoursColorClass(displayHours)} ${isWeekend ? 'weekend' : ''} ${isHoliday ? 'holiday' : ''}`}
                         title={`${formatDisplayDate(day)}: ${displayHours.toFixed(1)}h ${productiveHours > 0 ? '(Productive)' : '(Time Spent)'}`}
                       >
                         {displayHours > 0 && <span className="heatmap-hours">{displayHours.toFixed(1)}</span>}
@@ -803,6 +858,7 @@ function CalendarModule() {
                         <span className={`entry-ticket ${isTicket ? 'ticket-link' : ''}`}>
                           {isTicket ? `#${entry.ticket_id}` : entry.ticket_id || 'Task'}
                         </span>
+                        {isTicket && <TicketExternalLink ticketId={entry.ticket_id} />}
                         <span className="entry-hours">{entry.hours}h</span>
                       </div>
                       {entry.task_description && (
