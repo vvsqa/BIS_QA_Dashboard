@@ -15,6 +15,8 @@ import { Bar, Doughnut } from "react-chartjs-2";
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { formatDisplayDate, formatDisplayDateTime } from "./dateUtils";
 import { TicketExternalLink } from "./ticketUtils";
+import { useAuth } from "./AuthContext";
+import { apiFetch, API_BASE } from "./api";
 import "./dashboard.css";
 
 ChartJS.register(
@@ -27,8 +29,7 @@ ChartJS.register(
   ArcElement,
   ChartDataLabels
 );
-
-const BACKEND_URL = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
+const BACKEND_URL = API_BASE;
 
 // Status to Team Mapping
 const STATUS_TEAM_MAPPING = {
@@ -62,6 +63,19 @@ const STATUS_TEAM_MAPPING = {
   'Design In Progress': 'BIS',
   'Tested - Awaiting Fixes': 'DEV'
 };
+
+function SidebarUser() {
+  const { user, logout } = useAuth();
+  return (
+    <div className="sidebar-user">
+      <span className="sidebar-user-name">{user?.name || user?.email || 'User'}</span>
+      <span className="sidebar-user-role">{user?.role || ''}</span>
+      <button type="button" className="sidebar-logout" onClick={logout} title="Sign out">
+        Sign out
+      </button>
+    </div>
+  );
+}
 
 // Speedometer Gauge Component
 function SpeedometerGauge({ value, label, maxValue = 100, theme = 'dark' }) {
@@ -152,6 +166,7 @@ function Dashboard() {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { user } = useAuth();
   const [theme, setTheme] = useState(() => {
     try {
       const savedTheme = localStorage.getItem('dashboard-theme');
@@ -216,6 +231,10 @@ function Dashboard() {
   const [ticketTracking, setTicketTracking] = useState(null);
   const [expandedTicketTracking, setExpandedTicketTracking] = useState(true);
   
+  // Ticket detail state (for ageing and priority history)
+  const [selectedTicketDetail, setSelectedTicketDetail] = useState(null);
+  const [loadingTicketDetail, setLoadingTicketDetail] = useState(false);
+  
   // Employees for team classification
   const [employeeTeamMap, setEmployeeTeamMap] = useState({});
   
@@ -227,6 +246,7 @@ function Dashboard() {
   
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [redmineSyncing, setRedmineSyncing] = useState(false);
   
   // Ticket autocomplete state
   const [ticketSuggestions, setTicketSuggestions] = useState([]);
@@ -284,7 +304,7 @@ function Dashboard() {
     }
     
     try {
-      const response = await fetch(`${BACKEND_URL}/tickets/search?query=${encodeURIComponent(query)}`);
+      const response = await apiFetch(`/tickets/search?query=${encodeURIComponent(query)}`);
       if (response.ok) {
         const data = await response.json();
         setTicketSuggestions(data);
@@ -382,10 +402,10 @@ function Dashboard() {
     if (!name) return 'Unknown';
     const normalizedName = name.trim().toLowerCase();
     if (employeeTeamMap[normalizedName]) {
-      const team = employeeTeamMap[normalizedName];
-      if (team === 'DEVELOPMENT') return 'DEV';
+      const team = (employeeTeamMap[normalizedName] || '').toUpperCase();
+      if (team === 'DEVELOPMENT' || team === 'DEV') return 'DEV';
       if (team === 'QA') return 'QA';
-      return team;
+      return team || 'BIS Team';
     }
     // Not in employee database = BIS Team (client)
     return 'BIS Team';
@@ -413,7 +433,7 @@ function Dashboard() {
   useEffect(() => {
     const testConnection = async () => {
       try {
-        const res = await fetch(`${BACKEND_URL}/`);
+        const res = await apiFetch('/');
         if (res.ok) {
           console.log('Backend connection OK');
         } else {
@@ -439,10 +459,11 @@ function Dashboard() {
   }, [maximizedChart]);
 
   // Load employees for name click functionality and lead lookup
+  // Use for_display=true so all users see developer/QA names in ticket tracking (Tickets Dashboard, All Bugs, main Dashboard)
   useEffect(() => {
     const loadEmployees = async () => {
       try {
-        const res = await fetch(`${BACKEND_URL}/employees`);
+        const res = await apiFetch('/employees?for_display=true');
         if (res.ok) {
           const data = await res.json();
           // Store all employee data for lead lookup
@@ -452,9 +473,10 @@ function Dashboard() {
           const empMap = {};
           const teamMap = {};
           data.forEach(emp => {
-            const nameLower = emp.name.toLowerCase();
+            if (!emp?.name) return;
+            const nameLower = emp.name.trim().toLowerCase();
             empMap[nameLower] = emp.employee_id;
-            teamMap[nameLower] = emp.team; // Store team info
+            teamMap[nameLower] = emp.team; // Store team info (DEVELOPMENT, QA, etc.)
           });
           setEmployeeMap(empMap);
           setEmployeeTeamMap(teamMap);
@@ -690,6 +712,21 @@ function Dashboard() {
 
   const ragStatus = calculateRAGStatus();
 
+  const syncRedmine = async () => {
+    setRedmineSyncing(true);
+    setError("");
+    try {
+      const res = await apiFetch('/redmine/sync?all_bugs=true', { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Sync failed");
+      await loadBugs();
+    } catch (e) {
+      setError(e?.message || "Redmine sync failed");
+    } finally {
+      setRedmineSyncing(false);
+    }
+  };
+
   const loadBugs = async () => {
     if (!ticketId) {
       setError("Please enter Ticket ID");
@@ -701,7 +738,7 @@ function Dashboard() {
     // Don't clear bugs immediately - keep existing data visible during refresh
 
     try {
-      const baseUrl = `${BACKEND_URL}/bugs`;
+      const baseUrl = `/bugs`;
       const envParam = `environment=${environment}`;
       const platformParam = `platform=${platform}`;
       const ticketParam = `ticket_id=${parseInt(ticketId)}`;
@@ -714,91 +751,91 @@ function Dashboard() {
         ageRes, resolutionRes, reopenedRes, deferredRes, testRailSummaryRes, testCasesRes, testStatusRes, testRunsRes,
         ticketTrackingRes, employeesRes
       ] = await Promise.all([
-        fetch(`${baseUrl}/summary?${ticketParam}&${envParam}`).catch(err => {
+        apiFetch(`${baseUrl}/summary?${ticketParam}&${envParam}`).catch(err => {
           console.error('Failed to fetch summary:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}?${ticketParam}&${envParam}&only_open=true`).catch(err => {
+        apiFetch(`${baseUrl}?${ticketParam}&${envParam}&only_open=true`).catch(err => {
           console.error('Failed to fetch bugs:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/ticket-info?${ticketParam}`).catch(err => {
+        apiFetch(`${baseUrl}/ticket-info?${ticketParam}`).catch(err => {
           console.error('Failed to fetch ticket-info:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/severity-breakdown?${ticketParam}&${envParam}`).catch(err => {
+        apiFetch(`${baseUrl}/severity-breakdown?${ticketParam}&${envParam}`).catch(err => {
           console.error('Failed to fetch severity-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/priority-breakdown?${ticketParam}&${envParam}`).catch(err => {
+        apiFetch(`${baseUrl}/priority-breakdown?${ticketParam}&${envParam}`).catch(err => {
           console.error('Failed to fetch priority-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/metrics?${ticketParam}&${envParam}`).catch(err => {
+        apiFetch(`${baseUrl}/metrics?${ticketParam}&${envParam}`).catch(err => {
           console.error('Failed to fetch metrics:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/assignee-breakdown?${ticketParam}&${envParam}`).catch(err => {
+        apiFetch(`${baseUrl}/assignee-breakdown?${ticketParam}&${envParam}`).catch(err => {
           console.error('Failed to fetch assignee-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/author-breakdown?${ticketParam}&${envParam}`).catch(err => {
+        apiFetch(`${baseUrl}/author-breakdown?${ticketParam}&${envParam}`).catch(err => {
           console.error('Failed to fetch author-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/module-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
+        apiFetch(`${baseUrl}/module-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch module-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/feature-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
+        apiFetch(`${baseUrl}/feature-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch feature-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/browser-os-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
+        apiFetch(`${baseUrl}/browser-os-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch browser-os-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/platform-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
+        apiFetch(`${baseUrl}/platform-breakdown?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch platform-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/age-analysis?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
+        apiFetch(`${baseUrl}/age-analysis?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch age-analysis:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/resolution-time?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
+        apiFetch(`${baseUrl}/resolution-time?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch resolution-time:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/reopened-analysis?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
+        apiFetch(`${baseUrl}/reopened-analysis?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch reopened-analysis:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${baseUrl}/deferred-bugs?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
+        apiFetch(`${baseUrl}/deferred-bugs?${ticketParam}&${envParam}&${platformParam}`).catch(err => {
           console.error('Failed to fetch deferred-bugs:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${BACKEND_URL}/testrail/summary?${ticketParam}`).catch(err => {
+        apiFetch(`/testrail/summary?${ticketParam}`).catch(err => {
           console.error('Failed to fetch testrail-summary:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${BACKEND_URL}/testrail/test-cases?${ticketParam}`).catch(err => {
+        apiFetch(`/testrail/test-cases?${ticketParam}`).catch(err => {
           console.error('Failed to fetch testrail-test-cases:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${BACKEND_URL}/testrail/status-breakdown?${ticketParam}`).catch(err => {
+        apiFetch(`/testrail/status-breakdown?${ticketParam}`).catch(err => {
           console.error('Failed to fetch testrail-status-breakdown:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${BACKEND_URL}/testrail/test-runs?${ticketParam}`).catch(err => {
+        apiFetch(`/testrail/test-runs?${ticketParam}`).catch(err => {
           console.error('Failed to fetch testrail-test-runs:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${BACKEND_URL}/ticket-tracking/${parseInt(ticketId)}`).catch(err => {
+        apiFetch(`/ticket-tracking/${parseInt(ticketId)}`).catch(err => {
           console.error('Failed to fetch ticket-tracking:', err);
           return { ok: false, status: 500 };
         }),
-        fetch(`${BACKEND_URL}/employees`).catch(err => {
+        apiFetch(`/employees?for_display=true`).catch(err => {
           console.error('Failed to fetch employees:', err);
           return { ok: false, status: 500 };
         }),
@@ -916,8 +953,13 @@ function Dashboard() {
       console.log('Ticket Tracking Data:', ticketTrackingData);
       setTicketTracking(ticketTrackingData);
       
-      // Build employee team map for name classification
-      if (employeesData && Array.isArray(employeesData)) {
+      // Load ticket detail (ageing and priority history)
+      loadTicketDetail(parseInt(ticketId));
+      
+      // Build employee team map for name classification.
+      // Only overwrite when we have valid data - avoid clearing map if employees fetch failed
+      // (e.g. for employee users, failed fetch would wrongly show all names as BIS)
+      if (employeesData && Array.isArray(employeesData) && employeesData.length > 0) {
         const teamMap = {};
         employeesData.forEach(emp => {
           if (emp.name) {
@@ -932,6 +974,25 @@ function Dashboard() {
       setError(`Unable to load data: ${err.message}. Please check Ticket ID or backend connection at ${BACKEND_URL}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Load ticket detail (ageing and priority history)
+  const loadTicketDetail = async (tId) => {
+    setLoadingTicketDetail(true);
+    try {
+      const res = await apiFetch(`/ticket-tracking/${tId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSelectedTicketDetail(data);
+      } else {
+        setSelectedTicketDetail(null);
+      }
+    } catch (err) {
+      console.error('Error loading ticket detail:', err);
+      setSelectedTicketDetail(null);
+    } finally {
+      setLoadingTicketDetail(false);
     }
   };
 
@@ -1758,74 +1819,107 @@ function Dashboard() {
           </button>
         </div>
         <nav className="nav-menu">
-          <Link to="/" className={`nav-item ${location.pathname === '/' || location.pathname === '/ticket' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="3" width="7" height="7" rx="1"/>
-              <rect x="14" y="3" width="7" height="7" rx="1"/>
-              <rect x="3" y="14" width="7" height="7" rx="1"/>
-              <rect x="14" y="14" width="7" height="7" rx="1"/>
-            </svg>
-            Ticket Dashboard
+          <Link to="/" className={`nav-item ${location.pathname === '/' || location.pathname === '/ticket' ? 'active' : ''}`}> 
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+              <rect x="3" y="3" width="7" height="7" rx="1"/> 
+              <rect x="14" y="3" width="7" height="7" rx="1"/> 
+              <rect x="3" y="14" width="7" height="7" rx="1"/> 
+              <rect x="14" y="14" width="7" height="7" rx="1"/> 
+            </svg> 
+            Ticket Dashboard 
           </Link>
-          <Link to="/all-bugs" className={`nav-item ${location.pathname === '/all-bugs' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M12 8v4l2 2"/>
-            </svg>
-            All Bugs Dashboard
+          <Link to="/all-bugs" className={`nav-item ${location.pathname === '/all-bugs' ? 'active' : ''}`}> 
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+              <circle cx="12" cy="12" r="10"/> 
+              <path d="M12 8v4l2 2"/> 
+            </svg> 
+            All Bugs Dashboard 
           </Link>
-          <Link to="/tickets" className={`nav-item ${location.pathname === '/tickets' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="3" width="18" height="18" rx="2"/>
-              <path d="M3 9h18"/>
-              <path d="M9 21V9"/>
-            </svg>
-            Tickets Overview
+          <Link to="/tickets" className={`nav-item ${location.pathname === '/tickets' ? 'active' : ''}`}> 
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+              <rect x="3" y="3" width="18" height="18" rx="2"/> 
+              <path d="M3 9h18"/> 
+              <path d="M9 21V9"/> 
+            </svg> 
+            Tickets Overview 
           </Link>
-          <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
-            </svg>
-            Employees
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && ( 
+            <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}> 
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/> 
+                <circle cx="9" cy="7" r="4"/> 
+                <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/> 
+              </svg> 
+              Employees 
+            </Link> 
+          )}
+          <Link to="/calendar" className={`nav-item ${location.pathname === '/calendar' ? 'active' : ''}`}> 
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/> 
+              <line x1="16" y1="2" x2="16" y2="6"/> 
+              <line x1="8" y1="2" x2="8" y2="6"/> 
+              <line x1="3" y1="10" x2="21" y2="10"/> 
+            </svg> 
+            Calendar 
           </Link>
-          <Link to="/calendar" className={`nav-item ${location.pathname === '/calendar' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-              <line x1="16" y1="2" x2="16" y2="6"/>
-              <line x1="8" y1="2" x2="8" y2="6"/>
-              <line x1="3" y1="10" x2="21" y2="10"/>
-            </svg>
-            Calendar
+          {/* Timesheet link for all users */}
+          <Link to="/timesheet" className={`nav-item ${location.pathname === '/timesheet' ? 'active' : ''}`}> 
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+              <rect x="3" y="4" width="18" height="18" rx="2"/> 
+              <line x1="16" y1="2" x2="16" y2="6"/> 
+              <line x1="8" y1="2" x2="8" y2="6"/> 
+              <line x1="3" y1="10" x2="21" y2="10"/> 
+              <line x1="12" y1="14" x2="12" y2="18"/> 
+              <line x1="9" y1="17" x2="15" y2="17"/> 
+            </svg> 
+            Timesheet 
           </Link>
-          <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/>
-              <rect x="9" y="3" width="6" height="4" rx="1"/>
-              <path d="M9 12h6"/>
-              <path d="M9 16h6"/>
-            </svg>
-            Task Planning
+          {user?.employee_id && !user?.role?.includes('MANAGER') && ( 
+            <Link to="/my-tasks" className={`nav-item ${location.pathname === '/my-tasks' ? 'active' : ''}`}> 
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+                <path d="M9 11l3 3L22 4"/> 
+                <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/> 
+              </svg> 
+              My Tasks 
+            </Link> 
+          )}
+          {(user?.role === 'ADMIN' || user?.role?.includes('LEAD')) && ( 
+            <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}> 
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+                <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/> 
+              </svg> 
+              Task Planning 
+            </Link> 
+          )}
+          <Link to="/reports" className={`nav-item ${location.pathname === '/reports' ? 'active' : ''}`}> 
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/> 
+              <polyline points="14 2 14 8 20 8"/> 
+              <line x1="16" y1="13" x2="8" y2="13"/> 
+              <line x1="16" y1="17" x2="8" y2="17"/> 
+            </svg> 
+            Reports 
           </Link>
-          <Link to="/comparison" className={`nav-item ${location.pathname === '/comparison' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M18 20V10"/>
-              <path d="M12 20V4"/>
-              <path d="M6 20v-6"/>
-            </svg>
-            Plan vs Actual
-          </Link>
-          <Link to="/reports" className={`nav-item ${location.pathname === '/reports' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
-              <polyline points="14 2 14 8 20 8"/>
-              <line x1="16" y1="13" x2="8" y2="13"/>
-              <line x1="16" y1="17" x2="8" y2="17"/>
-            </svg>
-            Reports
-          </Link>
+          {user?.employee_id && ( 
+            <Link to={`/employees/${user.employee_id}`} className={`nav-item ${location.pathname.includes(`/employees/${user.employee_id}`) ? 'active' : ''}`}> 
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+                <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2"/> 
+                <circle cx="12" cy="7" r="4"/> 
+              </svg> 
+              My Profile 
+            </Link> 
+          )}
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER')) && ( 
+            <Link to="/settings" className={`nav-item ${location.pathname === '/settings' ? 'active' : ''}`}> 
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"> 
+                <path d="M12 15a3 3 0 100-6 3 3 0 000 6z"/> 
+                <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/> 
+              </svg> 
+              Settings 
+            </Link> 
+          )}
         </nav>
+        <SidebarUser />
       </aside>
 
       {/* Main Content */}
@@ -1987,7 +2081,7 @@ function Dashboard() {
           </div>
         )}
 
-        {/* Ticket Info Banner */}
+        {/* Ticket Info Banner - title from PM API (ticket-info), test plan as secondary */}
         {ticketId && (
           <div className="ticket-banner">
             <div className="ticket-info">
@@ -2006,12 +2100,24 @@ function Dashboard() {
                       {testRailSummary.total_test_cases} Test Cases
                     </span>
                   )}
-        </div>
+                </div>
+                {ticketInfo.ticket_title && (
+                  <h2 className="ticket-title-from-api">{ticketInfo.ticket_title}</h2>
+                )}
               </div>
             </div>
             <div className="ticket-meta">
               <span className="meta-badge">{environment}</span>
               <span className="meta-badge platform">{ticketInfo.platform || "Web"}</span>
+              <button
+                type="button"
+                className="sync-redmine-btn"
+                onClick={syncRedmine}
+                disabled={loading || redmineSyncing}
+                title="Sync all bugs from Redmine (including Closed). Use if bug count seems low."
+              >
+                {redmineSyncing ? "Syncing…" : "Sync Redmine"}
+              </button>
             </div>
           </div>
         )}
@@ -2154,11 +2260,24 @@ function Dashboard() {
                   </svg>
                   Project Tracking
                 </h2>
+                {ticketId && (
+                  <Link
+                    to={`/planning?ticket_id=${ticketId}`}
+                    className="export-pdf-btn"
+                    style={{ marginRight: '8px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+                    title="Plan development task for this ticket"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: '6px' }}>
+                      <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>
+                    </svg>
+                    Plan task
+                  </Link>
+                )}
                 <button 
                   className="export-pdf-btn"
                   onClick={async () => {
                     try {
-                      const response = await fetch(`${BACKEND_URL}/reports/ticket/${ticketId}`);
+                      const response = await apiFetch(`/reports/ticket/${ticketId}`);
                       if (!response.ok) throw new Error('Failed to generate report');
                       const blob = await response.blob();
                       const url = window.URL.createObjectURL(blob);
@@ -2211,6 +2330,30 @@ function Dashboard() {
                     <div className="rag-score">{Math.round(healthScore)}</div>
                     <div className="rag-label">{healthStatus}</div>
                   </div>
+
+                  {/* Ageing: closed = created→closed, open = created→today */}
+                  {(() => {
+                    const hasClosedAgeing = isTicketClosed && ticketTracking.days_to_close != null;
+                    const hasOpenAgeing = !isTicketClosed && ticketTracking.ageing_days != null;
+                    const ageingText = hasClosedAgeing
+                      ? `Closed in ${ticketTracking.days_to_close} days`
+                      : hasOpenAgeing
+                        ? `Open ${ticketTracking.ageing_days} days`
+                        : null;
+                    if (!ageingText) return <span className="eta-badge eta-missing">Ageing: —</span>;
+                    return (
+                      <span
+                        className={`ageing-badge ${hasClosedAgeing ? 'ageing-closed' : 'ageing-open'}`}
+                        title={hasClosedAgeing ? 'Ageing: created → closed date' : 'Ageing: created → today'}
+                      >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="ageing-icon">
+                          <circle cx="12" cy="12" r="10"/>
+                          <path d="M12 6v6l4 2"/>
+                        </svg>
+                        {ageingText}
+                      </span>
+                    );
+                  })()}
 
                   {/* ETA Display Logic */}
                   {!hasEta ? (
@@ -3677,6 +3820,47 @@ function Dashboard() {
               </div>
             </div>
             )}
+          </div>
+        )}
+
+        {/* Ticket Detail Section - Ageing & Priority History */}
+        {ticketId && selectedTicketDetail && (
+          <div className="ticket-detail-section">
+            <div className="detail-section-header">
+              <h2 className="detail-section-title">Ticket Details</h2>
+            </div>
+            
+            <div className="ticket-detail-meta">
+              <div className="ticket-ageing-block">
+                <h4 className="meta-label">AGEING</h4>
+                <div className="meta-row">
+                  <span>Created: {selectedTicketDetail.created_on ? formatDisplayDateTime(selectedTicketDetail.created_on) : '—'}</span>
+                  <span>Closed: {selectedTicketDetail.closed_on ? formatDisplayDateTime(selectedTicketDetail.closed_on) : '—'}</span>
+                  <span className={`ageing-summary ageing-${selectedTicketDetail.days_to_close != null ? 'closed' : 'open'}`} title={selectedTicketDetail.days_to_close != null ? 'Ageing: created → closed date' : 'Ageing: created → today'}>
+                    {selectedTicketDetail.days_to_close != null
+                      ? `Closed ageing: ${selectedTicketDetail.days_to_close} days`
+                      : selectedTicketDetail.ageing_days != null
+                        ? `Open ageing: ${selectedTicketDetail.ageing_days} days`
+                        : '—'}
+                  </span>
+                </div>
+              </div>
+              
+              {selectedTicketDetail.priority_history && selectedTicketDetail.priority_history.length > 0 && (
+                <div className="ticket-priority-history-block">
+                  <h4 className="meta-label">PRIORITY CHANGES ({selectedTicketDetail.priority_history.length})</h4>
+                  <div className="priority-history-items">
+                    {selectedTicketDetail.priority_history.map((history, idx) => (
+                      <div key={idx} className="priority-history-item">
+                        <span className="priority-from">—</span>
+                        <span className="priority-to">{history.priority}</span>
+                        <span className="priority-date">({formatDisplayDateTime(history.changed_on)})</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
         )}
 

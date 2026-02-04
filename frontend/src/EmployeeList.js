@@ -1,13 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link, useLocation } from 'react-router-dom';
 import { useTableSort, SortableHeader } from './useTableSort';
-
-const API_BASE = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
+import { apiFetch } from './api';
+import { useAuth } from './AuthContext';
 
 function EmployeeList() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const { user } = useAuth();
   const [employees, setEmployees] = useState([]);
   const [teamOverview, setTeamOverview] = useState(null);
+  const [filterOptions, setFilterOptions] = useState({ teams: [], categories: [], leads: [] });
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({
     team: '',
@@ -50,16 +53,20 @@ function EmployeeList() {
         params.append('employment_status', 'Ongoing Employee');
       }
 
-      const [empRes, overviewRes] = await Promise.all([
-        fetch(`${API_BASE}/employees?${params}`),
-        fetch(`${API_BASE}/employees/team-overview`)
+      const employmentForOptions = showArchived ? 'Resigned' : 'Ongoing Employee';
+      const [empRes, overviewRes, optionsRes] = await Promise.all([
+        apiFetch(`/employees?${params}`),
+        apiFetch(`/employees/team-overview`),
+        apiFetch(`/employees/filter-options?employment_status=${encodeURIComponent(employmentForOptions)}`)
       ]);
 
       const empData = await empRes.json();
       const overviewData = await overviewRes.json();
+      const optionsData = optionsRes.ok ? await optionsRes.json() : { teams: [], categories: [], leads: [] };
 
       setEmployees(empData);
       setTeamOverview(overviewData);
+      setFilterOptions(optionsData);
     } catch (error) {
       console.error('Error loading data:', error);
     } finally {
@@ -70,7 +77,7 @@ function EmployeeList() {
   const handleAddEmployee = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch(`${API_BASE}/employees`, {
+      const res = await apiFetch(`/employees`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newEmployee)
@@ -101,18 +108,19 @@ function EmployeeList() {
 
   const handleExportAll = async () => {
     try {
-      // Build query params for filters
+      // Build query params for filters (same as list view)
       const params = new URLSearchParams();
       if (filters.team) params.append('team', filters.team);
       if (filters.category) params.append('category', filters.category);
+      if (filters.lead) params.append('lead', filters.lead);
+      if (filters.search) params.append('search', filters.search);
       if (!showArchived) {
         params.append('employment_status', 'Ongoing Employee');
       } else {
         params.append('employment_status', 'Resigned');
       }
       
-      const url = `${API_BASE}/employees/export-all?${params}`;
-      const response = await fetch(url);
+      const response = await apiFetch(`/employees/export-all?${params}`);
       
       if (!response.ok) {
         throw new Error('Failed to export employees');
@@ -149,7 +157,7 @@ function EmployeeList() {
     }
     
     try {
-      const response = await fetch(`${API_BASE}/employees/import-mapping`, {
+      const response = await apiFetch(`/employees/import-mapping`, {
         method: 'POST'
       });
       
@@ -186,8 +194,10 @@ function EmployeeList() {
     return '🔴';
   };
 
-  // Get unique leads for filter dropdown
-  const uniqueLeads = [...new Set(employees.map(e => e.lead).filter(Boolean))];
+  // Filter dropdown options from API (so all teams/leads are listed regardless of current filter)
+  const uniqueTeams = filterOptions.teams || [];
+  const uniqueCategories = filterOptions.categories || [];
+  const uniqueLeads = filterOptions.leads || [];
 
   // Table sorting
   const { sortedData: sortedEmployees, sortConfig, handleSort } = useTableSort(employees, {
@@ -196,17 +206,65 @@ function EmployeeList() {
   });
 
   return (
-    <div className="employee-dashboard">
-      {/* Header */}
-      <div className="emp-header">
-        <img 
-          src="/techversant-logo.png" 
-          alt="Techversant Infotech" 
-          className="company-logo"
-          style={{ height: '36px', marginRight: '16px' }}
-        />
-        <h1>RESOURCE PERFORMANCE DASHBOARD</h1>
-        <div className="emp-header-actions">
+    <div className="dashboard employee-list-dashboard">
+      {/* Sidebar */}
+      <aside className="sidebar">
+        <div className="logo">
+          <div className="logo-icon">QA</div>
+          <span className="logo-text">Bug Tracker</span>
+        </div>
+        <nav className="nav-menu">
+          <Link to="/" className={`nav-item ${location.pathname === '/' || location.pathname === '/ticket' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+            Ticket Dashboard
+          </Link>
+          <Link to="/all-bugs" className={`nav-item ${location.pathname === '/all-bugs' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4l2 2"/></svg>
+            All Bugs Dashboard
+          </Link>
+          <Link to="/tickets" className={`nav-item ${location.pathname === '/tickets' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18"/><path d="M9 21V9"/></svg>
+            Tickets Overview
+          </Link>
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+            <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+              Employees
+            </Link>
+          )}
+          <Link to="/calendar" className={`nav-item ${location.pathname === '/calendar' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+            Calendar
+          </Link>
+          {user?.employee_id && !user?.role?.includes('MANAGER') && (
+            <Link to="/my-tasks" className={`nav-item ${location.pathname === '/my-tasks' ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+              My Tasks
+            </Link>
+          )}
+          {(user?.role === 'ADMIN' || user?.role?.includes('LEAD')) && (
+            <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+              Task Planning
+            </Link>
+          )}
+          <Link to="/reports" className={`nav-item ${location.pathname === '/reports' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            Reports
+          </Link>
+        </nav>
+      </aside>
+
+      {/* Main Content */}
+      <main className="main-content">
+        <div className="employee-dashboard">
+          {/* Header */}
+          <div className="emp-header">
+            <div className="emp-header-left">
+              <img src="/techversant-logo.png" alt="Techversant Infotech" className="company-logo" style={{ height: '36px', marginRight: '16px' }} />
+              <h1>RESOURCE PERFORMANCE DASHBOARD</h1>
+            </div>
+            <div className="emp-header-actions">
           <button 
             className={`btn-secondary ${showArchived ? 'active' : ''}`}
             onClick={() => setShowArchived(!showArchived)}
@@ -230,9 +288,11 @@ function EmployeeList() {
           >
             📤 Import Mapping Data
           </button>
-          <button className="btn-primary" onClick={() => setShowAddModal(true)}>
-            + Add Employee
-          </button>
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER')) && (
+            <button className="btn-primary" onClick={() => setShowAddModal(true)}>
+              + Add Employee
+            </button>
+          )}
           <button className="btn-secondary" onClick={() => navigate('/')}>
             ← Back to Dashboard
           </button>
@@ -277,8 +337,9 @@ function EmployeeList() {
             onChange={(e) => setFilters({...filters, team: e.target.value})}
           >
             <option value="">All Teams</option>
-            <option value="DEVELOPMENT">Development</option>
-            <option value="QA">QA</option>
+            {uniqueTeams.map(t => (
+              <option key={t} value={t}>{t}</option>
+            ))}
           </select>
         </div>
         <div className="filter-group">
@@ -288,8 +349,14 @@ function EmployeeList() {
             onChange={(e) => setFilters({...filters, category: e.target.value})}
           >
             <option value="">All Categories</option>
-            <option value="BILLED">Billed</option>
-            <option value="UN-BILLED">Un-billed</option>
+            {uniqueCategories.length > 0 ? uniqueCategories.map(c => (
+              <option key={c} value={c}>{c}</option>
+            )) : (
+              <>
+                <option value="BILLED">Billed</option>
+                <option value="UN-BILLED">Un-billed</option>
+              </>
+            )}
           </select>
         </div>
         <div className="filter-group">
@@ -379,6 +446,14 @@ function EmployeeList() {
                     >
                       View Profile
                     </button>
+                    <Link
+                      to={`/planning?employee_id=${emp.employee_id}`}
+                      className="btn-view"
+                      onClick={(e) => e.stopPropagation()}
+                      title="Plan development tasks"
+                    >
+                      Plan
+                    </Link>
                   </td>
                 </tr>
               ))}
@@ -516,6 +591,8 @@ function EmployeeList() {
           </div>
         </div>
       )}
+        </div>
+      </main>
     </div>
   );
 }

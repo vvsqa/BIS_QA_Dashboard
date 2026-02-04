@@ -6,6 +6,7 @@ Uses APScheduler to run sync jobs in the background.
 """
 
 import logging
+import threading
 from datetime import datetime
 from typing import Optional
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -81,8 +82,8 @@ class SheetsSyncScheduler:
         self.realtime_mode = realtime
         logger.info(f"Google Sheets auto-sync started. Interval: {interval_display}. Teams: {teams_to_sync}")
         
-        # Run initial sync
-        self._sync_job(teams_to_sync)
+        # Run initial sync in background so app startup is not blocked
+        threading.Thread(target=self._sync_job, args=(teams_to_sync,), daemon=True).start()
     
     def stop(self):
         """Stop the scheduler."""

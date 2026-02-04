@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { formatAPIDate, formatDisplayDate, formatDateRange, formatTime } from './dateUtils';
 import { TicketExternalLink } from './ticketUtils';
 import './CalendarModule.css';
 
-const API_BASE = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
+import { apiFetch } from './api';
+import { useAuth } from './AuthContext';
 
 // Helper function to format date as YYYY-MM-DD (for API calls)
 const formatDate = formatAPIDate;
@@ -35,10 +36,24 @@ const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
 
 function CalendarModule() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   
-  // State
+  // Determine if user can view all teams (Admin/Manager)
+  const canViewAllTeams = user?.permissions?.can_view_all_teams_calendar || 
+                          user?.role === 'ADMIN' || 
+                          user?.role?.includes('MANAGER');
+  
+  // Get user's team for filtering (DEV team members see DEV, QA team members see QA)
+  const userTeam = user?.team || null;
+  
+  // State - default team based on user's team (unless they can view all)
   const [view, setView] = useState('weekly'); // 'weekly' or 'monthly'
-  const [team, setTeam] = useState('ALL');
+  const [team, setTeam] = useState(() => {
+    if (canViewAllTeams) return 'ALL';
+    if (userTeam === 'DEVELOPMENT') return 'DEVELOPMENT';
+    if (userTeam === 'QA') return 'QA';
+    return 'ALL'; // Fallback
+  });
   const [category, setCategory] = useState('ALL'); // BILLED, UN-BILLED, or ALL
   const [currentDate, setCurrentDate] = useState(new Date());
   const [calendarData, setCalendarData] = useState(null);
@@ -48,6 +63,30 @@ function CalendarModule() {
   const [syncStatus, setSyncStatus] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
+  const [filterOptions, setFilterOptions] = useState({ teams: [], categories: [] });
+  
+  // Update team filter when user data loads
+  useEffect(() => {
+    if (!canViewAllTeams && userTeam) {
+      setTeam(userTeam);
+    }
+  }, [canViewAllTeams, userTeam]);
+
+  // Fetch filter options for team/category dropdowns (ongoing employees only)
+  useEffect(() => {
+    const loadFilterOptions = async () => {
+      try {
+        const res = await apiFetch(`/employees/filter-options?employment_status=${encodeURIComponent('Ongoing Employee')}`);
+        if (res.ok) {
+          const data = await res.json();
+          setFilterOptions({ teams: data.teams || [], categories: data.categories || [] });
+        }
+      } catch (err) {
+        console.error('Failed to load calendar filter options:', err);
+      }
+    };
+    loadFilterOptions();
+  }, []);
 
   // Calculate week boundaries
   const weekStart = useMemo(() => getWeekStart(currentDate), [currentDate]);
@@ -70,16 +109,16 @@ function CalendarModule() {
     try {
       let url;
       if (view === 'weekly') {
-        url = `${API_BASE}/calendar/weekly?team=${team}&category=${category}&date_str=${formatDate(currentDate)}`;
+        url = `/calendar/weekly?team=${team}&category=${category}&date_str=${formatDate(currentDate)}`;
       } else {
         const monthStr = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
-        url = `${API_BASE}/calendar/monthly?team=${team}&category=${category}&month=${monthStr}`;
+        url = `/calendar/monthly?team=${team}&category=${category}&month=${monthStr}`;
       }
       
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
       
-      const response = await fetch(url, { signal: controller.signal });
+      const response = await apiFetch(url, { signal: controller.signal });
       clearTimeout(timeoutId);
       
       if (!response.ok) {
@@ -89,7 +128,10 @@ function CalendarModule() {
       const data = await response.json();
       setCalendarData(data);
     } catch (err) {
-      setError(err.message);
+      const isNetworkError = err.name === 'TypeError' && (err.message === 'Failed to fetch' || err.message.includes('fetch'));
+      setError(isNetworkError
+        ? 'Cannot connect to the backend. Please ensure the server is running (e.g. uvicorn on port 8000).'
+        : (err.message || 'Failed to load calendar data'));
     } finally {
       setLoading(false);
     }
@@ -98,7 +140,7 @@ function CalendarModule() {
   // Fetch sync status
   const fetchSyncStatus = async () => {
     try {
-      const response = await fetch(`${API_BASE}/sync/google-sheets/status`);
+      const response = await apiFetch(`/sync/google-sheets/status`);
       if (response.ok) {
         const data = await response.json();
         setSyncStatus(data);
@@ -112,7 +154,7 @@ function CalendarModule() {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const response = await fetch(`${API_BASE}/sync/google-sheets?team=${team !== 'ALL' ? team : ''}`, {
+      const response = await apiFetch(`/sync/google-sheets?team=${team !== 'ALL' ? team : ''}`, {
         method: 'POST'
       });
       if (!response.ok) {
@@ -131,8 +173,7 @@ function CalendarModule() {
   // Start auto-sync (real-time mode)
   const handleStartAutoSync = async (realtime = true) => {
     try {
-      const url = `${API_BASE}/sync/google-sheets/start?realtime=${realtime}`;
-      const response = await fetch(url, {
+      const response = await apiFetch(`/sync/google-sheets/start?realtime=${realtime}`, {
         method: 'POST'
       });
       if (!response.ok) {
@@ -150,7 +191,7 @@ function CalendarModule() {
   // Stop auto-sync
   const handleStopAutoSync = async () => {
     try {
-      const response = await fetch(`${API_BASE}/sync/google-sheets/stop`, {
+      const response = await apiFetch(`/sync/google-sheets/stop`, {
         method: 'POST'
       });
       if (!response.ok) {
@@ -206,7 +247,7 @@ function CalendarModule() {
     // Auto-refresh sync status every 10 seconds
     const statusInterval = setInterval(async () => {
       try {
-        const response = await fetch(`${API_BASE}/sync/google-sheets/status`);
+        const response = await apiFetch(`/sync/google-sheets/status`);
         if (response.ok) {
           const status = await response.json();
           
@@ -219,7 +260,7 @@ function CalendarModule() {
               // Refresh calendar data
               const viewParam = view === 'weekly' ? `weekly?team=${team}&date_str=${formatDate(currentDate)}` 
                 : `monthly?team=${team}&month=${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
-              fetch(`${API_BASE}/calendar/${viewParam}`)
+              apiFetch(`/calendar/${viewParam}`)
                 .then(r => r.json())
                 .then(data => setCalendarData(data))
                 .catch(err => console.error('Failed to refresh calendar:', err));
@@ -409,23 +450,39 @@ function CalendarModule() {
                                 key={idx} 
                                 className={`entry-ticket ${isTicket ? 'clickable-ticket' : ''}`}
                                 title={entry.task_description || entry.ticket_id}
-                                onClick={(e) => {
-                                  if (isTicket) {
-                                    e.stopPropagation();
-                                    navigate(`/tickets?ticket=${entry.ticket_id}`);
-                                  }
-                                }}
                               >
-                                <span className={`ticket-id ${isTicket ? 'ticket-link' : ''}`}>
-                                  {isTicket 
-                                    ? `#${entry.ticket_id}`
-                                    : (entry.task_description 
-                                        ? (entry.task_description.length > 12 
-                                            ? entry.task_description.slice(0, 12) + '...' 
-                                            : entry.task_description)
-                                        : entry.ticket_id || 'Task')}
-                                </span>
-                                {isTicket && <TicketExternalLink ticketId={entry.ticket_id} />}
+                                {isTicket ? (
+                                  <div className="ticket-actions">
+                                    <Link 
+                                      to={`/tickets?ticket=${entry.ticket_id}`} 
+                                      className="ticket-id ticket-link"
+                                      onClick={(e) => e.stopPropagation()}
+                                      title="View ticket in dashboard"
+                                    >
+                                      #{entry.ticket_id}
+                                    </Link>
+                                    <TicketExternalLink ticketId={entry.ticket_id} />
+                                    <Link 
+                                      to={`/tickets?ticket=${entry.ticket_id}&view=timesheet`} 
+                                      className="timesheet-link"
+                                      title="View time entries for this ticket"
+                                      onClick={(e) => e.stopPropagation()}
+                                    >
+                                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                        <path d="M3 12a9 9 0 010-18 9 9 0 010 18z"/>
+                                        <path d="M12 6v6l4 2"/>
+                                      </svg>
+                                    </Link>
+                                  </div>
+                                ) : (
+                                  <span className="ticket-id">
+                                    {entry.task_description 
+                                      ? (entry.task_description.length > 12 
+                                          ? entry.task_description.slice(0, 12) + '...' 
+                                          : entry.task_description)
+                                      : entry.ticket_id || 'Task'}
+                                  </span>
+                                )}
                                 <span className="ticket-hours">{parseFloat(entry.hours || 0).toFixed(1)}h</span>
                               </div>
                             );
@@ -908,17 +965,15 @@ function CalendarModule() {
             <span className="nav-icon">🐛</span>
             <span>All Bugs</span>
           </a>
-          <a href="/employees" className="nav-item">
-            <span className="nav-icon">👥</span>
-            <span>Employees</span>
-          </a>
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+            <a href="/employees" className="nav-item">
+              <span className="nav-icon">👥</span>
+              <span>Employees</span>
+            </a>
+          )}
           <a href="/calendar" className="nav-item active">
             <span className="nav-icon">📅</span>
             <span>Calendar</span>
-          </a>
-          <a href="/planning" className="nav-item">
-            <span className="nav-icon">📋</span>
-            <span>Task Planning</span>
           </a>
           <a href="/reports" className="nav-item">
             <span className="nav-icon">📈</span>
@@ -1037,26 +1092,37 @@ function CalendarModule() {
               </button>
             </div>
 
-            {/* Team Filter */}
+            {/* Team Filter - options from API (ongoing employees) */}
+            {/* Admin/Manager can see all teams; Others see only their team */}
             <select 
               className="team-select"
               value={team}
               onChange={(e) => setTeam(e.target.value)}
+              disabled={!canViewAllTeams}
+              title={!canViewAllTeams ? `You can only view ${userTeam || 'your'} team calendar` : 'Filter by team'}
             >
-              <option value="ALL">All Teams</option>
-              <option value="QA">QA Team</option>
-              <option value="DEV">Dev Team</option>
+              {canViewAllTeams ? (
+                <>
+                  <option value="ALL">All Teams</option>
+                  {(filterOptions.teams || []).map((t) => (
+                    <option key={t} value={t}>{t}</option>
+                  ))}
+                </>
+              ) : (
+                <option value={userTeam || 'ALL'}>{userTeam || 'My Team'}</option>
+              )}
             </select>
 
-            {/* Category Filter (Billed/Un-Billed) */}
+            {/* Category Filter - options from API (Billed/Un-Billed etc.) */}
             <select 
               className="category-select"
               value={category}
               onChange={(e) => setCategory(e.target.value)}
             >
               <option value="ALL">All Resources</option>
-              <option value="BILLED">Billed</option>
-              <option value="UN-BILLED">Un-Billed</option>
+              {(filterOptions.categories || []).map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
             </select>
           </div>
 

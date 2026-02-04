@@ -18,7 +18,7 @@ import os
 import sys
 import logging
 from datetime import datetime, date
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
 # Configure logging
@@ -286,6 +286,137 @@ class GoogleSheetsSync:
                 return parts[-1].strip().rstrip('/')
         
         return ''
+
+    def _list_sheet_tabs(self, service, sheet_id: str) -> List[str]:
+        """Return all sheet/tab titles for a spreadsheet."""
+        try:
+            metadata = service.spreadsheets().get(spreadsheetId=sheet_id).execute()
+            sheets = metadata.get('sheets', [])
+            titles = []
+            for sheet in sheets:
+                title = sheet.get('properties', {}).get('title')
+                if title:
+                    titles.append(title)
+            return titles
+        except Exception as e:
+            logger.warning(f"Could not list sheet tabs for {sheet_id}: {e}")
+            return []
+
+    def _detect_header_row(self, values: List[List[Any]], team: str) -> Optional[int]:
+        """Detect header row by looking for required column names."""
+        if not values:
+            return None
+        employee_col_name = 'Tester' if team.upper() == 'QA' else 'Developer'
+        max_scan = min(len(values), 20)
+        for idx in range(max_scan):
+            row = values[idx]
+            if not row:
+                continue
+            date_idx = self._get_column_index(row, 'Date')
+            employee_idx = self._get_column_index(row, employee_col_name)
+            if date_idx >= 0 and employee_idx >= 0:
+                return idx
+        return None
+
+    def _parse_sheet_values(
+        self,
+        values: List[List[Any]],
+        header_row_idx: int,
+        team: str,
+        cutoff_date: date
+    ) -> Tuple[List[Dict], Optional[date]]:
+        """Parse sheet values into row_data list and return max date found."""
+        if not values or header_row_idx is None or header_row_idx >= len(values):
+            return [], None
+
+        headers = values[header_row_idx]
+        employee_col_name = 'Tester' if team.upper() == 'QA' else 'Developer'
+
+        col_map = {
+            'date': self._get_column_index(headers, 'Date'),
+            'ticket_id': self._get_column_index(headers, 'Ticket'),
+            'task_description': self._get_column_index(headers, 'Task'),
+            'status': self._get_column_index(headers, 'Status'),
+            'productive_hours': self._get_column_index(headers, 'Productive'),
+            'time_spent': self._get_column_index(headers, 'Time Spent'),
+            'employee_name': self._get_column_index(headers, employee_col_name),
+            'comments': self._get_column_index(headers, 'Comments'),
+        }
+
+        if col_map['date'] < 0 or col_map['employee_name'] < 0:
+            return [], None
+
+        data = []
+        max_date = None
+
+        for row_idx, row in enumerate(values[header_row_idx + 1:], start=header_row_idx + 2):
+            if not row:
+                continue
+
+            def get_val(col_key):
+                idx = col_map.get(col_key, -1)
+                if idx >= 0 and idx < len(row):
+                    return row[idx]
+                return None
+
+            date_val = get_val('date')
+            employee_name = get_val('employee_name')
+
+            if not date_val or not employee_name:
+                continue
+
+            parsed_row_date = self._parse_date(date_val)
+            if not parsed_row_date:
+                continue
+
+            if parsed_row_date < cutoff_date:
+                continue
+
+            if max_date is None or parsed_row_date > max_date:
+                max_date = parsed_row_date
+
+            time_spent = get_val('time_spent')
+            productive_hours = get_val('productive_hours')
+
+            task = get_val('task_description') or ''
+
+            task_lower = task.lower().strip()
+            leave_type = None
+            if any(lt in task_lower for lt in ['leave', 'half day', 'wfh', 'work from home', 'holiday', 'sick']):
+                if 'half day' in task_lower:
+                    leave_type = 'Half Day Leave'
+                elif 'sick' in task_lower:
+                    leave_type = 'Sick Leave'
+                elif 'wfh' in task_lower or 'work from home' in task_lower:
+                    leave_type = 'WFH'
+                else:
+                    leave_type = 'Leave'
+
+            ticket_raw = get_val('ticket_id') or ''
+            ticket_id = self._extract_ticket_id(ticket_raw)
+
+            if not ticket_id and not leave_type:
+                if task:
+                    ticket_id = task
+                else:
+                    ticket_id = 'UNASSIGNED'
+
+            row_data = {
+                '_row_number': row_idx,
+                'date': date_val,
+                'employee_name': str(employee_name).strip(),
+                'ticket_id': ticket_id or 'LEAVE' if leave_type else ticket_id,
+                'hours_logged': time_spent if time_spent else 0,
+                'productive_hours': productive_hours if productive_hours else None,
+                'task_description': task,
+                'leave_type': leave_type,
+                'project_name': get_val('status') or '',
+                'comments': get_val('comments') or '',
+            }
+
+            data.append(row_data)
+
+        return data, max_date
     
     def fetch_sheet_data(self, team: str, months_back: int = 6) -> List[Dict]:
         """
@@ -306,129 +437,56 @@ class GoogleSheetsSync:
         
         service = self._get_service()
         sheet_id = get_sheet_id(team)
-        sheet_name = get_sheet_name(team)
+        preferred_sheet_name = get_sheet_name(team)
         
         if not sheet_id:
             raise ValueError(f"Sheet ID not configured for team: {team}")
         
         try:
-            # Read the entire sheet
-            range_name = f"'{sheet_name}'"
-            result = service.spreadsheets().values().get(
-                spreadsheetId=sheet_id,
-                range=range_name
-            ).execute()
-            
-            values = result.get('values', [])
-            
-            if not values or len(values) < 2:
-                logger.warning(f"No data found in {team} sheet")
-                return []
-            
-            # Headers are in row 2 (index 1) for this sheet structure
-            header_row_idx = GOOGLE_SHEETS_CONFIG.get('header_row', 2) - 1
-            if header_row_idx >= len(values):
-                header_row_idx = 0
-            
-            headers = values[header_row_idx]
-            logger.info(f"Headers found: {headers}")
-            
-            # Determine employee column based on team
-            employee_col_name = 'Tester' if team.upper() == 'QA' else 'Developer'
-            
-            # Map column indices
-            col_map = {
-                'date': self._get_column_index(headers, 'Date'),
-                'ticket_id': self._get_column_index(headers, 'Ticket'),
-                'task_description': self._get_column_index(headers, 'Task'),
-                'status': self._get_column_index(headers, 'Status'),
-                'productive_hours': self._get_column_index(headers, 'Productive'),
-                'time_spent': self._get_column_index(headers, 'Time Spent'),
-                'employee_name': self._get_column_index(headers, employee_col_name),
-                'comments': self._get_column_index(headers, 'Comments'),
-            }
-            
-            logger.info(f"Column mapping for {team}: {col_map}")
-            
-            # Parse data rows (start after header row)
-            data = []
-            for row_idx, row in enumerate(values[header_row_idx + 1:], start=header_row_idx + 2):
-                if not row:  # Skip empty rows
+            def fetch_values(tab_name: str) -> List[List[Any]]:
+                range_name = f"'{tab_name}'"
+                result = service.spreadsheets().values().get(
+                    spreadsheetId=sheet_id,
+                    range=range_name
+                ).execute()
+                return result.get('values', [])
+
+            candidate_tabs = [preferred_sheet_name]
+            for tab in self._list_sheet_tabs(service, sheet_id):
+                if tab not in candidate_tabs:
+                    candidate_tabs.append(tab)
+
+            best_data = []
+            best_max_date = None
+            best_tab = None
+
+            for tab_name in candidate_tabs:
+                values = fetch_values(tab_name)
+                if not values or len(values) < 2:
                     continue
-                
-                # Extract values
-                def get_val(col_key):
-                    idx = col_map.get(col_key, -1)
-                    if idx >= 0 and idx < len(row):
-                        return row[idx]
-                    return None
-                
-                date_val = get_val('date')
-                employee_name = get_val('employee_name')
-                
-                # Skip rows without date or employee name
-                if not date_val or not employee_name:
+
+                header_row_cfg = GOOGLE_SHEETS_CONFIG.get('header_row', 2)
+                header_row_idx = header_row_cfg - 1 if header_row_cfg > 0 else 0
+                detected_header = self._detect_header_row(values, team)
+                if detected_header is not None:
+                    header_row_idx = detected_header
+
+                data, max_date = self._parse_sheet_values(values, header_row_idx, team, cutoff_date)
+                if not data:
                     continue
-                
-                # Parse the date to check if it's within our cutoff
-                parsed_row_date = self._parse_date(date_val)
-                if not parsed_row_date:
-                    continue  # Skip rows with unparseable dates
-                
-                # Skip rows older than cutoff date (6 months)
-                if parsed_row_date < cutoff_date:
-                    continue
-                
-                # Get hours - Store both Time Spent and Productive Hours separately
-                time_spent = get_val('time_spent')
-                productive_hours = get_val('productive_hours')
-                # Use Time Spent if available (employees), otherwise Productive Hours (leads/managers)
-                hours = time_spent if time_spent else (productive_hours if productive_hours else 0)
-                
-                # Get task description (Column C)
-                task = get_val('task_description') or ''
-                
-                # Determine if this is a leave entry
-                task_lower = task.lower().strip()
-                leave_type = None
-                if any(lt in task_lower for lt in ['leave', 'half day', 'wfh', 'work from home', 'holiday', 'sick']):
-                    if 'half day' in task_lower:
-                        leave_type = 'Half Day Leave'
-                    elif 'sick' in task_lower:
-                        leave_type = 'Sick Leave'
-                    elif 'wfh' in task_lower or 'work from home' in task_lower:
-                        leave_type = 'WFH'
-                    else:
-                        leave_type = 'Leave'
-                
-                # Extract ticket ID from URL or use task for generic activities
-                ticket_raw = get_val('ticket_id') or ''
-                ticket_id = self._extract_ticket_id(ticket_raw)
-                
-                # If no ticket ID from URL and not a leave, it's a generic activity - use task description
-                if not ticket_id and not leave_type:
-                    if task:
-                        ticket_id = task  # Generic activity - use task as identifier
-                    else:
-                        ticket_id = 'UNASSIGNED'
-                
-                row_data = {
-                    '_row_number': row_idx,
-                    'date': date_val,
-                    'employee_name': str(employee_name).strip(),
-                    'ticket_id': ticket_id or 'LEAVE' if leave_type else ticket_id,
-                    'hours_logged': time_spent if time_spent else 0,  # Time Spent from employees
-                    'productive_hours': productive_hours if productive_hours else None,  # Productive Hours from leads
-                    'task_description': task,
-                    'leave_type': leave_type,
-                    'project_name': get_val('status') or '',
-                    'comments': get_val('comments') or '',
-                }
-                
-                data.append(row_data)
-            
-            logger.info(f"Fetched {len(data)} rows from {team} sheet")
-            return data
+
+                if best_max_date is None or (max_date and max_date > best_max_date):
+                    best_data = data
+                    best_max_date = max_date
+                    best_tab = tab_name
+
+            if best_tab:
+                logger.info(f"Using sheet tab '{best_tab}' for {team} (latest date: {best_max_date})")
+                logger.info(f"Fetched {len(best_data)} rows from {team} sheet")
+                return best_data
+
+            logger.warning(f"No usable data found for {team} in any sheet tab")
+            return []
             
         except HttpError as e:
             logger.error(f"Google Sheets API error: {e}")
@@ -502,6 +560,7 @@ class GoogleSheetsSync:
                     ticket_id = ticket_id_raw[:150]  # Truncate to fit database column
                     hours_logged = self._parse_hours(row_data.get('hours_logged', 0))
                     productive_hours = self._parse_hours(row_data.get('productive_hours')) if row_data.get('productive_hours') else None
+                    leave_hours = hours_logged if hours_logged else (productive_hours if productive_hours else 0)
                     task_description = str(row_data.get('task_description', '') or '').strip()
                     project_name = str(row_data.get('project_name', '') or '').strip()[:150]  # Truncate
                     # Use leave_type from fetched data (already detected during fetch)
@@ -589,7 +648,7 @@ class GoogleSheetsSync:
                                 employee_name=employee_name,
                                 date=parsed_date,
                                 leave_type=leave_type,
-                                hours=hours if hours > 0 else 8.0,
+                                hours=leave_hours if leave_hours > 0 else 8.0,
                                 team=team,
                                 source='google_sheets'
                             )

@@ -20,7 +20,7 @@ Usage:
 import os
 import sys
 import argparse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from collections import defaultdict
 
 # Fix Unicode output on Windows
@@ -44,7 +44,7 @@ from reportlab.graphics import renderPDF
 
 from sqlalchemy import func, and_, or_
 from database import SessionLocal
-from models import Bug, TicketTracking, TestResult, TestCase, TestRun, TicketStatusHistory
+from models import Bug, TicketTracking, TestResult, TestCase, TestRun, TicketStatusHistory, TicketPriorityHistory
 
 # ============================================================================
 # CONFIGURATION
@@ -53,19 +53,19 @@ from models import Bug, TicketTracking, TestResult, TestCase, TestRun, TicketSta
 REPORTS_FOLDER = os.path.join(os.path.dirname(__file__), "reports")
 LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "frontend", "public", "techversant-logo.png")
 
-# Color Palette - Professional & Modern
+# Color Palette - Professional & Modern (consistent, high contrast for text)
 COLORS = {
-    'primary': colors.HexColor('#2563eb'),      # Blue
-    'secondary': colors.HexColor('#64748b'),    # Slate
-    'success': colors.HexColor('#16a34a'),      # Green
-    'warning': colors.HexColor('#d97706'),      # Amber
-    'danger': colors.HexColor('#dc2626'),       # Red
-    'info': colors.HexColor('#0891b2'),         # Cyan
-    'purple': colors.HexColor('#7c3aed'),       # Purple
-    'dark': colors.HexColor('#1e293b'),         # Dark slate
-    'light': colors.HexColor('#f8fafc'),        # Light
-    'border': colors.HexColor('#e2e8f0'),       # Border
-    'muted': colors.HexColor('#94a3b8'),        # Muted text
+    'primary': colors.HexColor('#1e40af'),      # Deep blue
+    'secondary': colors.HexColor('#475569'),    # Slate
+    'success': colors.HexColor('#15803d'),      # Green
+    'warning': colors.HexColor('#b45309'),      # Amber
+    'danger': colors.HexColor('#b91c1c'),       # Red
+    'info': colors.HexColor('#0e7490'),         # Cyan
+    'purple': colors.HexColor('#6d28d9'),       # Purple
+    'dark': colors.HexColor('#0f172a'),         # Near black for text
+    'light': colors.HexColor('#f8fafc'),        # Off-white
+    'border': colors.HexColor('#cbd5e1'),       # Border
+    'muted': colors.HexColor('#64748b'),        # Muted text
     'bg_green': colors.HexColor('#dcfce7'),
     'bg_red': colors.HexColor('#fee2e2'),
     'bg_yellow': colors.HexColor('#fef3c7'),
@@ -73,6 +73,9 @@ COLORS = {
     'bg_purple': colors.HexColor('#f3e8ff'),
     'bg_cyan': colors.HexColor('#cffafe'),
 }
+# Usable width on A4 with 0.65" margins (8.27 - 1.3 = 6.97 inch)
+PAGE_WIDTH_INCH = 8.27
+TABLE_MAX_WIDTH = PAGE_WIDTH_INCH - 1.3
 
 # Status Categories
 # ================
@@ -160,6 +163,7 @@ def get_comprehensive_data(week_start, week_end):
             # Current week data
             'current_week': {
                 'qa_tickets': [],           # All tickets pending with QA team
+                'qc_testing_newly_added': [],  # Newly added to QC Testing from dev this period
                 'bis_testing_moved': [],    # QA Achievement: moved to BIS Testing this period
                 'closed_moved': [],         # Tickets closed this period (QA responsible)
                 'in_progress': [],          # Dev in progress (for reference)
@@ -193,6 +197,13 @@ def get_comprehensive_data(week_start, week_end):
                 'by_module': defaultdict(int),
                 'by_feature': defaultdict(int),
             },
+            # Breakdowns for newly added to QC Testing (from dev)
+            'qc_newly_added_breakdowns': {
+                'by_priority': defaultdict(int),
+                'by_status': defaultdict(int),
+            },
+            # Priority changes this period (for report section)
+            'priority_changes': [],
             
             # Next week plan
             'next_week_plan': [],
@@ -212,18 +223,24 @@ def get_comprehensive_data(week_start, week_end):
         }
         
         # ===== CURRENT: All QA Team owned tickets (pending with QA) =====
+        # Use case-insensitive status match so API variations (e.g. "QC testing") are included
+        qa_status_conditions = or_(
+            *[func.lower(TicketTracking.status) == s.lower() for s in QA_TEAM_STATUSES]
+        )
         all_qa_tickets = db.query(TicketTracking).filter(
-            TicketTracking.status.in_(QA_TEAM_STATUSES)
+            TicketTracking.status.isnot(None),
+            qa_status_conditions
         ).all()
         
         for ticket in all_qa_tickets:
             ticket_data = get_enriched_ticket_data(db, ticket)
             data['current_week']['qa_tickets'].append(ticket_data)
             
-            # Update QA pending breakdown by status
+            # Update QA pending breakdown by status (match case-insensitively)
             status = ticket.status
-            if status in data['qa_pending_breakdown']:
-                data['qa_pending_breakdown'][status] += 1
+            status_key = next((s for s in QA_TEAM_STATUSES if status and s.lower() == status.strip().lower()), status)
+            if status_key in data['qa_pending_breakdown']:
+                data['qa_pending_breakdown'][status_key] += 1
             
             # Update breakdowns
             update_breakdowns(data['breakdowns'], ticket_data)
@@ -265,6 +282,64 @@ def get_comprehensive_data(week_start, week_end):
                 data['bis_breakdowns']['by_module'][ticket_data['module']] += 1
             if ticket_data['feature'] != 'N/A':
                 data['bis_breakdowns']['by_feature'][ticket_data['feature']] += 1
+        
+        # ===== CURRENT PERIOD: Tickets newly added to QC Testing (from development team) =====
+        qc_newly_history = db.query(TicketStatusHistory).filter(
+            TicketStatusHistory.new_status.in_(QA_TEAM_STATUSES),
+            TicketStatusHistory.changed_on >= week_start,
+            TicketStatusHistory.changed_on <= week_end
+        ).all()
+        if qc_newly_history:
+            qc_newly_ids = list(set(h.ticket_id for h in qc_newly_history))
+            qc_newly_tickets = db.query(TicketTracking).filter(
+                TicketTracking.ticket_id.in_(qc_newly_ids)
+            ).all()
+            for ticket in qc_newly_tickets:
+                ticket_data = get_enriched_ticket_data(db, ticket, include_full_details=False)
+                for h in qc_newly_history:
+                    if h.ticket_id == ticket.ticket_id:
+                        ticket_data['moved_to_qc_on'] = h.changed_on
+                        ticket_data['moved_from_status'] = h.previous_status
+                        break
+                data['current_week']['qc_testing_newly_added'].append(ticket_data)
+                data['qc_newly_added_breakdowns']['by_priority'][ticket_data['priority']] += 1
+                data['qc_newly_added_breakdowns']['by_status'][ticket_data['status']] += 1
+        else:
+            # Fallback when status history is empty: show tickets currently in QC with updated_on in period
+            qa_status_conditions = or_(
+                *[func.lower(TicketTracking.status) == s.lower() for s in QA_TEAM_STATUSES]
+            )
+            qc_newly_fallback = db.query(TicketTracking).filter(
+                TicketTracking.status.isnot(None),
+                qa_status_conditions,
+                TicketTracking.updated_on.isnot(None),
+                TicketTracking.updated_on >= week_start,
+                TicketTracking.updated_on <= week_end
+            ).order_by(TicketTracking.updated_on.desc()).all()
+            for ticket in qc_newly_fallback:
+                ticket_data = get_enriched_ticket_data(db, ticket, include_full_details=False)
+                ticket_data['moved_to_qc_on'] = ticket.updated_on
+                ticket_data['moved_from_status'] = None
+                ticket_data['_fallback_by_updated'] = True
+                data['current_week']['qc_testing_newly_added'].append(ticket_data)
+                data['qc_newly_added_breakdowns']['by_priority'][ticket_data['priority']] += 1
+                data['qc_newly_added_breakdowns']['by_status'][ticket_data['status']] += 1
+        
+        # ===== CURRENT PERIOD: Priority changes (any ticket) =====
+        priority_history = db.query(TicketPriorityHistory).filter(
+            TicketPriorityHistory.changed_on >= week_start,
+            TicketPriorityHistory.changed_on <= week_end
+        ).order_by(TicketPriorityHistory.changed_on.desc()).all()
+        for ph in priority_history:
+            ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == ph.ticket_id).first()
+            title = (ticket.title or f"Ticket #{ph.ticket_id}")[:50] if ticket else f"Ticket #{ph.ticket_id}"
+            data['priority_changes'].append({
+                'ticket_id': ph.ticket_id,
+                'title': title,
+                'previous_priority': ph.previous_priority or '—',
+                'new_priority': ph.new_priority or '—',
+                'changed_on': ph.changed_on,
+            })
         
         # ===== CURRENT PERIOD: Tickets moved to Closed (QA team responsible only) =====
         # Use status history for accuracy
@@ -357,6 +432,13 @@ def get_comprehensive_data(week_start, week_end):
         # ===== AGGREGATE METRICS =====
         data['metrics']['total_qa_tickets'] = len(data['current_week']['qa_tickets'])
         
+        # QA pending at start of report week (from date): current pending - newly added + moved out this week
+        total_pending_now = len(data['current_week']['qa_tickets'])
+        newly_added_count = len(data['current_week'].get('qc_testing_newly_added', []))
+        moved_to_bis_count = len(data['current_week']['bis_testing_moved'])
+        closed_count = len(data['current_week']['closed_moved'])
+        data['at_start_qa_pending'] = total_pending_now - newly_added_count + moved_to_bis_count + closed_count
+        
         # Aggregate from all ticket data
         for ticket_list in [data['current_week']['bis_testing_moved'], 
                            data['current_week']['closed_moved'],
@@ -409,14 +491,37 @@ def get_enriched_ticket_data(db, ticket, include_full_details=False):
     tests_blocked = len([t for t in test_results if t.status_name and t.status_name.lower() == 'blocked'])
     tests_untested = len([t for t in test_results if t.status_name and t.status_name.lower() == 'untested'])
     
-    # Get ticket title from first bug
-    ticket_title = f"Ticket #{ticket_id}"
-    if bugs:
+    # Get ticket title from PM API (TicketTracking), else first bug
+    ticket_title = (getattr(ticket, 'title', None) or '').strip()
+    if not ticket_title and bugs:
         first_bug = bugs[0]
         if first_bug.subject:
             parts = first_bug.subject.split(" - ")
             ticket_title = parts[0] if parts else first_bug.subject
-    
+    if not ticket_title:
+        ticket_title = f"Ticket #{ticket_id}"
+
+    ticket_priority = (getattr(ticket, 'priority', None) or '').strip() or 'Not Set'
+
+    # Ageing: created_on -> closed_on or today
+    created_dt = getattr(ticket, 'created_on', None)
+    closed_dt = getattr(ticket, 'closed_on', None)
+    created_date = created_dt.date() if created_dt and hasattr(created_dt, 'date') else (created_dt if isinstance(created_dt, date) else None)
+    closed_date = closed_dt.date() if closed_dt and hasattr(closed_dt, 'date') else (closed_dt if isinstance(closed_dt, date) else None)
+    is_closed = (ticket.status or '').lower() in ['closed', 'moved to live', 'completed']
+    ageing_days = None
+    days_to_close = None
+    if created_date:
+        if is_closed and closed_date:
+            ageing_days = (closed_date - created_date).days
+            days_to_close = ageing_days
+        else:
+            today = date.today()
+            ageing_days = (today - created_date).days
+    priority_changes_count = db.query(func.count(TicketPriorityHistory.id)).filter(
+        TicketPriorityHistory.ticket_id == ticket_id
+    ).scalar() or 0
+
     # Get module and feature from bugs
     module = None
     feature = None
@@ -435,6 +540,7 @@ def get_enriched_ticket_data(db, ticket, include_full_details=False):
     result = {
         'ticket_id': ticket_id,
         'title': ticket_title,
+        'priority': ticket_priority,
         'status': ticket.status or 'Unknown',
         'eta': ticket.eta,
         'eta_str': ticket.eta.strftime('%Y-%m-%d') if ticket.eta else 'Not Set',
@@ -449,6 +555,11 @@ def get_enriched_ticket_data(db, ticket, include_full_details=False):
         'qa_estimate': ticket.qa_estimate_hours or 0,
         'qa_actual': ticket.actual_qa_hours or 0,
         'updated_on': ticket.updated_on,
+        'created_on': ticket.created_on.strftime('%Y-%m-%d %H:%M') if getattr(ticket, 'created_on', None) else None,
+        'closed_on': ticket.closed_on.strftime('%Y-%m-%d %H:%M') if getattr(ticket, 'closed_on', None) else None,
+        'ageing_days': ageing_days,
+        'days_to_close': days_to_close,
+        'priority_changes_count': priority_changes_count,
         
         # Bug metrics
         'bugs_total': len(bugs),
@@ -503,125 +614,137 @@ def update_breakdowns(breakdowns, ticket_data):
 # ============================================================================
 
 def create_professional_styles():
-    """Create professional, enterprise-grade styles"""
+    """Create professional, enterprise-grade styles with clear hierarchy and spacing"""
     styles = getSampleStyleSheet()
     
     # Cover page styles
     styles.add(ParagraphStyle(
         name='CoverTitle',
         parent=styles['Heading1'],
-        fontSize=36,
-        spaceAfter=10,
+        fontSize=32,
+        spaceAfter=12,
         alignment=TA_CENTER,
         textColor=COLORS['dark'],
-        fontName='Helvetica-Bold'
+        fontName='Helvetica-Bold',
+        leading=38
     ))
     
     styles.add(ParagraphStyle(
         name='CoverSubtitle',
         parent=styles['Normal'],
-        fontSize=16,
+        fontSize=15,
         alignment=TA_CENTER,
         textColor=COLORS['secondary'],
-        spaceAfter=30
+        spaceAfter=24,
+        leading=18
     ))
     
     styles.add(ParagraphStyle(
         name='CoverDate',
         parent=styles['Normal'],
-        fontSize=14,
+        fontSize=13,
         alignment=TA_CENTER,
         textColor=COLORS['primary'],
         fontName='Helvetica-Bold',
-        spaceBefore=20
+        spaceBefore=16,
+        spaceAfter=8
     ))
     
-    # Section styles
+    # Section styles - clear hierarchy, no overlap
     styles.add(ParagraphStyle(
         name='SectionHeader',
         parent=styles['Heading1'],
-        fontSize=18,
-        spaceBefore=25,
-        spaceAfter=15,
+        fontSize=16,
+        spaceBefore=20,
+        spaceAfter=12,
         textColor=COLORS['dark'],
-        borderColor=COLORS['primary'],
-        borderWidth=2,
-        borderPadding=8
+        fontName='Helvetica-Bold',
+        borderPadding=6,
+        leading=20
     ))
     
     styles.add(ParagraphStyle(
         name='SubSectionHeader',
         parent=styles['Heading2'],
-        fontSize=14,
-        spaceBefore=15,
-        spaceAfter=10,
-        textColor=COLORS['primary']
+        fontSize=12,
+        spaceBefore=12,
+        spaceAfter=6,
+        textColor=COLORS['primary'],
+        fontName='Helvetica-Bold',
+        leading=14
     ))
     
     styles.add(ParagraphStyle(
         name='CardTitle',
         parent=styles['Heading3'],
-        fontSize=11,
-        spaceBefore=5,
-        spaceAfter=3,
-        textColor=COLORS['secondary']
+        fontSize=10,
+        spaceBefore=4,
+        spaceAfter=2,
+        textColor=COLORS['secondary'],
+        leading=12
     ))
     
     # Metric styles
     styles.add(ParagraphStyle(
         name='MetricLarge',
         parent=styles['Normal'],
-        fontSize=32,
+        fontSize=28,
         alignment=TA_CENTER,
         textColor=COLORS['dark'],
-        fontName='Helvetica-Bold'
+        fontName='Helvetica-Bold',
+        leading=32
     ))
     
     styles.add(ParagraphStyle(
         name='MetricMedium',
         parent=styles['Normal'],
-        fontSize=24,
+        fontSize=22,
         alignment=TA_CENTER,
         textColor=COLORS['dark'],
-        fontName='Helvetica-Bold'
+        fontName='Helvetica-Bold',
+        leading=26
     ))
     
     styles.add(ParagraphStyle(
         name='MetricLabel',
         parent=styles['Normal'],
-        fontSize=9,
+        fontSize=8,
         alignment=TA_CENTER,
-        textColor=COLORS['dark']  # Darker color for better readability on light backgrounds
+        textColor=COLORS['dark'],
+        leading=10
     ))
     
     styles.add(ParagraphStyle(
         name='MetricSmall',
         parent=styles['Normal'],
-        fontSize=11,
+        fontSize=10,
         alignment=TA_CENTER,
-        textColor=COLORS['secondary']
+        textColor=COLORS['secondary'],
+        leading=12
     ))
     
     # Body text styles
     styles.add(ParagraphStyle(
         name='ReportBody',
         parent=styles['Normal'],
-        fontSize=10,
+        fontSize=9,
         textColor=COLORS['dark'],
-        leading=14
+        leading=12,
+        spaceAfter=4
     ))
     
     styles.add(ParagraphStyle(
         name='SmallText',
         parent=styles['Normal'],
-        fontSize=8,
-        textColor=COLORS['muted']
+        fontSize=7,
+        textColor=COLORS['muted'],
+        leading=9
     ))
     
     styles.add(ParagraphStyle(
         name='FooterText',
         parent=styles['Normal'],
-        fontSize=8,
+        fontSize=7,
         alignment=TA_CENTER,
         textColor=COLORS['muted']
     ))
@@ -630,7 +753,7 @@ def create_professional_styles():
     styles.add(ParagraphStyle(
         name='TrendUp',
         parent=styles['Normal'],
-        fontSize=10,
+        fontSize=9,
         textColor=COLORS['success'],
         fontName='Helvetica-Bold'
     ))
@@ -638,7 +761,7 @@ def create_professional_styles():
     styles.add(ParagraphStyle(
         name='TrendDown',
         parent=styles['Normal'],
-        fontSize=10,
+        fontSize=9,
         textColor=COLORS['danger'],
         fontName='Helvetica-Bold'
     ))
@@ -647,234 +770,212 @@ def create_professional_styles():
 
 
 # ============================================================================
+# TABLE STYLE HELPERS
+# ============================================================================
+
+def get_base_table_style(header_bg_color=None):
+    """Return base TableStyle list for consistent padding, alignment, borders."""
+    header_bg = header_bg_color or COLORS['primary']
+    return [
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('TOPPADDING', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
+        ('BACKGROUND', (0, 0), (-1, 0), header_bg),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+    ]
+
+
+# ============================================================================
 # CHART GENERATORS
 # ============================================================================
 
-# Chart color palette
+# Chart color palette (professional, distinct)
 CHART_COLORS = [
-    colors.HexColor('#3498db'),  # Blue
-    colors.HexColor('#2ecc71'),  # Green
-    colors.HexColor('#e74c3c'),  # Red
-    colors.HexColor('#f39c12'),  # Orange
-    colors.HexColor('#9b59b6'),  # Purple
-    colors.HexColor('#1abc9c'),  # Teal
-    colors.HexColor('#34495e'),  # Dark gray
-    colors.HexColor('#e67e22'),  # Dark orange
+    colors.HexColor('#1e40af'),  # Blue
+    colors.HexColor('#15803d'),  # Green
+    colors.HexColor('#b91c1c'),  # Red
+    colors.HexColor('#b45309'),  # Amber
+    colors.HexColor('#6d28d9'),  # Purple
+    colors.HexColor('#0e7490'),  # Cyan
+    colors.HexColor('#475569'),  # Slate
+    colors.HexColor('#64748b'),  # Muted
 ]
 
 
-def create_pie_chart(data_dict, title="", width=280, height=200):
-    """Create a pie chart from a dictionary of label: value pairs"""
+def create_pie_chart(data_dict, title="", width=200, height=200):
+    """Create a pie chart with title and legend; no overlapping."""
     if not data_dict or sum(data_dict.values()) == 0:
         return None
     
     drawing = Drawing(width, height)
     
-    pie = Pie()
-    # Center the pie chart with more space for labels
-    pie.x = width // 2 - 50
-    pie.y = 35  # More space from bottom for labels
-    pie.width = 100  # Smaller pie to fit labels
-    pie.height = 100
+    # Title at top (reserve space)
+    title_height = 18
+    legend_height = 32
+    chart_area = height - title_height - legend_height
+    pie_size = min(100, chart_area - 10)
+    pie_x = (width - pie_size) // 2
+    pie_y = legend_height + (chart_area - pie_size) // 2
     
-    # Prepare data
+    pie = Pie()
+    pie.x = pie_x
+    pie.y = pie_y
+    pie.width = pie_size
+    pie.height = pie_size
+    
     labels = list(data_dict.keys())
     values = list(data_dict.values())
-    
     pie.data = values
-    # Shorter labels to prevent overflow
-    pie.labels = [f"{l[:8]} ({v})" if len(l) > 8 else f"{l} ({v})" for l, v in zip(labels, values)]
+    pie.labels = [f"{l[:10]} ({v})" if len(l) > 10 else f"{l} ({v})" for l, v in zip(labels, values)]
     
-    # Style the pie
     pie.slices.strokeWidth = 1
     pie.slices.strokeColor = colors.white
-    
-    for i, _ in enumerate(values):
+    for i in range(len(values)):
         pie.slices[i].fillColor = CHART_COLORS[i % len(CHART_COLORS)]
-        pie.slices[i].popout = 0  # Remove popout to prevent overflow
-    
-    # Use better label positioning
-    pie.sideLabels = False  # Use simple labels to prevent overflow
+        pie.slices[i].popout = 0
+    pie.sideLabels = False
     pie.simpleLabels = True
     pie.slices.fontName = 'Helvetica'
-    pie.slices.fontSize = 7  # Smaller font
-    
-    # Add compact legend below the chart
-    legend_y = 5
-    legend_x_start = 10
-    max_label_width = 70
-    items_per_row = min(3, len(labels))  # Max 3 items per row
-    legend_spacing = (width - 20) // items_per_row if items_per_row > 0 else 80
-    
-    for i, (label, value) in enumerate(zip(labels, values)):
-        row = i // items_per_row
-        col = i % items_per_row
-        x_pos = legend_x_start + (col * legend_spacing)
-        y_pos = legend_y - (row * 15)  # Stack rows if needed
-        
-        if x_pos + max_label_width > width or y_pos < 0:
-            continue
-            
-        # Color box
-        drawing.add(Rect(x_pos, y_pos, 6, 6, 
-                        fillColor=CHART_COLORS[i % len(CHART_COLORS)], 
-                        strokeColor=None))
-        # Label text - truncate if too long
-        label_text = f"{label[:8]}: {value}" if len(label) > 8 else f"{label}: {value}"
-        drawing.add(String(x_pos + 9, y_pos, 
-                          label_text,
-                          fontName='Helvetica', fontSize=6, fillColor=COLORS['dark']))
+    pie.slices.fontSize = 7
     
     drawing.add(pie)
     
-    # Add title at top - use very dark color for readability
+    # Title at top
     if title:
-        title_text = String(width // 2, height - 15, title,
-                           textAnchor='middle',
-                           fontName='Helvetica-Bold',
-                           fontSize=10,
-                           fillColor=colors.HexColor('#0f172a'))  # Very dark for better contrast
-        drawing.add(title_text)
+        drawing.add(String(width / 2, height - 12, title, textAnchor='middle',
+                          fontName='Helvetica-Bold', fontSize=9, fillColor=COLORS['dark']))
+    
+    # Legend below pie
+    legend_y = 8
+    legend_x = 12
+    for i, (label, value) in enumerate(zip(labels, values)):
+        row, col = i // 3, i % 3
+        x_pos = legend_x + col * (width / 3)
+        y_pos = legend_y - row * 12
+        if y_pos < 0:
+            continue
+        drawing.add(Rect(x_pos, y_pos, 8, 8, fillColor=CHART_COLORS[i % len(CHART_COLORS)], strokeColor=None))
+        lbl = (label[:12] + '…') if len(label) > 12 else label
+        drawing.add(String(x_pos + 11, y_pos + 1, f"{lbl}: {value}", fontName='Helvetica', fontSize=7, fillColor=COLORS['dark']))
     
     return drawing
 
 
-def create_bar_chart(data_dict, title="", width=400, height=180, bar_color=None):
-    """Create a vertical bar chart from a dictionary of label: value pairs"""
+def create_bar_chart(data_dict, title="", width=380, height=200, bar_color=None):
+    """Create a vertical bar chart with title; no overlapping labels."""
     if not data_dict:
         return None
     
     drawing = Drawing(width, height)
+    title_h, bottom_h, left_w, right_w = 22, 50, 55, 45
+    chart_w = width - left_w - right_w
+    chart_h = height - title_h - bottom_h
     
     chart = VerticalBarChart()
-    chart.x = 60
-    chart.y = 30
-    chart.width = width - 100
-    chart.height = height - 60
+    chart.x = left_w
+    chart.y = bottom_h
+    chart.width = chart_w
+    chart.height = chart_h
     
-    # Prepare data
     labels = list(data_dict.keys())
     values = list(data_dict.values())
-    
     chart.data = [values]
-    chart.categoryAxis.categoryNames = [l[:15] for l in labels]  # Truncate long labels
+    chart.categoryAxis.categoryNames = [l[:14] + ('…' if len(l) > 14 else '') for l in labels]
     
-    # Style
     chart.bars[0].fillColor = bar_color or COLORS['primary']
     chart.bars[0].strokeColor = None
     chart.bars.strokeWidth = 0
     
     chart.valueAxis.valueMin = 0
-    chart.valueAxis.valueMax = max(values) * 1.2 if values else 10
+    chart.valueAxis.valueMax = max(values) * 1.15 if values else 10
     chart.valueAxis.valueStep = max(1, max(values) // 5) if values else 2
     chart.valueAxis.labels.fontName = 'Helvetica'
     chart.valueAxis.labels.fontSize = 8
-    chart.valueAxis.labels.fillColor = colors.HexColor('#0f172a')  # Dark text for readability
+    chart.valueAxis.labels.fillColor = COLORS['dark']
     
     chart.categoryAxis.labels.fontName = 'Helvetica'
-    chart.categoryAxis.labels.fontSize = 8
-    chart.categoryAxis.labels.fillColor = colors.HexColor('#0f172a')  # Dark text for readability
-    chart.categoryAxis.labels.angle = 30
+    chart.categoryAxis.labels.fontSize = 7
+    chart.categoryAxis.labels.fillColor = COLORS['dark']
+    chart.categoryAxis.labels.angle = 25
     chart.categoryAxis.labels.boxAnchor = 'ne'
     
     drawing.add(chart)
-    
-    # Add title - use very dark color for readability
     if title:
-        title_text = String(width // 2, height - 10, title,
-                           textAnchor='middle',
-                           fontName='Helvetica-Bold',
-                           fontSize=10,
-                           fillColor=colors.HexColor('#0f172a'))  # Very dark for better contrast
-        drawing.add(title_text)
-    
+        drawing.add(String(width / 2, height - 14, title, textAnchor='middle',
+                          fontName='Helvetica-Bold', fontSize=9, fillColor=COLORS['dark']))
     return drawing
 
 
-def create_comparison_bar_chart(prev_values, curr_values, labels, title="", width=400, height=180):
-    """Create a grouped bar chart for comparison (previous vs current)"""
+def create_comparison_bar_chart(prev_values, curr_values, labels, title="", width=400, height=200):
+    """Create a grouped bar chart for comparison; title and legend don't overlap."""
     if not labels:
         return None
     
     drawing = Drawing(width, height)
+    title_h, legend_h = 20, 28
+    chart_x, chart_y = 65, legend_h
+    chart_w = width - 115
+    chart_h = height - title_h - legend_h - 10
     
     chart = VerticalBarChart()
-    chart.x = 70
-    chart.y = 40
-    chart.width = width - 120
-    chart.height = height - 70
+    chart.x = chart_x
+    chart.y = chart_y
+    chart.width = chart_w
+    chart.height = chart_h
     
     chart.data = [prev_values, curr_values]
-    chart.categoryAxis.categoryNames = labels
+    chart.categoryAxis.categoryNames = [l[:18] + ('…' if len(l) > 18 else '') for l in labels]
     
-    # Style the bars
-    chart.bars[0].fillColor = colors.HexColor('#95a5a6')  # Gray for previous
-    chart.bars[1].fillColor = colors.HexColor('#3498db')  # Blue for current
+    chart.bars[0].fillColor = colors.HexColor('#94a3b8')
+    chart.bars[1].fillColor = COLORS['primary']
     chart.bars.strokeWidth = 0
     
     max_val = max(max(prev_values) if prev_values else 0, max(curr_values) if curr_values else 0)
     chart.valueAxis.valueMin = 0
-    chart.valueAxis.valueMax = max_val * 1.3 if max_val > 0 else 10
+    chart.valueAxis.valueMax = max_val * 1.25 if max_val > 0 else 10
     chart.valueAxis.labels.fontName = 'Helvetica'
     chart.valueAxis.labels.fontSize = 8
-    chart.valueAxis.labels.fillColor = colors.HexColor('#0f172a')  # Dark text for readability
-    
+    chart.valueAxis.labels.fillColor = COLORS['dark']
     chart.categoryAxis.labels.fontName = 'Helvetica'
-    chart.categoryAxis.labels.fontSize = 9
-    chart.categoryAxis.labels.fillColor = colors.HexColor('#0f172a')  # Dark text for readability
+    chart.categoryAxis.labels.fontSize = 8
+    chart.categoryAxis.labels.fillColor = COLORS['dark']
     
     drawing.add(chart)
-    
-    # Add title - use very dark color for readability
     if title:
-        title_text = String(width // 2, height - 8, title,
-                           textAnchor='middle',
-                           fontName='Helvetica-Bold',
-                           fontSize=10,
-                           fillColor=colors.HexColor('#0f172a'))  # Very dark for better contrast
-        drawing.add(title_text)
-    
-    # Add legend - use dark text for readability
-    legend_y = 15
-    # Previous week
-    drawing.add(Rect(width - 130, legend_y, 12, 12, fillColor=colors.HexColor('#95a5a6'), strokeColor=None))
-    drawing.add(String(width - 115, legend_y + 2, "Last Week", fontName='Helvetica', fontSize=8, fillColor=colors.HexColor('#0f172a')))
-    # Current week  
-    drawing.add(Rect(width - 60, legend_y, 12, 12, fillColor=colors.HexColor('#3498db'), strokeColor=None))
-    drawing.add(String(width - 45, legend_y + 2, "This Week", fontName='Helvetica', fontSize=8, fillColor=colors.HexColor('#0f172a')))
-    
+        drawing.add(String(width / 2, height - 12, title, textAnchor='middle',
+                          fontName='Helvetica-Bold', fontSize=9, fillColor=COLORS['dark']))
+    legend_y = 8
+    drawing.add(Rect(width - 115, legend_y, 10, 10, fillColor=colors.HexColor('#94a3b8'), strokeColor=None))
+    drawing.add(String(width - 102, legend_y + 1, "Last Week", fontName='Helvetica', fontSize=8, fillColor=COLORS['dark']))
+    drawing.add(Rect(width - 58, legend_y, 10, 10, fillColor=COLORS['primary'], strokeColor=None))
+    drawing.add(String(width - 45, legend_y + 1, "This Week", fontName='Helvetica', fontSize=8, fillColor=COLORS['dark']))
     return drawing
 
 
-def create_horizontal_progress_bar(value, max_value, label="", width=300, height=40, bar_color=None):
-    """Create a horizontal progress bar"""
+def create_horizontal_progress_bar(value, max_value, label="", width=280, height=36, bar_color=None):
+    """Create a horizontal progress bar; label and value don't overlap."""
     drawing = Drawing(width, height)
-    
-    bar_height = 20
+    bar_height = 18
     bar_y = (height - bar_height) // 2
+    left_margin, right_margin = 55, 38
     
-    # Background bar
-    drawing.add(Rect(60, bar_y, width - 80, bar_height, 
-                    fillColor=colors.HexColor('#ecf0f1'), 
-                    strokeColor=colors.HexColor('#bdc3c7'),
-                    strokeWidth=1))
-    
-    # Progress bar
+    drawing.add(Rect(left_margin, bar_y, width - left_margin - right_margin, bar_height,
+                     fillColor=colors.HexColor('#e2e8f0'), strokeColor=COLORS['border'], strokeWidth=1))
     if max_value > 0:
-        progress_width = (value / max_value) * (width - 80)
-        drawing.add(Rect(60, bar_y, progress_width, bar_height,
-                        fillColor=bar_color or COLORS['success'],
-                        strokeColor=None))
-    
-    # Label - use very dark color for readability
+        progress_width = (value / max_value) * (width - left_margin - right_margin)
+        drawing.add(Rect(left_margin, bar_y, progress_width, bar_height,
+                         fillColor=bar_color or COLORS['success'], strokeColor=None))
     if label:
-        drawing.add(String(5, bar_y + 5, label, fontName='Helvetica', fontSize=9, fillColor=colors.HexColor('#0f172a')))
-    
-    # Value - use very dark color for readability
+        drawing.add(String(5, bar_y + 4, label[:25], fontName='Helvetica', fontSize=8, fillColor=COLORS['dark']))
     percentage = round((value / max_value * 100), 1) if max_value > 0 else 0
-    drawing.add(String(width - 15, bar_y + 5, f"{percentage}%", 
-                      fontName='Helvetica-Bold', fontSize=9, fillColor=colors.HexColor('#0f172a')))
-    
+    drawing.add(String(width - 32, bar_y + 4, f"{percentage}%", fontName='Helvetica-Bold', fontSize=8, fillColor=COLORS['dark']))
     return drawing
 
 
@@ -886,41 +987,41 @@ def create_cover_page(data, styles, project_name=None):
     """Page 1: Professional Cover Page"""
     elements = []
     
-    # Add vertical spacing to center content
-    elements.append(Spacer(1, 1.5*inch))
+    # Vertical spacing for balanced cover
+    elements.append(Spacer(1, 1.2*inch))
     
     # Logo
     if os.path.exists(LOGO_PATH):
         try:
-            logo = Image(LOGO_PATH, width=3*inch, height=0.75*inch)
+            logo = Image(LOGO_PATH, width=2.8*inch, height=0.7*inch)
             logo.hAlign = 'CENTER'
             elements.append(logo)
-            elements.append(Spacer(1, 0.8*inch))
-        except:
+            elements.append(Spacer(1, 0.6*inch))
+        except Exception:
             pass
     
     # Main Title
     elements.append(Paragraph("QA Weekly Report", styles['CoverTitle']))
-    elements.append(Spacer(1, 0.3*inch))
+    elements.append(Spacer(1, 0.25*inch))
     
     # Decorative line
-    elements.append(HRFlowable(width="60%", thickness=3, color=COLORS['primary'], hAlign='CENTER'))
-    elements.append(Spacer(1, 0.5*inch))
+    elements.append(HRFlowable(width="50%", thickness=2, color=COLORS['primary'], hAlign='CENTER'))
+    elements.append(Spacer(1, 0.4*inch))
     
     # Date range
     week_start = data['week_start'].strftime('%B %d, %Y')
     week_end = data['week_end'].strftime('%B %d, %Y')
     elements.append(Paragraph(f"{week_start} — {week_end}", styles['CoverDate']))
-    elements.append(Spacer(1, 0.3*inch))
+    elements.append(Spacer(1, 0.25*inch))
     
     # Project name if provided
     if project_name:
         elements.append(Paragraph(project_name, styles['CoverSubtitle']))
     
     # Generation info at bottom
-    elements.append(Spacer(1, 2*inch))
-    elements.append(HRFlowable(width="40%", thickness=1, color=COLORS['border'], hAlign='CENTER'))
-    elements.append(Spacer(1, 0.2*inch))
+    elements.append(Spacer(1, 1.8*inch))
+    elements.append(HRFlowable(width="35%", thickness=1, color=COLORS['border'], hAlign='CENTER'))
+    elements.append(Spacer(1, 0.15*inch))
     gen_time = data['generation_time'].strftime('%Y-%m-%d %H:%M')
     elements.append(Paragraph(f"Generated: {gen_time}", styles['SmallText']))
     elements.append(Paragraph("Confidential - For Internal Use Only", styles['SmallText']))
@@ -930,39 +1031,76 @@ def create_cover_page(data, styles, project_name=None):
 
 
 def create_overview_page(data, styles):
-    """Page 2: QA Overview Dashboard"""
+    """Page 2: QA Overview – At From Date → During Week → Pending as of Today"""
     elements = []
     
-    # Section Header
-    elements.append(Paragraph("QA Team Overview", styles['SectionHeader']))
-    elements.append(Spacer(1, 0.2*inch))
-    
-    # Key Metrics Cards (Top Row)
     current = data['current_week']
     metrics = data['metrics']
     qa_pending = data.get('qa_pending_breakdown', {})
     total_pending = len(current['qa_tickets'])
+    from_date_str = data['week_start'].strftime('%Y-%m-%d')
+    today_str = data['generation_time'].strftime('%Y-%m-%d')
+    at_start = data.get('at_start_qa_pending', 0)
+    qc_newly_count = len(current.get('qc_testing_newly_added', []))
+    bis_moved_count = len(current['bis_testing_moved'])
+    qc_newly_breakdowns = data.get('qc_newly_added_breakdowns', {})
     
-    # Main KPIs: Total Pending with QA and Achievement (moved to BIS Testing)
-    kpi_data = [
-        [
-            create_metric_cell(total_pending, "Total Pending with QA", COLORS['bg_blue'], styles),
-            create_metric_cell(len(current['bis_testing_moved']), "Moved to BIS Testing", COLORS['bg_green'], styles),
-        ]
+    # Section Header
+    elements.append(Paragraph("QA Team Overview", styles['SectionHeader']))
+    elements.append(Paragraph(
+        "<i>At start of week → During the week → Pending as of report generation date</i>",
+        styles['SmallText']
+    ))
+    elements.append(Spacer(1, 0.25*inch))
+    
+    # ----- Block 1: At From Date (start of report week) -----
+    elements.append(Paragraph("1. At Start of Report Week (From Date)", styles['SubSectionHeader']))
+    elements.append(Paragraph(f"<b>Date:</b> {from_date_str}", styles['ReportBody']))
+    at_start_cell = create_metric_cell(at_start, "QA Pending with QA", COLORS['bg_blue'], styles)
+    at_start_table = Table([[at_start_cell]], colWidths=[2.5*inch])
+    at_start_table.setStyle(TableStyle([
+        ('BOX', (0, 0), (-1, -1), 2, COLORS['primary']),
+        ('BACKGROUND', (0, 0), (-1, -1), COLORS['light']),
+    ]))
+    elements.append(at_start_table)
+    elements.append(Paragraph("<i>Count of tickets with QA at the start of the report period.</i>", styles['SmallText']))
+    elements.append(Spacer(1, 0.2*inch))
+    
+    # ----- Block 2: During the week -----
+    elements.append(Paragraph("2. During the Week", styles['SubSectionHeader']))
+    during_cells = [
+        create_metric_cell(bis_moved_count, "Moved to BIS Testing", COLORS['bg_green'], styles),
+        create_metric_cell(qc_newly_count, "Newly Released to QC Testing (from Dev)", COLORS['bg_cyan'], styles),
     ]
-    
-    kpi_table = Table(kpi_data, colWidths=[3.4*inch, 3.4*inch])
-    kpi_table.setStyle(TableStyle([
+    during_table = Table([during_cells], colWidths=[2.5*inch, 2.8*inch])
+    during_table.setStyle(TableStyle([
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ('BOX', (0, 0), (-1, -1), 2, COLORS['success']),
+        ('BACKGROUND', (0, 0), (0, -1), COLORS['light']),
+        ('BACKGROUND', (1, 0), (1, -1), COLORS['light']),
     ]))
-    elements.append(kpi_table)
-    elements.append(Spacer(1, 0.3*inch))
+    elements.append(during_table)
+    if qc_newly_count and qc_newly_breakdowns.get('by_priority'):
+        elements.append(Paragraph("<b>Newly released by priority:</b> ", styles['ReportBody']))
+        pri_parts = [f"{p or '—'}: {c}" for p, c in sorted(qc_newly_breakdowns['by_priority'].items(), key=lambda x: x[1], reverse=True)[:8]]
+        elements.append(Paragraph(", ".join(pri_parts), styles['ReportBody']))
+    elements.append(Spacer(1, 0.2*inch))
+    
+    # ----- Block 3: As of Today (report generation date) -----
+    elements.append(Paragraph("3. Pending as of Today (Report Generation Date)", styles['SubSectionHeader']))
+    elements.append(Paragraph(f"<b>Date:</b> {today_str}", styles['ReportBody']))
+    pending_now_cell = create_metric_cell(total_pending, "Total Pending with QA", COLORS['bg_blue'], styles)
+    pending_now_table = Table([[pending_now_cell]], colWidths=[2.5*inch])
+    pending_now_table.setStyle(TableStyle([
+        ('BOX', (0, 0), (-1, -1), 2, COLORS['primary']),
+        ('BACKGROUND', (0, 0), (-1, -1), COLORS['light']),
+    ]))
+    elements.append(pending_now_table)
+    elements.append(Paragraph("<b>Breakdown (QC Testing / In Progress / Hold):</b>", styles['ReportBody']))
     
     # QA Team Pending Breakdown by Status - Table and Pie Chart side by side
-    elements.append(Paragraph("QA Team Pending - Status Breakdown", styles['SubSectionHeader']))
+    elements.append(Spacer(1, 0.1*inch))
     
     pending_table_data = [['Status', 'Count', 'Percentage']]
     status_chart_data = {}
@@ -976,7 +1114,7 @@ def create_overview_page(data, styles):
     # Add total row
     pending_table_data.append(['Total Pending with QA', str(total_pending), '100%'])
     
-    pending_table = Table(pending_table_data, colWidths=[2.5*inch, 1*inch, 1*inch])
+    pending_table = Table(pending_table_data, colWidths=[2.6*inch, 0.9*inch, 1*inch])
     pending_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), COLORS['primary']),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -984,31 +1122,94 @@ def create_overview_page(data, styles):
         ('FONTSIZE', (0, 0), (-1, -1), 9),
         ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
         ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, COLORS['light']]),
-        ('TEXTCOLOR', (0, 1), (-1, -2), COLORS['dark']),  # Dark text for data rows
+        ('TEXTCOLOR', (0, 1), (-1, -2), COLORS['dark']),
         ('BACKGROUND', (0, -1), (-1, -1), COLORS['bg_blue']),
-        ('TEXTCOLOR', (0, -1), (-1, -1), COLORS['dark']),  # Dark text for total row
+        ('TEXTCOLOR', (0, -1), (-1, -1), COLORS['dark']),
         ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
         ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
         ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('TOPPADDING', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
     ]))
     
-    # Create pie chart for status breakdown
-    status_pie = create_pie_chart(status_chart_data, "Status Distribution", width=240, height=200)
+    # Create pie chart for status breakdown (fits sidebar)
+    status_pie = create_pie_chart(status_chart_data, "Status Distribution", width=200, height=200)
     
-    # Combine table and chart side by side
+    # Combine table and chart side by side (fit within page width)
     if status_pie:
-        combined_table = Table([[pending_table, status_pie]], colWidths=[4.2*inch, 2.8*inch])
+        combined_table = Table([[pending_table, status_pie]], colWidths=[3.8*inch, 2.75*inch])
         combined_table.setStyle(TableStyle([
             ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+            ('LEFTPADDING', (1, 0), (1, -1), 8),
         ]))
         elements.append(combined_table)
     else:
         elements.append(pending_table)
     
+    elements.append(Spacer(1, 0.3*inch))
+    
+    # Newly Added to QC Testing (from Development) - Summary in report
+    qc_newly = current.get('qc_testing_newly_added', [])
+    qc_newly_breakdowns = data.get('qc_newly_added_breakdowns', {})
+    used_fallback = any(t.get('_fallback_by_updated') for t in qc_newly)
+    elements.append(Paragraph("Newly Added to QC Testing (from Development)", styles['SubSectionHeader']))
+    newly_text = f"""
+    <b>Count:</b> {len(qc_newly)} tickets moved from Development to QC Testing this period.<br/>
+    <i>Tickets handed over by the development team for QA testing.</i>
+    """
+    if used_fallback:
+        newly_text += "<br/><i>Note: Includes tickets in QC Testing with last update in this period (status change history not recorded for all).</i>"
+    elements.append(Paragraph(newly_text, styles['ReportBody']))
+    if qc_newly and qc_newly_breakdowns.get('by_priority'):
+        priority_rows = [['Priority', 'Count']]
+        for pri, count in sorted(qc_newly_breakdowns['by_priority'].items(), key=lambda x: x[1], reverse=True)[:10]:
+            priority_rows.append([(pri or '—')[:25], str(count)])
+        pri_table = Table(priority_rows, colWidths=[3.5*inch, 1.2*inch])
+        pri_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), COLORS['bg_blue']),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
+            ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+            ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(Spacer(1, 0.15*inch))
+        elements.append(pri_table)
+        # Ticket list (ID, Title, Priority, Moved From)
+        newly_table_data = [['Ticket', 'Title', 'Priority', 'Moved From']]
+        for t in qc_newly[:15]:
+            moved_from = (t.get('moved_from_status') or '—')[:18]
+            newly_table_data.append([
+                f"#{t['ticket_id']}",
+                (t.get('title') or '—')[:28],
+                (t.get('priority') or '—')[:14],
+                moved_from
+            ])
+        newly_tbl = Table(newly_table_data, colWidths=[0.65*inch, 2*inch, 1.1*inch, 1.2*inch])
+        newly_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), COLORS['bg_cyan']),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
+            ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+            ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(Spacer(1, 0.1*inch))
+        elements.append(newly_tbl)
+        if len(qc_newly) > 15:
+            elements.append(Paragraph(f"<i>(Showing first 15 of {len(qc_newly)} tickets)</i>", styles['SmallText']))
     elements.append(Spacer(1, 0.3*inch))
     
     # QA Achievement Section
@@ -1020,6 +1221,37 @@ def create_overview_page(data, styles):
     elements.append(Paragraph(achievement_text, styles['ReportBody']))
     
     elements.append(Spacer(1, 0.3*inch))
+    
+    # Priority Changes This Period (if any)
+    priority_changes = data.get('priority_changes', [])
+    if priority_changes:
+        elements.append(Paragraph("Priority Changes This Period", styles['SubSectionHeader']))
+        pc_data = [['Ticket', 'Title', 'Previous → New', 'Changed On']]
+        for pc in priority_changes[:20]:
+            changed_str = (pc.get('changed_on').strftime('%Y-%m-%d %H:%M') if hasattr(pc.get('changed_on'), 'strftime') else str(pc.get('changed_on') or '—'))[:16]
+            pc_data.append([
+                f"#{pc['ticket_id']}",
+                (pc.get('title') or '—')[:22],
+                f"{pc.get('previous_priority', '—')} → {pc.get('new_priority', '—')}",
+                changed_str
+            ])
+        pc_table = Table(pc_data, colWidths=[0.7*inch, 1.8*inch, 1.8*inch, 1.2*inch])
+        pc_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), COLORS['primary']),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
+            ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+            ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(pc_table)
+        if len(priority_changes) > 20:
+            elements.append(Paragraph(f"<i>(Showing first 20 of {len(priority_changes)} priority changes)</i>", styles['SmallText']))
+        elements.append(Spacer(1, 0.3*inch))
     
     # BIS Testing - Module-wise Distribution (QA Achievement breakdown)
     bis_breakdowns = data.get('bis_breakdowns', {})
@@ -1113,21 +1345,23 @@ def create_comparison_page(data, styles):
         ],
     ]
     
-    comparison_table = Table(comparison_data, colWidths=[2.2*inch, 1.3*inch, 1.3*inch, 1*inch, 1*inch])
+    comparison_table = Table(comparison_data, colWidths=[2*inch, 1.2*inch, 1.2*inch, 0.9*inch, 1.1*inch])
     comparison_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), COLORS['dark']),
+        ('BACKGROUND', (0, 0), (-1, 0), COLORS['primary']),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
         ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
         ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
-        ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),  # Dark text for data rows
+        ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
         ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
         ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
-        ('TOPPADDING', (0, 0), (-1, -1), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
-        ('LEFTPADDING', (0, 0), (-1, -1), 12),
+        ('TOPPADDING', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 10),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
     ]))
     elements.append(comparison_table)
     
@@ -1165,8 +1399,100 @@ def create_comparison_page(data, styles):
     return elements
 
 
+def create_newly_released_to_qa_page(data, styles):
+    """Dedicated page: List of tickets newly released to QA with estimates, ETA, developer, status, module, QC tester."""
+    elements = []
+    
+    qc_newly = data['current_week'].get('qc_testing_newly_added', [])
+    
+    elements.append(Paragraph("Tickets Newly Released to QA (from Development)", styles['SectionHeader']))
+    elements.append(Paragraph(
+        f"Total: {len(qc_newly)} tickets handed over to QA this period. Details below.",
+        styles['CardTitle']
+    ))
+    elements.append(Spacer(1, 0.25*inch))
+    
+    if not qc_newly:
+        elements.append(Paragraph("No tickets were newly released to QC Testing this period.", styles['ReportBody']))
+        elements.append(PageBreak())
+        return elements
+    
+    # Ageing: closed = created→closed date, open = created→today (distinct labels)
+    def _ageing_cell(t):
+        if t.get('days_to_close') is not None:
+            return f"Closed: {t['days_to_close']}d"
+        if t.get('ageing_days') is not None:
+            return f"Open: {t['ageing_days']}d"
+        return '—'
+
+    # Table: Ticket, Title, Priority, Dev Est, QA Est, ETA, Developer(s), Current Status, Module, QC Tester, Ageing
+    table_data = [[
+        'Ticket', 'Title', 'Priority', 'Dev Est', 'QA Est', 'ETA',
+        'Developer(s)', 'Current Status', 'Module', 'QC Tester', 'Ageing'
+    ]]
+    for t in qc_newly:
+        title_short = (t.get('title') or '—')[:28]
+        if len(t.get('title') or '') > 28:
+            title_short += '…'
+        dev_est = t.get('dev_estimate')
+        dev_est_str = f"{dev_est}h" if dev_est is not None else '—'
+        qa_est = t.get('qa_estimate')
+        qa_est_str = f"{qa_est}h" if qa_est is not None else '—'
+        eta_str = t.get('eta_str') or '—'
+        developers = (t.get('developers_str') or '—')[:18]
+        if len(t.get('developers_str') or '') > 18:
+            developers += '…'
+        status_short = (t.get('status') or '—')[:14]
+        module_short = (t.get('module') or '—')[:12]
+        qa_tester = (t.get('qa_tester') or 'Not Assigned')[:14]
+        ageing_str = _ageing_cell(t)
+        table_data.append([
+            f"#{t['ticket_id']}",
+            title_short,
+            (t.get('priority') or '—')[:10],
+            dev_est_str,
+            qa_est_str,
+            eta_str[:10] if eta_str != '—' else '—',
+            developers,
+            status_short,
+            module_short,
+            qa_tester,
+            ageing_str
+        ])
+
+    # Column widths fit page (total ~6.95 inch); avoid overlap
+    col_widths = [0.4*inch, 1.15*inch, 0.5*inch, 0.45*inch, 0.45*inch, 0.6*inch, 0.9*inch, 0.85*inch, 0.65*inch, 0.75*inch, 0.5*inch]
+    ticket_table = Table(table_data, colWidths=col_widths)
+    ticket_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), COLORS['info']),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+        ('ALIGN', (3, 0), (5, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
+        ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+        ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
+        ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+    ]))
+    elements.append(ticket_table)
+    elements.append(Spacer(1, 0.2*inch))
+    elements.append(Paragraph(
+        "<i>Dev Est = Development estimate (hours); QA Est = QA estimate (hours); QC Tester = current QC tester if assigned. Ageing: Closed = created→closed date; Open = created→today.</i>",
+        styles['SmallText']
+    ))
+
+    elements.append(PageBreak())
+    return elements
+
+
 def create_bis_testing_summary_page(data, styles):
-    """Page 4: BIS Testing Summary"""
+    """BIS Testing Summary"""
     elements = []
     
     bis_tickets = data['current_week']['bis_testing_moved']
@@ -1219,10 +1545,15 @@ def create_bis_testing_summary_page(data, styles):
     # Ticket list table
     elements.append(Paragraph("Ticket Summary", styles['SubSectionHeader']))
     
-    table_data = [['Ticket ID', 'Status', 'QA Tester', 'Bugs', 'Tests', 'Pass Rate']]
+    table_data = [['Ticket ID', 'Title', 'Priority', 'Status', 'QA Tester', 'Bugs', 'Tests', 'Pass Rate']]
     for t in bis_tickets:
+        title_short = (t.get('title') or '')[:25]
+        if len(t.get('title') or '') > 25:
+            title_short += '…'
         table_data.append([
             f"#{t['ticket_id']}",
+            title_short or '—',
+            (t.get('priority') or '—')[:12],
             t['status'][:18],
             t['qa_tester'][:15],
             f"{t['bugs_open']}/{t['bugs_total']}",
@@ -1230,7 +1561,7 @@ def create_bis_testing_summary_page(data, styles):
             f"{t['pass_rate']}%"
         ])
     
-    ticket_table = Table(table_data, colWidths=[0.9*inch, 1.4*inch, 1.4*inch, 0.9*inch, 0.9*inch, 0.9*inch])
+    ticket_table = Table(table_data, colWidths=[0.8*inch, 1.8*inch, 0.8*inch, 1.2*inch, 1.2*inch, 0.7*inch, 0.7*inch, 0.75*inch])
     ticket_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), COLORS['success']),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -1262,8 +1593,9 @@ def create_ticket_detail_page(ticket, styles, section_title="BIS Testing"):
     # Quick Info Row
     info_data = [[
         f"<b>Status:</b> {ticket['status']}",
-        f"<b>Module:</b> {ticket['module']}",
+        f"<b>Priority:</b> {ticket.get('priority') or 'Not Set'}",
         f"<b>ETA:</b> {ticket['eta_str']}",
+        f"<b>Module:</b> {ticket['module']}",
     ]]
     # Create info cells with dark text for readability on light background
     info_cells = []
@@ -1271,7 +1603,7 @@ def create_ticket_detail_page(ticket, styles, section_title="BIS Testing"):
         # Ensure text is dark for readability
         info_cells.append(Paragraph(cell.replace('<b>', '<b><font color="#1e293b">').replace('</b>', '</font></b>'), styles['ReportBody']))
     
-    info_table = Table([info_cells], colWidths=[2.3*inch, 2.3*inch, 2.3*inch])
+    info_table = Table([info_cells], colWidths=[1.8*inch, 1.8*inch, 1.8*inch, 1.8*inch])
     info_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), COLORS['light']),
         ('TEXTCOLOR', (0, 0), (-1, -1), COLORS['dark']),  # Ensure dark text
@@ -1507,18 +1839,23 @@ def create_upcoming_plan_page(data, styles):
     # Sort by ETA
     sorted_planned = sorted(planned, key=lambda x: x['eta'] if x['eta'] else datetime.max)
     
-    table_data = [['Priority', 'Ticket ID', 'Status', 'ETA', 'QA Tester', 'Est. Hours']]
+    table_data = [['#', 'Ticket ID', 'Title', 'Priority', 'Status', 'ETA', 'QA Tester', 'Est. Hours']]
     for idx, t in enumerate(sorted_planned, 1):
+        title_short = (t.get('title') or '')[:22]
+        if len(t.get('title') or '') > 22:
+            title_short += '…'
         table_data.append([
             str(idx),
             f"#{t['ticket_id']}",
-            t['status'][:15],
+            title_short or '—',
+            (t.get('priority') or '—')[:10],
+            t['status'][:12],
             t['eta_str'],
             t['qa_tester'][:12],
             f"{t['qa_estimate']}h"
         ])
     
-    plan_table = Table(table_data, colWidths=[0.6*inch, 0.9*inch, 1.3*inch, 1*inch, 1.2*inch, 0.8*inch])
+    plan_table = Table(table_data, colWidths=[0.4*inch, 0.75*inch, 1.6*inch, 0.75*inch, 1*inch, 0.85*inch, 1*inch, 0.7*inch])
     plan_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), COLORS['info']),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -1547,24 +1884,22 @@ def create_upcoming_plan_page(data, styles):
 # ============================================================================
 
 def create_metric_cell(value, label, bg_color, styles):
-    """Create a styled metric cell for tables"""
+    """Create a styled metric cell for overview cards; aligned and readable."""
     cell_data = [
         [Paragraph(f"<b>{value}</b>", styles['MetricMedium'])],
         [Paragraph(label, styles['MetricLabel'])]
     ]
-    
-    cell_table = Table(cell_data, colWidths=[1.6*inch])
+    cell_table = Table(cell_data, colWidths=[1.65*inch])
     cell_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, -1), bg_color),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
-        ('TOPPADDING', (0, 0), (-1, -1), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
-        ('LEFTPADDING', (0, 0), (-1, -1), 8),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 14),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 14),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 10),
     ]))
-    
     return cell_table
 
 
@@ -1594,10 +1929,10 @@ def generate_comprehensive_report(data, output_path, project_name=None):
     doc = SimpleDocTemplate(
         output_path,
         pagesize=A4,
-        rightMargin=0.5*inch,
-        leftMargin=0.5*inch,
-        topMargin=0.5*inch,
-        bottomMargin=0.5*inch
+        rightMargin=0.65*inch,
+        leftMargin=0.65*inch,
+        topMargin=0.65*inch,
+        bottomMargin=0.65*inch
     )
     
     elements = []
@@ -1608,10 +1943,13 @@ def generate_comprehensive_report(data, output_path, project_name=None):
     # Page 2: QA Overview Dashboard
     elements.extend(create_overview_page(data, styles))
     
-    # Page 3: Weekly Comparison
+    # Page 3: Newly Released to QA (list with estimates, ETA, developer, status, module, QC tester)
+    elements.extend(create_newly_released_to_qa_page(data, styles))
+    
+    # Page 4: Weekly Comparison
     elements.extend(create_comparison_page(data, styles))
     
-    # Page 4: BIS Testing Summary
+    # Page 5: BIS Testing Summary
     elements.extend(create_bis_testing_summary_page(data, styles))
     
     # Pages 5+: Individual BIS Testing Ticket Details
@@ -1659,7 +1997,9 @@ Examples:
     data = get_comprehensive_data(week_start, week_end)
     
     print(f"  • QA Tickets: {len(data['current_week']['qa_tickets'])}")
+    print(f"  • Newly Added to QC Testing: {len(data['current_week'].get('qc_testing_newly_added', []))}")
     print(f"  • Moved to BIS Testing: {len(data['current_week']['bis_testing_moved'])}")
+    print(f"  • Priority Changes: {len(data.get('priority_changes', []))}")
     print(f"  • In Progress: {len(data['current_week']['in_progress'])}")
     print(f"  • Planned Next Week: {len(data['next_week_plan'])}")
     

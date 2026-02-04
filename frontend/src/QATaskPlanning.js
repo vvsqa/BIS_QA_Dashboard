@@ -1,0 +1,3023 @@
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  ArcElement,
+} from 'chart.js';
+import { Bar, Doughnut } from 'react-chartjs-2';
+import ChartDataLabels from 'chartjs-plugin-datalabels';
+import { formatDisplayDate, formatAPIDate, formatDisplayDateWithDay, formatPlanningWeek } from './dateUtils';
+import { TicketExternalLink, getTicketTrackingUrl } from './ticketUtils';
+import { useTableSort } from './useTableSort';
+import { apiFetch } from './api';
+import { useAuth } from './AuthContext';
+import './DevelopmentTaskPlanning.css';
+import './QATaskPlanning.css';
+import './QATaskPlanningCalendarStyles.css';
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  ArcElement,
+  ChartDataLabels
+);
+
+const API_BASE = (process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`).replace(/\/$/, '');
+const HOURS_PER_WEEK = 40;
+const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous'];
+const GENERIC_CATEGORIES = ['Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous'];
+const QA_TASK_TYPES = ['Manual Testing', 'Automation Testing', 'API Testing', 'Non-Functional Testing'];
+const MAX_HOURS_PER_DAY_OPTIONS = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8];
+
+function getWeekMonday(d) {
+  const date = new Date(d);
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+  return new Date(date.setDate(diff));
+}
+
+// Priority colors (matches TicketsDashboard PRIORITY_ORDER)
+const PRIORITY_COLORS = {
+  'URGENT': '#dc2626',
+  'High (Bugs)': '#ea580c',
+  'High (Billable)': '#f97316',
+  'EPIC!': '#d97706',
+  'Medium (Bugs)': '#eab308',
+  'High Level 1': '#f59e0b',
+  'High Level 2': '#fbbf24',
+  'High Level 3': '#facc15',
+  'High Level 4': '#eab308',
+  'Medium': '#22c55e',
+  'Low': '#3b82f6',
+  'Quote': '#8b5cf6',
+  'Suggestion': '#94a3b8',
+  'Unspecified': '#6b7280',
+};
+
+const TASK_CATEGORY_COLORS = {
+  Ticket: '#60a5fa',
+  'Team Meetings': '#a78bfa',
+  'Customer Support': '#34d399',
+  Training: '#fbbf24',
+  KT: '#f97316',
+  Leave: '#94a3b8',
+  Miscellaneous: '#64748b',
+  Other: '#64748b',
+};
+
+// Priority order for sorting
+const PRIORITY_ORDER = [
+  'URGENT', 'High (Bugs)', 'High (Billable)', 'EPIC!', 'Medium (Bugs)',
+  'High Level 1', 'High Level 2', 'High Level 3', 'High Level 4',
+  'Medium', 'Low', 'Quote', 'Suggestion', 'Unspecified'
+];
+
+// Status colors for cards
+const STATUS_COLORS = {
+  'QC Testing': '#a78bfa',
+  'QC Testing in Progress': '#3b82f6',
+  'QC Testing Hold': '#f59e0b',
+};
+
+function QATaskPlanning({ showParentTitle = false }) {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const { user } = useAuth();
+  const urlTicketId = searchParams.get('ticket_id');
+  const urlEmployeeId = searchParams.get('employee_id');
+
+  const isEmployeeRole = user?.role === 'EMPLOYEE';
+  const isLeadOrManager = user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD');
+  const isLeadOnly = user?.role?.includes('LEAD') && !user?.role?.includes('MANAGER') && user?.role !== 'ADMIN';
+  const isAdminOrManager = user?.role === 'ADMIN' || user?.role?.includes('MANAGER');
+
+  const [view, setView] = useState(isEmployeeRole ? 'my-tasks' : 'overview'); // overview | planner | calendar | my-tasks (employees only)
+  const [overviewData, setOverviewData] = useState(null);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastRefresh, setLastRefresh] = useState(null);
+
+  // Filters for overview
+  const [searchQuery, setSearchQuery] = useState('');
+  const [priorityFilter, setPriorityFilter] = useState('');
+  const [testerFilter, setTesterFilter] = useState('');
+  const [moduleFilter, setModuleFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [platformFilter, setPlatformFilter] = useState('');
+  const [planningFilter, setPlanningFilter] = useState(''); // 'planned' | 'not_planned' | ''
+
+  // Selected category for dynamic table
+  const [selectedCard, setSelectedCard] = useState(null); // { type: 'status'|'priority'|'tester', key: string }
+
+  // Planner state
+  const [weekStart, setWeekStart] = useState(() => formatAPIDate(getWeekMonday(new Date())));
+  const [weekData, setWeekData] = useState(null);
+  const [ticketsRaw, setTicketsRaw] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [addTaskOpen, setAddTaskOpen] = useState(false);
+  const [addTaskModalTab, setAddTaskModalTab] = useState('details'); // details | resource-blocked
+  const [addTaskEmployee, setAddTaskEmployee] = useState(null);
+  const [addTaskSelectedTesters, setAddTaskSelectedTesters] = useState([]); // multi-select when task_category is Ticket
+  const [form, setForm] = useState({
+    employee_name: '', 
+    employee_id: '', 
+    task_category: 'Ticket', 
+    ticket_id: null, 
+    ticket_id_input: '',
+    task_type: '', 
+    activity_description: '', 
+    start_date: '', 
+    total_hours: 8, 
+    max_hours_per_day: 8, 
+    generic_category: '',
+    justification: '',
+  });
+  const [formErrors, setFormErrors] = useState({});
+  const [submitting, setSubmitting] = useState(false);
+  const [actionLoading, setActionLoading] = useState(false);
+  const [lookedUpTicket, setLookedUpTicket] = useState(null);
+  const [ticketSearch, setTicketSearch] = useState('');
+  const [ticketSearchDebounced, setTicketSearchDebounced] = useState('');
+  const [ticketStatusFilter, setTicketStatusFilter] = useState('');
+  const [ticketPriorityFilter, setTicketPriorityFilter] = useState('');
+  const [ticketAssigneeFilter, setTicketAssigneeFilter] = useState('');
+  const [ticketUnassignedFilter, setTicketUnassignedFilter] = useState(false);
+  const [hasEstimateFilter, setHasEstimateFilter] = useState(null);
+  const [resourceFilter, setResourceFilter] = useState('all');
+  const [plannerViewMode, setPlannerViewMode] = useState('grid');
+  const [testerChartExpanded, setTesterChartExpanded] = useState(false);
+  const [ticketLookupLoading, setTicketLookupLoading] = useState(false);
+  const [ticketSuggestions, setTicketSuggestions] = useState([]);
+  const [showTicketSuggestions, setShowTicketSuggestions] = useState(false);
+  const [ticketSuggestionsCategorized, setTicketSuggestionsCategorized] = useState(null); // { next_in_queue, on_hold, for_retesting, ageing }
+  const [ticketSuggestionsLoading, setTicketSuggestionsLoading] = useState(false);
+  const ticketInputRef = useRef(null);
+  const ticketSuggestionsRef = useRef(null);
+  const [allocationPreview, setAllocationPreview] = useState(null);
+  const [startDateAvailable, setStartDateAvailable] = useState(8);
+  // Per-tester availability when multi-select: { [employee_id]: { availableOnStartDate, allocationError, employee_name } }
+  const [selectedTestersAvailability, setSelectedTestersAvailability] = useState({});
+
+  // Calendar day detail modal state
+  const [dayDetailOpen, setDayDetailOpen] = useState(false);
+  const [dayDetailEmployee, setDayDetailEmployee] = useState(null);
+  const [dayDetailDate, setDayDetailDate] = useState(null);
+  const [dayDetailTasks, setDayDetailTasks] = useState([]);
+  const [dayDetailLoading, setDayDetailLoading] = useState(false);
+
+  // Multi-tester plan modal state
+  const [multiPlanOpen, setMultiPlanOpen] = useState(false);
+  const [multiPlanTicket, setMultiPlanTicket] = useState(null);
+  const [multiPlanSelectedTesters, setMultiPlanSelectedTesters] = useState([]);
+  const [multiPlanForm, setMultiPlanForm] = useState({
+    task_type: '',
+    activity_description: '',
+    start_date: '',
+    total_hours: 8,
+    max_hours_per_day: 8,
+  });
+  const [multiPlanErrors, setMultiPlanErrors] = useState({});
+  const [multiPlanSubmitting, setMultiPlanSubmitting] = useState(false);
+  const [multiPlanResults, setMultiPlanResults] = useState(null);
+
+  // Calendar state
+  const [calendarData, setCalendarData] = useState(null);
+  const [calendarView, setCalendarView] = useState('weekly');
+  const [plannerEmployeeSearch, setPlannerEmployeeSearch] = useState('');
+
+  const loadOverviewData = useCallback(async () => {
+    setOverviewLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/overview`);
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = text;
+        try {
+          const j = JSON.parse(text);
+          msg = j.detail || msg;
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      setOverviewData(data);
+      setLastRefresh(new Date());
+    } catch (e) {
+      setError(e.message || 'Failed to load QA overview data');
+      setOverviewData(null);
+    } finally {
+      setOverviewLoading(false);
+    }
+  }, []);
+
+  const refreshFromPMTracker = async () => {
+    setRefreshing(true);
+    try {
+      // Trigger PM Tracker sync
+      await apiFetch(`${API_BASE}/pm-tracker/sync`, { method: 'POST' });
+      // Wait a moment for sync to complete
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      // Reload overview data
+      await loadOverviewData();
+    } catch (e) {
+      setError('Failed to refresh from PM Tracker');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  const loadWeekData = useCallback(async () => {
+    if (!weekStart) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/week/${encodeURIComponent(weekStart)}`);
+      if (!res.ok) throw new Error((await res.json()).detail || 'Failed');
+      const data = await res.json();
+      setWeekData(data);
+    } catch (e) {
+      setError(e.message || 'Failed to load week data');
+      setWeekData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [weekStart]);
+
+  const loadTickets = useCallback(async () => {
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/tickets`);
+      const data = res.ok ? await res.json() : { tickets: [] };
+      setTicketsRaw(data.tickets || []);
+    } catch (_) {
+      setTicketsRaw([]);
+    }
+  }, []);
+
+  const loadCalendarData = useCallback(async () => {
+    setError(null);
+    try {
+      const params = new URLSearchParams({ view: calendarView });
+      params.append(calendarView === 'weekly' ? 'date_str' : 'month_str', weekStart.slice(0, calendarView === 'monthly' ? 7 : 10));
+      const res = await apiFetch(`${API_BASE}/qa-planning/calendar?${params}`);
+      if (!res.ok) {
+        const errText = await res.text();
+        let msg = errText;
+        try {
+          const j = JSON.parse(errText);
+          msg = j.detail || msg;
+        } catch (_) {}
+        throw new Error(msg || `Request failed (${res.status})`);
+      }
+      const data = await res.json();
+      setCalendarData(data);
+    } catch (e) {
+      setCalendarData(null);
+      setError(e?.message || 'Failed to load calendar. Ensure the backend is running.');
+    }
+  }, [calendarView, weekStart]);
+
+  useEffect(() => {
+    if (view === 'overview') loadOverviewData();
+  }, [view, loadOverviewData]);
+  useEffect(() => {
+    if (view === 'planner' || view === 'resource-blocked' || view === 'overview' || view === 'my-tasks') loadWeekData();
+  }, [view, weekStart, loadWeekData]);
+  useEffect(() => {
+    if (view === 'planner') loadTickets();
+  }, [view, loadTickets]);
+  useEffect(() => {
+    const t = setTimeout(() => setTicketSearchDebounced(ticketSearch), 300);
+    return () => clearTimeout(t);
+  }, [ticketSearch]);
+  useEffect(() => {
+    if (view === 'calendar') loadCalendarData();
+  }, [view, calendarView, weekStart, loadCalendarData]);
+
+  // Sync view when user role is determined (e.g. user loads after mount)
+  useEffect(() => {
+    if (isEmployeeRole && view !== 'my-tasks') setView('my-tasks');
+  }, [isEmployeeRole]);
+
+  // When Add Task modal opens from a resource with Ticket category, ensure tester is pre-selected
+  useEffect(() => {
+    if (addTaskOpen && addTaskEmployee && form.task_category === 'Ticket' && addTaskSelectedTesters.length === 0) {
+      setAddTaskSelectedTesters([addTaskEmployee.employee_id]);
+    }
+  }, [addTaskOpen, addTaskEmployee?.employee_id, form.task_category]);
+
+  const ticketFilterOptions = useMemo(() => {
+    const statuses = [...new Set(ticketsRaw.map((t) => t.status).filter(Boolean))].sort();
+    const priorities = [...new Set(ticketsRaw.map((t) => t.priority).filter(Boolean))].sort();
+    const assignees = [...new Set(ticketsRaw.map((t) => t.qc_tester).filter(Boolean))].sort();
+    return { statuses, priorities, assignees };
+  }, [ticketsRaw]);
+
+  const filteredPlannerTickets = useMemo(() => {
+    let list = ticketsRaw;
+    const q = (ticketSearchDebounced || '').trim().toLowerCase();
+    if (q) {
+      list = list.filter((t) =>
+        String(t.ticket_id).includes(q) ||
+        (t.title || '').toLowerCase().includes(q) ||
+        (t.qc_tester || '').toLowerCase().includes(q)
+      );
+    }
+    if (ticketStatusFilter) list = list.filter((t) => t.status === ticketStatusFilter);
+    if (ticketPriorityFilter) list = list.filter((t) => t.priority === ticketPriorityFilter);
+    if (ticketAssigneeFilter) list = list.filter((t) => t.qc_tester === ticketAssigneeFilter);
+    if (ticketUnassignedFilter) list = list.filter((t) => !t.qc_tester);
+    if (hasEstimateFilter !== null) {
+      list = list.filter((t) => (t.qa_estimate_hours != null && t.qa_estimate_hours > 0) === hasEstimateFilter);
+    }
+    return list;
+  }, [ticketsRaw, ticketSearchDebounced, ticketStatusFilter, ticketPriorityFilter, ticketAssigneeFilter, ticketUnassignedFilter, hasEstimateFilter]);
+
+  // Ticket suggestions dropdown
+  useEffect(() => {
+    const q = (form.ticket_id_input || '').trim();
+    if (!q || form.task_category !== 'Ticket') {
+      setTicketSuggestions([]);
+      setShowTicketSuggestions(false);
+      return;
+    }
+    if (form.ticket_id) {
+      setShowTicketSuggestions(false);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const params = new URLSearchParams({ search: q });
+        if (addTaskEmployee?.employee_name) {
+          params.set('assignee', addTaskEmployee.employee_name);
+        }
+        const res = await apiFetch(`${API_BASE}/qa-planning/tickets?${params}`);
+        const data = res.ok ? await res.json() : { tickets: [] };
+        const list = (data.tickets || []).slice(0, 12);
+        setTicketSuggestions(list);
+        setShowTicketSuggestions(list.length > 0);
+      } catch (_) {
+        setTicketSuggestions([]);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [form.ticket_id_input, form.task_category, form.ticket_id, addTaskEmployee?.employee_name]);
+
+  // Fetch categorized ticket suggestions when Add Task modal is open with Ticket category
+  useEffect(() => {
+    if (!addTaskOpen || form.task_category !== 'Ticket' || form.ticket_id) {
+      setTicketSuggestionsCategorized(null);
+      return;
+    }
+    const assignee = addTaskSelectedTesters.length > 0
+      ? (weekData?.employees || []).find((e) => e.employee_id === addTaskSelectedTesters[0])?.employee_name
+      : addTaskEmployee?.employee_name;
+    setTicketSuggestionsLoading(true);
+    const params = assignee ? `?assignee=${encodeURIComponent(assignee)}` : '';
+    apiFetch(`${API_BASE}/qa-planning/ticket-suggestions${params}`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => {
+        setTicketSuggestionsCategorized(data || { next_in_queue: [], on_hold: [], for_retesting: [], ageing: [] });
+      })
+      .catch(() => setTicketSuggestionsCategorized(null))
+      .finally(() => setTicketSuggestionsLoading(false));
+  }, [addTaskOpen, form.task_category, form.ticket_id, addTaskEmployee?.employee_name, addTaskSelectedTesters, weekData?.employees]);
+
+  // Click outside to close suggestions
+  useEffect(() => {
+    const handleClick = (e) => {
+      if (ticketInputRef.current?.contains(e.target) || ticketSuggestionsRef.current?.contains(e.target)) return;
+      setShowTicketSuggestions(false);
+    };
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [addTaskOpen]);
+
+  // Resolve preview employee: first selected tester for Ticket, else addTaskEmployee
+  const previewEmployee = form.task_category === 'Ticket' && addTaskSelectedTesters.length > 0
+    ? (weekData?.employees || []).find((e) => e.employee_id === addTaskSelectedTesters[0])
+    : addTaskEmployee;
+
+  // Fetch available hours and allocation preview (single or multi-tester)
+  useEffect(() => {
+    if (!addTaskOpen || !form.start_date || !weekStart) {
+      setStartDateAvailable(8);
+      setAllocationPreview(null);
+      setSelectedTestersAvailability({});
+      return;
+    }
+    const hours = Number(form.total_hours);
+    const maxPerDay = form.max_hours_per_day != null ? Number(form.max_hours_per_day) : 8;
+    const isMultiTester = form.task_category === 'Ticket' && addTaskSelectedTesters.length > 0;
+    const employees = weekData?.employees || [];
+    const targetEmps = isMultiTester
+      ? addTaskSelectedTesters.map((id) => employees.find((e) => e.employee_id === id)).filter(Boolean)
+      : (previewEmployee || addTaskEmployee) ? [previewEmployee || addTaskEmployee] : [];
+
+    if (targetEmps.length === 0) {
+      setStartDateAvailable(8);
+      setAllocationPreview(null);
+      setSelectedTestersAvailability({});
+      return;
+    }
+
+    if (form.total_hours == null || form.total_hours === '' || isNaN(hours) || hours < 0.5) {
+      setAllocationPreview(null);
+      if (!isMultiTester) setStartDateAvailable(8);
+      return;
+    }
+
+    let cancelled = false;
+
+    if (isMultiTester && targetEmps.length > 0) {
+      // Fetch for each selected tester in parallel
+      const fetchOne = async (emp) => {
+        const [availRes, allocRes] = await Promise.all([
+          apiFetch(`${API_BASE}/qa-planning/available-hours?employee_name=${encodeURIComponent(emp.employee_name)}&date=${form.start_date}`),
+          apiFetch(`${API_BASE}/qa-planning/allocation-preview?employee_name=${encodeURIComponent(emp.employee_name)}&start_date=${form.start_date}&total_hours=${hours}&max_hours_per_day=${maxPerDay}&week_start=${weekStart}`),
+        ]);
+        const availData = availRes.ok ? await availRes.json() : null;
+        const allocData = await allocRes.json().catch(() => ({}));
+        const allocOk = allocRes.ok && !allocData.error;
+        const allocationError = allocOk ? null : (allocData.error || allocData.detail || 'Cannot fit hours');
+        return {
+          employee_id: emp.employee_id,
+          employee_name: emp.employee_name,
+          availableOnStartDate: availData?.available_hours ?? 8,
+          allocationError,
+          distribution: allocOk ? allocData.distribution : null,
+        };
+      };
+
+      Promise.all(targetEmps.map(fetchOne)).then((results) => {
+        if (cancelled) return;
+        const byId = {};
+        let firstDistribution = null;
+        const failed = [];
+        results.forEach((r) => {
+          byId[r.employee_id] = {
+            availableOnStartDate: r.availableOnStartDate,
+            allocationError: r.allocationError,
+            employee_name: r.employee_name,
+          };
+          if (r.distribution) firstDistribution = firstDistribution || r.distribution;
+          if (r.allocationError) failed.push(`${r.employee_name}: ${r.allocationError}`);
+        });
+        setSelectedTestersAvailability(byId);
+        const minAvail = Math.min(...results.map((r) => r.availableOnStartDate));
+        setStartDateAvailable(minAvail);
+        if (failed.length > 0) {
+          setAllocationPreview({ error: failed.join('; '), distribution: firstDistribution });
+        } else {
+          setAllocationPreview({
+            distribution: firstDistribution || [],
+            total: firstDistribution ? firstDistribution.reduce((s, d) => s + (d.hours || 0), 0) : hours,
+          });
+        }
+      }).catch(() => {
+        if (!cancelled) setSelectedTestersAvailability({});
+      });
+    } else {
+      // Single employee
+      const emp = targetEmps[0];
+      Promise.all([
+        apiFetch(`${API_BASE}/qa-planning/available-hours?employee_name=${encodeURIComponent(emp.employee_name)}&date=${form.start_date}`).then((r) => r.ok ? r.json() : null),
+        apiFetch(`${API_BASE}/qa-planning/allocation-preview?employee_name=${encodeURIComponent(emp.employee_name)}&start_date=${form.start_date}&total_hours=${hours}&max_hours_per_day=${maxPerDay}&week_start=${weekStart}`).then((r) => r.json().then((d) => ({ ok: r.ok, data: d }))),
+      ]).then(([availData, allocResult]) => {
+        if (cancelled) return;
+        setStartDateAvailable(availData?.available_hours ?? 8);
+        if (allocResult.ok && !allocResult.data.error) {
+          setAllocationPreview({ distribution: allocResult.data.distribution || [], total: allocResult.data.total });
+          if (allocResult.data.max_available_on_start_date != null) setStartDateAvailable(allocResult.data.max_available_on_start_date);
+        } else {
+          setAllocationPreview({ error: allocResult.data.error || allocResult.data.detail || 'Cannot fit hours' });
+        }
+      }).catch(() => {
+        if (!cancelled) setAllocationPreview(null);
+      });
+    }
+
+    return () => { cancelled = true; };
+  }, [addTaskOpen, addTaskEmployee, previewEmployee, form.start_date, form.total_hours, form.max_hours_per_day, form.employee_name, form.task_category, form.ticket_id, addTaskSelectedTesters, weekStart, weekData?.employees]);
+
+  // Get unique values for filters
+  const filterOptions = useMemo(() => {
+    const queue = overviewData?.queue || [];
+    const priorities = [...new Set(queue.map(t => t.priority).filter(Boolean))];
+    const testers = [...new Set(queue.map(t => t.qc_tester).filter(Boolean))];
+    const modules = [...new Set(queue.map(t => t.module).filter(Boolean))];
+    const statuses = [...new Set(queue.map(t => t.status).filter(Boolean))];
+    const platforms = [...new Set(queue.map(t => t.platform || 'Web').filter(Boolean))].sort();
+    return { priorities, testers, modules, statuses, platforms };
+  }, [overviewData]);
+
+  // Filter tickets based on all filters
+  const filteredQueue = useMemo(() => {
+    let queue = overviewData?.queue || [];
+    
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      queue = queue.filter(t => 
+        String(t.ticket_id).includes(q) ||
+        (t.title || '').toLowerCase().includes(q) ||
+        (t.qc_tester || '').toLowerCase().includes(q) ||
+        (t.module || '').toLowerCase().includes(q)
+      );
+    }
+    
+    if (priorityFilter) {
+      queue = queue.filter(t => t.priority === priorityFilter);
+    }
+    
+    if (testerFilter) {
+      queue = queue.filter(t => t.qc_tester === testerFilter);
+    }
+    
+    if (moduleFilter) {
+      queue = queue.filter(t => t.module === moduleFilter);
+    }
+    
+    if (statusFilter) {
+      queue = queue.filter(t => t.status === statusFilter);
+    }
+    
+    if (platformFilter) {
+      queue = queue.filter(t => (t.platform || 'Web') === platformFilter);
+    }
+    
+    if (planningFilter === 'planned') {
+      queue = queue.filter(t => t.qa_estimate_hours != null && t.qa_estimate_hours > 0);
+    } else if (planningFilter === 'not_planned') {
+      queue = queue.filter(t => t.qa_estimate_hours == null || t.qa_estimate_hours === 0);
+    }
+    
+    if (selectedCard) {
+      if (selectedCard.type === 'status') {
+        queue = queue.filter(t => t.status === selectedCard.key);
+      } else if (selectedCard.type === 'priority') {
+        queue = queue.filter(t => t.priority === selectedCard.key);
+      } else if (selectedCard.type === 'tester') {
+        queue = queue.filter(t => t.qc_tester === selectedCard.key);
+      } else if (selectedCard.type === 'planning') {
+        if (selectedCard.key === 'not_planned') {
+          queue = queue.filter(t => t.qa_estimate_hours == null || t.qa_estimate_hours === 0);
+        } else if (selectedCard.key === 'planned') {
+          queue = queue.filter(t => t.qa_estimate_hours != null && t.qa_estimate_hours > 0);
+        }
+      }
+    }
+    
+    return queue;
+  }, [overviewData, searchQuery, priorityFilter, testerFilter, moduleFilter, statusFilter, platformFilter, planningFilter, selectedCard]);
+
+  // Statistics for charts
+  const chartData = useMemo(() => {
+    const queue = overviewData?.queue || [];
+    
+    const priorityCounts = {};
+    queue.forEach(t => {
+      const p = t.priority || 'Unspecified';
+      priorityCounts[p] = (priorityCounts[p] || 0) + 1;
+    });
+    
+    const testerCounts = {};
+    queue.forEach(t => {
+      const tester = t.qc_tester || 'Unassigned';
+      testerCounts[tester] = (testerCounts[tester] || 0) + 1;
+    });
+
+    // Current assigned tasks from QA planner (for Tester Workload chart)
+    const plannerTaskCounts = {};
+    const plannerTasks = weekData?.tasks || [];
+    plannerTasks.forEach(t => {
+      const emp = t.employee_name || 'Unknown';
+      plannerTaskCounts[emp] = (plannerTaskCounts[emp] || 0) + 1;
+    });
+    
+    const statusCounts = {};
+    queue.forEach(t => {
+      const s = t.status || 'Unknown';
+      statusCounts[s] = (statusCounts[s] || 0) + 1;
+    });
+    
+    const planned = queue.filter(t => t.qa_estimate_hours != null && t.qa_estimate_hours > 0).length;
+    const notPlanned = queue.length - planned;
+    
+    return { priorityCounts, testerCounts, plannerTaskCounts, statusCounts, planned, notPlanned };
+  }, [overviewData, weekData]);
+
+  // Priority chart data
+  const priorityChartData = useMemo(() => {
+    const sortedPriorities = Object.entries(chartData.priorityCounts)
+      .sort((a, b) => {
+        const idxA = PRIORITY_ORDER.indexOf(a[0]);
+        const idxB = PRIORITY_ORDER.indexOf(b[0]);
+        return (idxA === -1 ? 999 : idxA) - (idxB === -1 ? 999 : idxB);
+      });
+    
+    return {
+      labels: sortedPriorities.map(([p]) => p),
+      datasets: [{
+        data: sortedPriorities.map(([, c]) => c),
+        backgroundColor: sortedPriorities.map(([p]) => PRIORITY_COLORS[p] || '#6b7280'),
+        borderWidth: 0,
+      }]
+    };
+  }, [chartData.priorityCounts]);
+
+  // Tester workload chart – use testerCounts (tickets by QC tester) for full QA team; fallback to plannerTaskCounts
+  const testerChartData = useMemo(() => {
+    const counts = Object.keys(chartData.testerCounts || {}).length > 0
+      ? chartData.testerCounts
+      : (chartData.plannerTaskCounts || {});
+    const sorted = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1]);
+    const limit = testerChartExpanded ? sorted.length : 8;
+    const sliced = sorted.slice(0, limit);
+    
+    return {
+      labels: sliced.map(([t]) => (t.split(' ')[0] || t).slice(0, 20)),
+      datasets: [{
+        label: 'Assigned tasks',
+        data: sliced.map(([, c]) => c),
+        backgroundColor: '#22c55e',
+        borderRadius: 4,
+      }]
+    };
+  }, [chartData.plannerTaskCounts, chartData.testerCounts, testerChartExpanded]);
+
+  const testerChartTotalCount = Object.keys(
+    Object.keys(chartData.testerCounts || {}).length > 0 ? chartData.testerCounts : (chartData.plannerTaskCounts || {})
+  ).length;
+  const testerChartHasMore = testerChartTotalCount > 8;
+
+  // Planning status chart data
+  const planningChartData = useMemo(() => ({
+    labels: ['Planned', 'Not Planned'],
+    datasets: [{
+      data: [chartData.planned, chartData.notPlanned],
+      backgroundColor: ['#22c55e', '#ef4444'],
+      borderWidth: 0,
+    }]
+  }), [chartData.planned, chartData.notPlanned]);
+
+  const handleCardClick = (type, key, label) => {
+    if (selectedCard?.type === type && selectedCard?.key === key) {
+      setSelectedCard(null);
+    } else {
+      setSelectedCard({ type, key, label });
+    }
+  };
+
+  const clearFilters = () => {
+    setSearchQuery('');
+    setPriorityFilter('');
+    setTesterFilter('');
+    setModuleFilter('');
+    setStatusFilter('');
+    setPlatformFilter('');
+    setPlanningFilter('');
+    setSelectedCard(null);
+  };
+
+  const goToTicket = (ticketId) => {
+    navigate(`/tickets?ticket=${ticketId}`);
+  };
+
+  // Open multi-plan modal for a ticket
+  const openMultiPlanModal = (ticket) => {
+    setMultiPlanTicket(ticket);
+    setMultiPlanSelectedTesters([]);
+    setMultiPlanForm({
+      task_type: '',
+      activity_description: ticket.title || '',
+      start_date: weekStart,
+      total_hours: ticket.qa_estimate_hours || 8,
+      max_hours_per_day: 8,
+    });
+    setMultiPlanErrors({});
+    setMultiPlanResults(null);
+    setMultiPlanOpen(true);
+  };
+
+  const closeMultiPlanModal = () => {
+    setMultiPlanOpen(false);
+    setMultiPlanTicket(null);
+    setMultiPlanSelectedTesters([]);
+    setMultiPlanResults(null);
+  };
+
+  const toggleMultiPlanTester = (empId) => {
+    setMultiPlanSelectedTesters((prev) =>
+      prev.includes(empId) ? prev.filter((id) => id !== empId) : [...prev, empId]
+    );
+  };
+
+  const validateMultiPlanForm = () => {
+    const err = {};
+    if (multiPlanSelectedTesters.length === 0) err.testers = 'Select at least one tester';
+    if (!(multiPlanForm.task_type || '').trim()) err.task_type = 'Task Type is required';
+    if (!multiPlanForm.activity_description?.trim()) err.activity_description = 'Task description is required';
+    if (!multiPlanForm.start_date) err.start_date = 'Start date is required';
+    // QA Estimate and QC Tester are mandatory for ticket tasks
+    if (multiPlanTicket) {
+      if (multiPlanTicket.qa_estimate_hours == null || multiPlanTicket.qa_estimate_hours <= 0) {
+        err.ticket = 'QA Estimate is required. Update the ticket estimate before assigning.';
+      } else if (!(multiPlanTicket.qc_tester || '').trim()) {
+        err.ticket = 'QC Tester is required in PM Tracker. Assign and refresh.';
+      }
+    }
+    const totalHours = Number(multiPlanForm.total_hours);
+    if (isNaN(totalHours) || totalHours < 0.5) err.total_hours = 'Duration must be at least 0.5 hours';
+    const maxH = Number(multiPlanForm.max_hours_per_day);
+    if (isNaN(maxH) || maxH < 0.5 || maxH > 8) err.max_hours_per_day = 'Max hours must be 0.5–8';
+    const today = formatAPIDate(new Date());
+    if (multiPlanForm.start_date && multiPlanForm.start_date < today) err.start_date = 'Start date cannot be in the past';
+    setMultiPlanErrors(err);
+    return Object.keys(err).length === 0;
+  };
+
+  const submitMultiPlan = async (e) => {
+    e.preventDefault();
+    if (!validateMultiPlanForm()) return;
+    setMultiPlanSubmitting(true);
+    setMultiPlanErrors({});
+
+    const results = { success: [], failed: [] };
+    const employees = weekData?.employees || [];
+    const selectedEmps = employees.filter((emp) => multiPlanSelectedTesters.includes(emp.employee_id));
+
+    for (const emp of selectedEmps) {
+      try {
+        const body = {
+          employee_name: emp.employee_name,
+          employee_id: emp.employee_id,
+          task_category: 'Ticket',
+          ticket_id: multiPlanTicket.ticket_id,
+          task_type: multiPlanForm.task_type || undefined,
+          activity_description: multiPlanForm.activity_description.trim(),
+          start_date: multiPlanForm.start_date,
+          total_hours: Number(multiPlanForm.total_hours),
+          max_hours_per_day: Number(multiPlanForm.max_hours_per_day),
+        };
+        const res = await apiFetch(`${API_BASE}/qa-planning/tasks?week_start=${weekStart}`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          results.success.push({ employee: emp.employee_name, task: data.task });
+        } else {
+          results.failed.push({ employee: emp.employee_name, error: data.detail || 'Failed' });
+        }
+      } catch (err) {
+        results.failed.push({ employee: emp.employee_name, error: err.message || 'Error' });
+      }
+    }
+
+    setMultiPlanResults(results);
+    setMultiPlanSubmitting(false);
+
+    if (results.success.length > 0) {
+      loadWeekData();
+      if (view === 'calendar') loadCalendarData();
+    }
+  };
+
+  const assignTicket = async (ticket) => {
+    if (view !== 'planner') setView('planner');
+    if (!weekData) {
+      await loadWeekData();
+    }
+    openMultiPlanModal(ticket);
+  };
+
+  const ensureWeek = async () => {
+    setActionLoading(true);
+    try {
+      await apiFetch(`${API_BASE}/qa-planning/week?week_start=${weekStart}`, { method: 'POST' });
+      await loadWeekData();
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const updateWeekState = async (state) => {
+    setActionLoading(true);
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/week/${weekStart}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ state }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || 'Failed');
+      await loadWeekData();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const getInitialFormState = (emp, monday) => ({
+    employee_name: emp?.employee_name || '',
+    employee_id: emp?.employee_id || '',
+    task_category: 'Ticket',
+    ticket_id: null,
+    ticket_id_input: '',
+    task_type: '',
+    activity_description: '',
+    start_date: formatAPIDate(new Date()), // Default to current date
+    total_hours: 8,
+    max_hours_per_day: 8,
+    generic_category: '',
+    justification: '',
+  });
+
+  const toggleAddTaskTester = (empId) => {
+    setAddTaskSelectedTesters((prev) =>
+      prev.includes(empId) ? prev.filter((id) => id !== empId) : [...prev, empId]
+    );
+  };
+
+  const openAddTask = (emp) => {
+    setAddTaskEmployee(emp);
+    setAddTaskSelectedTesters(emp ? [emp.employee_id] : []);
+    const monday = weekStart;
+    setForm({
+      ...getInitialFormState(emp, monday),
+      task_category: 'Ticket',
+      ticket_id: null,
+      ticket_id_input: '',
+      generic_category: '',
+    });
+    setLookedUpTicket(null);
+    setTicketSuggestions([]);
+    setShowTicketSuggestions(false);
+    setFormErrors({});
+    setAllocationPreview(null);
+    setStartDateAvailable(8);
+    setAddTaskModalTab('details');
+    setAddTaskOpen(true);
+  };
+
+  const closeAddTask = () => {
+    setAddTaskOpen(false);
+    setAddTaskEmployee(null);
+    setAddTaskSelectedTesters([]);
+    setSelectedTestersAvailability({});
+    setForm(getInitialFormState(null, ''));
+    setLookedUpTicket(null);
+    setTicketSuggestions([]);
+    setTicketSuggestionsCategorized(null);
+    setShowTicketSuggestions(false);
+    setFormErrors({});
+    setAllocationPreview(null);
+    setStartDateAvailable(8);
+  };
+
+  const fetchTicketDetails = useCallback(async (ticketId) => {
+    setTicketLookupLoading(true);
+    setFormErrors((e) => ({ ...e, ticket_id: null }));
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/ticket/${ticketId}`);
+      const data = res.ok ? await res.json() : null;
+      setLookedUpTicket(data);
+      if (data) {
+        setForm((f) => ({ 
+          ...f, 
+          ticket_id: ticketId, 
+          activity_description: data.title || f.activity_description,
+          total_hours: data.qa_estimate_hours || f.total_hours,
+        }));
+      } else {
+        setFormErrors((e) => ({ ...e, ticket_id: 'Ticket not found or not in applicable statuses' }));
+      }
+    } catch (_) {
+      setLookedUpTicket(null);
+      setFormErrors((e) => ({ ...e, ticket_id: 'Failed to fetch ticket details' }));
+    } finally {
+      setTicketLookupLoading(false);
+    }
+  }, []);
+
+  const selectTicket = useCallback((ticket) => {
+    setForm((f) => ({ ...f, ticket_id: ticket.ticket_id, ticket_id_input: String(ticket.ticket_id) }));
+    setShowTicketSuggestions(false);
+    setTicketSuggestions([]);
+    fetchTicketDetails(ticket.ticket_id);
+  }, [fetchTicketDetails]);
+
+  const validateForm = () => {
+    const err = {};
+    if (!form.task_category) err.task_category = 'Task category is required';
+    if (!form.activity_description?.trim()) err.activity_description = 'Task description is required';
+    if (!form.start_date) err.start_date = 'Start date is required';
+    
+    if (form.task_category === 'Ticket') {
+      // Tester is pre-selected when opening from a resource; only require selection when neither is set
+      const hasTester = addTaskSelectedTesters.length > 0 || addTaskEmployee;
+      if (!hasTester) err.testers = 'Select at least one tester';
+      if (!form.ticket_id) err.ticket_id = 'Select a ticket from suggestions';
+      if (lookedUpTicket) {
+        if (lookedUpTicket.qa_estimate_hours == null || lookedUpTicket.qa_estimate_hours <= 0) {
+          err.ticket_id = 'QA Estimate is required in PM Tracker. Add it and click Refresh.';
+        } else if (!(lookedUpTicket.qc_tester || '').trim()) {
+          err.ticket_id = 'QC Tester is required in PM Tracker. Assign and click Refresh.';
+        } else if (!form.task_type) {
+          err.task_type = 'Task Type is required';
+        }
+      }
+    }
+    
+    const totalHoursNum = form.total_hours != null && form.total_hours !== '' ? Number(form.total_hours) : NaN;
+    if (form.total_hours == null || form.total_hours === '' || isNaN(totalHoursNum)) {
+      err.total_hours = 'Duration is required';
+    } else if (totalHoursNum < 0.5) {
+      err.total_hours = 'Duration must be at least 0.5 hours';
+    }
+    
+    // Remaining QA hours is informational only - do not block task creation
+    
+    const maxH = form.max_hours_per_day != null ? Number(form.max_hours_per_day) : 8;
+    if (isNaN(maxH) || maxH < 0.5 || maxH > 8 || !MAX_HOURS_PER_DAY_OPTIONS.includes(maxH)) {
+      err.max_hours_per_day = 'Select max hours per day (0.5–8h)';
+    }
+    
+    const today = formatAPIDate(new Date());
+    if (form.start_date && form.start_date < today) {
+      err.start_date = 'Start date cannot be in the past';
+    }
+    
+    if (allocationPreview?.error) {
+      err.submit = allocationPreview.error;
+    }
+    
+    setFormErrors(err);
+    return Object.keys(err).length === 0;
+  };
+
+  const submitAddTask = async (e) => {
+    e.preventDefault();
+    if (!validateForm()) return;
+    setSubmitting(true);
+    setError(null);
+    setFormErrors({});
+    const employees = weekData?.employees || [];
+    const targetEmployees = form.task_category === 'Ticket'
+      ? (addTaskSelectedTesters.length > 0
+          ? employees.filter((emp) => addTaskSelectedTesters.includes(emp.employee_id))
+          : addTaskEmployee ? [addTaskEmployee] : [])
+      : (addTaskEmployee ? [addTaskEmployee] : []);
+
+    if (targetEmployees.length === 0) {
+      setFormErrors({ testers: form.task_category === 'Ticket' ? 'Select at least one tester' : 'No employee selected' });
+      setSubmitting(false);
+      return;
+    }
+
+    const results = { success: 0, failed: [] };
+    for (const emp of targetEmployees) {
+      try {
+        const body = {
+          employee_name: emp.employee_name,
+          employee_id: emp.employee_id || undefined,
+          task_category: form.task_category,
+          ticket_id: form.task_category === 'Ticket' ? form.ticket_id : undefined,
+          task_type: form.task_category === 'Ticket' ? (form.task_type || undefined) : undefined,
+          activity_description: form.activity_description.trim(),
+          start_date: form.start_date,
+          total_hours: form.total_hours != null ? Number(form.total_hours) : undefined,
+          max_hours_per_day: form.max_hours_per_day != null ? Number(form.max_hours_per_day) : 8,
+          generic_category: form.task_category !== 'Ticket' ? form.task_category : undefined,
+          justification: form.justification?.trim() || undefined,
+        };
+        const res = await apiFetch(`${API_BASE}/qa-planning/tasks?week_start=${weekStart}`, {
+          method: 'POST',
+          body: JSON.stringify(body),
+        });
+        let data = {};
+        try {
+          data = await res.json();
+        } catch (_) {
+          if (!res.ok) throw new Error(`Request failed (${res.status})`);
+        }
+        if (res.ok) {
+          results.success += 1;
+        } else {
+          const detail = data.detail;
+          const msg = typeof detail === 'string' ? detail : (detail && typeof detail === 'object' ? (detail.message || JSON.stringify(detail)) : 'Failed');
+          results.failed.push({ employee: emp.employee_name, error: msg });
+        }
+      } catch (err) {
+        results.failed.push({ employee: emp.employee_name, error: err?.message || 'Error' });
+      }
+    }
+
+    if (results.failed.length > 0 && results.success === 0) {
+      setFormErrors({
+        submit: results.failed.map((f) => `${f.employee}: ${f.error}`).join('; '),
+      });
+    } else {
+      closeAddTask();
+      loadWeekData();
+      if (view === 'calendar') loadCalendarData();
+    }
+    setSubmitting(false);
+  };
+
+  const deleteTask = async (taskId) => {
+    if (!window.confirm('Remove this planned task?')) return;
+    setActionLoading(true);
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/tasks/${taskId}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error((await res.json()).detail || 'Failed');
+      loadWeekData();
+      if (view === 'calendar') loadCalendarData();
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const openDayDetail = async (employeeName, dateStr) => {
+    setDayDetailEmployee(employeeName);
+    setDayDetailDate(dateStr);
+    setDayDetailOpen(true);
+    setDayDetailTasks([]);
+    setDayDetailLoading(true);
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/day-details?employee_name=${encodeURIComponent(employeeName)}&date_str=${encodeURIComponent(dateStr)}`);
+      const data = res.ok ? await res.json() : { tasks: [] };
+      setDayDetailTasks(data.tasks || []);
+    } catch (_) {
+      setDayDetailTasks([]);
+    } finally {
+      setDayDetailLoading(false);
+    }
+  };
+
+  const closeDayDetail = () => {
+    setDayDetailOpen(false);
+    setDayDetailEmployee(null);
+    setDayDetailDate(null);
+    setDayDetailTasks([]);
+  };
+
+  const employees = weekData?.employees || [];
+  const employeeGroups = weekData?.employee_groups || [];
+  const tasks = weekData?.tasks || [];
+  const weekState = weekData?.state || 'draft';
+  const canEdit = weekState === 'draft' || weekState === 'submitted';
+  const tasksByEmployee = tasks.reduce((acc, t) => {
+    const key = t.employee_name || t.employee_id || 'Unknown';
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(t);
+    return acc;
+  }, {});
+  const getTaskDisplayHours = (t) => {
+    if (t.total_planned_hours != null && t.total_planned_hours > 0) return t.total_planned_hours;
+    const fromAllocs = t.allocations?.reduce((s, a) => s + (a.hours || 0), 0);
+    return fromAllocs != null && fromAllocs > 0 ? fromAllocs : 0;
+  };
+  const filterEmp = (emp, forPlanner = false) => {
+    // Leads see all department (view); can_manage_tasks controls assign/edit only (not visibility)
+    const status = (emp.allocation_status || '').toLowerCase().replace(/\s+/g, '-');
+    if (resourceFilter !== 'all') {
+      if (resourceFilter === 'available' && status !== 'available') return false;
+      if (resourceFilter === 'partial' && status !== 'partially-allocated') return false;
+      if (resourceFilter === 'full' && status !== 'fully-allocated') return false;
+    }
+    const search = (plannerEmployeeSearch || '').trim().toLowerCase();
+    if (search && !(emp.employee_name || '').toLowerCase().includes(search)) return false;
+    return true;
+  };
+  // For planner: leads only see their own team
+  const filteredEmployees = employees.filter((emp) => filterEmp(emp, true));
+  const filteredEmployeeGroups = employeeGroups.length > 0
+    ? employeeGroups.map((g) => ({ ...g, members: (g.members || []).filter((emp) => filterEmp(emp, true)) })).filter((g) => g.members.length > 0)
+    : null;
+
+  const { sortedData: sortedEmployees, sortConfig, handleSort } = useTableSort(filteredEmployees, {
+    defaultSortKey: 'employee_name',
+    defaultSortDirection: 'asc',
+  });
+
+  const sortedEmployeeGroups = useMemo(() => {
+    if (!filteredEmployeeGroups) return null;
+    return filteredEmployeeGroups.map((g) => ({
+      ...g,
+      members: [...(g.members || [])].sort((a, b) => {
+        const key = sortConfig.key;
+        let aVal = a[key];
+        let bVal = b[key];
+        if (aVal == null && bVal == null) return 0;
+        if (aVal == null) return 1;
+        if (bVal == null) return -1;
+        if (typeof aVal === 'string' && typeof bVal === 'string') {
+          const cmp = aVal.toLowerCase().localeCompare(bVal.toLowerCase());
+          return sortConfig.direction === 'asc' ? cmp : -cmp;
+        }
+        const aNum = Number(aVal) ?? 0;
+        const bNum = Number(bVal) ?? 0;
+        return sortConfig.direction === 'asc' ? aNum - bNum : bNum - aNum;
+      }),
+    }));
+  }, [filteredEmployeeGroups, sortConfig]);
+
+  const totalCapacity = employees.length * HOURS_PER_WEEK;
+  const totalAllocated = employees.reduce((sum, e) => sum + (e.allocated_hours || 0), 0);
+  const utilizationPct = totalCapacity > 0 ? Math.round((totalAllocated / totalCapacity) * 100) : 0;
+
+  const statusCards = overviewData?.status_cards || {};
+
+  // QA calendar now uses same format as dev: calendarData.employees with days per row
+  // Sort employees: manageable (own team) first, then others
+  const calendarRows = useMemo(() => {
+    const rows = calendarData?.employees || [];
+    if (!isLeadOnly) return rows; // Admin/Manager sees normal order
+    // Sort: can_manage_tasks = true first, then alphabetically within each group
+    return [...rows].sort((a, b) => {
+      const aManage = a.can_manage_tasks === true ? 0 : 1;
+      const bManage = b.can_manage_tasks === true ? 0 : 1;
+      if (aManage !== bManage) return aManage - bManage;
+      return (a.employee_name || '').localeCompare(b.employee_name || '');
+    });
+  }, [calendarData?.employees, isLeadOnly]);
+  const calendarDayKeys = useMemo(() => {
+    if (!calendarRows.length) return [];
+    return Object.keys(calendarRows[0].days || {}).sort();
+  }, [calendarRows]);
+  const calendarSummary = useMemo(() => {
+    if (!calendarRows.length) return null;
+    const allDays = calendarRows.flatMap((row) => Object.values(row.days || {}));
+    const totalHours = allDays.reduce((s, d) => s + (d.hours || 0), 0);
+    const numDays = calendarDayKeys.length || 1;
+    const numEmps = calendarRows.length || 1;
+    const avgHours = (totalHours / numEmps / numDays).toFixed(1);
+    const capacity = numEmps * numDays * 8;
+    const utilization = Math.round((totalHours / capacity) * 100);
+    return { totalHours, avgHours, utilization, employees: calendarRows.length };
+  }, [calendarRows, calendarDayKeys]);
+
+  return (
+    <div className={`qa-planning-page ${!showParentTitle ? 'qa-planning-embedded' : ''}`}>
+      {showParentTitle && (
+        <header className="qa-planning-header">
+          <div className="qa-planning-header-left">
+            <Link to="/" className="qa-planning-back">← Dashboard</Link>
+            <h1>QA Task Planning</h1>
+          </div>
+        </header>
+      )}
+
+      {isLeadOrManager && (
+        <div className="qa-planning-tabs" role="tablist">
+          <button type="button" className={view === 'overview' ? 'active' : ''} onClick={() => setView('overview')}>
+            QA Active Tickets
+          </button>
+          <button type="button" className={view === 'planner' ? 'active' : ''} onClick={() => setView('planner')}>
+            Weekly Planner
+          </button>
+          <button type="button" className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}>
+            Calendar
+          </button>
+          <button type="button" className={view === 'resource-blocked' ? 'active' : ''} onClick={() => setView('resource-blocked')}>
+            Resource Blocked Until
+          </button>
+        </div>
+      )}
+
+      {error && <div className="qa-planning-error">{error}</div>}
+
+      {/* MY PLANNED TASKS VIEW (Employees only) */}
+      {view === 'my-tasks' && isEmployeeRole && (
+        <div className="dev-my-tasks-container qa-my-tasks">
+          <div className="dev-my-tasks-header">
+            <div className="dev-my-tasks-title-row">
+              <span className="dev-my-tasks-icon">✅</span>
+              <div>
+                <h2 className="dev-my-tasks-title">My Planned Tasks</h2>
+                <p className="dev-my-tasks-subtitle">Your QA tasks for the week</p>
+              </div>
+            </div>
+            <div className="dev-my-tasks-week-nav">
+              <button type="button" className="dev-planner-nav-btn" onClick={() => { const d = new Date(weekStart + 'T12:00:00'); d.setDate(d.getDate() - 7); setWeekStart(formatAPIDate(d)); }} aria-label="Previous week">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
+              </button>
+              <label className="dev-planner-week-display">
+                <input type="date" value={weekStart} onChange={(e) => setWeekStart(e.target.value)} className="dev-planner-week-picker" title="Pick a week" />
+                <span className="dev-planner-week-label">{formatPlanningWeek(weekStart)}</span>
+              </label>
+              <button type="button" className="dev-planner-nav-btn" onClick={() => { const d = new Date(weekStart + 'T12:00:00'); d.setDate(d.getDate() + 7); setWeekStart(formatAPIDate(d)); }} aria-label="Next week">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
+              </button>
+              <button type="button" className="dev-planner-today-btn" onClick={() => setWeekStart(formatAPIDate(getWeekMonday(new Date())))}>Today</button>
+            </div>
+          </div>
+          {loading ? (
+            <div className="qa-planning-skeleton">Loading your tasks…</div>
+          ) : !weekData ? (
+            <div className="qa-planning-empty">
+              <p>No planning data for this week.</p>
+              <p className="dev-planning-empty-hint">Your lead will add tasks for you in the Weekly Planner.</p>
+            </div>
+          ) : (() => {
+            const myEmp = (weekData.employees || []).find((e) => e.employee_id === user?.employee_id) || (weekData.employees || [])[0];
+            const myTasks = (weekData.tasks || []).filter((t) => t.employee_id === user?.employee_id || t.employee_name === myEmp?.employee_name);
+            const mySummary = myEmp ? { allocated_hours: myEmp.allocated_hours || 0, remaining_hours: myEmp.remaining_hours || 0 } : { allocated_hours: 0, remaining_hours: 40 };
+            return (
+              <div className="dev-my-tasks-content">
+                <div className="dev-my-tasks-summary">
+                  <span className="dev-my-tasks-summary-item">Allocated: {mySummary.allocated_hours}h</span>
+                  <span className="dev-my-tasks-summary-item">Remaining: {mySummary.remaining_hours}h</span>
+                </div>
+                {myTasks.length === 0 ? (
+                  <div className="qa-planning-empty">
+                    <p>No tasks planned for you this week.</p>
+                    <p className="dev-planning-empty-hint">Your lead will assign tasks in the Weekly Planner.</p>
+                  </div>
+                ) : (
+                  <div className="dev-my-tasks-list">
+                    {myTasks.map((t) => (
+                      <div key={t.id} className="dev-my-tasks-card qa-my-tasks-card">
+                        <div className="dev-my-tasks-card-header">
+                          <span className="dev-my-tasks-card-id">
+                            {t.ticket_id ? (
+                              getTicketTrackingUrl(t.ticket_id) ? (
+                                <a href={getTicketTrackingUrl(t.ticket_id)} target="_blank" rel="noopener noreferrer">#{t.ticket_id}</a>
+                              ) : (
+                                `#${t.ticket_id}`
+                              )
+                            ) : (
+                              t.generic_category || 'Miscellaneous'
+                            )}
+                          </span>
+                          <span className="dev-my-tasks-card-hours">{t.total_planned_hours || 0}h</span>
+                        </div>
+                        <p className="dev-my-tasks-card-desc">{t.activity_description || (t.ticket_id ? `Ticket #${t.ticket_id}` : t.generic_category) || '—'}</p>
+                        <div className="dev-my-tasks-card-dates">
+                          {t.start_date && t.end_date ? `${formatDisplayDateWithDay(t.start_date)} → ${formatDisplayDateWithDay(t.end_date)}` : t.start_date ? formatDisplayDateWithDay(t.start_date) : '—'}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {view === 'overview' && (
+        <div className="qa-overview-container">
+          {overviewLoading ? (
+            <div className="qa-planning-skeleton">Loading QA overview...</div>
+          ) : !overviewData ? (
+            <div className="qa-planning-empty">
+              <p>Failed to load QA overview data.</p>
+              <button type="button" className="btn-secondary" onClick={loadOverviewData}>Retry</button>
+            </div>
+          ) : (
+            <>
+              {/* Header with Refresh Button */}
+              <div className="qa-overview-header">
+                <div className="qa-overview-title-section">
+                  <h2 className="qa-overview-title">
+                    <span className="qa-title-icon">🧪</span>
+                    QA Active Tickets Dashboard
+                  </h2>
+                  <span className="qa-overview-subtitle">
+                    {overviewData.total || 0} tickets in QC pipeline • Excludes BIS Testing
+                  </span>
+                </div>
+                <div className="qa-overview-actions">
+                  {lastRefresh && (
+                    <span className="qa-last-refresh">
+                      Last updated: {lastRefresh.toLocaleTimeString()}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="qa-export-excel-btn"
+                    onClick={async () => {
+                      try {
+                        const params = new URLSearchParams();
+                        if (searchQuery?.trim()) params.set('search', searchQuery.trim());
+                        const priority = selectedCard?.type === 'priority' ? selectedCard.key : priorityFilter;
+                        if (priority) params.set('priority', priority);
+                        const tester = selectedCard?.type === 'tester' ? selectedCard.key : testerFilter;
+                        if (tester) params.set('tester', tester);
+                        if (moduleFilter) params.set('module', moduleFilter);
+                        const status = selectedCard?.type === 'status' ? selectedCard.key : statusFilter;
+                        if (status && status !== 'all') params.set('status', status);
+                        if (platformFilter) params.set('platform', platformFilter);
+                        const planning = selectedCard?.type === 'planning' ? selectedCard.key : planningFilter;
+                        if (planning) params.set('planning', planning);
+                        const url = `${API_BASE}/qa-planning/overview/export-excel${params.toString() ? `?${params}` : ''}`;
+                        const res = await apiFetch(url);
+                        if (!res.ok) {
+                          const err = await res.json().catch(() => ({}));
+                          throw new Error(err.detail || 'Export failed');
+                        }
+                        const blob = await res.blob();
+                        const disp = res.headers.get('Content-Disposition');
+                        const match = disp && disp.match(/filename="?([^";\n]+)"?/);
+                        const filename = match ? match[1] : `QA_Active_Tickets_${new Date().toISOString().slice(0, 10)}.xlsx`;
+                        const a = document.createElement('a');
+                        a.href = URL.createObjectURL(blob);
+                        a.download = filename;
+                        a.click();
+                        URL.revokeObjectURL(a.href);
+                      } catch (e) {
+                        setError(e?.message || 'Failed to export');
+                      }
+                    }}
+                    title={searchQuery || priorityFilter || testerFilter || moduleFilter || statusFilter || platformFilter || planningFilter || selectedCard
+                      ? "Export filtered tickets to Excel"
+                      : "Export active tickets to Excel"}
+                  >
+                    📥 Export Excel
+                  </button>
+                  <button 
+                    type="button" 
+                    className="qa-refresh-btn"
+                    onClick={refreshFromPMTracker}
+                    disabled={refreshing}
+                    title="Sync latest data from PM Tracker"
+                  >
+                    {refreshing ? '⟳ Syncing...' : '⟳ Refresh'}
+                  </button>
+                </div>
+              </div>
+
+              {/* Summary Stats Cards */}
+              <section className="qa-summary-section">
+                <div className="qa-summary-grid">
+                  <div 
+                    className={`qa-summary-card qa-card-total ${selectedCard?.type === 'status' && selectedCard?.key === 'all' ? 'selected' : ''}`}
+                    onClick={() => handleCardClick('status', 'all', 'All Tickets')}
+                  >
+                    <div className="qa-card-icon">📊</div>
+                    <div className="qa-card-content">
+                      <span className="qa-card-value">{overviewData.total || 0}</span>
+                      <span className="qa-card-label">Total Tickets</span>
+                    </div>
+                  </div>
+
+                  <div 
+                    className={`qa-summary-card qa-card-pending ${selectedCard?.type === 'status' && selectedCard?.key === 'QC Testing' ? 'selected' : ''}`}
+                    onClick={() => handleCardClick('status', 'QC Testing', 'QC Testing')}
+                  >
+                    <div className="qa-card-icon">📋</div>
+                    <div className="qa-card-content">
+                      <span className="qa-card-value">{statusCards['QC Testing'] || 0}</span>
+                      <span className="qa-card-label">QC Testing</span>
+                      <span className="qa-card-hint">To be started</span>
+                    </div>
+                  </div>
+
+                  <div 
+                    className={`qa-summary-card qa-card-progress ${selectedCard?.type === 'status' && selectedCard?.key === 'QC Testing in Progress' ? 'selected' : ''}`}
+                    onClick={() => handleCardClick('status', 'QC Testing in Progress', 'In Progress')}
+                  >
+                    <div className="qa-card-icon">🔄</div>
+                    <div className="qa-card-content">
+                      <span className="qa-card-value">{statusCards['QC Testing in Progress'] || 0}</span>
+                      <span className="qa-card-label">In Progress</span>
+                      <span className="qa-card-hint">Testing active</span>
+                    </div>
+                  </div>
+
+                  <div 
+                    className={`qa-summary-card qa-card-hold ${selectedCard?.type === 'status' && selectedCard?.key === 'QC Testing Hold' ? 'selected' : ''}`}
+                    onClick={() => handleCardClick('status', 'QC Testing Hold', 'On Hold')}
+                  >
+                    <div className="qa-card-icon">⏸️</div>
+                    <div className="qa-card-content">
+                      <span className="qa-card-value">{statusCards['QC Testing Hold'] || 0}</span>
+                      <span className="qa-card-label">On Hold</span>
+                      <span className="qa-card-hint">Waiting</span>
+                    </div>
+                  </div>
+
+                  <div 
+                    className={`qa-summary-card qa-card-planned ${selectedCard?.type === 'planning' && selectedCard?.key === 'planned' ? 'selected' : ''}`}
+                    onClick={() => handleCardClick('planning', 'planned', 'Planned')}
+                  >
+                    <div className="qa-card-icon">✅</div>
+                    <div className="qa-card-content">
+                      <span className="qa-card-value">{chartData.planned}</span>
+                      <span className="qa-card-label">Planned</span>
+                      <span className="qa-card-hint">Has QA estimate</span>
+                    </div>
+                  </div>
+
+                  <div 
+                    className={`qa-summary-card qa-card-not-planned ${selectedCard?.type === 'planning' && selectedCard?.key === 'not_planned' ? 'selected' : ''}`}
+                    onClick={() => handleCardClick('planning', 'not_planned', 'Not Planned')}
+                  >
+                    <div className="qa-card-icon">⚠️</div>
+                    <div className="qa-card-content">
+                      <span className="qa-card-value">{chartData.notPlanned}</span>
+                      <span className="qa-card-label">Not Planned</span>
+                      <span className="qa-card-hint">Missing QA estimate</span>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Charts Section */}
+              <section className="qa-charts-section">
+                <div className="qa-charts-grid">
+                  <div className="qa-chart-card">
+                    <h3 className="qa-chart-title">Priority Distribution</h3>
+                    <div className="qa-chart-wrap qa-chart-doughnut">
+                      {Object.keys(chartData.priorityCounts).length > 0 ? (
+                        <Doughnut
+                          data={priorityChartData}
+                          options={{
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                              legend: {
+                                position: 'right',
+                                labels: { color: '#94a3b8', font: { size: 11 }, padding: 8 }
+                              },
+                              datalabels: {
+                                color: '#fff',
+                                font: { weight: 'bold', size: 11 },
+                                formatter: (value) => value > 0 ? value : '',
+                              }
+                            },
+                            onClick: (_, elements) => {
+                              if (elements.length > 0) {
+                                const idx = elements[0].index;
+                                const priority = priorityChartData.labels[idx];
+                                handleCardClick('priority', priority, priority);
+                              }
+                            }
+                          }}
+                        />
+                      ) : (
+                        <div className="qa-chart-empty">No data available</div>
+                      )}
+                    </div>
+                    <p className="qa-chart-hint">Click on a segment to filter tickets</p>
+                  </div>
+
+                  <div className="qa-chart-card">
+                    <div className="qa-chart-header-row">
+                      <div>
+                        <h3 className="qa-chart-title">Tester Workload</h3>
+                        <p className="qa-chart-subtitle">
+                      {Object.keys(chartData.testerCounts || {}).length > 0
+                        ? 'Tickets by QC tester'
+                        : `Planner tasks · ${formatPlanningWeek(weekStart)}`}
+                    </p>
+                      </div>
+                      {testerChartHasMore && (
+                        <button
+                          type="button"
+                          className="qa-chart-expand-btn"
+                          onClick={() => setTesterChartExpanded((v) => !v)}
+                          title={testerChartExpanded ? 'Show fewer' : `Show all ${testerChartTotalCount}`}
+                        >
+                          {testerChartExpanded ? '▼ Collapse' : `▲ Expand (${testerChartTotalCount})`}
+                        </button>
+                      )}
+                    </div>
+                    <div className={`qa-chart-wrap qa-chart-bar ${testerChartExpanded ? 'qa-chart-expanded' : ''}`}>
+                      {testerChartTotalCount > 0 ? (
+                        <Bar
+                          data={testerChartData}
+                          options={{
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            indexAxis: 'y',
+                            plugins: {
+                              legend: { display: false },
+                              datalabels: {
+                                anchor: 'end',
+                                align: 'end',
+                                color: '#94a3b8',
+                                font: { weight: 'bold', size: 11 },
+                              }
+                            },
+                            scales: {
+                              x: {
+                                ticks: { color: '#94a3b8' },
+                                grid: { color: 'rgba(148, 163, 184, 0.1)' }
+                              },
+                              y: {
+                                ticks: { color: '#f1f5f9' },
+                                grid: { display: false }
+                              }
+                            },
+                            onClick: (_, elements) => {
+                              if (elements.length > 0) {
+                                const counts = Object.keys(chartData.testerCounts || {}).length > 0
+                                  ? chartData.testerCounts
+                                  : (chartData.plannerTaskCounts || {});
+                                const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+                                const limit = testerChartExpanded ? sorted.length : 8;
+                                const testerName = sorted.slice(0, limit)[elements[0].index]?.[0];
+                                if (testerName) handleCardClick('tester', testerName, testerName);
+                              }
+                            }
+                          }}
+                        />
+                      ) : (
+                        <div className="qa-chart-empty">
+                          {loading ? 'Loading…' : (weekData ? 'No tasks assigned this week' : 'Go to Weekly Planner to create a week')}
+                        </div>
+                      )}
+                    </div>
+                    <p className="qa-chart-hint">Click on a bar to filter by tester</p>
+                  </div>
+
+                  <div className="qa-chart-card qa-chart-small">
+                    <h3 className="qa-chart-title">Planning Status</h3>
+                    <div className="qa-chart-wrap qa-chart-doughnut-small">
+                      <Doughnut
+                        data={planningChartData}
+                        options={{
+                          responsive: true,
+                          maintainAspectRatio: false,
+                          cutout: '60%',
+                          plugins: {
+                            legend: {
+                              position: 'bottom',
+                              labels: { color: '#94a3b8', font: { size: 11 }, padding: 8 }
+                            },
+                            datalabels: {
+                              color: '#fff',
+                              font: { weight: 'bold', size: 12 },
+                              formatter: (value) => value > 0 ? value : '',
+                            }
+                          },
+                          onClick: (_, elements) => {
+                            if (elements.length > 0) {
+                              const idx = elements[0].index;
+                              handleCardClick('planning', idx === 0 ? 'planned' : 'not_planned', idx === 0 ? 'Planned' : 'Not Planned');
+                            }
+                          }
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              {/* Search and Filters */}
+              <section className="qa-filters-section">
+                <div className="qa-filters-row">
+                  <div className="qa-search-wrap">
+                    <span className="qa-search-icon">🔍</span>
+                    <input
+                      type="text"
+                      placeholder="Search tickets..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="qa-search-input"
+                    />
+                  </div>
+
+                  <select
+                    value={priorityFilter}
+                    onChange={(e) => setPriorityFilter(e.target.value)}
+                    className="qa-filter-select"
+                  >
+                    <option value="">All Priorities</option>
+                    {filterOptions.priorities.map(p => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={testerFilter}
+                    onChange={(e) => setTesterFilter(e.target.value)}
+                    className="qa-filter-select"
+                  >
+                    <option value="">All Testers</option>
+                    {filterOptions.testers.map(t => (
+                      <option key={t} value={t}>{t}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={moduleFilter}
+                    onChange={(e) => setModuleFilter(e.target.value)}
+                    className="qa-filter-select"
+                  >
+                    <option value="">All Modules</option>
+                    {filterOptions.modules.map(m => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="qa-filter-select"
+                  >
+                    <option value="">All Statuses</option>
+                    {filterOptions.statuses.map(s => (
+                      <option key={s} value={s}>{s}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={platformFilter}
+                    onChange={(e) => setPlatformFilter(e.target.value)}
+                    className="qa-filter-select"
+                  >
+                    <option value="">All Platforms</option>
+                    {filterOptions.platforms.map(p => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
+
+                  <select
+                    value={planningFilter}
+                    onChange={(e) => setPlanningFilter(e.target.value)}
+                    className="qa-filter-select"
+                  >
+                    <option value="">All Planning</option>
+                    <option value="planned">Planned (Has Estimate)</option>
+                    <option value="not_planned">Not Planned</option>
+                  </select>
+
+                  {(searchQuery || priorityFilter || testerFilter || moduleFilter || statusFilter || platformFilter || planningFilter || selectedCard) && (
+                    <button type="button" className="qa-clear-filters" onClick={clearFilters}>
+                      Clear Filters
+                    </button>
+                  )}
+                </div>
+
+                {selectedCard && (
+                  <div className="qa-active-filter-badge">
+                    <span>Showing: {selectedCard.label}</span>
+                    <button type="button" onClick={() => setSelectedCard(null)}>×</button>
+                  </div>
+                )}
+              </section>
+
+              {/* Ticket Table */}
+              <section className="qa-tickets-section">
+                <div className="qa-tickets-header">
+                  <h3 className="qa-tickets-title">
+                    Priority Queue
+                    <span className="qa-tickets-count">{filteredQueue.length} tickets</span>
+                  </h3>
+                </div>
+
+                <div className="qa-tickets-table-wrap">
+                  <table className="qa-tickets-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Ticket</th>
+                        <th>Title</th>
+                        <th>Priority</th>
+                        <th>Status</th>
+                        <th>Activity</th>
+                        <th>Ageing</th>
+                        <th>Module</th>
+                        <th>Platform</th>
+                        <th>QC Tester</th>
+                        <th>QA Lead</th>
+                        <th>Dev(s)</th>
+                        <th>QA Est</th>
+                        <th>QA Actual</th>
+                        <th>ETA</th>
+                        <th>Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredQueue.length === 0 ? (
+                        <tr>
+                          <td colSpan={16} className="qa-table-empty">
+                            {searchQuery || priorityFilter || testerFilter || moduleFilter || statusFilter || platformFilter || planningFilter || selectedCard
+                              ? 'No tickets match your filters.'
+                              : 'No QC tickets in queue.'}
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredQueue.map((t, idx) => {
+                          const isNotPlanned = t.qa_estimate_hours == null || t.qa_estimate_hours === 0;
+                          return (
+                            <tr
+                              key={t.ticket_id}
+                              className={`qa-ticket-row ${t.is_next_in_queue ? 'qa-next-in-queue' : ''} ${isNotPlanned ? 'qa-not-planned' : ''}`}
+                            >
+                              <td className="qa-rank">{idx + 1}</td>
+                              <td className="qa-ticket-id-cell">
+                                <Link to={`/tickets?ticket=${t.ticket_id}`} className="qa-ticket-link">
+                                  #{t.ticket_id}
+                                </Link>
+                                <TicketExternalLink ticketId={t.ticket_id} />
+                              </td>
+                              <td className="qa-title-cell" title={t.title}>
+                                {t.title?.slice(0, 45)}{(t.title?.length || 0) > 45 ? '…' : ''}
+                              </td>
+                              <td>
+                                <span
+                                  className="qa-priority-pill"
+                                  style={{ backgroundColor: PRIORITY_COLORS[t.priority] || '#6b7280' }}
+                                >
+                                  {t.priority}
+                                </span>
+                              </td>
+                              <td>
+                                <span className="qa-status-pill" style={{ borderColor: STATUS_COLORS[t.status] || '#6b7280' }}>
+                                  {t.status}
+                                </span>
+                              </td>
+                              <td>
+                                <span className={`qa-activity-pill qa-activity-${t.activity_type}`}>
+                                  {t.activity_label}
+                                </span>
+                              </td>
+                              <td className="qa-ageing-cell">
+                                <span title={t.moved_to_qc_on ? `Moved to QC: ${t.moved_to_qc_on}` : ''}>
+                                  {t.days_in_qc > 0 ? `${t.days_in_qc}d` : '-'}
+                                </span>
+                                {t.days_on_hold > 0 && (
+                                  <span className="qa-hold-badge">({t.days_on_hold}d hold)</span>
+                                )}
+                              </td>
+                              <td title={t.module || ''}>{t.module || '—'}</td>
+                              <td>
+                                <span className={`qa-platform-badge ${(t.platform || 'Web').toLowerCase()}`}>
+                                  {t.platform || 'Web'}
+                                </span>
+                              </td>
+                              <td title={t.qc_tester || ''}>{t.qc_tester || '—'}</td>
+                              <td title={t.qa_lead || ''}>{t.qa_lead || '—'}</td>
+                              <td title={t.developers_str || ''}>{t.developers_str || 'Not Assigned'}</td>
+                              <td className={isNotPlanned ? 'qa-estimate-missing' : ''}>
+                                {isNotPlanned ? (
+                                  <span className="qa-not-planned-badge">Not Planned</span>
+                                ) : (
+                                  `${t.qa_estimate_hours}h`
+                                )}
+                              </td>
+                              <td>{t.qa_actual_hours != null ? `${t.qa_actual_hours}h` : '—'}</td>
+                              <td>{t.eta ? formatDisplayDate(t.eta) : '—'}</td>
+                              <td className="qa-actions-cell">
+                                <button
+                                  type="button"
+                                  className="qa-action-btn qa-btn-view"
+                                  onClick={() => goToTicket(t.ticket_id)}
+                                  title="View in Tickets"
+                                >
+                                  View
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            </>
+          )}
+        </div>
+      )}
+
+      {view === 'planner' && (
+        <div className="dev-planner-resource-ui">
+          <div className="dev-planner-header">
+            <div className="dev-planner-header-left">
+              <div className="dev-planner-title-row">
+                <span className="dev-planner-icon">📋</span>
+                <div>
+                  <h1 className="dev-planner-title">QA Task Planning</h1>
+                  <p className="dev-planner-subtitle">Resource Allocation & Weekly Planning</p>
+                </div>
+              </div>
+              <div className="dev-planner-week-nav">
+                <button type="button" className="dev-planner-nav-btn" onClick={() => { const d = new Date(weekStart + 'T12:00:00'); d.setDate(d.getDate() - 7); setWeekStart(formatAPIDate(d)); }} aria-label="Previous week">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
+                </button>
+                <label className="dev-planner-week-display">
+                  <input
+                    type="date"
+                    value={weekStart}
+                    onChange={(e) => setWeekStart(e.target.value)}
+                    className="dev-planner-week-picker"
+                    title="Click to pick a week"
+                  />
+                  <span className="dev-planner-week-label">{formatPlanningWeek(weekStart)}</span>
+                </label>
+                <button type="button" className="dev-planner-nav-btn" onClick={() => { const d = new Date(weekStart + 'T12:00:00'); d.setDate(d.getDate() + 7); setWeekStart(formatAPIDate(d)); }} aria-label="Next week">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
+                </button>
+                <button type="button" className="dev-planner-today-btn" onClick={() => setWeekStart(formatAPIDate(getWeekMonday(new Date())))}>
+                  Today
+                </button>
+              </div>
+            </div>
+            <div className="dev-planner-header-right">
+              {canEdit && (
+                <>
+                  <button type="button" className={`dev-planner-btn draft ${weekState === 'draft' ? 'active' : ''}`} onClick={ensureWeek} disabled={actionLoading}>
+                    <span className="btn-dot" /> Draft
+                  </button>
+                  <button type="button" className="dev-planner-btn submit" onClick={() => updateWeekState('submitted')} disabled={actionLoading}>
+                    ✓ Submit Plan
+                  </button>
+                </>
+              )}
+              <span className="dev-planner-save-status">Last saved: 2 min ago</span>
+              <div className="dev-planner-view-toggle">
+                <button type="button" className={plannerViewMode === 'grid' ? 'active' : ''} onClick={() => setPlannerViewMode('grid')} title="Grid view">⊞</button>
+                <button type="button" className={plannerViewMode === 'list' ? 'active' : ''} onClick={() => setPlannerViewMode('list')} title="List view">≡</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="dev-planner-summary-bar">
+            <span className="dev-planner-summary-item"><strong>Total Resources:</strong> {employees.length}</span>
+            <span className="dev-planner-summary-item"><strong>Available Capacity:</strong> {totalCapacity}h</span>
+            <span className={`dev-planner-summary-item allocated ${utilizationPct >= 90 ? 'high' : utilizationPct >= 50 ? 'partial' : ''}`}><strong>Allocated:</strong> {totalAllocated}h</span>
+            <span className="dev-planner-summary-item"><strong>Utilization:</strong> {utilizationPct}%</span>
+          </div>
+
+          <div className="dev-planner-layout">
+            <section className="dev-planner-left-panel">
+              <div className="dev-planner-panel-header">
+                <h2>PM Tracker Tickets</h2>
+                <span className="dev-planner-badge">{filteredPlannerTickets.length}</span>
+              </div>
+              <div className="dev-planner-filters">
+                <div className="dev-planner-search-wrap">
+                  <span className="search-icon">🔍</span>
+                  <input
+                    type="text"
+                    placeholder="Search by ID, title, or tester..."
+                    value={ticketSearch}
+                    onChange={(e) => setTicketSearch(e.target.value)}
+                    className="dev-planner-search"
+                  />
+                </div>
+                <select value={ticketStatusFilter} onChange={(e) => setTicketStatusFilter(e.target.value)} title="Filter by status">
+                  <option value="">All Statuses</option>
+                  {(ticketFilterOptions.statuses || []).map((s) => (
+                    <option key={s} value={s}>{s}</option>
+                  ))}
+                </select>
+                <select value={ticketPriorityFilter} onChange={(e) => setTicketPriorityFilter(e.target.value)} title="Filter by priority">
+                  <option value="">All Priorities</option>
+                  {(ticketFilterOptions.priorities || []).map((p) => (
+                    <option key={p} value={p}>{p}</option>
+                  ))}
+                </select>
+                <select value={ticketAssigneeFilter} onChange={(e) => setTicketAssigneeFilter(e.target.value)} title="Filter by tester">
+                  <option value="">All Testers</option>
+                  {(ticketFilterOptions.assignees || []).map((a) => (
+                    <option key={a} value={a}>{a}</option>
+                  ))}
+                </select>
+                <label className="dev-planner-filter-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={ticketUnassignedFilter}
+                    onChange={(e) => setTicketUnassignedFilter(e.target.checked)}
+                  />
+                  <span>Unassigned only</span>
+                </label>
+                <select value={hasEstimateFilter === null ? '' : String(hasEstimateFilter)} onChange={(e) => setHasEstimateFilter(e.target.value === '' ? null : e.target.value === 'true')} title="Filter by estimate">
+                  <option value="">All Estimates</option>
+                  <option value="true">With QA estimate</option>
+                  <option value="false">Without estimate</option>
+                </select>
+                {(ticketSearch || ticketStatusFilter || ticketPriorityFilter || ticketAssigneeFilter || ticketUnassignedFilter || hasEstimateFilter !== null) && (
+                  <button
+                    type="button"
+                    className="dev-planner-clear-filters"
+                    onClick={() => {
+                      setTicketSearch('');
+                      setTicketStatusFilter('');
+                      setTicketPriorityFilter('');
+                      setTicketAssigneeFilter('');
+                      setTicketUnassignedFilter(false);
+                      setHasEstimateFilter(null);
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                )}
+              </div>
+              <div className="dev-planner-ticket-list">
+                {loading ? (
+                  <div className="dev-planning-skeleton">Loading tickets…</div>
+                ) : filteredPlannerTickets.length === 0 ? (
+                  <div className="dev-planning-empty">
+                    <p>No tickets found.</p>
+                    <p className="dev-planning-empty-hint">Sync PM Tracker from the app or clear filters above.</p>
+                  </div>
+                ) : (
+                  filteredPlannerTickets.slice(0, 100).map((t) => (
+                    <div key={t.ticket_id} className={`dev-planner-ticket-card ${urlTicketId && t.ticket_id === parseInt(urlTicketId, 10) ? 'highlight-from-link' : ''}`}>
+                      <div className="dev-planner-ticket-top">
+                        <span className="dev-planner-ticket-id">
+                          <Link to={`/tickets?ticket=${t.ticket_id}`} onClick={(e) => e.stopPropagation()}>#{t.ticket_id}</Link>
+                          <TicketExternalLink ticketId={t.ticket_id} className="dev-planner-ticket-ext-link" />
+                        </span>
+                        <span className={`dev-planner-status-badge status-${(t.status || '').toLowerCase().replace(/\s+/g, '-').slice(0, 20)}`}>{t.status || 'Open'}</span>
+                      </div>
+                      <p className="dev-planner-ticket-title" title={t.title}>{t.title?.slice(0, 60)}{(t.title?.length || 0) > 60 ? '…' : ''}</p>
+                      <div className="dev-planner-ticket-hours">
+                        <span>Dev: {t.dev_estimate_hours != null && t.dev_estimate_hours > 0 ? `${t.dev_estimate_hours}h` : '—'}</span>
+                        <span>QA: {t.qa_estimate_hours != null && t.qa_estimate_hours > 0 ? `${t.qa_estimate_hours}h` : '—'}</span>
+                      </div>
+                      <button type="button" className="dev-planner-ticket-plan-btn" onClick={() => openMultiPlanModal(t)} title="Plan for multiple testers">Plan</button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="dev-planner-right-panel">
+              <div className="dev-planner-panel-header">
+                <h2>QA Resources</h2>
+                <div className="dev-planner-resource-controls">
+                  <div className="dev-planner-user-search-wrap">
+                    <span className="search-icon">🔍</span>
+                    <input
+                      type="text"
+                      placeholder="Search by name..."
+                      value={plannerEmployeeSearch}
+                      onChange={(e) => setPlannerEmployeeSearch(e.target.value)}
+                      className="dev-planner-user-search"
+                    />
+                  </div>
+                  <label className="dev-planner-sort-label">
+                    Sort:
+                    <select
+                      value={sortConfig.key}
+                      onChange={(e) => handleSort(e.target.value)}
+                      className="dev-planner-sort-select"
+                    >
+                      <option value="employee_name">Name</option>
+                      <option value="allocated_hours">Allocated (h)</option>
+                      <option value="remaining_hours">Remaining (h)</option>
+                      <option value="role">Role</option>
+                    </select>
+                    <button
+                      type="button"
+                      className="dev-planner-sort-direction"
+                      onClick={() => handleSort(sortConfig.key)}
+                      title={sortConfig.direction === 'asc' ? 'Ascending (click for descending)' : 'Descending (click for ascending)'}
+                    >
+                      {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                    </button>
+                  </label>
+                  <div className="dev-planner-resource-tabs">
+                    {['all', 'available', 'partial', 'full'].map((tab) => (
+                      <button
+                        key={tab}
+                        type="button"
+                        className={`dev-planner-tab ${resourceFilter === tab ? 'active' : ''}`}
+                        onClick={() => setResourceFilter(tab)}
+                      >
+                        {tab.charAt(0).toUpperCase() + tab.slice(1)}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+              {loading ? (
+                <div className="dev-planning-skeleton">Loading…</div>
+              ) : filteredEmployees.length === 0 ? (
+                <div className="dev-planning-empty">
+                  <p>No resources match the filter.</p>
+                </div>
+              ) : (
+                <div className="dev-planner-resource-sections">
+                  {(sortedEmployeeGroups || [{ lead_name: null, members: sortedEmployees }]).map((group, gIdx) => (
+                    <div key={group.lead_name || `group-${gIdx}`} className="dev-planner-lead-group">
+                      {(group.lead_name || (filteredEmployeeGroups && filteredEmployeeGroups.length > 1)) && (
+                        <h3 className="dev-planner-lead-header">
+                          {group.lead_name ? `${group.lead_name}'s Team` : 'Unassigned'}
+                        </h3>
+                      )}
+                      <div className={`dev-planner-resource-grid ${plannerViewMode === 'list' ? 'list-mode' : ''}`}>
+                        {(group.members || []).map((emp) => {
+                    const empTasks = tasksByEmployee[emp.employee_name] || [];
+                    const statusKey = (emp.allocation_status || '').toLowerCase().replace(/\s+/g, '-');
+                    const initials = (emp.employee_name || 'XX').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
+                    return (
+                      <div
+                        key={emp.employee_id}
+                        className={`dev-planner-resource-card ${statusKey} ${urlEmployeeId && emp.employee_id === urlEmployeeId ? 'highlight-from-link' : ''}`}
+                      >
+                        <div className="dev-planner-resource-header">
+                          <div className="dev-planner-avatar">{initials}</div>
+                          <div className="dev-planner-resource-info">
+                            <Link to={`/employees/${emp.employee_id}`} className="dev-planner-resource-name" onClick={(e) => e.stopPropagation()}>{emp.employee_name}</Link>
+                            <span className="dev-planner-resource-role">{emp.role || 'QA'}</span>
+                          </div>
+                          <span className={`dev-planner-allocation-badge ${statusKey}`}>
+                            {emp.allocation_status === 'Fully Allocated' ? 'Full' : emp.allocation_status === 'Partially Allocated' ? 'Partial' : 'Available'}
+                          </span>
+                        </div>
+                        <div className="dev-planner-progress-bar">
+                          <div className="dev-planner-progress-fill" style={{ width: `${Math.min(100, (emp.allocated_hours / HOURS_PER_WEEK) * 100)}%` }} />
+                        </div>
+                        <div className="dev-planner-progress-label">
+                          {emp.allocated_hours}h / {HOURS_PER_WEEK}h
+                        </div>
+                        <div className="dev-planner-remaining">Remaining: {emp.remaining_hours}h</div>
+                        <div className="dev-planner-assigned-tasks">
+                          {empTasks.length === 0 ? (
+                            canEdit && (emp.can_manage_tasks !== false) && emp.remaining_hours > 0 ? (
+                              <button type="button" className="dev-planner-add-task-btn" onClick={() => openAddTask(emp)}>+ Add Task</button>
+                            ) : emp.remaining_hours <= 0 ? (
+                              <span className="dev-planner-fully-allocated">+ Fully Allocated</span>
+                            ) : (
+                              <span className="dev-planner-no-tasks">No tasks assigned</span>
+                            )
+                          ) : (
+                            <>
+                              {empTasks.map((t) => (
+                                <div key={t.id} className="dev-planner-task-item">
+                                  <span className="dev-planner-task-id">
+                                    {t.ticket_id ? (
+                                      <Link to={`/tickets?ticket=${t.ticket_id}`} onClick={(e) => e.stopPropagation()}>#{t.ticket_id}</Link>
+                                    ) : (
+                                      t.generic_category
+                                    )}
+                                  </span>
+                                  <span className="dev-planner-task-desc">{t.activity_description?.slice(0, 35)}{(t.activity_description?.length || 0) > 35 ? '…' : ''}</span>
+                                  <span className="dev-planner-task-hours">{getTaskDisplayHours(t)}h</span>
+                                  <span className="dev-planner-task-dates">{t.start_date && t.end_date ? `${formatDisplayDateWithDay(t.start_date)} → ${formatDisplayDateWithDay(t.end_date)}` : formatDisplayDate(t.start_date)}</span>
+                                  {canEdit && (emp.can_manage_tasks !== false) && (
+                                    <div className="dev-planner-task-actions">
+                                      <button
+                                        type="button"
+                                        className="dev-planner-task-edit"
+                                        title="Edit not available"
+                                        disabled
+                                      >
+                                        ✎
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="dev-planner-task-remove"
+                                        onClick={() => deleteTask(t.id)}
+                                        title="Remove"
+                                      >
+                                        ×
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                              {canEdit && (emp.can_manage_tasks !== false) && emp.remaining_hours > 0 && (
+                                <button type="button" className="dev-planner-add-task-btn small" onClick={() => openAddTask(emp)}>+ Add Task</button>
+                              )}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </div>
+        </div>
+      )}
+
+      {view === 'calendar' && (
+        <div className="dev-planning-calendar-view">
+          <div className="dev-planning-calendar-header">
+            <div className="dev-planning-calendar-controls">
+              <div className="calendar-view-toggle">
+                <button type="button" className={calendarView === 'weekly' ? 'active' : ''} onClick={() => setCalendarView('weekly')}>Weekly</button>
+                <button type="button" className={calendarView === 'monthly' ? 'active' : ''} onClick={() => setCalendarView('monthly')}>Monthly</button>
+              </div>
+              <div className="calendar-date-controls">
+                {calendarView === 'weekly' ? (
+                  <>
+                    <label>Week:</label>
+                    <button type="button" className="calendar-nav-btn" onClick={() => {
+                      const d = new Date(weekStart + 'T12:00:00');
+                      d.setDate(d.getDate() - 7);
+                      setWeekStart(formatAPIDate(d));
+                    }}>←</button>
+                    <input
+                      type="date"
+                      value={weekStart}
+                      onChange={(e) => setWeekStart(e.target.value)}
+                      className="calendar-week-input"
+                    />
+                    <button type="button" className="calendar-nav-btn" onClick={() => {
+                      const d = new Date(weekStart + 'T12:00:00');
+                      d.setDate(d.getDate() + 7);
+                      setWeekStart(formatAPIDate(d));
+                    }}>→</button>
+                  </>
+                ) : (
+                  <>
+                    <label>Month:</label>
+                    <select
+                      value={parseInt(weekStart.slice(5, 7), 10)}
+                      onChange={(e) => {
+                        const m = String(e.target.value).padStart(2, '0');
+                        setWeekStart(`${weekStart.slice(0, 4)}-${m}-01`);
+                      }}
+                      className="calendar-month-select"
+                    >
+                      {['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].map((m, i) => (
+                        <option key={i + 1} value={i + 1}>{m}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={parseInt(weekStart.slice(0, 4), 10)}
+                      onChange={(e) => setWeekStart(`${e.target.value}-${weekStart.slice(5, 7)}-01`)}
+                      className="calendar-year-select"
+                    >
+                      {[2024, 2025, 2026, 2027, 2028].map((y) => (
+                        <option key={y} value={y}>{y}</option>
+                      ))}
+                    </select>
+                  </>
+                )}
+                <button type="button" className="btn-secondary calendar-today-btn" onClick={() => setWeekStart(formatAPIDate(new Date()))}>Today</button>
+              </div>
+            </div>
+            {calendarSummary && (
+              <div className="calendar-summary-section">
+                <div className="calendar-period-label">
+                  {calendarView === 'weekly'
+                    ? `Week of ${formatDisplayDateWithDay(calendarData?.start || weekStart)} – ${formatDisplayDateWithDay(calendarData?.end || weekStart)}`
+                    : (() => {
+                        const [y, m] = (calendarData?.start || weekStart).split('-');
+                        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                        return `${monthNames[parseInt(m, 10) - 1]} ${y}`;
+                      })()}
+                </div>
+                <div className="calendar-summary-stats">
+                  <div className="calendar-stat">
+                    <span className="calendar-stat-label">Employees</span>
+                    <span className="calendar-stat-value">{calendarSummary.employees}</span>
+                  </div>
+                  <div className="calendar-stat">
+                    <span className="calendar-stat-label">Total Hours</span>
+                    <span className="calendar-stat-value">{calendarSummary.totalHours}h</span>
+                  </div>
+                  <div className="calendar-stat">
+                    <span className="calendar-stat-label">Avg Hours/Day</span>
+                    <span className="calendar-stat-value">{calendarSummary.avgHours}h</span>
+                  </div>
+                  <div className="calendar-stat">
+                    <span className="calendar-stat-label">Utilization</span>
+                    <span className="calendar-stat-value">{calendarSummary.utilization}%</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+          {view === 'calendar' && !calendarData && !error && (
+            <div className="qa-planning-skeleton">Loading calendar...</div>
+          )}
+          {view === 'calendar' && error && (
+            <div className="qa-planning-empty">
+              <p>{error}</p>
+              <button type="button" className="btn-secondary" onClick={() => { setError(null); loadCalendarData(); }}>Retry</button>
+            </div>
+          )}
+          {view === 'calendar' && calendarData && calendarRows.length === 0 && !error && (
+            <div className="qa-planning-empty">No QA team members or no data for this period.</div>
+          )}
+          {calendarRows.length > 0 && (
+            <>
+            <div className="calendar-legend">
+              <span className="calendar-legend-item"><span className="calendar-legend-swatch full" /> Fully occupied (8h)</span>
+              <span className="calendar-legend-item"><span className="calendar-legend-swatch partial" /> Partially occupied</span>
+              <span className="calendar-legend-item"><span className="calendar-legend-swatch empty" /> Not occupied</span>
+            </div>
+            <div className="dev-planning-calendar-grid-wrap">
+              <table className="dev-planning-calendar-grid">
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    {calendarDayKeys.map((d) => (
+                      <th key={d}>{formatDisplayDate(d)}</th>
+                    ))}
+                    <th className="total-col">Total</th>
+                    <th className="avg-col">Avg</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {calendarRows.map((row) => {
+                    const days = Object.values(row.days || {});
+                    const totalHours = days.reduce((s, d) => s + (d.hours || 0), 0);
+                    const avgHours = days.length > 0 ? (totalHours / days.length).toFixed(1) : 0;
+                    return (
+                      <tr key={row.employee_id || row.employee_name}>
+                        <td className="emp-cell">
+                          <div className="calendar-emp-info">
+                            <span>
+                              {row.employee_id ? (
+                                <Link to={`/employees/${row.employee_id}`} className="emp-name-link">{row.employee_name}</Link>
+                              ) : (
+                                row.employee_name
+                              )}
+                            </span>
+                            {row.allocation_status && (
+                              <span className={`calendar-allocation-badge ${(row.allocation_status || '').toLowerCase().replace(/\s+/g, '-')}`}>
+                                {row.allocation_status === 'Fully Allocated' ? 'Full' : row.allocation_status === 'Partially Allocated' ? 'Partial' : 'Available'}
+                              </span>
+                            )}
+                            {row.remaining_hours != null && (
+                              <span className="calendar-remaining-hint">{row.remaining_hours}h left</span>
+                            )}
+                          </div>
+                        </td>
+                        {Object.entries(row.days || {}).sort((a, b) => a[0].localeCompare(b[0])).map(([day, cell]) => {
+                          const items = cell.items || [];
+                          const actualItems = cell.actual_items || [];
+                          const isPastDay = new Date(day) < new Date(new Date().setHours(0, 0, 0, 0));
+                          const displayHours = isPastDay && cell.actual_hours != null ? cell.actual_hours : cell.hours;
+                          const displayItems = isPastDay && actualItems.length > 0 ? actualItems : items;
+                          
+                          return (
+                            <td
+                              key={day}
+                              className={`cell-hours clickable ${cell.total >= 8 ? 'full' : cell.hours > 0 ? 'partial' : 'empty'} ${isPastDay && cell.actual_hours != null ? 'has-actuals' : ''}`}
+                              title={isPastDay 
+                                ? `Plan: ${cell.hours}h | Actual: ${cell.actual_hours}h${cell.leave_hours > 0 ? ` | Leave: ${cell.leave_hours}h` : ''}. Click for details.`
+                                : `${cell.hours}h allocated${cell.leave_hours > 0 ? `, ${cell.leave_hours}h leave` : ''}. Click for details.`}
+                              onClick={() => openDayDetail(row.employee_name, day)}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDayDetail(row.employee_name, day); } }}
+                            >
+                              <span className="hours">
+                                {isPastDay && cell.actual_hours != null ? (
+                                  <>
+                                    <span className="plan-hours" title="planned">{cell.hours}h</span>
+                                    <span className="actual-hours" title="actual">{cell.actual_hours}h</span>
+                                  </>
+                                ) : (
+                                  displayHours + 'h'
+                                )}
+                              </span>
+                              {displayItems.length > 0 && (
+                                <span className="labels">
+                                  {displayItems.map((it, i) => {
+                                    const cat = it.category || (it.ticket_id ? 'Ticket' : 'Miscellaneous');
+                                    const color = TASK_CATEGORY_COLORS[cat] || TASK_CATEGORY_COLORS.Miscellaneous;
+                                    const baseLabel = it.text || (it.ticket_id ? `#${it.ticket_id}` : (it.category || it.description || 'Task'));
+                                    const labelWithPriority = it.ticket_priority ? `${baseLabel} (${it.ticket_priority})` : baseLabel;
+                                    return (
+                                      <span key={i} className="cell-label-wrap">
+                                        {i > 0 && ', '}
+                                        {it.ticket_id ? (
+                                          <a
+                                            href={getTicketTrackingUrl(it.ticket_id)}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="cell-task-link"
+                                            style={{ color }}
+                                            onClick={(e) => e.stopPropagation()}
+                                            title={it.ticket_priority ? `Priority: ${it.ticket_priority}` : undefined}
+                                          >
+                                            {labelWithPriority}
+                                          </a>
+                                        ) : (
+                                          <span className="cell-task-label" style={{ color }} title={it.ticket_priority ? `Priority: ${it.ticket_priority}` : undefined}>{labelWithPriority}</span>
+                                        )}
+                                      </span>
+                                    );
+                                  })}
+                                </span>
+                              )}
+                            </td>
+                          );
+                        })}
+                        <td className="total-col">{totalHours}h</td>
+                        <td className="avg-col">{avgHours}h</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {view === 'resource-blocked' && (
+        <div className="resource-blocked-view">
+          <div className="resource-blocked-header">
+            <h2 className="resource-blocked-title">Resource Blocked Until – QA Planning</h2>
+            <p className="resource-blocked-subtitle">See when each QA resource is blocked based on current allocations. Helps plan new tasks.</p>
+            <div className="resource-blocked-week-nav">
+              <button type="button" className="dev-planner-nav-btn" onClick={() => { const d = new Date(weekStart + 'T12:00:00'); d.setDate(d.getDate() - 7); setWeekStart(formatAPIDate(d)); }} aria-label="Previous week">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
+              </button>
+              <label className="dev-planner-week-display">
+                <input type="date" value={weekStart} onChange={(e) => setWeekStart(e.target.value)} className="dev-planner-week-picker" title="Week" />
+                <span className="dev-planner-week-label">{formatPlanningWeek(weekStart)}</span>
+              </label>
+              <button type="button" className="dev-planner-nav-btn" onClick={() => { const d = new Date(weekStart + 'T12:00:00'); d.setDate(d.getDate() + 7); setWeekStart(formatAPIDate(d)); }} aria-label="Next week">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 18l6-6-6-6"/></svg>
+              </button>
+              <button type="button" className="dev-planner-today-btn" onClick={() => setWeekStart(formatAPIDate(getWeekMonday(new Date())))}>Today</button>
+            </div>
+          </div>
+          {loading ? (
+            <div className="qa-planning-skeleton">Loading…</div>
+          ) : !weekData ? (
+            <div className="qa-planning-empty">
+              <p>No planning data. Create a week from the Weekly Planner first.</p>
+              <button type="button" className="btn-secondary" onClick={() => { setView('planner'); loadWeekData(); }}>Go to Weekly Planner</button>
+            </div>
+          ) : (
+            <div className="resource-blocked-table-wrap">
+              <table className="resource-blocked-table">
+                <thead>
+                  <tr>
+                    <th>Employee</th>
+                    <th>Role</th>
+                    <th>Allocated (h)</th>
+                    <th>Tasks (Priority)</th>
+                    <th>Blocked Until</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(employees || []).map((emp) => {
+                    const tasks = weekData?.tasks || [];
+                    let maxDate = null;
+                    const empTasks = [];
+                    for (const t of tasks) {
+                      if (t.employee_name !== emp.employee_name) continue;
+                      for (const a of t.allocations || []) {
+                        if (a.date && (!maxDate || a.date > maxDate)) maxDate = a.date;
+                      }
+                      const label = t.ticket_id ? `#${t.ticket_id}` : (t.generic_category || 'Task');
+                      const pri = t.ticket_priority ? ` (${t.ticket_priority})` : '';
+                      empTasks.push({ ticket_id: t.ticket_id, label, priority: t.ticket_priority, full: `${label}${pri}` });
+                    }
+                    const statusKey = (emp.allocation_status || '').toLowerCase().replace(/\s+/g, '-');
+                    return (
+                      <tr key={emp.employee_id}>
+                        <td>
+                          <Link to={`/employees/${emp.employee_id}`} className="resource-blocked-emp-link">{emp.employee_name}</Link>
+                        </td>
+                        <td>{emp.role || 'QA'}</td>
+                        <td>{emp.allocated_hours ?? 0}h</td>
+                        <td className="resource-blocked-tasks-cell">
+                          {empTasks.length === 0 ? (
+                            <span className="resource-blocked-available">—</span>
+                          ) : (
+                            <span className="resource-blocked-task-list" title={empTasks.map((x) => x.full).join(', ')}>
+                              {empTasks.map((task, idx) => (
+                                <span key={idx} className="resource-blocked-task-item">
+                                  {idx > 0 && ', '}
+                                  {task.ticket_id ? (
+                                    <Link to={`/tickets?ticket=${task.ticket_id}`} className="resource-blocked-task-link" onClick={(e) => e.stopPropagation()}>
+                                      {task.full}
+                                    </Link>
+                                  ) : (
+                                    task.full
+                                  )}
+                                </span>
+                              ))}
+                            </span>
+                          )}
+                        </td>
+                        <td className="resource-blocked-date-cell">
+                          {maxDate ? formatDisplayDateWithDay(maxDate) : <span className="resource-blocked-available">Available</span>}
+                        </td>
+                        <td>
+                          <span className={`resource-blocked-status ${statusKey}`}>
+                            {emp.allocation_status === 'Fully Allocated' ? 'Full' : emp.allocation_status === 'Partially Allocated' ? 'Partial' : 'Available'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Multi-tester plan modal */}
+      {multiPlanOpen && multiPlanTicket && (
+        <div className="qa-modal-overlay" onClick={closeMultiPlanModal}>
+          <div className="qa-modal qa-multi-plan-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="qa-modal-header">
+              <h3>Assign Ticket to Multiple Testers</h3>
+              <button type="button" className="qa-modal-close" onClick={closeMultiPlanModal} title="Close">×</button>
+            </div>
+            
+            <div className="qa-ticket-info">
+              <div className="qa-ticket-info-header">
+                <span className="qa-priority-pill" style={{ backgroundColor: PRIORITY_COLORS[multiPlanTicket.priority] || '#6b7280' }}>
+                  {multiPlanTicket.priority}
+                </span>
+                <strong>#{multiPlanTicket.ticket_id}</strong>
+              </div>
+              <p className="qa-ticket-info-title">{multiPlanTicket.title}</p>
+              {multiPlanTicket.qa_estimate_hours != null && multiPlanTicket.qa_estimate_hours > 0 ? (
+                <p className="qa-ticket-info-estimate">QA Estimate: {multiPlanTicket.qa_estimate_hours}h</p>
+              ) : (
+                <p className="qa-ticket-info-estimate qa-estimate-warning">⚠ No QA Estimate set</p>
+              )}
+              {!(multiPlanTicket.qc_tester || '').trim() && (
+                <p className="qa-ticket-info-estimate qa-estimate-warning">⚠ QC Tester required in PM Tracker</p>
+              )}
+              {multiPlanErrors.ticket && <div className="qa-form-error qa-form-error-block">{multiPlanErrors.ticket}</div>}
+            </div>
+
+            <div className="qa-form-group">
+              <label>Task Type *</label>
+              <select
+                value={multiPlanForm.task_type || ''}
+                onChange={(e) => setMultiPlanForm({ ...multiPlanForm, task_type: e.target.value })}
+              >
+                <option value="">Select task type</option>
+                {QA_TASK_TYPES.map((tt) => (
+                  <option key={tt} value={tt}>{tt}</option>
+                ))}
+              </select>
+              {multiPlanErrors.task_type && <span className="qa-form-error">{multiPlanErrors.task_type}</span>}
+            </div>
+
+            {multiPlanResults ? (
+              <div className="qa-multi-plan-results">
+                {multiPlanResults.success.length > 0 && (
+                  <div className="qa-multi-plan-success">
+                    <strong>✓ Created {multiPlanResults.success.length} task(s):</strong>
+                    <ul>
+                      {multiPlanResults.success.map((r, i) => (
+                        <li key={i}>{r.employee}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {multiPlanResults.failed.length > 0 && (
+                  <div className="qa-multi-plan-failed">
+                    <strong>✗ Failed {multiPlanResults.failed.length}:</strong>
+                    <ul>
+                      {multiPlanResults.failed.map((r, i) => (
+                        <li key={i}>{r.employee}: {r.error}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                <div className="qa-modal-actions">
+                  <button type="button" className="qa-btn-primary" onClick={closeMultiPlanModal}>Close</button>
+                </div>
+              </div>
+            ) : (
+              <form onSubmit={submitMultiPlan}>
+                <div className="qa-form-group">
+                  <label>Select Testers *</label>
+                  <div className="qa-multi-select-list">
+                    {(employees || []).filter((emp) => emp.can_manage_tasks !== false && emp.employee_id !== user?.employee_id).map((emp) => (
+                      <label key={emp.employee_id} className={`qa-multi-select-item ${multiPlanSelectedTesters.includes(emp.employee_id) ? 'selected' : ''}`}>
+                        <input
+                          type="checkbox"
+                          checked={multiPlanSelectedTesters.includes(emp.employee_id)}
+                          onChange={() => toggleMultiPlanTester(emp.employee_id)}
+                        />
+                        <span className="qa-emp-name">{emp.employee_name}</span>
+                        <span className="qa-emp-hours">{emp.remaining_hours || (HOURS_PER_WEEK - (emp.allocated_hours || 0))}h available</span>
+                      </label>
+                    ))}
+                  </div>
+                  {multiPlanErrors.testers && <span className="qa-form-error">{multiPlanErrors.testers}</span>}
+                </div>
+
+                <div className="qa-form-group">
+                  <label>Task Description *</label>
+                  <textarea
+                    value={multiPlanForm.activity_description}
+                    onChange={(e) => setMultiPlanForm({ ...multiPlanForm, activity_description: e.target.value })}
+                    rows={2}
+                    placeholder="What will be done?"
+                  />
+                  {multiPlanErrors.activity_description && <span className="qa-form-error">{multiPlanErrors.activity_description}</span>}
+                </div>
+
+                <div className="qa-form-row-grid">
+                  <div className="qa-form-group">
+                    <label>Start Date *</label>
+                    <input
+                      type="date"
+                      value={multiPlanForm.start_date}
+                      min={formatAPIDate(new Date())}
+                      onChange={(e) => setMultiPlanForm({ ...multiPlanForm, start_date: e.target.value })}
+                    />
+                    {multiPlanErrors.start_date && <span className="qa-form-error">{multiPlanErrors.start_date}</span>}
+                  </div>
+                  <div className="qa-form-group">
+                    <label>Duration per tester (hours)</label>
+                    <input
+                      type="number"
+                      min={0.5}
+                      step={0.5}
+                      value={multiPlanForm.total_hours}
+                      onChange={(e) => setMultiPlanForm({ ...multiPlanForm, total_hours: parseFloat(e.target.value) || 8 })}
+                    />
+                    {multiPlanErrors.total_hours && <span className="qa-form-error">{multiPlanErrors.total_hours}</span>}
+                  </div>
+                </div>
+
+                <div className="qa-form-row-grid">
+                  <div className="qa-form-group">
+                    <label>Max hours per day</label>
+                    <select
+                      value={multiPlanForm.max_hours_per_day}
+                      onChange={(e) => setMultiPlanForm({ ...multiPlanForm, max_hours_per_day: parseFloat(e.target.value) })}
+                    >
+                      {MAX_HOURS_PER_DAY_OPTIONS.map((h) => (
+                        <option key={h} value={h}>{h}h</option>
+                      ))}
+                    </select>
+                    {multiPlanErrors.max_hours_per_day && <span className="qa-form-error">{multiPlanErrors.max_hours_per_day}</span>}
+                  </div>
+                </div>
+
+                {multiPlanErrors.submit && <div className="qa-form-error qa-form-error-block">{multiPlanErrors.submit}</div>}
+
+                <div className="qa-modal-actions">
+                  <button type="button" onClick={closeMultiPlanModal}>Cancel</button>
+                  <button type="submit" className="qa-btn-primary" disabled={multiPlanSubmitting}>
+                    {multiPlanSubmitting ? 'Creating...' : `Assign to ${multiPlanSelectedTesters.length} Tester${multiPlanSelectedTesters.length !== 1 ? 's' : ''}`}
+                  </button>
+                </div>
+              </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Add Task Modal (single employee) */}
+      {addTaskOpen && (
+        <div className="qa-modal-overlay" onClick={closeAddTask}>
+          <div className="qa-modal qa-add-task-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="qa-modal-header">
+              <h3>Add QA Task</h3>
+              <button type="button" className="qa-modal-close" onClick={closeAddTask} title="Close">×</button>
+            </div>
+            
+            {addTaskEmployee && form.task_category !== 'Ticket' && (
+              <p className="qa-modal-subtitle">
+                Assigning to: <strong>{addTaskEmployee.employee_name}</strong>
+                ({addTaskEmployee.remaining_hours || (HOURS_PER_WEEK - (addTaskEmployee.allocated_hours || 0))}h available)
+              </p>
+            )}
+            
+            <form onSubmit={submitAddTask}>
+              <div className="qa-form-group">
+                <label>Task Category *</label>
+                <select 
+                  value={form.task_category} 
+                  onChange={(e) => {
+                    const cat = e.target.value;
+                    const updates = { task_category: cat, ticket_id: null, ticket_id_input: '', task_type: '', generic_category: cat !== 'Ticket' ? cat : '' };
+                    if (cat === 'Leave') {
+                      updates.total_hours = 8;
+                      updates.max_hours_per_day = 8;
+                    }
+                    setForm({ ...form, ...updates });
+                    setLookedUpTicket(null);
+                    if (cat === 'Ticket' && addTaskEmployee && addTaskSelectedTesters.length === 0) {
+                      setAddTaskSelectedTesters([addTaskEmployee.employee_id]);
+                    }
+                  }}
+                >
+                  {TASK_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                {formErrors.task_category && <span className="qa-form-error">{formErrors.task_category}</span>}
+              </div>
+
+              {form.task_category === 'Ticket' && (
+                <div className="qa-form-group">
+                  <label>Assign to Tester(s) *</label>
+                  <div className="qa-multi-select-list">
+                    {(weekData?.employees || []).filter((emp) => emp.can_manage_tasks !== false && emp.employee_id !== user?.employee_id).map((emp) => {
+                      const avail = selectedTestersAvailability[emp.employee_id];
+                      const isSelected = addTaskSelectedTesters.includes(emp.employee_id);
+                      const weeklyHours = emp.remaining_hours ?? (HOURS_PER_WEEK - (emp.allocated_hours || 0));
+                      const startDateHours = form.start_date && avail ? avail.availableOnStartDate : null;
+                      const hasAllocError = isSelected && avail?.allocationError;
+                      return (
+                        <label key={emp.employee_id} className={`qa-multi-select-item ${isSelected ? 'selected' : ''} ${hasAllocError ? 'qa-alloc-error' : ''}`}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleAddTaskTester(emp.employee_id)}
+                          />
+                          <span className="qa-emp-name">{emp.employee_name}</span>
+                          <span className="qa-emp-hours">
+                            ({weeklyHours}h week
+                            {startDateHours != null && ` · ${startDateHours}h on start date`})
+                          </span>
+                          {hasAllocError && <span className="qa-emp-alloc-error" title={avail.allocationError}>⚠</span>}
+                        </label>
+                      );
+                    })}
+                  </div>
+                  {addTaskSelectedTesters.length > 1 && form.start_date && Object.keys(selectedTestersAvailability).length > 0 && (
+                    <div className="qa-availability-summary">
+                      <strong>On start date:</strong>{' '}
+                      {addTaskSelectedTesters.map((id) => {
+                        const emp = (weekData?.employees || []).find((e) => e.employee_id === id);
+                        const a = selectedTestersAvailability[id];
+                        if (!emp || !a) return null;
+                        return `${emp.employee_name}: ${a.availableOnStartDate}h${a.allocationError ? ' ⚠' : ''}`;
+                      }).filter(Boolean).join(', ')}
+                    </div>
+                  )}
+                  {formErrors.testers && <span className="qa-form-error">{formErrors.testers}</span>}
+                </div>
+              )}
+
+              {form.task_category === 'Ticket' && (
+                <div className="qa-form-group qa-ticket-search-group" ref={ticketInputRef}>
+                  {!form.ticket_id && !(form.ticket_id_input || '').trim() && (
+                    <div className="qa-ticket-suggestions-categorized">
+                      <p className="qa-suggestions-help">Suggested tickets – select one to assign:</p>
+                      {ticketSuggestionsLoading ? (
+                        <p className="qa-suggestions-loading">Loading suggestions…</p>
+                      ) : ticketSuggestionsCategorized ? (
+                        <div className="qa-suggestions-categories">
+                          {[
+                            { key: 'next_in_queue', label: 'Next in queue (by priority)', list: ticketSuggestionsCategorized.next_in_queue || [] },
+                            { key: 'on_hold', label: 'On hold (next when released)', list: ticketSuggestionsCategorized.on_hold || [] },
+                            { key: 'for_retesting', label: 'For retesting (after QC fail)', list: ticketSuggestionsCategorized.for_retesting || [] },
+                            { key: 'ageing', label: 'Ageing in QA (most days)', list: ticketSuggestionsCategorized.ageing || [] },
+                          ].filter((c) => c.list.length > 0).map((cat) => (
+                            <div key={cat.key} className="qa-suggestion-category">
+                              <span className="qa-suggestion-category-label">{cat.label}</span>
+                              <div className="qa-suggestion-category-items">
+                                {cat.list.map((t) => (
+                                  <button
+                                    key={t.ticket_id}
+                                    type="button"
+                                    className="qa-suggestion-chip"
+                                    onClick={() => selectTicket(t)}
+                                    title={t.title}
+                                  >
+                                    <span className={`qa-sug-platform qa-platform-${(t.platform || 'web').toLowerCase()}`}>{t.platform || 'Web'}</span>
+                                    <span className="qa-sug-id">#{t.ticket_id}</span>
+                                    <span className="qa-sug-title">{t.title?.slice(0, 35)}{(t.title?.length || 0) > 35 ? '…' : ''}</span>
+                                    <span className="qa-sug-meta">{t.qa_estimate_hours ? `${t.qa_estimate_hours}h` : ''} {t.days_in_qc > 0 ? `· ${t.days_in_qc}d` : ''}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
+                  <label>Ticket ID *</label>
+                  <input
+                    type="text"
+                    value={form.ticket_id_input}
+                    onChange={(e) => setForm({ ...form, ticket_id_input: e.target.value, ticket_id: null })}
+                    onFocus={() => ticketSuggestions.length > 0 && setShowTicketSuggestions(true)}
+                    placeholder="Or type ticket ID / title to search..."
+                    autoComplete="off"
+                  />
+                  {ticketLookupLoading && <span className="qa-loading-hint">Looking up...</span>}
+                  {showTicketSuggestions && ticketSuggestions.length > 0 && (
+                    <div className="qa-ticket-suggestions" ref={ticketSuggestionsRef}>
+                      {ticketSuggestions.map((t) => (
+                        <button
+                          key={t.ticket_id}
+                          type="button"
+                          className="qa-ticket-suggestion-item"
+                          onClick={() => selectTicket(t)}
+                        >
+                          <span className="qa-sug-id">#{t.ticket_id}</span>
+                          <span className="qa-sug-title">{t.title?.slice(0, 40)}{(t.title?.length || 0) > 40 ? '…' : ''}</span>
+                          <span className="qa-sug-meta">{t.qa_estimate_hours ? `${t.qa_estimate_hours}h` : '—'}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {formErrors.ticket_id && <span className="qa-form-error">{formErrors.ticket_id}</span>}
+                </div>
+              )}
+
+              {form.task_category === 'Ticket' && (
+                <div className="qa-form-group">
+                  <label>Task Type *</label>
+                  <select
+                    value={form.task_type || ''}
+                    onChange={(e) => setForm({ ...form, task_type: e.target.value })}
+                  >
+                    <option value="">Select task type</option>
+                    {QA_TASK_TYPES.map((tt) => (
+                      <option key={tt} value={tt}>{tt}</option>
+                    ))}
+                  </select>
+                  {formErrors.task_type && <span className="qa-form-error">{formErrors.task_type}</span>}
+                </div>
+              )}
+
+              {lookedUpTicket && (
+                <div className="qa-ticket-details-card">
+                  <div className="qa-ticket-card-header">
+                    <div className="qa-ticket-card-header-content">
+                      <span className="qa-priority-pill" style={{ backgroundColor: PRIORITY_COLORS[lookedUpTicket.priority] || '#6b7280' }}>
+                        {lookedUpTicket.priority}
+                      </span>
+                      <strong>#{lookedUpTicket.ticket_id}</strong>
+                      <span className="qa-ticket-card-title">{lookedUpTicket.title?.slice(0, 50)}{(lookedUpTicket.title?.length || 0) > 50 ? '…' : ''}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="qa-ticket-card-refresh"
+                      onClick={() => form.ticket_id && fetchTicketDetails(form.ticket_id)}
+                      disabled={ticketLookupLoading}
+                      title="Refresh from PM Tracker (if you updated QC Tester or QA Estimate there)"
+                    >
+                      {ticketLookupLoading ? '…' : '↻ Refresh'}
+                    </button>
+                  </div>
+                  <div className="qa-ticket-card-body">
+                    <div className="qa-ticket-card-field">
+                      <span className="qa-field-label">QA Estimate</span>
+                      <span className="qa-field-value">{lookedUpTicket.qa_estimate_hours ?? '—'}h</span>
+                    </div>
+                    <div className="qa-ticket-card-field">
+                      <span className="qa-field-label">Remaining</span>
+                      <span className="qa-field-value">{lookedUpTicket.remaining_qa_hours ?? lookedUpTicket.qa_estimate_hours ?? '—'}h</span>
+                    </div>
+                    <div className="qa-ticket-card-field">
+                      <span className="qa-field-label">Status</span>
+                      <span className="qa-field-value">{lookedUpTicket.status}</span>
+                    </div>
+                    <div className="qa-ticket-card-field">
+                      <span className="qa-field-label">QC Tester</span>
+                      <span className={`qa-field-value ${!(lookedUpTicket.qc_tester || '').trim() ? 'qa-field-missing' : ''}`}>
+                        {lookedUpTicket.qc_tester || '— (Required in PM)'}
+                      </span>
+                    </div>
+                    <div className="qa-ticket-card-field">
+                      <span className="qa-field-label">Actual QA</span>
+                      <span className="qa-field-value">{lookedUpTicket.actual_qa_hours != null ? `${lookedUpTicket.actual_qa_hours}h` : '—'}</span>
+                    </div>
+                  </div>
+                  {['QC Review Fail', 'Code Review Failed'].includes(lookedUpTicket.status) && (
+                    <div className="qa-ticket-card-warning">
+                      This ticket was returned from review. Consider addressing feedback before allocating more time.
+                    </div>
+                  )}
+                  {(lookedUpTicket.qa_estimate_hours == null || lookedUpTicket.qa_estimate_hours <= 0) && (
+                    <div className="qa-ticket-card-warning">
+                      QA Estimate is required in PM Tracker. Add it and click Refresh.
+                    </div>
+                  )}
+                  {!(lookedUpTicket.qc_tester || '').trim() && (
+                    <div className="qa-ticket-card-warning">
+                      QC Tester is required in PM Tracker. Assign and click Refresh.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="qa-form-group">
+                <label>Task Description *</label>
+                <input 
+                  type="text" 
+                  value={form.activity_description} 
+                  onChange={(e) => setForm({ ...form, activity_description: e.target.value })} 
+                  placeholder="What will be done?"
+                />
+                {formErrors.activity_description && <span className="qa-form-error">{formErrors.activity_description}</span>}
+              </div>
+
+              <div className="qa-form-row-grid">
+                <div className="qa-form-group">
+                  <label>Start Date *</label>
+                  <input 
+                    type="date" 
+                    value={form.start_date} 
+                    min={formatAPIDate(new Date())}
+                    onChange={(e) => setForm({ ...form, start_date: e.target.value })} 
+                  />
+                  {formErrors.start_date && <span className="qa-form-error">{formErrors.start_date}</span>}
+                  {startDateAvailable < 8 && form.start_date && (
+                    <span className="qa-info-hint">Only {startDateAvailable}h available on this date</span>
+                  )}
+                </div>
+                {form.task_category === 'Leave' ? (
+                  <div className="qa-form-group">
+                    <label>Leave type *</label>
+                    <div className="qa-leave-type-options">
+                      <label className={`qa-leave-type-option ${form.total_hours === 4 ? 'selected' : ''}`}>
+                        <input
+                          type="radio"
+                          name="leave_type"
+                          checked={form.total_hours === 4}
+                          onChange={() => setForm({ ...form, total_hours: 4, max_hours_per_day: 4 })}
+                        />
+                        Half Day (4h)
+                      </label>
+                      <label className={`qa-leave-type-option ${form.total_hours === 8 ? 'selected' : ''}`}>
+                        <input
+                          type="radio"
+                          name="leave_type"
+                          checked={form.total_hours === 8}
+                          onChange={() => setForm({ ...form, total_hours: 8, max_hours_per_day: 8 })}
+                        />
+                        Full Day (8h)
+                      </label>
+                    </div>
+                    {formErrors.total_hours && <span className="qa-form-error">{formErrors.total_hours}</span>}
+                  </div>
+                ) : (
+                  <div className="qa-form-group">
+                    <label>Duration (hours) *</label>
+                    <input 
+                      type="number" 
+                      min="0.5" 
+                      step="0.5" 
+                      value={form.total_hours} 
+                      onChange={(e) => setForm({ ...form, total_hours: e.target.value })} 
+                    />
+                    {form.task_category === 'Ticket' && lookedUpTicket?.remaining_qa_hours != null && lookedUpTicket.remaining_qa_hours >= 0 && (
+                      <span className="qa-info-hint">Max {lookedUpTicket.remaining_qa_hours}h remaining for this ticket</span>
+                    )}
+                    {formErrors.total_hours && <span className="qa-form-error">{formErrors.total_hours}</span>}
+                  </div>
+                )}
+              </div>
+
+              {form.task_category !== 'Leave' && (
+                <div className="qa-form-row-grid">
+                  <div className="qa-form-group">
+                    <label>Max hours per day for this task</label>
+                    <select 
+                      value={form.max_hours_per_day} 
+                      onChange={(e) => setForm({ ...form, max_hours_per_day: parseFloat(e.target.value) })}
+                    >
+                      {MAX_HOURS_PER_DAY_OPTIONS.map((h) => (
+                        <option key={h} value={h}>{h === 0.5 ? '30 min' : `${h}h`}{h > startDateAvailable ? ` (${startDateAvailable}h available on start date)` : ''}</option>
+                      ))}
+                    </select>
+                    {startDateAvailable < 8 && (
+                      <span className="qa-info-hint">
+                        {form.task_category === 'Ticket' && addTaskSelectedTesters.length > 1
+                          ? `Min ${startDateAvailable}h among selected testers on start date. Task will use available hours each day.`
+                          : startDateAvailable > 0
+                            ? `Start date has ${startDateAvailable}h available. Task will use available hours each day.`
+                            : 'Start date is fully allocated. Task will start from next available day.'}
+                      </span>
+                    )}
+                    {formErrors.max_hours_per_day && <span className="qa-form-error">{formErrors.max_hours_per_day}</span>}
+                  </div>
+                </div>
+              )}
+
+              {form.task_category !== 'Ticket' && GENERIC_CATEGORIES.includes(form.task_category) && (
+                <div className="qa-form-group">
+                  <label>Justification (optional)</label>
+                  <input 
+                    type="text" 
+                    value={form.justification || ''} 
+                    onChange={(e) => setForm({ ...form, justification: e.target.value })} 
+                    placeholder="Why is this task needed?"
+                  />
+                </div>
+              )}
+
+              {allocationPreview && !allocationPreview.error && (
+                <div className="qa-allocation-preview">
+                  <strong>Allocation Preview:</strong>
+                  <div className="qa-allocation-dist">
+                    {allocationPreview.distribution.map((d, i) => (
+                      <span key={i} className="qa-alloc-day">{formatDisplayDate(d.date)}: {d.hours}h</span>
+                    ))}
+                  </div>
+                  <span className="qa-alloc-total">Total: {allocationPreview.total}h</span>
+                </div>
+              )}
+
+              {allocationPreview?.error && (
+                <div className="qa-allocation-preview qa-preview-error">
+                  <strong>Cannot allocate:</strong> {allocationPreview.error}
+                </div>
+              )}
+
+              {formErrors.submit && <div className="qa-form-error qa-form-error-block">{formErrors.submit}</div>}
+              
+              <div className="qa-modal-actions">
+                <button type="button" onClick={closeAddTask}>Cancel</button>
+                <button type="submit" className="qa-btn-primary" disabled={submitting || !!allocationPreview?.error}>
+                  {submitting ? 'Adding…' : 'Add Task'}
+                </button>
+              </div>
+            </form>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Calendar Day Detail Modal */}
+      {dayDetailOpen && (
+        <div className="dev-planning-modal-overlay" onClick={closeDayDetail}>
+          <div className="dev-planning-modal dev-planning-day-detail-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>Tasks for {dayDetailDate ? formatDisplayDateWithDay(dayDetailDate) : ''}</h3>
+              <button type="button" className="modal-close-btn" onClick={closeDayDetail} title="Close">×</button>
+            </div>
+            <p className="modal-subtitle">Employee: {dayDetailEmployee}</p>
+
+            {dayDetailLoading ? (
+              <div className="dev-planning-skeleton">Loading…</div>
+            ) : dayDetailTasks.length === 0 ? (
+              <div className="day-detail-empty">No tasks for this day.</div>
+            ) : (
+              <div className="day-detail-task-list">
+                {/* Separate planned vs actual tasks */}
+                {dayDetailTasks.some(t => t.is_planned) && (
+                  <div className="day-detail-section">
+                    <h4 className="day-detail-section-title">Planned Tasks</h4>
+                    {dayDetailTasks.filter(t => t.is_planned).map((t, i) => (
+                      <div key={t.task_id || `plan-${i}`} className="day-detail-task-item planned-task">
+                        <div className="day-detail-task-header">
+                          <span className="day-detail-task-id" style={{ color: TASK_CATEGORY_COLORS[t.category] || TASK_CATEGORY_COLORS.Miscellaneous }}>
+                            {t.ticket_id ? (
+                              <a href={getTicketTrackingUrl(t.ticket_id)} target="_blank" rel="noopener noreferrer" className="day-detail-ticket-link">
+                                #{t.ticket_id}
+                              </a>
+                            ) : (
+                              t.generic_category || 'Task'
+                            )}
+                          </span>
+                          {t.ticket_priority && <span className="day-detail-priority-badge">{t.ticket_priority}</span>}
+                          <span className="day-detail-task-hours planned">{t.hours}h</span>
+                        </div>
+                        <div className="day-detail-task-desc">{t.activity_description || 'No description'}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {dayDetailTasks.some(t => t.is_actual) && (
+                  <div className="day-detail-section">
+                    <h4 className="day-detail-section-title">Actual (Logged)</h4>
+                    {dayDetailTasks.filter(t => t.is_actual).map((t, i) => (
+                      <div key={`actual-${i}`} className="day-detail-task-item actual-task">
+                        <div className="day-detail-task-header">
+                          <span className="day-detail-task-id">
+                            {t.ticket_id ? (
+                              <a href={getTicketTrackingUrl(t.ticket_id)} target="_blank" rel="noopener noreferrer" className="day-detail-ticket-link">
+                                #{t.ticket_id}
+                              </a>
+                            ) : (
+                              t.project_name || 'Entry'
+                            )}
+                          </span>
+                          <span className="day-detail-task-hours actual">{t.hours}h</span>
+                        </div>
+                        {t.task_description && <div className="day-detail-task-desc">{t.task_description}</div>}
+                        {t.project_name && <div className="day-detail-task-project">{t.project_name}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+export default QATaskPlanning;

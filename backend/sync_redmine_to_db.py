@@ -76,12 +76,17 @@ def parse_float(value):
         return None
 
 
-def sync_redmine_bugs(full_refresh=False):
-    """Sync all bugs from Redmine to database"""
+def sync_redmine_bugs(full_refresh=False, all_bugs=False):
+    """
+    Sync bugs from Redmine to database.
+    - full_refresh: re-fetch all data (no-op for now, kept for CLI compatibility)
+    - all_bugs: if True, fetch ALL bugs (including Closed, Deferred, Rejected) by omitting query_id
+                 and using status_id=*. Default uses query_id=20 which may exclude some statuses.
+    """
     print("="*60)
     print("Starting Redmine -> PostgreSQL sync...")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"Full Refresh: {full_refresh}")
+    print(f"All bugs (incl. closed): {all_bugs}")
     print("="*60)
 
     db: Session = SessionLocal()
@@ -94,10 +99,15 @@ def sync_redmine_bugs(full_refresh=False):
         while True:
             params = {
                 "project_id": "bis-web",
-                "query_id": 20,
                 "limit": LIMIT,
                 "offset": offset
             }
+            if all_bugs:
+                # Fetch ALL issues (open + closed) - no query filter
+                params["status_id"] = "*"
+            else:
+                # Use saved query (may exclude closed/deferred bugs)
+                params["query_id"] = 20
 
             response = requests.get(
                 f"{REDMINE_URL}/issues.json",
@@ -114,6 +124,11 @@ def sync_redmine_bugs(full_refresh=False):
                 break
 
             for issue in issues:
+                # When all_bugs=True (no query), filter to Bug tracker only
+                tracker_name = (issue.get("tracker") or {}).get("name") or ""
+                if all_bugs and tracker_name.lower() != "bug":
+                    continue
+
                 bug_id = issue.get("id")
                 existing_bug = db.query(Bug).filter(Bug.bug_id == bug_id).first()
 
@@ -253,9 +268,11 @@ def main():
     parser = argparse.ArgumentParser(description="Sync Redmine bugs to database")
     parser.add_argument('--full-refresh', '-f', action='store_true', 
                         help="Force full refresh of all data")
+    parser.add_argument('--all-bugs', '-a', action='store_true',
+                        help="Fetch ALL bugs including Closed, Deferred, Rejected (omits query filter)")
     args = parser.parse_args()
     
-    sync_redmine_bugs(full_refresh=args.full_refresh)
+    sync_redmine_bugs(full_refresh=args.full_refresh, all_bugs=args.all_bugs)
 
 
 if __name__ == "__main__":

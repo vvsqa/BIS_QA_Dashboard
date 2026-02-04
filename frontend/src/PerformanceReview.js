@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
 
 function PerformanceReview() {
   const { employeeId } = useParams();

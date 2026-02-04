@@ -4,6 +4,8 @@ import { Bar, Doughnut } from "react-chartjs-2";
 import { useTableSort, SortableHeader } from "./useTableSort";
 import { formatDisplayDate, formatDisplayDateTime, formatDisplayDateWithDay } from "./dateUtils";
 import { TicketExternalLink } from "./ticketUtils";
+import { apiFetch } from "./api";
+import { useAuth } from "./AuthContext";
 import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import "./dashboard.css";
@@ -55,9 +57,43 @@ const TEAM_COLORS = {
   'Unknown': { bg: 'rgba(107, 114, 128, 0.8)', border: '#6b7280' }
 };
 
+// Priority display order (1 = highest). Used for ticket priority chart sorting.
+const PRIORITY_ORDER = {
+  'URGENT': 1,
+  'High (Bugs)': 2,
+  'High (Billable)': 3,
+  'EPIC!': 4,
+  'Medium (Bugs)': 5,
+  'High Level 1': 6,
+  'High Level 2': 7,
+  'High Level 3': 8,
+  'High Level 4': 9,
+  'Medium': 10,
+  'Low': 11,
+  'Quote': 12,
+  'Suggestion': 13
+};
+const PRIORITY_ORDER_LIST = Object.entries(PRIORITY_ORDER).sort((a, b) => a[1] - b[1]);
+
+/** Whether ticket is closed (for ageing type). */
+function getAgeingType(ticket) {
+  const isClosed = ticket.status && ['closed', 'moved to live', 'completed'].includes((ticket.status || '').toLowerCase());
+  return isClosed && ticket.days_to_close != null ? 'closed' : 'open';
+}
+
+/** Format ageing for display: "Closed in X days" for closed tickets, "Open X days" for open. */
+function formatAgeing(ticket) {
+  const isClosed = ticket.status && ['closed', 'moved to live', 'completed'].includes((ticket.status || '').toLowerCase());
+  if (isClosed && ticket.days_to_close != null) return `Closed in ${ticket.days_to_close} days`;
+  const days = ticket.ageing_days ?? ticket.age_days ?? 0;
+  return `Open ${days} days`;
+}
+
 function TicketsDashboard() {
   const location = useLocation();
   const navigate = useNavigate();
+  const auth = useAuth();
+  const user = auth?.user;
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [loading, setLoading] = useState(false);
   const [overview, setOverview] = useState(null);
@@ -66,8 +102,11 @@ function TicketsDashboard() {
   const [selectedAssignee, setSelectedAssignee] = useState(null);
   const [teamDetails, setTeamDetails] = useState(null);
   const [assigneeDetails, setAssigneeDetails] = useState(null);
-  const [activeView, setActiveView] = useState('overview'); // overview, team, assignee, ticket-list, analysis
+  const [activeView, setActiveView] = useState('overview'); // overview, team, assignee, ticket-list, analysis, newlyReleased
   const [ticketListFilter, setTicketListFilter] = useState(null); // {type: 'status'|'team'|'assignee'|'age', value: string, label: string}
+  const [newlyReleasedData, setNewlyReleasedData] = useState(null); // { tickets, period_days, from, to }
+  const [newlyReleasedDays, setNewlyReleasedDays] = useState(7);
+  const [loadingNewlyReleased, setLoadingNewlyReleased] = useState(false);
   const [filteredTickets, setFilteredTickets] = useState([]);
   const [employeeMap, setEmployeeMap] = useState({});
   
@@ -75,16 +114,15 @@ function TicketsDashboard() {
   const [selectedTicketId, setSelectedTicketId] = useState(null);
   const [ticketTimesheetEntries, setTicketTimesheetEntries] = useState([]);
   const [loadingTimesheet, setLoadingTimesheet] = useState(false);
+  const [selectedTicketDetail, setSelectedTicketDetail] = useState(null); // Ageing + priority history
   
   // Time Analysis state
   const [timeAnalysis, setTimeAnalysis] = useState(null);
   const [analysisPeriod, setAnalysisPeriod] = useState('last_week');
   const [expandedAnalysisSections, setExpandedAnalysisSections] = useState({}); // All collapsed by default
   
-  // Sync state
-  const [syncing, setSyncing] = useState(false);
+  // API sync status (data is always from API; no manual sync)
   const [syncStatus, setSyncStatus] = useState(null);
-  const [lastSyncResult, setLastSyncResult] = useState(null);
   
   // Ref for timesheet section scrolling
   const timesheetSectionRef = useRef(null);
@@ -165,29 +203,6 @@ function TicketsDashboard() {
     }
   }, []);
 
-  // Sync latest TicketReport from Downloads
-  const handleSyncNow = async () => {
-    setSyncing(true);
-    setLastSyncResult(null);
-    try {
-      const res = await fetch(`${BACKEND_URL}/ticket-tracking/sync-latest`, { method: 'POST' });
-      const data = await res.json();
-      setLastSyncResult(data);
-      
-      if (data.success) {
-        // Refresh the data
-        loadOverview();
-        fetchSyncStatus();
-      }
-    } catch (err) {
-      setLastSyncResult({ success: false, message: err.message });
-    } finally {
-      setSyncing(false);
-      // Clear result message after 5 seconds
-      setTimeout(() => setLastSyncResult(null), 5000);
-    }
-  };
-
   useEffect(() => {
     fetchSyncStatus();
   }, [fetchSyncStatus]);
@@ -201,33 +216,65 @@ function TicketsDashboard() {
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const ticketId = params.get('ticket');
+    const viewParam = params.get('view');
     if (ticketId) {
       setSelectedTicketId(ticketId);
       loadTicketTimesheetEntries(ticketId);
+      // If view=timesheet, scroll to timesheet section after a short delay to let DOM update
+      if (viewParam === 'timesheet') {
+        const timer = setTimeout(() => {
+          if (timesheetSectionRef.current) {
+            timesheetSectionRef.current.scrollIntoView({ 
+              behavior: 'smooth', 
+              block: 'start' 
+            });
+          }
+        }, 800);
+        return () => clearTimeout(timer);
+      }
     } else {
       setSelectedTicketId(null);
       setTicketTimesheetEntries([]);
+      setSelectedTicketDetail(null);
     }
   }, [location.search]);
 
-  // Load timesheet entries for a specific ticket
+  // Load timesheet entries and ticket detail (ageing, priority history) for a specific ticket
   const loadTicketTimesheetEntries = async (ticketId) => {
     setLoadingTimesheet(true);
+    setSelectedTicketDetail(null);
     try {
-      const res = await fetch(`${BACKEND_URL}/calendar/ticket/${ticketId}/timesheet`);
-      if (res.ok) {
-        const data = await res.json();
+      const [timesheetRes, detailRes] = await Promise.all([
+        fetch(`${BACKEND_URL}/calendar/ticket/${ticketId}/timesheet`),
+        fetch(`${BACKEND_URL}/ticket-tracking/${ticketId}`)
+      ]);
+      if (timesheetRes.ok) {
+        const data = await timesheetRes.json();
         setTicketTimesheetEntries(data.entries || []);
       } else {
         setTicketTimesheetEntries([]);
       }
+      if (detailRes.ok) {
+        const detail = await detailRes.json();
+        setSelectedTicketDetail(detail);
+      } else {
+        setSelectedTicketDetail(null);
+      }
     } catch (err) {
       console.error('Failed to load timesheet entries:', err);
       setTicketTimesheetEntries([]);
+      setSelectedTicketDetail(null);
     } finally {
       setLoadingTimesheet(false);
     }
   };
+
+  // Scroll to top when ticket is selected from URL
+  useEffect(() => {
+    if (selectedTicketId) {
+      window.scrollTo({ top: 0, left: 0, behavior: 'smooth' });
+    }
+  }, [selectedTicketId]);
 
   // Auto-scroll to timesheet section when entries are loaded
   useEffect(() => {
@@ -249,6 +296,7 @@ function TicketsDashboard() {
   const clearTicketSelection = () => {
     setSelectedTicketId(null);
     setTicketTimesheetEntries([]);
+    setSelectedTicketDetail(null);
     navigate('/tickets', { replace: true });
   };
 
@@ -275,11 +323,11 @@ function TicketsDashboard() {
     }
   }, [overview, location.search]);
 
-  // Load employees for name click functionality
+  // Load employees for name click functionality (for_display=true: all users see all names)
   useEffect(() => {
     const loadEmployees = async () => {
       try {
-        const res = await fetch(`${BACKEND_URL}/employees`);
+        const res = await apiFetch('/employees?for_display=true');
         if (res.ok) {
           const data = await res.json();
           const empMap = {};
@@ -447,6 +495,25 @@ function TicketsDashboard() {
     setTicketListFilter(null);
     setFilteredTickets([]);
     setTimeAnalysis(null);
+    setNewlyReleasedData(null);
+  };
+
+  const loadNewlyReleasedToQA = async (days = newlyReleasedDays) => {
+    setLoadingNewlyReleased(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/tickets-dashboard/newly-released-to-qa?days=${days}`);
+      if (res.ok) {
+        const data = await res.json();
+        setNewlyReleasedData(data);
+      } else {
+        setNewlyReleasedData({ tickets: [], period_days: days, from: null, to: null });
+      }
+    } catch (err) {
+      console.error('Error loading newly released to QA:', err);
+      setNewlyReleasedData({ tickets: [], period_days: days, from: null, to: null });
+    } finally {
+      setLoadingNewlyReleased(false);
+    }
   };
 
   const loadTimeAnalysis = async (period = analysisPeriod) => {
@@ -524,6 +591,8 @@ function TicketsDashboard() {
           if (filter.value === '30+') return age > 30;
           return false;
         });
+      } else if (filter.type === 'priority') {
+        tickets = baseTickets.filter(t => (t.priority || 'Unspecified') === (filter.value || 'Unspecified'));
       } else if (filter.type === 'eta-overdue') {
         tickets = etaAlerts?.overdue || [];
       } else if (filter.type === 'eta-due-this-week') {
@@ -545,7 +614,7 @@ function TicketsDashboard() {
     const teamTickets = overview.team_tickets[teamName] || [];
     const statusBreakdown = overview.team_status_breakdown[teamName] || {};
     const assigneeBreakdown = {};
-    const ageGroups = { '0-7': 0, '8-14': 0, '15-30': 0, '30+': 0 };
+    const priorityBreakdown = {};
     
     teamTickets.forEach(ticket => {
       // Assignee breakdown
@@ -556,19 +625,24 @@ function TicketsDashboard() {
       assigneeBreakdown[assignee].count++;
       assigneeBreakdown[assignee].tickets.push(ticket);
       
-      // Age grouping
-      const age = ticket.age_days || 0;
-      if (age <= 7) ageGroups['0-7']++;
-      else if (age <= 14) ageGroups['8-14']++;
-      else if (age <= 30) ageGroups['15-30']++;
-      else ageGroups['30+']++;
+      // Priority breakdown
+      const priority = ticket.priority || 'Unspecified';
+      priorityBreakdown[priority] = (priorityBreakdown[priority] || 0) + 1;
     });
+    
+    // Sort priorities by order (known first, then Unspecified, then others)
+    const sortedPriorityLabels = [
+      ...PRIORITY_ORDER_LIST.filter(([p]) => priorityBreakdown[p] > 0).map(([p]) => p),
+      ...(priorityBreakdown['Unspecified'] ? ['Unspecified'] : []),
+      ...Object.keys(priorityBreakdown).filter(p => !PRIORITY_ORDER[p] && p !== 'Unspecified').sort()
+    ];
     
     return {
       total: teamTickets.length,
       statusBreakdown,
       assigneeBreakdown,
-      ageGroups,
+      priorityBreakdown,
+      sortedPriorityLabels,
       tickets: teamTickets
     };
   };
@@ -778,14 +852,16 @@ function TicketsDashboard() {
             </svg>
             Tickets
           </Link>
-          <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
-            </svg>
-            Employees
-          </Link>
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+            <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+              </svg>
+              Employees
+            </Link>
+          )}
           <Link to="/calendar" className={`nav-item ${location.pathname === '/calendar' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <rect x="3" y="4" width="18" height="18" rx="2"/>
@@ -793,19 +869,18 @@ function TicketsDashboard() {
             </svg>
             Calendar
           </Link>
-          <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-            </svg>
-            Task Planning
-          </Link>
-          <Link to="/comparison" className={`nav-item ${location.pathname === '/comparison' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 3v18h18"/>
-              <path d="M18 9l-5 5-4-4-3 3"/>
-            </svg>
-            Plan vs Actual
-          </Link>
+          {user?.employee_id && (
+            <Link to="/my-tasks" className={`nav-item ${location.pathname === '/my-tasks' ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+              My Tasks
+            </Link>
+          )}
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+            <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+              Task Planning
+            </Link>
+          )}
           <Link to="/reports" className={`nav-item ${location.pathname === '/reports' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
@@ -852,6 +927,20 @@ function TicketsDashboard() {
                 Overview
               </button>
               <button 
+                className={`view-tab ${activeView === 'newlyReleased' ? 'active' : ''}`}
+                onClick={() => {
+                  setActiveView('newlyReleased');
+                  loadNewlyReleasedToQA(newlyReleasedDays);
+                }}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                  <polyline points="14,2 14,8 20,8"/>
+                  <path d="M12 18v-6M9 15l3-3 3 3"/>
+                </svg>
+                Newly Released to QA
+              </button>
+              <button 
                 className={`view-tab ${activeView === 'analysis' ? 'active' : ''}`}
                 onClick={() => loadTimeAnalysis()}
               >
@@ -863,33 +952,18 @@ function TicketsDashboard() {
               </button>
             </div>
             
-            {/* Sync Button */}
-            <div className="sync-controls">
-              <button 
-                className={`sync-btn ${syncing ? 'syncing' : ''}`}
-                onClick={handleSyncNow}
-                disabled={syncing}
-                title={syncStatus?.latest_download ? `Latest: ${syncStatus.latest_download}` : 'Sync from Downloads'}
-              >
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={syncing ? 'spinning' : ''}>
-                  <path d="M21 12a9 9 0 11-9-9"/>
-                  <path d="M21 3v6h-6"/>
-                </svg>
-                {syncing ? 'Syncing...' : 'Sync Now'}
-              </button>
-              {syncStatus?.last_db_update && (
-                <span className="sync-status-text" title={`Last sync: ${formatDisplayDateTime(syncStatus.last_db_update)}`}>
-                  Updated: {formatDisplayDate(syncStatus.last_db_update)}
-                </span>
-              )}
-              {lastSyncResult && (
-                <span className={`sync-result ${lastSyncResult.success ? 'success' : 'error'}`}>
-                  {lastSyncResult.success 
-                    ? `✓ ${lastSyncResult.imported} new, ${lastSyncResult.updated} updated`
-                    : `✗ ${lastSyncResult.message}`}
-                </span>
-              )}
-            </div>
+            {/* API data status (auto-sync keeps data up to date) */}
+            {(syncStatus?.last_db_update || syncStatus?.auto_sync?.running) && (
+              <span className="sync-status-text" style={{ fontSize: '12px', opacity: 0.8 }} title={syncStatus.last_db_update ? formatDisplayDateTime(syncStatus.last_db_update) : ''}>
+                Data from API
+                {syncStatus.auto_sync?.running && (
+                  <span style={{ marginLeft: '6px' }}>• Auto-sync every {syncStatus.auto_sync.interval_minutes} min</span>
+                )}
+                {syncStatus.last_db_update && (
+                  <span style={{ marginLeft: '6px' }}>• Updated: {formatDisplayDate(syncStatus.last_db_update)}</span>
+                )}
+              </span>
+            )}
 
             {/* Export PDF Button */}
             <button 
@@ -921,6 +995,7 @@ function TicketsDashboard() {
               {activeView === 'team' ? `Team: ${selectedTeam}` : 
                activeView === 'assignee' ? `Assignee: ${selectedAssignee}` :
                activeView === 'ticket-list' ? ticketListFilter?.label :
+               activeView === 'newlyReleased' ? 'Newly Released to QA' :
                activeView === 'analysis' ? 'Time Analysis' : ''}
             </span>
           </div>
@@ -1190,33 +1265,28 @@ function TicketsDashboard() {
                         )}
                       </div>
 
-                      {/* Ageing Analysis */}
+                      {/* Priority classification (active tickets per team) */}
                       <div className="analytics-card">
                         <div className="analytics-card-header">
-                          <h3 className="analytics-card-title">Ticket Ageing</h3>
+                          <h3 className="analytics-card-title">Priority classification</h3>
+                          <span className="assignee-total-badge" style={{ marginRight: '8px' }}>{analytics.total} active</span>
                           <button 
                             className="chart-maximize-btn" 
                             onClick={(e) => {
                               e.stopPropagation();
+                              const labels = analytics.sortedPriorityLabels || [];
+                              const data = labels.map(p => analytics.priorityBreakdown[p] || 0);
+                              const colors = labels.map((_, i) => {
+                                const n = labels.length;
+                                const r = 239 - Math.round((239 - 34) * (1 - i / Math.max(n - 1, 1)));
+                                const g = 68 + Math.round((197 - 68) * (i / Math.max(n - 1, 1)));
+                                const b = 68 + Math.round((94 - 68) * (i / Math.max(n - 1, 1)));
+                                return `rgba(${r},${g},${b},0.8)`;
+                              });
                               maximizeChart({
-                                labels: ['0-7 days', '8-14 days', '15-30 days', '30+ days'],
-                                datasets: [{
-                                  label: 'Tickets',
-                                  data: [
-                                    analytics.ageGroups['0-7'],
-                                    analytics.ageGroups['8-14'],
-                                    analytics.ageGroups['15-30'],
-                                    analytics.ageGroups['30+']
-                                  ],
-                                  backgroundColor: [
-                                    'rgba(34, 197, 94, 0.8)',
-                                    'rgba(245, 158, 11, 0.8)',
-                                    'rgba(249, 115, 22, 0.8)',
-                                    'rgba(239, 68, 68, 0.8)'
-                                  ],
-                                  borderRadius: 4
-                                }]
-                              }, `${teamName} - Ticket Ageing`, 'bar');
+                                labels,
+                                datasets: [{ label: 'Tickets', data, backgroundColor: colors, borderRadius: 4 }]
+                              }, `${teamName} - Priority classification`, 'bar');
                             }}
                             title="Maximize"
                           >
@@ -1225,40 +1295,65 @@ function TicketsDashboard() {
                             </svg>
                           </button>
                         </div>
+                        {/* Compact priority summary for this team */}
+                        <div className="priority-classification-list" style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', padding: '0 12px 8px', marginBottom: '8px' }}>
+                          {(analytics.sortedPriorityLabels || []).map(priority => {
+                            const count = analytics.priorityBreakdown[priority] || 0;
+                            if (count === 0) return null;
+                            return (
+                              <span
+                                key={priority}
+                                className="priority-pill clickable"
+                                onClick={() => showTicketList({ type: 'priority', value: priority, team: teamName, label: `${priority} in ${teamName}` })}
+                                style={{
+                                  padding: '4px 10px',
+                                  borderRadius: '16px',
+                                  fontSize: '12px',
+                                  background: 'var(--bg-tertiary)',
+                                  color: 'var(--text-secondary)',
+                                  cursor: 'pointer'
+                                }}
+                                title={`${priority}: ${count} ticket(s)`}
+                              >
+                                {priority}: <strong>{count}</strong>
+                              </span>
+                            );
+                          })}
+                          {(!analytics.sortedPriorityLabels || analytics.sortedPriorityLabels.length === 0) && (
+                            <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>No priority data</span>
+                          )}
+                        </div>
                         <div className="chart-container-small" style={{ height: '200px' }}>
                           <Bar
                             data={{
-                              labels: ['0-7 days', '8-14 days', '15-30 days', '30+ days'],
+                              labels: analytics.sortedPriorityLabels || [],
                               datasets: [{
                                 label: 'Tickets',
-                                data: [
-                                  analytics.ageGroups['0-7'],
-                                  analytics.ageGroups['8-14'],
-                                  analytics.ageGroups['15-30'],
-                                  analytics.ageGroups['30+']
-                                ],
-                                backgroundColor: [
-                                  'rgba(34, 197, 94, 0.8)',
-                                  'rgba(245, 158, 11, 0.8)',
-                                  'rgba(249, 115, 22, 0.8)',
-                                  'rgba(239, 68, 68, 0.8)'
-                                ],
+                                data: (analytics.sortedPriorityLabels || []).map(p => analytics.priorityBreakdown[p] || 0),
+                                backgroundColor: (analytics.sortedPriorityLabels || []).map((_, i) => {
+                                  const n = (analytics.sortedPriorityLabels || []).length;
+                                  const r = 239 - Math.round((239 - 34) * (1 - i / Math.max(n - 1, 1)));
+                                  const g = 68 + Math.round((197 - 68) * (i / Math.max(n - 1, 1)));
+                                  const b = 68 + Math.round((94 - 68) * (i / Math.max(n - 1, 1)));
+                                  return `rgba(${r},${g},${b},0.8)`;
+                                }),
                                 borderRadius: 4
                               }]
                             }}
                             options={{
                               ...barChartOptions,
+                              indexAxis: 'y',
                               onClick: (e, elements) => {
                                 if (elements.length > 0) {
                                   const index = elements[0].index;
-                                  const ageRanges = ['0-7', '8-14', '15-30', '30+'];
-                                  showTicketList({ type: 'age', value: ageRanges[index], team: teamName, label: `${ageRanges[index]} days in ${teamName}` });
+                                  const priority = analytics.sortedPriorityLabels[index];
+                                  showTicketList({ type: 'priority', value: priority, team: teamName, label: `${priority} in ${teamName}` });
                                 }
                               }
                             }}
                           />
                         </div>
-                        <div className="analytics-card-footer">Click bars to view tickets • Click ⛶ to expand</div>
+                        <div className="analytics-card-footer">Click bars or pills to view tickets • Click ⛶ to expand</div>
                       </div>
                     </div>
                     )}
@@ -1397,9 +1492,12 @@ function TicketsDashboard() {
                         <thead>
                           <tr>
                             <SortableHeader columnKey="ticket_id" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Ticket</SortableHeader>
+                            <th>Title</th>
                             <SortableHeader columnKey="status" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Status</SortableHeader>
+                            <SortableHeader columnKey="priority" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Priority</SortableHeader>
                             <SortableHeader columnKey="team" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Team</SortableHeader>
                             <SortableHeader columnKey="assignee" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Assignee</SortableHeader>
+                            <SortableHeader columnKey="ageing_days" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Age</SortableHeader>
                             <SortableHeader columnKey="days_overdue" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Days Overdue</SortableHeader>
                           </tr>
                         </thead>
@@ -1412,9 +1510,21 @@ function TicketsDashboard() {
                                 </Link>
                                 <TicketExternalLink ticketId={ticket.ticket_id} />
                               </td>
+                              <td className="ticket-title-cell" title={ticket.title || ''}>{ticket.title ? (ticket.title.length > 50 ? ticket.title.slice(0, 50) + '…' : ticket.title) : '—'}</td>
                               <td><span className="status-badge">{ticket.status}</span></td>
+                              <td>
+                                <span className="priority-badge" title={ticket.priority_changes_count > 0 ? `Priority changed ${ticket.priority_changes_count} time(s)` : ''}>
+                                  {ticket.priority || 'Unspecified'}
+                                  {ticket.priority_changes_count > 0 && <span className="priority-changes-badge" title={`Priority changed ${ticket.priority_changes_count} time(s)`}>{ticket.priority_changes_count}</span>}
+                                </span>
+                              </td>
                               <td><span className={`team-badge team-${ticket.team.toLowerCase().replace(/\s+/g, '-')}`}>{ticket.team}</span></td>
                               <td onClick={() => loadAssigneeDetails(ticket.assignee)} className="clickable">{ticket.assignee}</td>
+                              <td>
+                                <span className={`age-badge age-badge-${getAgeingType(ticket)}`} title={getAgeingType(ticket) === 'closed' ? 'Ageing: created → closed date' : 'Ageing: created → today'}>
+                                  {formatAgeing(ticket)}
+                                </span>
+                              </td>
                               <td><span className="days-overdue">{ticket.days_overdue} days</span></td>
                             </tr>
                           ))}
@@ -1432,9 +1542,12 @@ function TicketsDashboard() {
                         <thead>
                           <tr>
                             <SortableHeader columnKey="ticket_id" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Ticket</SortableHeader>
+                            <th>Title</th>
                             <SortableHeader columnKey="status" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Status</SortableHeader>
+                            <SortableHeader columnKey="priority" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Priority</SortableHeader>
                             <SortableHeader columnKey="team" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Team</SortableHeader>
                             <SortableHeader columnKey="assignee" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Assignee</SortableHeader>
+                            <SortableHeader columnKey="ageing_days" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Age</SortableHeader>
                             <SortableHeader columnKey="days_until_eta" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Days Until ETA</SortableHeader>
                           </tr>
                         </thead>
@@ -1447,9 +1560,21 @@ function TicketsDashboard() {
                                 </Link>
                                 <TicketExternalLink ticketId={ticket.ticket_id} />
                               </td>
+                              <td className="ticket-title-cell" title={ticket.title || ''}>{ticket.title ? (ticket.title.length > 50 ? ticket.title.slice(0, 50) + '…' : ticket.title) : '—'}</td>
                               <td><span className="status-badge">{ticket.status}</span></td>
+                              <td>
+                                <span className="priority-badge" title={ticket.priority_changes_count > 0 ? `Priority changed ${ticket.priority_changes_count} time(s)` : ''}>
+                                  {ticket.priority || 'Unspecified'}
+                                  {ticket.priority_changes_count > 0 && <span className="priority-changes-badge" title={`Priority changed ${ticket.priority_changes_count} time(s)`}>{ticket.priority_changes_count}</span>}
+                                </span>
+                              </td>
                               <td><span className={`team-badge team-${ticket.team.toLowerCase().replace(/\s+/g, '-')}`}>{ticket.team}</span></td>
                               <td onClick={() => loadAssigneeDetails(ticket.assignee)} className="clickable">{ticket.assignee}</td>
+                              <td>
+                                <span className={`age-badge age-badge-${getAgeingType(ticket)}`} title={getAgeingType(ticket) === 'closed' ? 'Ageing: created → closed date' : 'Ageing: created → today'}>
+                                  {formatAgeing(ticket)}
+                                </span>
+                              </td>
                               <td><span className="days-until">{ticket.days_until_eta} days</span></td>
                             </tr>
                           ))}
@@ -1495,6 +1620,40 @@ function TicketsDashboard() {
                   ))}
               </div>
             </div>
+
+            {/* Active tickets by priority */}
+            {overview.by_priority && Object.keys(overview.by_priority).length > 0 && (
+              <div className="tickets-section">
+                <h2 className="section-title">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                  </svg>
+                  Active tickets by priority
+                </h2>
+                <div className="assignees-grid" style={{ display: 'flex', flexWrap: 'wrap', gap: '12px' }}>
+                  {[
+                    ...PRIORITY_ORDER_LIST.filter(([p]) => (overview.by_priority[p] || 0) > 0).map(([p]) => p),
+                    ...(overview.by_priority['Unspecified'] ? ['Unspecified'] : []),
+                    ...Object.keys(overview.by_priority).filter(p => !PRIORITY_ORDER[p] && p !== 'Unspecified').sort()
+                  ].map(priority => (
+                    <div
+                      key={priority}
+                      className="assignee-card"
+                      onClick={() => showTicketList({ type: 'priority', value: priority, label: `Priority: ${priority}` })}
+                      style={{ cursor: 'pointer' }}
+                    >
+                      <div className="assignee-info" style={{ flex: 1 }}>
+                        <span className="assignee-name">{priority}</span>
+                        <span className="assignee-count">{overview.by_priority[priority]} tickets</span>
+                      </div>
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="assignee-arrow">
+                        <path d="M9 18l6-6-6-6"/>
+                      </svg>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         )}
 
@@ -1551,8 +1710,11 @@ function TicketsDashboard() {
                   <thead>
                     <tr>
                       <SortableHeader columnKey="ticket_id" onSort={handleTeamSort} sortConfig={teamSortConfig}>Ticket ID</SortableHeader>
+                      <th>Title</th>
                       <SortableHeader columnKey="status" onSort={handleTeamSort} sortConfig={teamSortConfig}>Status</SortableHeader>
+                      <SortableHeader columnKey="priority" onSort={handleTeamSort} sortConfig={teamSortConfig}>Priority</SortableHeader>
                       <SortableHeader columnKey="assignee" onSort={handleTeamSort} sortConfig={teamSortConfig}>Assignee</SortableHeader>
+                      <SortableHeader columnKey="ageing_days" onSort={handleTeamSort} sortConfig={teamSortConfig}>Age</SortableHeader>
                       <SortableHeader columnKey="eta" onSort={handleTeamSort} sortConfig={teamSortConfig}>ETA</SortableHeader>
                       <SortableHeader columnKey="dev_estimate" onSort={handleTeamSort} sortConfig={teamSortConfig}>Dev Est.</SortableHeader>
                       <SortableHeader columnKey="dev_actual" onSort={handleTeamSort} sortConfig={teamSortConfig}>Dev Actual</SortableHeader>
@@ -1569,7 +1731,14 @@ function TicketsDashboard() {
                           </Link>
                           <TicketExternalLink ticketId={ticket.ticket_id} />
                         </td>
+                        <td className="ticket-title-cell" title={ticket.title || ''}>{ticket.title ? (ticket.title.length > 50 ? ticket.title.slice(0, 50) + '…' : ticket.title) : '—'}</td>
                         <td><span className="status-badge">{ticket.status}</span></td>
+                        <td>
+                          <span className="priority-badge" title={ticket.priority_changes_count > 0 ? `Priority changed ${ticket.priority_changes_count} time(s)` : ''}>
+                            {ticket.priority || 'Unspecified'}
+                            {ticket.priority_changes_count > 0 && <span className="priority-changes-badge" title={`Priority changed ${ticket.priority_changes_count} time(s)`}>{ticket.priority_changes_count}</span>}
+                          </span>
+                        </td>
                         <td>
                           <span 
                             className={isValidEmployee(ticket.assignee) ? 'clickable-name' : ''}
@@ -1579,6 +1748,11 @@ function TicketsDashboard() {
                             {ticket.assignee}
                           </span>
                         </td>
+                        <td>
+                        <span className={`age-badge age-badge-${getAgeingType(ticket)}`} title={getAgeingType(ticket) === 'closed' ? 'Ageing: created → closed date' : 'Ageing: created → today'}>
+                          {formatAgeing(ticket)}
+                        </span>
+                      </td>
                         <td>{formatDisplayDate(ticket.eta)}</td>
                         <td>{ticket.dev_estimate || '-'}h</td>
                         <td>{ticket.dev_actual || '-'}h</td>
@@ -1648,8 +1822,11 @@ function TicketsDashboard() {
                   <thead>
                     <tr>
                       <SortableHeader columnKey="ticket_id" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Ticket ID</SortableHeader>
+                      <th>Title</th>
                       <SortableHeader columnKey="status" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Status</SortableHeader>
+                      <SortableHeader columnKey="priority" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Priority</SortableHeader>
                       <SortableHeader columnKey="team" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Team</SortableHeader>
+                      <SortableHeader columnKey="ageing_days" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Age</SortableHeader>
                       <SortableHeader columnKey="eta" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>ETA</SortableHeader>
                       <SortableHeader columnKey="dev_estimate" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Dev Est.</SortableHeader>
                       <SortableHeader columnKey="dev_actual" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Dev Actual</SortableHeader>
@@ -1666,8 +1843,20 @@ function TicketsDashboard() {
                           </Link>
                           <TicketExternalLink ticketId={ticket.ticket_id} />
                         </td>
+                        <td className="ticket-title-cell" title={ticket.title || ''}>{ticket.title ? (ticket.title.length > 50 ? ticket.title.slice(0, 50) + '…' : ticket.title) : '—'}</td>
                         <td><span className="status-badge">{ticket.status}</span></td>
+                        <td>
+                          <span className="priority-badge" title={ticket.priority_changes_count > 0 ? `Priority changed ${ticket.priority_changes_count} time(s)` : ''}>
+                            {ticket.priority || 'Unspecified'}
+                            {ticket.priority_changes_count > 0 && <span className="priority-changes-badge" title={`Priority changed ${ticket.priority_changes_count} time(s)`}>{ticket.priority_changes_count}</span>}
+                          </span>
+                        </td>
                         <td><span className={`team-badge team-${ticket.team.toLowerCase().replace(/\s+/g, '-')}`}>{ticket.team}</span></td>
+                        <td>
+                        <span className={`age-badge age-badge-${getAgeingType(ticket)}`} title={getAgeingType(ticket) === 'closed' ? 'Ageing: created → closed date' : 'Ageing: created → today'}>
+                          {formatAgeing(ticket)}
+                        </span>
+                      </td>
                         <td>{formatDisplayDate(ticket.eta)}</td>
                         <td>{ticket.dev_estimate || '-'}h</td>
                         <td>{ticket.dev_actual || '-'}h</td>
@@ -1695,10 +1884,12 @@ function TicketsDashboard() {
                 <thead>
                   <tr>
                     <SortableHeader columnKey="ticket_id" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Ticket ID</SortableHeader>
+                    <th>Title</th>
                     <SortableHeader columnKey="status" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Status</SortableHeader>
+                    <SortableHeader columnKey="priority" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Priority</SortableHeader>
                     <SortableHeader columnKey="team" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Team</SortableHeader>
                     <SortableHeader columnKey="assignee" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Assignee</SortableHeader>
-                    <SortableHeader columnKey="age_days" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Age (Days)</SortableHeader>
+                    <SortableHeader columnKey="ageing_days" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Age</SortableHeader>
                     <SortableHeader columnKey="eta" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>ETA</SortableHeader>
                     <SortableHeader columnKey="dev_estimate" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Dev Est.</SortableHeader>
                     <SortableHeader columnKey="dev_actual" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Dev Actual</SortableHeader>
@@ -1709,7 +1900,7 @@ function TicketsDashboard() {
                 <tbody>
                   {sortedFilteredTickets.length === 0 ? (
                     <tr>
-                      <td colSpan="10" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
+                      <td colSpan="12" style={{ textAlign: 'center', padding: '40px', color: 'var(--text-muted)' }}>
                         No tickets found
                       </td>
                     </tr>
@@ -1722,12 +1913,19 @@ function TicketsDashboard() {
                           </Link>
                           <TicketExternalLink ticketId={ticket.ticket_id} />
                         </td>
+                        <td className="ticket-title-cell" title={ticket.title || ''}>{ticket.title ? (ticket.title.length > 50 ? ticket.title.slice(0, 50) + '…' : ticket.title) : '—'}</td>
                         <td><span className="status-badge">{ticket.status}</span></td>
+                        <td>
+                          <span className="priority-badge" title={ticket.priority_changes_count > 0 ? `Priority changed ${ticket.priority_changes_count} time(s)` : (ticket.priority || 'Unspecified')}>
+                            {ticket.priority || 'Unspecified'}
+                            {ticket.priority_changes_count > 0 && <span className="priority-changes-badge" title={`Priority changed ${ticket.priority_changes_count} time(s)`}>{ticket.priority_changes_count}</span>}
+                          </span>
+                        </td>
                         <td><span className={`team-badge team-${(ticket.team || 'Unknown').toLowerCase().replace(/\s+/g, '-')}`}>{ticket.team || 'Unknown'}</span></td>
                         <td onClick={() => loadAssigneeDetails(ticket.assignee)} className="clickable">{ticket.assignee || 'Unassigned'}</td>
                         <td>
-                          <span className={`age-badge ${(ticket.age_days || 0) > 30 ? 'age-critical' : (ticket.age_days || 0) > 14 ? 'age-warning' : 'age-normal'}`}>
-                            {ticket.age_days || 0} days
+                          <span className={`age-badge age-badge-${getAgeingType(ticket)} ${getAgeingType(ticket) === 'open' ? (((ticket.ageing_days ?? ticket.age_days) || 0) > 30 ? 'age-critical' : ((ticket.ageing_days ?? ticket.age_days) || 0) > 14 ? 'age-warning' : 'age-normal') : ''}`} title={getAgeingType(ticket) === 'closed' ? 'Ageing: created → closed date' : 'Ageing: created → today'}>
+                            {formatAgeing(ticket)}
                           </span>
                         </td>
                         <td>{formatDisplayDate(ticket.eta)}</td>
@@ -1741,6 +1939,100 @@ function TicketsDashboard() {
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+
+        {/* Newly Released to QA View */}
+        {activeView === 'newlyReleased' && (
+          <div className="newly-released-view">
+            <div className="analysis-controls">
+              <div className="control-group">
+                <label className="control-label">Period</label>
+                <div className="period-selector">
+                  <button 
+                    className={`period-btn ${newlyReleasedDays === 7 ? 'active' : ''}`}
+                    onClick={() => {
+                      setNewlyReleasedDays(7);
+                      loadNewlyReleasedToQA(7);
+                    }}
+                  >
+                    Last 7 days
+                  </button>
+                  <button 
+                    className={`period-btn ${newlyReleasedDays === 14 ? 'active' : ''}`}
+                    onClick={() => {
+                      setNewlyReleasedDays(14);
+                      loadNewlyReleasedToQA(14);
+                    }}
+                  >
+                    Last 14 days
+                  </button>
+                </div>
+              </div>
+              {newlyReleasedData && (
+                <div className="period-info">
+                  <span className="period-total">{newlyReleasedData.tickets?.length ?? 0} tickets released to QA</span>
+                </div>
+              )}
+            </div>
+
+            {loadingNewlyReleased && (
+              <div className="loading-indicator">
+                <div className="loading-spinner"></div>
+                <span>Loading...</span>
+              </div>
+            )}
+
+            {!loadingNewlyReleased && newlyReleasedData && (
+              <div className="tickets-table-wrapper">
+                {(!newlyReleasedData.tickets || newlyReleasedData.tickets.length === 0) ? (
+                  <p className="empty-state-message">No tickets were newly released to QC Testing in this period.</p>
+                ) : (
+                  <table className="tickets-table">
+                    <thead>
+                      <tr>
+                        <th>Ticket</th>
+                        <th>Title</th>
+                        <th>Priority</th>
+                        <th>Dev Est</th>
+                        <th>QA Est</th>
+                        <th>ETA</th>
+                        <th>Developer(s)</th>
+                        <th>Current Status</th>
+                        <th>Module</th>
+                        <th>QC Tester</th>
+                        <th>Age</th>
+                        <th>Released on</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {newlyReleasedData.tickets.map((t) => (
+                        <tr key={t.ticket_id}>
+                          <td>
+                            <TicketExternalLink ticketId={t.ticket_id} />
+                          </td>
+                          <td className="title-cell" title={t.title || ''}>{(t.title || '—').slice(0, 50)}{(t.title || '').length > 50 ? '…' : ''}</td>
+                          <td>{t.priority || '—'}</td>
+                          <td>{t.dev_estimate_hours != null ? `${t.dev_estimate_hours}h` : '—'}</td>
+                          <td>{t.qa_estimate_hours != null ? `${t.qa_estimate_hours}h` : '—'}</td>
+                          <td>{t.eta ? formatDisplayDate(t.eta) : '—'}</td>
+                          <td title={t.developers_str || ''}>{(t.developers_str || '—').slice(0, 20)}{(t.developers_str || '').length > 20 ? '…' : ''}</td>
+                          <td>{t.status || '—'}</td>
+                          <td>{t.module || '—'}</td>
+                          <td>{t.qc_tester || 'Not Assigned'}</td>
+                          <td>
+                            <span className={`age-badge age-badge-${getAgeingType(t)}`} title={getAgeingType(t) === 'closed' ? 'Ageing: created → closed date' : 'Ageing: created → today'}>
+                              {formatAgeing(t)}
+                            </span>
+                          </td>
+                          <td>{t.moved_to_qc_on ? formatDisplayDateTime(t.moved_to_qc_on) : '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -2084,7 +2376,42 @@ function TicketsDashboard() {
                 <div className="loading-spinner"></div>
                 <span>Loading timesheet entries...</span>
               </div>
-            ) : ticketTimesheetEntries.length > 0 ? (
+            ) : (
+              <>
+                {/* Ticket Ageing & Priority History */}
+                {selectedTicketDetail && (
+                  <div className="ticket-detail-meta">
+                    <div className="ticket-ageing-block">
+                      <h4 className="meta-label">Ageing</h4>
+                      <div className="meta-row">
+                        <span>Created: {selectedTicketDetail.created_on ? formatDisplayDateTime(selectedTicketDetail.created_on) : '—'}</span>
+                        <span>Closed: {selectedTicketDetail.closed_on ? formatDisplayDateTime(selectedTicketDetail.closed_on) : '—'}</span>
+                        <span className={`ageing-summary ageing-${selectedTicketDetail.days_to_close != null ? 'closed' : 'open'}`} title={selectedTicketDetail.days_to_close != null ? 'Ageing: created → closed date' : 'Ageing: created → today'}>
+                          {selectedTicketDetail.days_to_close != null
+                            ? `Closed ageing: ${selectedTicketDetail.days_to_close} days`
+                            : selectedTicketDetail.ageing_days != null
+                              ? `Open ageing: ${selectedTicketDetail.ageing_days} days`
+                              : '—'}
+                        </span>
+                      </div>
+                    </div>
+                    {selectedTicketDetail.priority_history && selectedTicketDetail.priority_history.length > 0 && (
+                      <div className="ticket-priority-history-block">
+                        <h4 className="meta-label">Priority changes ({selectedTicketDetail.priority_history.length})</h4>
+                        <ul className="priority-history-list">
+                          {selectedTicketDetail.priority_history.map((h, i) => (
+                            <li key={i}>
+                              {(h.previous_priority || '—')} → <strong>{h.new_priority || '—'}</strong>
+                              {h.changed_on && <span className="priority-change-date"> ({formatDisplayDateTime(h.changed_on)})</span>}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {ticketTimesheetEntries.length > 0 ? (
               <>
                 {/* Summary Stats */}
                 <div className="timesheet-summary">
@@ -2159,6 +2486,8 @@ function TicketsDashboard() {
                 </svg>
                 <p>No timesheet entries found for ticket #{selectedTicketId}</p>
               </div>
+            )}
+              </>
             )}
           </div>
         )}

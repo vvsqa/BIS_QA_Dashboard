@@ -1,12 +1,16 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { useTableSort, SortableHeader } from './useTableSort';
+import { TicketExternalLink } from './ticketUtils';
+import { apiFetch, API_BASE } from './api';
+import { useAuth } from './AuthContext';
 import './dashboard.css';
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL || 'http://localhost:8000';
+const BACKEND_URL = API_BASE;
 
 function ReportsModule() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [loading, setLoading] = useState(false);
   const [previewData, setPreviewData] = useState(null);
   const [selectedDate, setSelectedDate] = useState('');
@@ -103,7 +107,7 @@ function ReportsModule() {
           : `${BACKEND_URL}/reports/weekly`;
       }
       
-      const response = await fetch(url);
+      const response = await apiFetch(url);
       if (!response.ok) throw new Error('Failed to generate report');
       
       const blob = await response.blob();
@@ -180,17 +184,15 @@ function ReportsModule() {
             <span className="nav-icon">🐛</span>
             <span>All Bugs</span>
           </a>
-          <a href="/employees" className="nav-item">
-            <span className="nav-icon">👥</span>
-            <span>Employees</span>
-          </a>
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+            <a href="/employees" className="nav-item">
+              <span className="nav-icon">👥</span>
+              <span>Employees</span>
+            </a>
+          )}
           <a href="/calendar" className="nav-item">
             <span className="nav-icon">📅</span>
             <span>Calendar</span>
-          </a>
-          <a href="/planning" className="nav-item">
-            <span className="nav-icon">📋</span>
-            <span>Task Planning</span>
           </a>
           <a href="/reports" className="nav-item active">
             <span className="nav-icon">📈</span>
@@ -513,11 +515,11 @@ function ReportsModule() {
                       <tbody>
                         {sortedBisTickets.slice(0, 10).map((ticket, idx) => (
                           <tr key={idx}>
-                            <td 
-                              className="clickable-cell"
-                              onClick={() => navigate(`/?ticket=${ticket.ticket_id}`)}
-                            >
-                              #{ticket.ticket_id}
+                            <td>
+                              <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
+                                #{ticket.ticket_id}
+                              </Link>
+                              <TicketExternalLink ticketId={ticket.ticket_id} />
                             </td>
                             <td className="truncate">{ticket.title}</td>
                             <td>
@@ -561,11 +563,11 @@ function ReportsModule() {
                       <tbody>
                         {sortedClosedTickets.slice(0, 10).map((ticket, idx) => (
                           <tr key={idx}>
-                            <td 
-                              className="clickable-cell"
-                              onClick={() => navigate(`/?ticket=${ticket.ticket_id}`)}
-                            >
-                              #{ticket.ticket_id}
+                            <td>
+                              <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
+                                #{ticket.ticket_id}
+                              </Link>
+                              <TicketExternalLink ticketId={ticket.ticket_id} />
                             </td>
                             <td className="truncate">{ticket.title}</td>
                             <td>{ticket.bugs_closed}</td>

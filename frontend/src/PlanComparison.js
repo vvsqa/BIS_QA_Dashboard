@@ -1,647 +1,950 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Chart as ChartJS, ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, PointElement, LineElement } from 'chart.js';
-import { Bar, Doughnut, Line } from 'react-chartjs-2';
-import { formatAPIDate, formatDateRange, formatMonthYear } from './dateUtils';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js';
+import { Bar } from 'react-chartjs-2';
+import ChartDataLabels from 'chartjs-plugin-datalabels';
+import { formatAPIDate, formatDisplayDate, formatPlanningWeek } from './dateUtils';
+import { useTableSort, SortableHeader } from './useTableSort';
+import { TicketExternalLink } from './ticketUtils';
 import './PlanComparison.css';
 
-ChartJS.register(ArcElement, Tooltip, Legend, CategoryScale, LinearScale, BarElement, PointElement, LineElement);
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+  ChartDataLabels
+);
 
-const API_BASE = 'http://localhost:8000';
+const API_BASE = (process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`).replace(/\/$/, '');
 
-// Helper function to format date as YYYY-MM-DD (for API calls)
-const formatDate = formatAPIDate;
+function getWeekMonday(d) {
+  const date = new Date(d);
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+  return new Date(date.setDate(diff));
+}
 
-// Helper function to get week start (Monday)
-const getWeekStart = (date) => {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  return new Date(d.setDate(diff));
-};
+const DAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'];
 
-function PlanComparison() {
-  const navigate = useNavigate();
-  
-  // State
-  const [team, setTeam] = useState('ALL');
-  const [period, setPeriod] = useState('week');
-  const [currentDate, setCurrentDate] = useState(new Date());
-  const [comparisonData, setComparisonData] = useState(null);
-  const [trendsData, setTrendsData] = useState(null);
+function formatMonth(d) {
+  const date = new Date(d);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function formatMonthDisplay(monthStr) {
+  const [year, month] = monthStr.split('-');
+  const date = new Date(parseInt(year), parseInt(month) - 1, 1);
+  return date.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+}
+
+function PlanComparison({ showParentTitle = false }) {
+  const [searchParams] = useSearchParams();
+  const employeeFromUrl = searchParams.get('employee') || '';
+  const [team, setTeam] = useState('dev');
+  const [period, setPeriod] = useState('weekly'); // 'weekly' | 'monthly'
+  const [weekStart, setWeekStart] = useState(() => formatAPIDate(getWeekMonday(new Date())));
+  const [monthStart, setMonthStart] = useState(() => formatMonth(new Date()));
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
-  const [selectedEmployee, setSelectedEmployee] = useState(null);
+  const [expandedEmployee, setExpandedEmployee] = useState(null);
+  const [expandedDays, setExpandedDays] = useState({}); // date string -> boolean
+  const [expandedDayEmployees, setExpandedDayEmployees] = useState({}); // "date:employee" -> boolean
+  const [employeeSearch, setEmployeeSearch] = useState(employeeFromUrl);
+  const [showNoTimesheetOnly, setShowNoTimesheetOnly] = useState(false);
 
-  // Fetch comparison data
-  const fetchComparisonData = useCallback(async () => {
+  useEffect(() => {
+    if (employeeFromUrl) {
+      setEmployeeSearch(employeeFromUrl);
+    }
+  }, [employeeFromUrl]);
+  const [viewMode, setViewMode] = useState('employee-daily'); // 'employee' | 'daily' | 'employee-daily'
+  const [employeeDailySortKey, setEmployeeDailySortKey] = useState('employee_name'); // for employee-by-day view
+
+  const fetchComparison = useCallback(async () => {
     setLoading(true);
     setError(null);
-    
     try {
-      const url = `${API_BASE}/planning/comparison?team=${team}&period=${period}&date_str=${formatDate(currentDate)}`;
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Failed to fetch comparison data');
-      const data = await response.json();
-      setComparisonData(data);
-    } catch (err) {
-      setError(err.message);
+      let url;
+      if (period === 'monthly') {
+        const params = new URLSearchParams({ team, month_str: monthStart });
+        url = `${API_BASE}/planning/comparison/monthly?${params}`;
+      } else {
+        const params = new URLSearchParams({ team, week_start_str: weekStart });
+        url = `${API_BASE}/planning/comparison/planning?${params}`;
+      }
+      const res = await fetch(url);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || res.statusText || 'Failed to fetch');
+      }
+      const json = await res.json();
+      setData(json);
+    } catch (e) {
+      setError(e.message || 'Failed to load plan vs actual data');
+      setData(null);
     } finally {
       setLoading(false);
     }
-  }, [team, period, currentDate]);
+  }, [team, weekStart, monthStart, period]);
 
-  // Fetch trends data
-  const fetchTrendsData = useCallback(async () => {
-    try {
-      const url = `${API_BASE}/planning/comparison/trends?team=${team}&weeks=8`;
-      const response = await fetch(url);
-      if (response.ok) {
-        const data = await response.json();
-        setTrendsData(data);
+  useEffect(() => {
+    fetchComparison();
+  }, [fetchComparison]);
+
+  const goPrevWeek = () => {
+    const d = new Date(weekStart + 'T12:00:00');
+    d.setDate(d.getDate() - 7);
+    setWeekStart(formatAPIDate(getWeekMonday(d)));
+  };
+
+  const goNextWeek = () => {
+    const d = new Date(weekStart + 'T12:00:00');
+    d.setDate(d.getDate() + 7);
+    setWeekStart(formatAPIDate(getWeekMonday(d)));
+  };
+
+  const goToCurrentWeek = () => {
+    setWeekStart(formatAPIDate(getWeekMonday(new Date())));
+  };
+
+  const goPrevMonth = () => {
+    const [year, month] = monthStart.split('-').map(Number);
+    const d = new Date(year, month - 2, 1);
+    setMonthStart(formatMonth(d));
+  };
+
+  const goNextMonth = () => {
+    const [year, month] = monthStart.split('-').map(Number);
+    const d = new Date(year, month, 1);
+    setMonthStart(formatMonth(d));
+  };
+
+  const goToCurrentMonth = () => {
+    setMonthStart(formatMonth(new Date()));
+  };
+
+  const toggleDayExpand = (date) => {
+    setExpandedDays((prev) => ({ ...prev, [date]: !prev[date] }));
+  };
+
+  const toggleDayEmployeeExpand = (date, employeeName) => {
+    const key = `${date}:${employeeName}`;
+    setExpandedDayEmployees((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
+  // Helper function to determine day deviation status
+  const getDayStatus = (day) => {
+    const planned = day.total_planned || 0;
+    const actual = day.total_actual || 0;
+    const variance = day.variance || (actual - planned);
+    const variancePercent = planned > 0 ? Math.abs(variance / planned * 100) : 0;
+    
+    if (planned === 0 && actual === 0) {
+      return { status: 'no-data', label: 'No Data', color: 'muted' };
+    }
+    if (actual === 0 && planned > 0) {
+      return { status: 'no-timesheet', label: 'No Timesheet', color: 'warning' };
+    }
+    // Consider "on track" if variance is within 10%
+    if (variancePercent <= 10) {
+      return { status: 'on-track', label: 'On Track', color: 'match' };
+    }
+    if (variance > 0) {
+      return { status: 'over', label: `Over (+${variancePercent.toFixed(0)}%)`, color: 'over' };
+    }
+    return { status: 'under', label: `Under (${variancePercent.toFixed(0)}%)`, color: 'under' };
+  };
+
+  const toggleEmployee = (name) => {
+    setExpandedEmployee((prev) => (prev === name ? null : name));
+  };
+
+  // Sort employee breakdown for Employee by Day view
+  const sortEmployeeBreakdown = (list) => {
+    if (!list?.length) return list;
+    const key = employeeDailySortKey;
+    return [...list].sort((a, b) => {
+      const aVal = a[key];
+      const bVal = b[key];
+      if (typeof aVal === 'string' && typeof bVal === 'string') {
+        return aVal.localeCompare(bVal, undefined, { sensitivity: 'base' });
       }
-    } catch (err) {
-      console.error('Failed to fetch trends:', err);
+      const aNum = Number(aVal) ?? 0;
+      const bNum = Number(bVal) ?? 0;
+      return aNum - bNum;
+    });
+  };
+
+  const filteredEmployees = useMemo(() => {
+    if (!data?.employees) return [];
+    let list = data.employees;
+    if (employeeSearch.trim()) {
+      const q = employeeSearch.trim().toLowerCase();
+      list = list.filter(
+        (e) =>
+          (e.employee_name || '').toLowerCase().includes(q) ||
+          (e.role || '').toLowerCase().includes(q) ||
+          (e.lead || '').toLowerCase().includes(q)
+      );
     }
-  }, [team]);
-
-  // Navigation handlers
-  const goToPrevious = () => {
-    const newDate = new Date(currentDate);
-    if (period === 'week') {
-      newDate.setDate(newDate.getDate() - 7);
-    } else {
-      newDate.setMonth(newDate.getMonth() - 1);
+    if (showNoTimesheetOnly) {
+      list = list.filter((e) => e.actual_hours === 0);
     }
-    setCurrentDate(newDate);
-  };
+    return list;
+  }, [data?.employees, employeeSearch, showNoTimesheetOnly]);
 
-  const goToNext = () => {
-    const newDate = new Date(currentDate);
-    if (period === 'week') {
-      newDate.setDate(newDate.getDate() + 7);
-    } else {
-      newDate.setMonth(newDate.getMonth() + 1);
-    }
-    setCurrentDate(newDate);
-  };
+  const { sortedData: sortedEmployees, sortConfig, handleSort } = useTableSort(filteredEmployees, {
+    defaultSortKey: 'employee_name',
+    defaultSortDirection: 'asc',
+  });
 
-  const goToToday = () => {
-    setCurrentDate(new Date());
-  };
-
-  // Effects
-  useEffect(() => {
-    fetchComparisonData();
-    fetchTrendsData();
-  }, [fetchComparisonData, fetchTrendsData]);
-
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('theme', theme);
-  }, [theme]);
-
-  // Get variance color class
-  const getVarianceClass = (variance) => {
-    if (variance > 10) return 'variance-over';
-    if (variance < -10) return 'variance-under';
-    return 'variance-ok';
-  };
-
-  // Get accuracy color class
-  const getAccuracyClass = (accuracy) => {
-    if (accuracy === null) return '';
-    if (accuracy >= 90) return 'accuracy-excellent';
-    if (accuracy >= 75) return 'accuracy-good';
-    if (accuracy >= 50) return 'accuracy-fair';
-    return 'accuracy-poor';
-  };
-
-  // Summary Cards
-  const renderSummaryCards = () => {
-    if (!comparisonData?.summary) return null;
-
-    const { summary } = comparisonData;
-
-    return (
-      <div className="summary-cards">
-        <div className="summary-card planned">
-          <div className="card-icon">📋</div>
-          <div className="card-content">
-            <span className="card-value">{summary.total_planned_hours}h</span>
-            <span className="card-label">Planned Hours</span>
-          </div>
-        </div>
-        <div className="summary-card actual">
-          <div className="card-icon">⏱️</div>
-          <div className="card-content">
-            <span className="card-value">{summary.total_actual_hours}h</span>
-            <span className="card-label">Actual Hours</span>
-          </div>
-        </div>
-        <div className={`summary-card variance ${getVarianceClass(summary.variance_percent)}`}>
-          <div className="card-icon">{summary.over_estimation ? '📉' : '📈'}</div>
-          <div className="card-content">
-            <span className="card-value">
-              {summary.variance_percent >= 0 ? '+' : ''}{summary.variance_percent}%
-            </span>
-            <span className="card-label">Variance</span>
-          </div>
-        </div>
-        <div className={`summary-card accuracy ${getAccuracyClass(summary.estimation_accuracy)}`}>
-          <div className="card-icon">🎯</div>
-          <div className="card-content">
-            <span className="card-value">
-              {summary.estimation_accuracy !== null ? `${summary.estimation_accuracy}%` : 'N/A'}
-            </span>
-            <span className="card-label">Accuracy</span>
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  // Comparison Chart
-  const renderComparisonChart = () => {
-    if (!comparisonData?.employees?.length) return null;
-
-    const chartData = {
-      labels: comparisonData.employees.map(e => e.employee_name?.split(' ')[0] || 'Unknown'),
+  const dailyChartData = useMemo(() => {
+    if (!data?.by_day_summary) return null;
+    return {
+      labels: data.by_day_summary.map((d, i) => DAY_LABELS[i] || formatDisplayDate(d.date).split('-')[0]),
       datasets: [
         {
-          label: 'Planned Hours',
-          data: comparisonData.employees.map(e => e.planned_hours || 0),
-          backgroundColor: 'rgba(139, 92, 246, 0.8)',
-          borderColor: 'rgb(139, 92, 246)',
-          borderWidth: 1
-        },
-        {
-          label: 'Actual Hours',
-          data: comparisonData.employees.map(e => e.actual_hours || 0),
-          backgroundColor: 'rgba(59, 130, 246, 0.8)',
+          label: 'Planned (h)',
+          data: data.by_day_summary.map((d) => d.planned_hours),
+          backgroundColor: 'rgba(59, 130, 246, 0.7)',
           borderColor: 'rgb(59, 130, 246)',
-          borderWidth: 1
-        }
-      ]
-    };
-
-    const options = {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          position: 'top',
-          labels: {
-            color: theme === 'dark' ? '#9ca3af' : '#475569'
-          }
-        }
-      },
-      scales: {
-        x: {
-          grid: {
-            color: theme === 'dark' ? 'rgba(75, 85, 99, 0.3)' : 'rgba(203, 213, 225, 0.5)'
-          },
-          ticks: {
-            color: theme === 'dark' ? '#9ca3af' : '#475569'
-          }
+          borderWidth: 1,
         },
-        y: {
-          grid: {
-            color: theme === 'dark' ? 'rgba(75, 85, 99, 0.3)' : 'rgba(203, 213, 225, 0.5)'
-          },
-          ticks: {
-            color: theme === 'dark' ? '#9ca3af' : '#475569'
-          }
-        }
-      }
+        {
+          label: 'Actual (h)',
+          data: data.by_day_summary.map((d) => d.actual_hours),
+          backgroundColor: 'rgba(20, 184, 166, 0.7)',
+          borderColor: 'rgb(20, 184, 166)',
+          borderWidth: 1,
+        },
+      ],
     };
+  }, [data?.by_day_summary]);
 
-    return (
-      <div className="chart-panel">
-        <h3>Plan vs Actual by Employee</h3>
-        <div className="chart-container" style={{ height: '300px' }}>
-          <Bar data={chartData} options={options} />
-        </div>
-      </div>
-    );
-  };
-
-  // Accuracy Gauge
-  const renderAccuracyGauge = () => {
-    if (!comparisonData?.summary) return null;
-
-    const accuracy = comparisonData.summary.estimation_accuracy || 0;
-
-    const gaugeData = {
-      datasets: [{
-        data: [accuracy, 100 - accuracy],
-        backgroundColor: [
-          accuracy >= 90 ? '#22c55e' : accuracy >= 75 ? '#f59e0b' : '#ef4444',
-          theme === 'dark' ? '#1f2937' : '#e2e8f0'
-        ],
-        borderWidth: 0
-      }]
-    };
-
-    const options = {
-      responsive: true,
-      maintainAspectRatio: false,
-      cutout: '70%',
-      rotation: -90,
-      circumference: 180,
-      plugins: {
-        legend: { display: false },
-        tooltip: { enabled: false }
-      }
-    };
-
-    return (
-      <div className="gauge-panel">
-        <h3>Estimation Accuracy</h3>
-        <div className="gauge-container">
-          <div style={{ height: '150px', position: 'relative' }}>
-            <Doughnut data={gaugeData} options={options} />
-            <div className="gauge-value">
-              <span className="value">{accuracy.toFixed(0)}%</span>
-              <span className="label">Accuracy</span>
-            </div>
-          </div>
-        </div>
-        <div className="gauge-legend">
-          <span className={getAccuracyClass(accuracy)}>
-            {accuracy >= 90 ? 'Excellent' : accuracy >= 75 ? 'Good' : accuracy >= 50 ? 'Fair' : 'Needs Improvement'}
-          </span>
-        </div>
-      </div>
-    );
-  };
-
-  // Trends Chart
-  const renderTrendsChart = () => {
-    if (!trendsData?.trends?.length) return null;
-
-    const chartData = {
-      labels: trendsData.trends.map(t => `Week ${t.week_number}`),
+  const employeeChartData = useMemo(() => {
+    if (!sortedEmployees?.length) return null;
+    const maxShow = 12;
+    const slice = sortedEmployees.slice(0, maxShow);
+    return {
+      labels: slice.map((e) => (e.employee_name || '').split(' ')[0] || '-'),
       datasets: [
         {
-          label: 'Accuracy %',
-          data: trendsData.trends.map(t => t.estimation_accuracy || 0),
-          borderColor: 'rgb(139, 92, 246)',
-          backgroundColor: 'rgba(139, 92, 246, 0.1)',
-          fill: true,
-          tension: 0.4
-        }
-      ]
-    };
-
-    const options = {
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {
-        legend: {
-          display: false
-        }
-      },
-      scales: {
-        x: {
-          grid: {
-            color: theme === 'dark' ? 'rgba(75, 85, 99, 0.3)' : 'rgba(203, 213, 225, 0.5)'
-          },
-          ticks: {
-            color: theme === 'dark' ? '#9ca3af' : '#475569'
-          }
+          label: 'Planned (h)',
+          data: slice.map((e) => e.planned_hours),
+          backgroundColor: 'rgba(59, 130, 246, 0.7)',
+          borderColor: 'rgb(59, 130, 246)',
+          borderWidth: 1,
         },
-        y: {
-          min: 0,
-          max: 100,
-          grid: {
-            color: theme === 'dark' ? 'rgba(75, 85, 99, 0.3)' : 'rgba(203, 213, 225, 0.5)'
-          },
-          ticks: {
-            color: theme === 'dark' ? '#9ca3af' : '#475569',
-            callback: (value) => value + '%'
-          }
-        }
-      }
+        {
+          label: 'Actual (h)',
+          data: slice.map((e) => e.actual_hours),
+          backgroundColor: 'rgba(20, 184, 166, 0.7)',
+          borderColor: 'rgb(20, 184, 166)',
+          borderWidth: 1,
+        },
+      ],
     };
+  }, [sortedEmployees]);
 
-    return (
-      <div className="chart-panel trends-panel">
-        <h3>Accuracy Trend (Last 8 Weeks)</h3>
-        <div className="chart-container" style={{ height: '200px' }}>
-          <Line data={chartData} options={options} />
-        </div>
-        {trendsData.summary?.average_accuracy && (
-          <div className="trends-summary">
-            <span>Average: <strong>{trendsData.summary.average_accuracy}%</strong></span>
-          </div>
-        )}
-      </div>
-    );
+  const chartOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: { position: 'top' },
+      datalabels: {
+        display: false,
+      },
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        ticks: { font: { size: 11 }, color: 'var(--text-muted)' },
+      },
+      y: {
+        beginAtZero: true,
+        grid: { color: 'rgba(255,255,255,0.06)' },
+        ticks: { font: { size: 11 }, color: 'var(--text-muted)' },
+      },
+    },
   };
 
-  // Employee Details Table
-  const renderEmployeeTable = () => {
-    if (!comparisonData?.employees?.length) return null;
-
+  if (loading && !data) {
     return (
-      <div className="table-panel">
-        <h3>Employee Breakdown</h3>
-        <div className="table-container">
-          <table className="comparison-table">
-            <thead>
-              <tr>
-                <th>Employee</th>
-                <th>Team</th>
-                <th>Planned</th>
-                <th>Actual</th>
-                <th>Variance</th>
-                <th>Accuracy</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {comparisonData.employees.map((emp, idx) => (
-                <tr key={idx}>
-                  <td>
-                    <span 
-                      className="employee-name clickable"
-                      onClick={() => emp.employee_id && navigate(`/employees/${emp.employee_id}`)}
-                    >
-                      {emp.employee_name}
-                    </span>
-                  </td>
-                  <td>
-                    <span className="team-badge">{emp.team}</span>
-                  </td>
-                  <td className="hours-cell">{emp.planned_hours.toFixed(1)}h</td>
-                  <td className="hours-cell">{emp.actual_hours.toFixed(1)}h</td>
-                  <td className={`variance-cell ${getVarianceClass(emp.variance_percent)}`}>
-                    {emp.variance >= 0 ? '+' : ''}{emp.variance.toFixed(1)}h
-                    <span className="variance-percent">({emp.variance_percent}%)</span>
-                  </td>
-                  <td className={`accuracy-cell ${getAccuracyClass(emp.estimation_accuracy)}`}>
-                    {emp.estimation_accuracy !== null ? `${emp.estimation_accuracy}%` : 'N/A'}
-                  </td>
-                  <td>
-                    <button 
-                      className="detail-btn"
-                      onClick={() => setSelectedEmployee(emp)}
-                      title="View details"
-                    >
-                      📊 Details
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      <div className="plan-comparison-page">
+        <div className="plan-comparison-loading">
+          <div className="plan-comparison-spinner" />
+          <p>Loading plan vs actual data…</p>
         </div>
       </div>
     );
-  };
-
-  // Employee Detail Modal
-  const renderEmployeeModal = () => {
-    if (!selectedEmployee) return null;
-
-    const tickets = Object.entries(selectedEmployee.by_ticket || {});
-
-    return (
-      <div className="modal-overlay" onClick={() => setSelectedEmployee(null)}>
-        <div className="modal-content employee-detail-modal" onClick={e => e.stopPropagation()}>
-          <div className="modal-header">
-            <h3>{selectedEmployee.employee_name}</h3>
-            <button className="modal-close" onClick={() => setSelectedEmployee(null)}>×</button>
-          </div>
-          <div className="modal-body">
-            <div className="employee-summary">
-              <div className="summary-item">
-                <span className="label">Planned</span>
-                <span className="value">{selectedEmployee.planned_hours.toFixed(1)}h</span>
-              </div>
-              <div className="summary-item">
-                <span className="label">Actual</span>
-                <span className="value">{selectedEmployee.actual_hours.toFixed(1)}h</span>
-              </div>
-              <div className={`summary-item ${getVarianceClass(selectedEmployee.variance_percent)}`}>
-                <span className="label">Variance</span>
-                <span className="value">{selectedEmployee.variance_percent}%</span>
-              </div>
-              <div className={`summary-item ${getAccuracyClass(selectedEmployee.estimation_accuracy)}`}>
-                <span className="label">Accuracy</span>
-                <span className="value">{selectedEmployee.estimation_accuracy}%</span>
-              </div>
-            </div>
-
-            {tickets.length > 0 && (
-              <>
-                <h4>Ticket Breakdown</h4>
-                <table className="ticket-table">
-                  <thead>
-                    <tr>
-                      <th>Ticket</th>
-                      <th>Planned</th>
-                      <th>Actual</th>
-                      <th>Variance</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tickets.map(([ticketId, data]) => (
-                      <tr key={ticketId}>
-                        <td>#{ticketId}</td>
-                        <td>{data.planned_hours.toFixed(1)}h</td>
-                        <td>{data.actual_hours.toFixed(1)}h</td>
-                        <td className={data.variance > 0 ? 'positive' : data.variance < 0 ? 'negative' : ''}>
-                          {data.variance >= 0 ? '+' : ''}{data.variance.toFixed(1)}h
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
-            )}
-
-            {selectedEmployee.planned_tasks?.length > 0 && (
-              <>
-                <h4>Planned Tasks</h4>
-                <div className="task-list">
-                  {selectedEmployee.planned_tasks.map((task, idx) => (
-                    <div key={idx} className="task-item">
-                      <span className="task-ticket">#{task.ticket_id}</span>
-                      <span className="task-title">{task.task_title}</span>
-                      <span className="task-hours">{task.planned_hours}h</span>
-                      <span className={`task-status status-${task.status}`}>{task.status}</span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
-
-  // Period display
-  const getPeriodDisplay = () => {
-    if (period === 'week') {
-      const weekStart = getWeekStart(currentDate);
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekEnd.getDate() + 6);
-      return formatDateRange(weekStart, weekEnd);
-    } else {
-      return formatMonthYear(currentDate);
-    }
-  };
+  }
 
   return (
-    <div className="plan-comparison-module">
-      {/* Sidebar */}
-      <aside className="sidebar">
-        <div className="logo-section">
-          <img src="/techversant-logo.png" alt="Techversant" className="company-logo" />
-          <div className="logo-text">
-            <span className="logo-title">QA Dashboard</span>
-            <span className="logo-subtitle">Comparison</span>
-          </div>
+    <div className="plan-comparison-page">
+      <header className="plan-comparison-header">
+        <div className="plan-comparison-header-top">
+          <h2 className="plan-comparison-title">Plan vs Actual Deviation</h2>
+          <p className="plan-comparison-subtitle">
+            Compare planned tasks (Dev/QA planning) with actual activities (Excel/Google Sheets timesheet).
+          </p>
         </div>
 
-        <nav className="sidebar-nav">
-          <a href="/" className="nav-item">
-            <span className="nav-icon">📊</span>
-            <span>Dashboard</span>
-          </a>
-          <a href="/tickets" className="nav-item">
-            <span className="nav-icon">🎫</span>
-            <span>Tickets</span>
-          </a>
-          <a href="/all-bugs" className="nav-item">
-            <span className="nav-icon">🐛</span>
-            <span>All Bugs</span>
-          </a>
-          <a href="/employees" className="nav-item">
-            <span className="nav-icon">👥</span>
-            <span>Employees</span>
-          </a>
-          <a href="/calendar" className="nav-item">
-            <span className="nav-icon">📅</span>
-            <span>Calendar</span>
-          </a>
-          <a href="/planning" className="nav-item">
-            <span className="nav-icon">📋</span>
-            <span>Task Planning</span>
-          </a>
-          <a href="/comparison" className="nav-item active">
-            <span className="nav-icon">📊</span>
-            <span>Plan vs Actual</span>
-          </a>
-          <a href="/reports" className="nav-item">
-            <span className="nav-icon">📈</span>
-            <span>Reports</span>
-          </a>
-        </nav>
-
-        <div className="sidebar-footer">
-          <button 
-            className="theme-toggle" 
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          >
-            {theme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode'}
-          </button>
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className="main-content">
-        {/* Header */}
-        <header className="page-header">
-          <div className="header-title">
-            <h1>📊 Plan vs Actual Comparison</h1>
-            <p>Compare planned tasks with actual timesheet data</p>
+        <div className="plan-comparison-controls">
+          <div className="plan-comparison-control-group">
+            <span className="plan-comparison-control-label">Team</span>
+            <div className="plan-comparison-team-toggle">
+              <button
+                type="button"
+                className={`plan-comparison-team-btn ${team === 'dev' ? 'active' : ''}`}
+                onClick={() => setTeam('dev')}
+              >
+                Development
+              </button>
+              <button
+                type="button"
+                className={`plan-comparison-team-btn ${team === 'qa' ? 'active' : ''}`}
+                onClick={() => setTeam('qa')}
+              >
+                QA
+              </button>
+            </div>
           </div>
-        </header>
 
-        {/* Controls */}
-        <div className="comparison-controls">
-          <div className="control-group">
-            {/* Period Toggle */}
-            <div className="view-toggle">
-              <button 
-                className={`toggle-btn ${period === 'week' ? 'active' : ''}`}
-                onClick={() => setPeriod('week')}
+          <div className="plan-comparison-control-group">
+            <span className="plan-comparison-control-label">Period</span>
+            <div className="plan-comparison-team-toggle">
+              <button
+                type="button"
+                className={`plan-comparison-team-btn ${period === 'weekly' ? 'active' : ''}`}
+                onClick={() => setPeriod('weekly')}
               >
                 Weekly
               </button>
-              <button 
-                className={`toggle-btn ${period === 'month' ? 'active' : ''}`}
-                onClick={() => setPeriod('month')}
+              <button
+                type="button"
+                className={`plan-comparison-team-btn ${period === 'monthly' ? 'active' : ''}`}
+                onClick={() => setPeriod('monthly')}
               >
                 Monthly
               </button>
             </div>
-
-            {/* Team Filter */}
-            <select 
-              className="team-select"
-              value={team}
-              onChange={(e) => setTeam(e.target.value)}
-            >
-              <option value="ALL">All Teams</option>
-              <option value="QA">QA Team</option>
-              <option value="DEV">Dev Team</option>
-            </select>
           </div>
 
-          <div className="date-navigation">
-            <button className="nav-btn" onClick={goToPrevious}>
-              ←
-            </button>
-            <button className="today-btn" onClick={goToToday}>
-              Today
-            </button>
-            <span className="current-period">
-              {getPeriodDisplay()}
-            </span>
-            <button className="nav-btn" onClick={goToNext}>
-              →
-            </button>
-          </div>
-        </div>
-
-        {/* Content */}
-        {loading && (
-          <div className="loading-state">
-            <div className="spinner"></div>
-            <p>Loading comparison data...</p>
-          </div>
-        )}
-        
-        {error && (
-          <div className="error-state">
-            <p>⚠️ {error}</p>
-            <button onClick={fetchComparisonData}>Retry</button>
-          </div>
-        )}
-        
-        {!loading && !error && (
-          <>
-            {renderSummaryCards()}
-            
-            <div className="charts-grid">
-              {renderComparisonChart()}
-              {renderAccuracyGauge()}
+          {period === 'weekly' ? (
+            <div className="plan-comparison-control-group">
+              <span className="plan-comparison-control-label">Week</span>
+              <div className="plan-comparison-week-nav">
+                <button type="button" className="plan-comparison-nav-btn" onClick={goPrevWeek} aria-label="Previous week">
+                  ‹
+                </button>
+                <span className="plan-comparison-week-label">{formatPlanningWeek(weekStart)}</span>
+                <button type="button" className="plan-comparison-nav-btn" onClick={goNextWeek} aria-label="Next week">
+                  ›
+                </button>
+                <button type="button" className="plan-comparison-today-btn" onClick={goToCurrentWeek}>
+                  This Week
+                </button>
+              </div>
             </div>
-            
-            {renderTrendsChart()}
-            {renderEmployeeTable()}
-          </>
-        )}
-      </main>
+          ) : (
+            <div className="plan-comparison-control-group">
+              <span className="plan-comparison-control-label">Month</span>
+              <div className="plan-comparison-week-nav">
+                <button type="button" className="plan-comparison-nav-btn" onClick={goPrevMonth} aria-label="Previous month">
+                  ‹
+                </button>
+                <span className="plan-comparison-week-label">{formatMonthDisplay(monthStart)}</span>
+                <button type="button" className="plan-comparison-nav-btn" onClick={goNextMonth} aria-label="Next month">
+                  ›
+                </button>
+                <button type="button" className="plan-comparison-today-btn" onClick={goToCurrentMonth}>
+                  This Month
+                </button>
+              </div>
+            </div>
+          )}
 
-      {/* Employee Detail Modal */}
-      {renderEmployeeModal()}
+          <button
+            type="button"
+            className="plan-comparison-refresh"
+            onClick={fetchComparison}
+            disabled={loading}
+            title="Refresh data"
+          >
+            {loading ? '…' : '↻ Refresh'}
+          </button>
+        </div>
+      </header>
+
+      {error && (
+        <div className="plan-comparison-error">
+          <span className="plan-comparison-error-icon">⚠</span>
+          {error}
+        </div>
+      )}
+
+      {data && !error && (
+        <>
+          <section className="plan-comparison-summary">
+            <h3 className="plan-comparison-section-title">Summary</h3>
+            <div className="plan-comparison-summary-cards">
+              <div className="plan-comparison-card">
+                <span className="plan-comparison-card-icon">📋</span>
+                <span className="plan-comparison-card-label">Planned Hours</span>
+                <span className="plan-comparison-card-value planned">
+                  {data.summary?.total_planned_hours ?? 0}h
+                </span>
+              </div>
+              <div className="plan-comparison-card">
+                <span className="plan-comparison-card-icon">✓</span>
+                <span className="plan-comparison-card-label">Actual Hours</span>
+                <span className="plan-comparison-card-value actual">
+                  {data.summary?.total_actual_hours ?? 0}h
+                </span>
+              </div>
+              <div className="plan-comparison-card">
+                <span className="plan-comparison-card-icon">Δ</span>
+                <span className="plan-comparison-card-label">Variance</span>
+                <span
+                  className={`plan-comparison-card-value variance ${
+                    (data.summary?.total_variance ?? 0) >= 0 ? 'over' : 'under'
+                  }`}
+                >
+                  {(data.summary?.total_variance ?? 0) >= 0 ? '+' : ''}
+                  {data.summary?.total_variance ?? 0}h
+                  {data.summary?.variance_percent != null && (
+                    <span className="plan-comparison-variance-pct">({data.summary.variance_percent}%)</span>
+                  )}
+                </span>
+              </div>
+              <div className="plan-comparison-card">
+                <span className="plan-comparison-card-icon">%</span>
+                <span className="plan-comparison-card-label">Estimation Accuracy</span>
+                <span className="plan-comparison-card-value accuracy">
+                  {data.summary?.estimation_accuracy != null ? `${data.summary.estimation_accuracy}%` : '—'}
+                </span>
+              </div>
+              <div className="plan-comparison-card">
+                <span className="plan-comparison-card-icon">👥</span>
+                <span className="plan-comparison-card-label">Active Employees</span>
+                <span className="plan-comparison-card-value">{data.summary?.employee_count ?? 0}</span>
+              </div>
+              <div className="plan-comparison-card">
+                <span className="plan-comparison-card-icon">📝</span>
+                <span className="plan-comparison-card-label">With Timesheet</span>
+                <span className="plan-comparison-card-value">
+                  {data.summary?.employees_with_actual ?? 0}
+                </span>
+              </div>
+              <div className="plan-comparison-card plan-comparison-card-warning">
+                <span className="plan-comparison-card-icon">⚠</span>
+                <span className="plan-comparison-card-label">No Timesheet</span>
+                <span className="plan-comparison-card-value">
+                  {data.summary?.employees_with_no_timesheet ?? 0}
+                </span>
+              </div>
+            </div>
+          </section>
+
+          <section className="plan-comparison-charts">
+            <div className="plan-comparison-chart-box">
+              <h4 className="plan-comparison-chart-title">Daily Breakdown (Mon–Fri)</h4>
+              {dailyChartData && (
+                <div className="plan-comparison-chart-inner">
+                  <Bar data={dailyChartData} options={chartOptions} />
+                </div>
+              )}
+            </div>
+            <div className="plan-comparison-chart-box">
+              <h4 className="plan-comparison-chart-title">By Employee (Top 12)</h4>
+              {employeeChartData && (
+                <div className="plan-comparison-chart-inner">
+                  <Bar data={employeeChartData} options={{ ...chartOptions, indexAxis: 'y' }} />
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="plan-comparison-view-toggle">
+            <h3 className="plan-comparison-section-title">Detailed View</h3>
+            <div className="plan-comparison-view-btns">
+              <button
+                type="button"
+                className={`plan-comparison-view-btn ${viewMode === 'employee' ? 'active' : ''}`}
+                onClick={() => setViewMode('employee')}
+              >
+                By Employee
+              </button>
+              <button
+                type="button"
+                className={`plan-comparison-view-btn ${viewMode === 'daily' ? 'active' : ''}`}
+                onClick={() => setViewMode('daily')}
+              >
+                Daily View
+              </button>
+              <button
+                type="button"
+                className={`plan-comparison-view-btn ${viewMode === 'employee-daily' ? 'active' : ''}`}
+                onClick={() => setViewMode('employee-daily')}
+              >
+                Employee by Day
+              </button>
+            </div>
+          </section>
+
+          {viewMode === 'daily' && data?.daily_view && (
+            <section className="plan-comparison-daily-view">
+              {(data.daily_view || []).map((day, idx) => {
+                const dayStatus = getDayStatus(day);
+                return (
+                <div key={day.date} className={`plan-comparison-day-card plan-comparison-day-${dayStatus.status}`}>
+                  <div className="plan-comparison-day-header">
+                    <div className="plan-comparison-day-title-row">
+                      <span className="plan-comparison-day-title">
+                        {day.day_name || DAY_LABELS[idx] || ''} {formatDisplayDate(day.date)}
+                      </span>
+                      <span className={`plan-comparison-day-status-badge plan-comparison-badge-${dayStatus.color}`}>
+                        {dayStatus.label}
+                      </span>
+                    </div>
+                    <div className="plan-comparison-day-totals">
+                      <span className="plan-comparison-day-total planned">
+                        Planned: <strong>{day.total_planned}h</strong>
+                      </span>
+                      <span className="plan-comparison-day-total actual">
+                        Actual: <strong>{day.total_actual}h</strong>
+                      </span>
+                      <span className="plan-comparison-day-total available">
+                        Available: <strong>{day.total_available}h</strong>
+                      </span>
+                      <span className={`plan-comparison-day-total variance ${day.variance >= 0 ? 'over' : 'under'}`}>
+                        Variance: <strong>{day.variance >= 0 ? '+' : ''}{day.variance}h</strong>
+                      </span>
+                    </div>
+                  </div>
+                  <div className="plan-comparison-day-body">
+                      <div className="plan-comparison-day-grid">
+                        <div className="plan-comparison-day-section">
+                          <h4>Planned Tasks</h4>
+                          {day.planned_tasks?.length ? (
+                            <table className="plan-comparison-day-table">
+                              <thead>
+                                <tr>
+                                  <th>Employee</th>
+                                  <th>Ticket / Activity</th>
+                                  <th className="num">Hours</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {day.planned_tasks.map((t, i) => (
+                                  <tr key={i}>
+                                    <td>{t.employee_name}</td>
+                                    <td>
+                                      {t.ticket_id ? (
+                                        <>
+                                          <Link to={`/tickets?ticket=${t.ticket_id}`} className="plan-comparison-ticket-link" onClick={(e) => e.stopPropagation()}>
+                                            #{t.ticket_id}
+                                          </Link>
+                                          <TicketExternalLink ticketId={t.ticket_id} />
+                                          {' '}{t.ticket_title || t.activity_description || '—'}
+                                        </>
+                                      ) : (
+                                        <>{t.generic_category || '—'} · {t.activity_description || '—'}</>
+                                      )}
+                                    </td>
+                                    <td className="num">{t.hours}h</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          ) : (
+                            <p className="plan-comparison-empty">No planned tasks for this day.</p>
+                          )}
+                        </div>
+                        <div className="plan-comparison-day-section">
+                          <h4>Actual Timesheet Entries</h4>
+                          {day.actual_entries?.length ? (
+                            <table className="plan-comparison-day-table">
+                              <thead>
+                                <tr>
+                                  <th>Employee</th>
+                                  <th>Ticket / Activity / Project</th>
+                                  <th className="num">Hours</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {day.actual_entries.map((e, i) => (
+                                  <tr key={i}>
+                                    <td>{e.employee_name}</td>
+                                    <td>
+                                      {e.ticket_id != null && (
+                                        <>
+                                          <Link to={`/tickets?ticket=${e.ticket_id}`} className="plan-comparison-ticket-link" onClick={(ev) => ev.stopPropagation()}>
+                                            #{e.ticket_id}
+                                          </Link>
+                                          <TicketExternalLink ticketId={e.ticket_id} />
+                                          {' '}
+                                        </>
+                                      )}
+                                      {e.task_description || '—'}
+                                      {e.project_name && ` · ${e.project_name}`}
+                                    </td>
+                                    <td className="num">{e.hours}h</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          ) : (
+                            <p className="plan-comparison-empty">No timesheet entries for this day.</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+              );
+              })}
+          </section>
+          )}
+
+          {viewMode === 'employee-daily' && data?.daily_view && (
+            <section className="plan-comparison-employee-daily">
+              <div className="plan-comparison-employee-daily-header">
+                <h3 className="plan-comparison-section-title">Employee by Day Breakdown</h3>
+                <div className="plan-comparison-employee-daily-controls">
+                  <p className="plan-comparison-subtitle-small">
+                    Expand each day to see individual employee plan vs actual details
+                  </p>
+                  <label className="plan-comparison-sort-label">
+                    Sort by:
+                    <select
+                      value={employeeDailySortKey}
+                      onChange={(e) => setEmployeeDailySortKey(e.target.value)}
+                      className="plan-comparison-sort-select"
+                    >
+                      <option value="employee_name">Name</option>
+                      <option value="planned_hours">Planned (h)</option>
+                      <option value="actual_hours">Actual (h)</option>
+                      <option value="variance">Variance</option>
+                    </select>
+                  </label>
+                </div>
+              </div>
+              {(data.daily_view || []).map((day) => {
+                const dayStatus = getDayStatus(day);
+                return (
+                <div key={day.date} className={`plan-comparison-day-accordion plan-comparison-day-${dayStatus.status}`}>
+                  <div 
+                    className={`plan-comparison-day-accordion-header ${expandedDays[day.date] ? 'expanded' : ''}`}
+                    onClick={() => toggleDayExpand(day.date)}
+                  >
+                    <span className="plan-comparison-day-accordion-icon">
+                      {expandedDays[day.date] ? '▼' : '▶'}
+                    </span>
+                    <span className="plan-comparison-day-accordion-title">
+                      <strong>{day.day_name || ''}</strong> {formatDisplayDate(day.date)}
+                    </span>
+                    <span className={`plan-comparison-day-status-badge plan-comparison-badge-${dayStatus.color}`}>
+                      {dayStatus.label}
+                    </span>
+                    <div className="plan-comparison-day-accordion-summary">
+                      <span className="plan-comparison-tag planned">Plan: {day.total_planned}h</span>
+                      <span className="plan-comparison-tag actual">Actual: {day.total_actual}h</span>
+                      <span className={`plan-comparison-tag variance ${day.variance >= 0 ? 'over' : 'under'}`}>
+                        {day.variance >= 0 ? '+' : ''}{day.variance}h
+                      </span>
+                      <span className="plan-comparison-tag employees">
+                        {day.employee_breakdown?.length || 0} employees
+                      </span>
+                    </div>
+                  </div>
+                  {expandedDays[day.date] && (
+                    <div className="plan-comparison-day-accordion-body">
+                      {day.employee_breakdown?.length ? (
+                        <div className="plan-comparison-employee-day-list">
+                          {sortEmployeeBreakdown(day.employee_breakdown).map((emp) => (
+                            <div key={emp.employee_name} className="plan-comparison-employee-day-item">
+                              <div 
+                                className={`plan-comparison-employee-day-row ${expandedDayEmployees[`${day.date}:${emp.employee_name}`] ? 'expanded' : ''}`}
+                                onClick={() => toggleDayEmployeeExpand(day.date, emp.employee_name)}
+                              >
+                                <span className="plan-comparison-emp-expand-icon">
+                                  {expandedDayEmployees[`${day.date}:${emp.employee_name}`] ? '▼' : '▶'}
+                                </span>
+                                <span className="plan-comparison-emp-name-cell">{emp.employee_name}</span>
+                                <span className="plan-comparison-emp-hours planned">{emp.planned_hours}h planned</span>
+                                <span className="plan-comparison-emp-hours actual">{emp.actual_hours}h actual</span>
+                                <span className={`plan-comparison-emp-hours variance ${emp.variance >= 0 ? 'over' : 'under'}`}>
+                                  {emp.variance >= 0 ? '+' : ''}{emp.variance}h
+                                </span>
+                                <span className="plan-comparison-emp-status">
+                                  {emp.actual_hours === 0 ? (
+                                    <span className="plan-comparison-badge plan-comparison-badge-warning">No timesheet</span>
+                                  ) : emp.variance > 0 ? (
+                                    <span className="plan-comparison-badge plan-comparison-badge-over">Over</span>
+                                  ) : emp.variance < 0 ? (
+                                    <span className="plan-comparison-badge plan-comparison-badge-under">Under</span>
+                                  ) : (
+                                    <span className="plan-comparison-badge plan-comparison-badge-match">On track</span>
+                                  )}
+                                </span>
+                              </div>
+                              {expandedDayEmployees[`${day.date}:${emp.employee_name}`] && (
+                                <div className="plan-comparison-employee-day-details">
+                                  <div className="plan-comparison-detail-grid">
+                                    <div className="plan-comparison-detail-section">
+                                      <h5>Planned Tasks</h5>
+                                      {emp.planned_tasks?.length ? (
+                                        <ul className="plan-comparison-task-list">
+                                          {emp.planned_tasks.map((t, i) => (
+                                            <li key={i}>
+                                              <span className="plan-comparison-task-hours">{t.hours}h</span>
+                                              {t.ticket_id ? (
+                                                <span>
+                                                  <Link to={`/tickets?ticket=${t.ticket_id}`} className="plan-comparison-ticket-link" onClick={(ev) => ev.stopPropagation()}>
+                                                    #{t.ticket_id}
+                                                  </Link>
+                                                  <TicketExternalLink ticketId={t.ticket_id} />
+                                                  {' '}{t.ticket_title || t.activity_description || '—'}
+                                                </span>
+                                              ) : (
+                                                <span>{t.generic_category || '—'} · {t.activity_description || '—'}</span>
+                                              )}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      ) : (
+                                        <p className="plan-comparison-empty-small">No planned tasks</p>
+                                      )}
+                                    </div>
+                                    <div className="plan-comparison-detail-section">
+                                      <h5>Actual Entries</h5>
+                                      {emp.actual_entries?.length ? (
+                                        <ul className="plan-comparison-task-list">
+                                          {emp.actual_entries.map((e, i) => (
+                                            <li key={i}>
+                                              <span className="plan-comparison-task-hours">{e.hours}h</span>
+                                              <span>
+                                                {e.ticket_id != null && (
+                                                  <>
+                                                    <Link to={`/tickets?ticket=${e.ticket_id}`} className="plan-comparison-ticket-link" onClick={(ev) => ev.stopPropagation()}>
+                                                      #{e.ticket_id}
+                                                    </Link>
+                                                    {' '}
+                                                  </>
+                                                )}
+                                                {e.task_description || '—'}
+                                                {e.project_name && ` · ${e.project_name}`}
+                                              </span>
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      ) : (
+                                        <p className="plan-comparison-empty-small">No timesheet entries</p>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="plan-comparison-empty">No employee data for this day.</p>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+              })}
+            </section>
+          )}
+
+          {viewMode === 'employee' && (
+          <section className="plan-comparison-employees">
+            <div className="plan-comparison-employees-header">
+              <h3 className="plan-comparison-section-title">Employee Comparison</h3>
+              <div className="plan-comparison-filters">
+                <input
+                  type="search"
+                  placeholder="Search employee, role, lead…"
+                  className="plan-comparison-search"
+                  value={employeeSearch}
+                  onChange={(e) => setEmployeeSearch(e.target.value)}
+                />
+                <label className="plan-comparison-filter-check">
+                  <input
+                    type="checkbox"
+                    checked={showNoTimesheetOnly}
+                    onChange={(e) => setShowNoTimesheetOnly(e.target.checked)}
+                  />
+                  <span>No timesheet only</span>
+                </label>
+              </div>
+            </div>
+
+            <div className="plan-comparison-table-wrap">
+              <table className="plan-comparison-table">
+                <thead>
+                  <tr>
+                    <th></th>
+                    <SortableHeader columnKey="employee_name" onSort={handleSort} sortConfig={sortConfig}>Employee</SortableHeader>
+                    <SortableHeader columnKey="planned_task_count" onSort={handleSort} sortConfig={sortConfig} className="num">Tasks</SortableHeader>
+                    <SortableHeader columnKey="actual_ticket_count" onSort={handleSort} sortConfig={sortConfig} className="num">Tickets</SortableHeader>
+                    <SortableHeader columnKey="planned_hours" onSort={handleSort} sortConfig={sortConfig} className="num">Planned (h)</SortableHeader>
+                    <SortableHeader columnKey="actual_hours" onSort={handleSort} sortConfig={sortConfig} className="num">Actual (h)</SortableHeader>
+                    <SortableHeader columnKey="variance" onSort={handleSort} sortConfig={sortConfig} className="num">Variance</SortableHeader>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedEmployees.map((emp) => (
+                    <React.Fragment key={emp.employee_name}>
+                      <tr
+                        className="plan-comparison-row-main"
+                        onClick={() => toggleEmployee(emp.employee_name)}
+                      >
+                        <td className="plan-comparison-expand">
+                          {expandedEmployee === emp.employee_name ? '▼' : '▶'}
+                        </td>
+                        <td className="plan-comparison-emp-name">{emp.employee_name}</td>
+                        <td className="num plan-comparison-count">{emp.planned_task_count || 0}</td>
+                        <td className="num plan-comparison-count">{emp.actual_ticket_count || 0}</td>
+                        <td className="num">{emp.planned_hours}</td>
+                        <td className="num">{emp.actual_hours}</td>
+                        <td className={`num variance ${emp.variance >= 0 ? 'over' : 'under'}`}>
+                          {emp.variance >= 0 ? '+' : ''}{emp.variance}h
+                          {emp.variance_percent != null && ` (${emp.variance_percent}%)`}
+                        </td>
+                        <td>
+                          {emp.actual_hours === 0 ? (
+                            <span className="plan-comparison-badge plan-comparison-badge-warning">
+                              No timesheet
+                            </span>
+                          ) : emp.variance > 0 ? (
+                            <span className="plan-comparison-badge plan-comparison-badge-over">
+                              Over
+                            </span>
+                          ) : emp.variance < 0 ? (
+                            <span className="plan-comparison-badge plan-comparison-badge-under">
+                              Under
+                            </span>
+                          ) : (
+                            <span className="plan-comparison-badge plan-comparison-badge-match">
+                              On track
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                      {expandedEmployee === emp.employee_name && (
+                        <tr className="plan-comparison-row-detail">
+                          <td colSpan={8}>
+                            <div className="plan-comparison-detail">
+                              <div className="plan-comparison-detail-section">
+                                <h4>Planned Tasks</h4>
+                                {emp.planned_tasks?.length ? (
+                                  <table className="plan-comparison-detail-table">
+                                    <thead>
+                                      <tr>
+                                        <th>Ticket / Activity</th>
+                                        <th className="num">Hours</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {emp.planned_tasks.map((t) => (
+                                        <tr key={t.task_id}>
+                                          <td>
+                                            {t.ticket_id ? (
+                                              <span>
+                                                <Link to={`/tickets?ticket=${t.ticket_id}`} className="plan-comparison-ticket-link" onClick={(ev) => ev.stopPropagation()}>
+                                                  #{t.ticket_id}
+                                                </Link>
+                                                {' '}{t.ticket_title || t.activity_description || ''}
+                                              </span>
+                                            ) : (
+                                              <span>
+                                                {t.generic_category || '—'} · {t.activity_description || '—'}
+                                              </span>
+                                            )}
+                                          </td>
+                                          <td className="num">{t.planned_hours}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                ) : (
+                                  <p className="plan-comparison-empty">No planned tasks for this week.</p>
+                                )}
+                              </div>
+                              <div className="plan-comparison-detail-section">
+                                <h4>Actual (Timesheet)</h4>
+                                {emp.actual_entries?.length ? (
+                                  <table className="plan-comparison-detail-table">
+                                    <thead>
+                                      <tr>
+                                        <th>Date</th>
+                                        <th>Ticket / Description</th>
+                                        <th className="num">Hours</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {emp.actual_entries.map((e, i) => (
+                                        <tr key={i}>
+                                          <td>{formatDisplayDate(e.date)}</td>
+                                          <td>
+                                            {e.ticket_id != null && (
+                                              <>
+                                                <Link to={`/tickets?ticket=${e.ticket_id}`} className="plan-comparison-ticket-link" onClick={(ev) => ev.stopPropagation()}>
+                                                  #{e.ticket_id}
+                                                </Link>
+                                                {' '}
+                                              </>
+                                            )}
+                                            {e.task_description || '—'}
+                                          </td>
+                                          <td className="num">{e.hours}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                ) : (
+                                  <p className="plan-comparison-empty">
+                                    No timesheet entries. Ensure timesheet is synced for this employee.
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {filteredEmployees.length === 0 && (
+              <div className="plan-comparison-empty-state">
+                {employeeSearch || showNoTimesheetOnly
+                  ? 'No employees match the current filters.'
+                  : 'No active employees found for this team.'}
+              </div>
+            )}
+          </section>
+          )}
+        </>
+      )}
     </div>
   );
 }

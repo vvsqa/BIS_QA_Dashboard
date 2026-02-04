@@ -14,6 +14,8 @@ import {
 import { Bar, Doughnut } from "react-chartjs-2";
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { useTableSort, SortableHeader } from "./useTableSort";
+import { apiFetch } from "./api";
+import { useAuth } from "./AuthContext";
 import "./dashboard.css";
 
 ChartJS.register(
@@ -102,6 +104,7 @@ function SpeedometerGauge({ value, label, maxValue = 100, theme = 'dark' }) {
 function AllBugsDashboard() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [theme, setTheme] = useState(() => {
     try {
       const savedTheme = localStorage.getItem('dashboard-theme');
@@ -147,6 +150,7 @@ function AllBugsDashboard() {
   const [bugs, setBugs] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [redmineSyncing, setRedmineSyncing] = useState(false);
 
   // Maximize/minimize state for charts
   const [maximizedChart, setMaximizedChart] = useState(null);
@@ -294,6 +298,21 @@ function AllBugsDashboard() {
   };
 
   const ragStatus = calculateRAGStatus();
+
+  const syncRedmine = async (allBugs = true) => {
+    setRedmineSyncing(true);
+    setError("");
+    try {
+      const res = await fetch(`${BACKEND_URL}/redmine/sync?all_bugs=${allBugs}`, { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Sync failed");
+      await loadBugs();
+    } catch (e) {
+      setError(e?.message || "Redmine sync failed");
+    } finally {
+      setRedmineSyncing(false);
+    }
+  };
 
   const loadBugs = async () => {
     setLoading(true);
@@ -507,11 +526,11 @@ function AllBugsDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [environment]);
 
-  // Load employees for name click functionality
+  // Load employees for name click functionality (for_display=true: all users see all names)
   useEffect(() => {
     const loadEmployees = async () => {
       try {
-        const res = await fetch(`${BACKEND_URL}/employees`);
+        const res = await apiFetch('/employees?for_display=true');
         if (res.ok) {
           const data = await res.json();
           const empMap = {};
@@ -1230,14 +1249,16 @@ function AllBugsDashboard() {
             </svg>
             Tickets Overview
           </Link>
-          <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
-            </svg>
-            Employees
-          </Link>
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+            <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+              </svg>
+              Employees
+            </Link>
+          )}
           <Link to="/calendar" className={`nav-item ${location.pathname === '/calendar' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <rect x="3" y="4" width="18" height="18" rx="2"/>
@@ -1245,19 +1266,18 @@ function AllBugsDashboard() {
             </svg>
             Calendar
           </Link>
-          <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-            </svg>
-            Task Planning
-          </Link>
-          <Link to="/comparison" className={`nav-item ${location.pathname === '/comparison' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 3v18h18"/>
-              <path d="M18 9l-5 5-4-4-3 3"/>
-            </svg>
-            Plan vs Actual
-          </Link>
+          {user?.employee_id && (
+            <Link to="/my-tasks" className={`nav-item ${location.pathname === '/my-tasks' ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg>
+              My Tasks
+            </Link>
+          )}
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+            <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/></svg>
+              Task Planning
+            </Link>
+          )}
           <Link to="/reports" className={`nav-item ${location.pathname === '/reports' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
@@ -1298,6 +1318,29 @@ function AllBugsDashboard() {
                 <option>BIS Testing (Pre)</option>
               </select>
             </div>
+            <button 
+              className="load-btn-large sync-redmine-btn" 
+              onClick={() => syncRedmine(true)} 
+              disabled={loading || redmineSyncing}
+              title="Sync all bugs from Redmine (including Closed/Deferred). Use if ticket bug counts seem low."
+            >
+              {redmineSyncing ? (
+                <>
+                  <span className="loading-spinner"></span>
+                  Syncing Redmine...
+                </>
+              ) : (
+                <>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    <path d="M3 12a9 9 0 0118 0"/>
+                    <path d="M21 12v-6"/>
+                    <path d="M3 12v6"/>
+                  </svg>
+                  Sync Redmine
+                </>
+              )}
+            </button>
             <button className="load-btn-large" onClick={loadBugs} disabled={loading}>
               {loading ? (
                 <>
@@ -2388,13 +2431,13 @@ function AllBugsDashboard() {
                     <td className="bug-id">
                       {bug.ticket_id ? (
                         <span>
-                          <span 
-                            className="clickable-ticket"
-                            onClick={() => handleTicketClick(bug.ticket_id)}
-                            style={{ cursor: 'pointer', color: '#6366f1' }}
+                          <Link 
+                            to={`/?ticket=${bug.ticket_id}`} 
+                            className="ticket-link"
+                            onClick={(e) => e.stopPropagation()}
                           >
                             #{bug.ticket_id}
-                          </span>
+                          </Link>
                           <TicketExternalLink ticketId={bug.ticket_id} />
                         </span>
                       ) : '—'}

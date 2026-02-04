@@ -113,7 +113,9 @@ class TicketTracking(Base):
     
     id = Column(Integer, primary_key=True)
     ticket_id = Column(Integer, unique=True, index=True)  # Ticket Number from tracking tool
+    title = Column(String(500), nullable=True)            # Ticket title from PM API (TicketTitle)
     status = Column(String(100), nullable=True)           # Ticket status (NEW, In Progress, etc.)
+    priority = Column(String(100), nullable=True)         # URGENT, High (Bugs), Medium, Low, etc.
     backend_developer = Column(String(100), nullable=True)
     frontend_developer = Column(String(100), nullable=True)
     qc_tester = Column(String(100), nullable=True)
@@ -124,7 +126,29 @@ class TicketTracking(Base):
     qa_estimate_hours = Column(Float, nullable=True)      # Estimated QA time
     actual_qa_hours = Column(Float, nullable=True)        # Actual QA time spent
     developer_assigned = Column(String(100), nullable=True)  # Developer column from Excel
+    subdepartment = Column(String(100), nullable=True)    # Web, Mobile, BIS, etc. from PM API Subdepartment
     updated_on = Column(DateTime, nullable=True)          # Last import timestamp
+    created_on = Column(DateTime, nullable=True)          # Ticket created date from PM API (TicketCreatedDate)
+    closed_on = Column(DateTime, nullable=True)          # Ticket closed date from PM API (TicketClosedDate); set when status is closed
+
+
+class TicketPriorityHistory(Base):
+    """
+    Tracks priority changes for tickets.
+    When priority changes (from sync or API), a new record is created for ageing and reporting.
+    """
+    __tablename__ = "ticket_priority_history"
+
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, index=True, nullable=False)
+
+    previous_priority = Column(String(100), nullable=True)  # NULL when first priority is set
+    new_priority = Column(String(100), nullable=False)
+
+    changed_on = Column(DateTime, index=True, default=datetime.utcnow)
+    source = Column(String(50), default='sync')  # 'sync', 'manual', 'api'
+
+    created_on = Column(DateTime, default=datetime.utcnow)
 
 
 # ===== EMPLOYEE MANAGEMENT MODELS =====
@@ -153,6 +177,30 @@ class Employee(Base):
     mapping_data = Column(JSONB, nullable=True)  # Additional mapping columns from Excel (Column 1-5, Notes, etc.)
     created_on = Column(DateTime, default=datetime.utcnow)
     updated_on = Column(DateTime, onupdate=datetime.utcnow)
+
+
+class User(Base):
+    """User accounts for authentication. Links to Employee for non-admin users."""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True)
+    email = Column(String(150), unique=True, index=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    role = Column(String(50), index=True, nullable=False)  # ADMIN, MANAGER_DEV, MANAGER_QA, LEAD_DEV, LEAD_QA, EMPLOYEE
+    employee_id = Column(String(20), index=True, nullable=True)  # FK to Employee.employee_id (null for admin)
+    password_changed_at = Column(DateTime, nullable=True)  # Null = first login, must change
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, onupdate=datetime.utcnow)
+
+
+class AdminConfig(Base):
+    """Configurable admin account. Single row."""
+    __tablename__ = "admin_config"
+
+    id = Column(Integer, primary_key=True)
+    email = Column(String(150), unique=True, nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    updated_at = Column(DateTime, onupdate=datetime.utcnow)
 
 
 class Timesheet(Base):
@@ -421,6 +469,87 @@ class LeaveEntry(Base):
     )
 
 
+class TimeSheetSubmission(Base):
+    """Weekly timesheet submission record with approval status"""
+    __tablename__ = "timesheet_submissions"
+
+    id = Column(Integer, primary_key=True)
+    employee_id = Column(String(20), index=True)
+    employee_name = Column(String(100), index=True)
+    week_start = Column(Date, index=True)
+    week_end = Column(Date, index=True)
+    status = Column(String(50), default='Pending', index=True)  # Draft, Pending, Lead Approved, Approved, Rejected, Revision Required
+    submitted_on = Column(DateTime, default=datetime.utcnow)
+    lead_id = Column(String(20), nullable=True)
+    manager_id = Column(String(20), nullable=True)
+    lead_approved_on = Column(DateTime, nullable=True)
+    manager_approved_on = Column(DateTime, nullable=True)
+    total_hours_logged = Column(Float, default=0.0)
+    leave_hours = Column(Float, default=0.0)
+    notes = Column(Text, nullable=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, onupdate=datetime.utcnow)
+
+
+class TimeSheetEntry(Base):
+    """Manual timesheet entry created by users"""
+    __tablename__ = "timesheet_entries"
+
+    id = Column(Integer, primary_key=True)
+    submission_id = Column(Integer, index=True, nullable=True)
+    employee_id = Column(String(20), index=True)
+    employee_name = Column(String(100), index=True)
+    date = Column(Date, index=True)
+    activity_type = Column(String(100))
+    task_category = Column(String(50), nullable=True)  # Ticket | Team Meetings | Customer Support | Training | KT | Leave | Miscellaneous
+    hours = Column(Float)
+    productive_hours = Column(Float, nullable=True)
+    ticket_id = Column(String(100), nullable=True)
+    description = Column(Text, nullable=True)
+    project_name = Column(String(150), nullable=True)
+    planned_task_id = Column(Integer, nullable=True)
+    planned_task_source = Column(String(20), nullable=True)  # dev | qa | other
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('employee_name', 'date', 'ticket_id', name='uq_timesheet_manual_entry'),
+    )
+
+
+class TimeSheetEntryReview(Base):
+    """Per-entry approval/revision decisions for a submission"""
+    __tablename__ = "timesheet_entry_reviews"
+
+    id = Column(Integer, primary_key=True)
+    submission_id = Column(Integer, index=True, nullable=False)
+    entry_source = Column(String(20), nullable=False)  # sync | manual
+    entry_id = Column(Integer, nullable=False)
+    status = Column(String(30), nullable=False)  # approved | revision_required | rejected
+    productive_hours = Column(Float, nullable=True)
+    notes = Column(Text, nullable=True)
+    reviewed_by = Column(String(100))
+    reviewed_role = Column(String(50))
+    reviewed_on = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint('submission_id', 'entry_source', 'entry_id', 'reviewed_role', name='uq_timesheet_entry_review'),
+    )
+
+
+class TimeSheetApprovalLog(Base):
+    """Audit log for approvals/rejections on timesheet submissions"""
+    __tablename__ = "timesheet_approval_log"
+
+    id = Column(Integer, primary_key=True)
+    submission_id = Column(Integer, index=True, nullable=False)
+    approver_id = Column(String(100))
+    approver_role = Column(String(50))
+    action = Column(String(50))  # approved, rejected, revision_requested, lead_approved
+    notes = Column(Text, nullable=True)
+    action_timestamp = Column(DateTime, default=datetime.utcnow)
+
+
 class PlannedTask(Base):
     """
     Tasks planned by leads for team members.
@@ -541,4 +670,220 @@ class Holiday(Base):
     
     __table_args__ = (
         UniqueConstraint('holiday_date', 'year', name='uq_holiday_date_year'),
+    )
+
+
+class SyncLog(Base):
+    """
+    Audit trail for PM Tracker sync operations.
+    Tracks which sync method was used, success/failure, and record counts.
+    """
+    __tablename__ = "sync_logs"
+    
+    id = Column(Integer, primary_key=True)
+    
+    # Sync source: 'excel' or 'api'
+    sync_source = Column(String(20), nullable=False, index=True)
+    
+    # Success/failure
+    success = Column(Boolean, nullable=False, index=True)
+    
+    # Status message or error details
+    message = Column(Text, nullable=True)
+    
+    # Record counts
+    total_records = Column(Integer, nullable=True)  # Total records processed from source
+    records_added = Column(Integer, nullable=True)
+    records_updated = Column(Integer, nullable=True)
+    records_skipped = Column(Integer, nullable=True)
+    errors = Column(Integer, nullable=True)
+    
+    # If fallback occurred
+    fallback_from = Column(String(20), nullable=True)  # Original source before fallback (e.g., 'api')
+    fallback_reason = Column(Text, nullable=True)  # Why fallback was triggered
+    
+    # Metadata
+    duration_seconds = Column(Float, nullable=True)  # How long the sync took
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    completed_at = Column(DateTime, nullable=True)
+    
+    # Raw response size for monitoring
+    response_size_bytes = Column(Integer, nullable=True)
+    
+    __table_args__ = (
+        # Allow quick lookup of recent syncs by source
+        # "CREATE INDEX idx_synclogs_source_started ON sync_logs(sync_source, started_at DESC)"
+    )
+
+
+# ===== DEVELOPMENT TASK PLANNING MODULE =====
+
+class DevPlanningWeek(Base):
+    """
+    One planning week (Monday–Friday) with lifecycle state.
+    Managers/Leads plan Development work for the next work week.
+    """
+    __tablename__ = "dev_planning_weeks"
+
+    id = Column(Integer, primary_key=True)
+    week_start = Column(Date, unique=True, index=True)  # Monday of the week
+    week_end = Column(Date)  # Friday of the week
+
+    # Lifecycle: draft | submitted | approved | locked
+    state = Column(String(20), default="draft", index=True)
+
+    created_by = Column(String(100), index=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, onupdate=datetime.utcnow)
+    submitted_at = Column(DateTime, nullable=True)
+    submitted_by = Column(String(100), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    approved_by = Column(String(100), nullable=True)
+    locked_at = Column(DateTime, nullable=True)
+    locked_by = Column(String(100), nullable=True)
+    unlocked_at = Column(DateTime, nullable=True)
+    unlocked_by = Column(String(100), nullable=True)
+
+
+class DevPlannedTask(Base):
+    """
+    One logical planned task (can span multiple days via spillover).
+    Linked to planning week; daily hours stored in DevPlannedAllocation.
+    """
+    __tablename__ = "dev_planned_tasks"
+
+    id = Column(Integer, primary_key=True)
+    planning_week_id = Column(Integer, index=True, nullable=False)  # FK to DevPlanningWeek
+
+    employee_id = Column(String(20), index=True)
+    employee_name = Column(String(100), index=True)
+
+    # Ticket (optional for generic tasks)
+    ticket_id = Column(Integer, index=True, nullable=True)  # PM Tracker ticket
+    ticket_title = Column(String(500), nullable=True)
+
+    # Generic task category: Support, KT, Research, Meeting, Leave (when no ticket)
+    generic_category = Column(String(50), nullable=True, index=True)
+    justification = Column(Text, nullable=True)  # Required for generic tasks
+
+    activity_description = Column(Text, nullable=False)
+
+    start_date = Column(Date, index=True)
+    end_date = Column(Date, nullable=True)
+    allocation_pct = Column(Integer, nullable=True)  # 10, 20, ..., 100 (multiples of 10)
+    total_planned_hours = Column(Float)  # Sum of allocation rows
+
+    # Spillover: link to parent task when this row is auto-created spillover
+    spillover_parent_id = Column(Integer, index=True, nullable=True)  # FK to DevPlannedTask.id
+
+    status = Column(String(30), default="active", index=True)  # active | removed | converted_generic
+
+    created_by = Column(String(100))
+    updated_by = Column(String(100), nullable=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, onupdate=datetime.utcnow)
+
+
+class DevPlannedAllocation(Base):
+    """
+    One day's allocation for a planned task. Enables 8h/day and 40h/week enforcement.
+    """
+    __tablename__ = "dev_planned_allocations"
+
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, index=True, nullable=False)  # FK to DevPlannedTask
+    allocation_date = Column(Date, index=True)
+    hours = Column(Float)  # Typically 0–8
+
+    created_on = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "allocation_date", name="uq_dev_planned_allocation_task_date"),
+    )
+
+
+class DevPlanningAuditLog(Base):
+    """
+    Audit trail for planning week and task changes.
+    """
+    __tablename__ = "dev_planning_audit_logs"
+
+    id = Column(Integer, primary_key=True)
+    planning_week_id = Column(Integer, index=True, nullable=True)
+    action = Column(String(50), index=True)  # create_week, submit, approve, lock, unlock, add_task, edit_task, delete_task
+    entity_type = Column(String(30))  # week | task | allocation
+    entity_id = Column(Integer, nullable=True)
+
+    old_value = Column(JSONB, nullable=True)
+    new_value = Column(JSONB, nullable=True)
+
+    changed_by = Column(String(100))
+    changed_on = Column(DateTime, default=datetime.utcnow)
+
+
+# ===== QA TASK PLANNING MODULE =====
+
+class QAPlanningWeek(Base):
+    """One planning week for QA team. Mirrors DevPlanningWeek."""
+    __tablename__ = "qa_planning_weeks"
+
+    id = Column(Integer, primary_key=True)
+    week_start = Column(Date, unique=True, index=True)
+    week_end = Column(Date)
+    state = Column(String(20), default="draft", index=True)
+    created_by = Column(String(100), index=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, onupdate=datetime.utcnow)
+    submitted_at = Column(DateTime, nullable=True)
+    submitted_by = Column(String(100), nullable=True)
+    approved_at = Column(DateTime, nullable=True)
+    approved_by = Column(String(100), nullable=True)
+    locked_at = Column(DateTime, nullable=True)
+    locked_by = Column(String(100), nullable=True)
+    unlocked_at = Column(DateTime, nullable=True)
+    unlocked_by = Column(String(100), nullable=True)
+
+
+class QAPlannedTask(Base):
+    """One QA planned task. Includes ticket_priority for color coding."""
+    __tablename__ = "qa_planned_tasks"
+
+    id = Column(Integer, primary_key=True)
+    planning_week_id = Column(Integer, index=True, nullable=False)
+
+    employee_id = Column(String(20), index=True)
+    employee_name = Column(String(100), index=True)
+
+    ticket_id = Column(Integer, index=True, nullable=True)
+    ticket_title = Column(String(500), nullable=True)
+    ticket_priority = Column(String(100), nullable=True)  # URGENT, High (Bugs), Medium, etc. - for color coding
+
+    generic_category = Column(String(50), nullable=True, index=True)
+    task_type = Column(String(50), nullable=True)  # Manual Testing, Automation Testing, API Testing, Non-Functional Testing
+    activity_description = Column(Text, nullable=False)
+
+    start_date = Column(Date, index=True)
+    end_date = Column(Date, nullable=True)
+    total_planned_hours = Column(Float)
+    status = Column(String(30), default="active", index=True)
+
+    created_by = Column(String(100))
+    updated_by = Column(String(100), nullable=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, onupdate=datetime.utcnow)
+
+
+class QAPlannedAllocation(Base):
+    """One day's allocation for a QA planned task."""
+    __tablename__ = "qa_planned_allocations"
+
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, index=True, nullable=False)
+    allocation_date = Column(Date, index=True)
+    hours = Column(Float)
+
+    created_on = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("task_id", "allocation_date", name="uq_qa_planned_allocation_task_date"),
     )

@@ -137,3 +137,21 @@ export const formatDateRange = (startDate, endDate) => {
   
   return `${startDay}-${startMonth} to ${endDay}-${endMonth}-${endYear}`;
 };
+
+/**
+ * Format planning week: "Week of Feb 2, 2026 (Mon, Feb 2 – Fri, Feb 6)"
+ * @param {string} weekStart - Monday YYYY-MM-DD
+ * @returns {string} Formatted week string
+ */
+export const formatPlanningWeek = (weekStart) => {
+  if (!weekStart) return '';
+  const mon = new Date(weekStart + 'T12:00:00');
+  if (isNaN(mon.getTime())) return '';
+  const fri = new Date(mon);
+  fri.setDate(fri.getDate() + 4);
+  const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const monStr = `${weekdays[mon.getDay()]}, ${monthNames[mon.getMonth()]} ${mon.getDate()}`;
+  const friStr = `${weekdays[fri.getDay()]}, ${monthNames[fri.getMonth()]} ${fri.getDate()}, ${fri.getFullYear()}`;
+  return `Week of ${monthNames[mon.getMonth()]} ${mon.getDate()}, ${mon.getFullYear()} (${monStr} – ${friStr})`;
+};

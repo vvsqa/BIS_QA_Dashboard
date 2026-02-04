@@ -1,714 +1,1101 @@
-/* ===== Plan Comparison Module Styles ===== */
+/* Plan vs Actual Comparison – Professional UI */
 
-.plan-comparison-module {
-  display: flex;
-  min-height: 100vh;
-  background: var(--bg-primary);
+.plan-comparison-page {
+  padding: 0 0 2rem;
+  min-height: 60vh;
 }
 
-.plan-comparison-module .main-content {
-  flex: 1;
-  margin-left: var(--sidebar-width);
-  padding: 24px;
-  min-height: 100vh;
-}
-
-/* ===== Page Header ===== */
-.plan-comparison-module .page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.plan-comparison-module .header-title h1 {
-  font-size: 28px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 4px;
-}
-
-.plan-comparison-module .header-title p {
-  font-size: 14px;
-  color: var(--text-secondary);
-}
-
-/* ===== Controls ===== */
-.comparison-controls {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 24px;
-  padding: 16px;
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
-}
-
-.comparison-controls .control-group {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-}
-
-.comparison-controls .view-toggle {
-  display: flex;
-  background: var(--bg-tertiary);
-  border-radius: var(--radius-md);
-  padding: 4px;
-}
-
-.comparison-controls .toggle-btn {
-  padding: 8px 20px;
-  border: none;
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  border-radius: var(--radius-sm);
-  transition: all 0.2s ease;
-}
-
-.comparison-controls .toggle-btn:hover {
-  color: var(--text-primary);
-}
-
-.comparison-controls .toggle-btn.active {
-  background: var(--accent-purple);
-  color: white;
-}
-
-.comparison-controls .team-select {
-  padding: 10px 16px;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  color: var(--text-primary);
-  font-size: 14px;
-  cursor: pointer;
-  min-width: 140px;
-}
-
-.comparison-controls .team-select:focus {
-  outline: none;
-  border-color: var(--accent-purple);
-}
-
-.comparison-controls .date-navigation {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.comparison-controls .nav-btn {
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  font-size: 18px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.comparison-controls .nav-btn:hover {
-  background: var(--accent-purple);
-  border-color: var(--accent-purple);
-}
-
-.comparison-controls .today-btn {
-  padding: 8px 16px;
-  background: var(--accent-blue);
-  color: white;
-  border: none;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.comparison-controls .today-btn:hover {
-  background: var(--accent-cyan);
-}
-
-.comparison-controls .current-period {
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--text-primary);
-  min-width: 200px;
+.plan-comparison-loading {
+  padding: 4rem 2rem;
   text-align: center;
-}
-
-/* ===== Summary Cards ===== */
-.summary-cards {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 16px;
-  margin-bottom: 24px;
-}
-
-.summary-card {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 20px;
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
-  transition: all 0.2s ease;
-}
-
-.summary-card:hover {
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-lg);
-}
-
-.summary-card .card-icon {
-  font-size: 32px;
-}
-
-.summary-card .card-content {
+  color: var(--text-muted);
   display: flex;
   flex-direction: column;
+  align-items: center;
+  gap: 1rem;
 }
 
-.summary-card .card-value {
-  font-size: 24px;
-  font-weight: 700;
-  color: var(--text-primary);
+.plan-comparison-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--border);
+  border-top-color: var(--accent-blue);
+  border-radius: 50%;
+  animation: plan-comparison-spin 0.8s linear infinite;
 }
 
-.summary-card .card-label {
-  font-size: 13px;
-  color: var(--text-muted);
+@keyframes plan-comparison-spin {
+  to { transform: rotate(360deg); }
 }
 
-.summary-card.planned {
-  border-left: 4px solid var(--accent-purple);
+.plan-comparison-loading p {
+  margin: 0;
+  font-size: 0.95rem;
 }
 
-.summary-card.actual {
-  border-left: 4px solid var(--accent-blue);
+/* Header */
+.plan-comparison-header {
+  margin-bottom: 1.75rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
 }
 
-.summary-card.variance.variance-over {
-  border-left: 4px solid var(--accent-amber);
+.plan-comparison-header-top {
+  margin-bottom: 1.25rem;
 }
 
-.summary-card.variance.variance-under {
-  border-left: 4px solid var(--accent-red);
-}
-
-.summary-card.variance.variance-ok {
-  border-left: 4px solid var(--accent-green);
-}
-
-.summary-card.accuracy.accuracy-excellent {
-  border-left: 4px solid var(--accent-green);
-}
-
-.summary-card.accuracy.accuracy-good {
-  border-left: 4px solid var(--accent-cyan);
-}
-
-.summary-card.accuracy.accuracy-fair {
-  border-left: 4px solid var(--accent-amber);
-}
-
-.summary-card.accuracy.accuracy-poor {
-  border-left: 4px solid var(--accent-red);
-}
-
-/* ===== Charts Grid ===== */
-.charts-grid {
-  display: grid;
-  grid-template-columns: 2fr 1fr;
-  gap: 24px;
-  margin-bottom: 24px;
-}
-
-.chart-panel,
-.gauge-panel {
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
-  padding: 20px;
-}
-
-.chart-panel h3,
-.gauge-panel h3,
-.table-panel h3 {
-  font-size: 16px;
+.plan-comparison-title {
+  font-size: 1.5rem;
   font-weight: 600;
+  margin: 0 0 0.35rem 0;
   color: var(--text-primary);
-  margin-bottom: 16px;
+  letter-spacing: -0.02em;
 }
 
-.chart-container {
-  position: relative;
+.plan-comparison-subtitle {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1.45;
 }
 
-/* ===== Gauge Panel ===== */
-.gauge-container {
+.plan-comparison-controls {
   display: flex;
-  justify-content: center;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 1.5rem;
 }
 
-.gauge-value {
-  position: absolute;
-  bottom: 30px;
-  left: 50%;
-  transform: translateX(-50%);
+.plan-comparison-control-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.plan-comparison-control-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.plan-comparison-team-toggle {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.plan-comparison-team-btn {
+  padding: 0.55rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.plan-comparison-team-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.plan-comparison-team-btn.active {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+
+.plan-comparison-week-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.plan-comparison-nav-btn {
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  transition: background 0.15s;
+}
+
+.plan-comparison-nav-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+.plan-comparison-week-label {
+  font-size: 0.95rem;
+  color: var(--text-secondary);
+  min-width: 240px;
   text-align: center;
+  font-weight: 500;
 }
 
-.gauge-value .value {
-  display: block;
-  font-size: 32px;
-  font-weight: 700;
+.plan-comparison-today-btn {
+  padding: 0.45rem 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.plan-comparison-today-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+}
+
+.plan-comparison-refresh {
+  padding: 0.55rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.plan-comparison-refresh:hover:not(:disabled) {
+  background: var(--accent-teal);
+  border-color: var(--accent-teal);
+  color: #fff;
+}
+
+.plan-comparison-refresh:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Error */
+.plan-comparison-error {
+  padding: 1rem 1.25rem;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid var(--accent-red);
+  border-radius: 10px;
+  color: var(--accent-red);
+  margin-bottom: 1.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.plan-comparison-error-icon {
+  font-size: 1.1rem;
+}
+
+/* Section titles */
+.plan-comparison-section-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0 0 1rem 0;
   color: var(--text-primary);
 }
 
-.gauge-value .label {
-  font-size: 12px;
+/* Summary cards */
+.plan-comparison-summary {
+  margin-bottom: 1.75rem;
+}
+
+.plan-comparison-summary-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 1rem;
+}
+
+.plan-comparison-card {
+  padding: 1.1rem 1.25rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.plan-comparison-card:hover {
+  border-color: var(--bg-tertiary);
+}
+
+.plan-comparison-card-icon {
+  font-size: 1.1rem;
+  opacity: 0.8;
+}
+
+.plan-comparison-card-label {
+  font-size: 0.75rem;
   color: var(--text-muted);
-}
-
-.gauge-legend {
-  text-align: center;
-  margin-top: 16px;
-}
-
-.gauge-legend span {
-  padding: 4px 12px;
-  border-radius: 4px;
-  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
   font-weight: 600;
 }
 
-.gauge-legend .accuracy-excellent {
-  background: rgba(34, 197, 94, 0.2);
+.plan-comparison-card-value {
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.plan-comparison-card-value.planned {
+  color: var(--accent-blue);
+}
+
+.plan-comparison-card-value.actual {
+  color: var(--accent-teal);
+}
+
+.plan-comparison-card-value.variance.over {
   color: var(--accent-green);
 }
 
-.gauge-legend .accuracy-good {
-  background: rgba(6, 182, 212, 0.2);
-  color: var(--accent-cyan);
+.plan-comparison-card-value.variance.under {
+  color: var(--accent-amber);
 }
 
-.gauge-legend .accuracy-fair {
+.plan-comparison-variance-pct {
+  font-size: 0.8rem;
+  font-weight: 500;
+  margin-left: 0.2rem;
+  opacity: 0.9;
+}
+
+.plan-comparison-card-value.accuracy {
+  color: var(--accent-purple);
+}
+
+.plan-comparison-card-warning {
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.06);
+}
+
+.plan-comparison-card-warning .plan-comparison-card-value {
+  color: var(--accent-amber);
+}
+
+/* Charts */
+.plan-comparison-charts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  margin-bottom: 1.75rem;
+}
+
+@media (max-width: 900px) {
+  .plan-comparison-charts {
+    grid-template-columns: 1fr;
+  }
+}
+
+.plan-comparison-chart-box {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  min-height: 280px;
+}
+
+.plan-comparison-chart-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin: 0 0 1rem 0;
+  color: var(--text-secondary);
+}
+
+.plan-comparison-chart-inner {
+  height: 220px;
+}
+
+/* Employee table section */
+.plan-comparison-employees {
+  margin-bottom: 1rem;
+}
+
+.plan-comparison-employees-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.plan-comparison-filters {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.plan-comparison-search {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  min-width: 220px;
+}
+
+.plan-comparison-search::placeholder {
+  color: var(--text-muted);
+}
+
+.plan-comparison-search:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.plan-comparison-filter-check {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.plan-comparison-filter-check input {
+  cursor: pointer;
+}
+
+.plan-comparison-filter-check span {
+  color: var(--text-secondary);
+}
+
+/* Table */
+.plan-comparison-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-secondary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+
+.plan-comparison-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.plan-comparison-table th,
+.plan-comparison-table td {
+  padding: 0.85rem 1rem;
+  text-align: center;
+  border-bottom: 1px solid var(--border);
+}
+
+.plan-comparison-table th:nth-child(2),
+.plan-comparison-table td:nth-child(2) {
+  text-align: left;
+}
+
+.plan-comparison-table th.num,
+.plan-comparison-table td.num {
+  text-align: center;
+}
+
+.plan-comparison-table thead th {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--bg-tertiary);
+}
+
+.plan-comparison-table thead th:first-child {
+  width: 2rem;
+  padding-left: 0.75rem;
+}
+
+.plan-comparison-row-main {
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.plan-comparison-row-main:hover {
+  background: var(--bg-tertiary);
+}
+
+.plan-comparison-expand {
+  width: 2rem;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  padding-left: 0.75rem !important;
+}
+
+.plan-comparison-emp-name {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.plan-comparison-role {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.plan-comparison-lead {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.plan-comparison-badge {
+  display: inline-block;
+  padding: 0.25rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.plan-comparison-badge-warning {
   background: rgba(245, 158, 11, 0.2);
   color: var(--accent-amber);
 }
 
-.gauge-legend .accuracy-poor {
-  background: rgba(239, 68, 68, 0.2);
-  color: var(--accent-red);
-}
-
-/* ===== Trends Panel ===== */
-.trends-panel {
-  margin-bottom: 24px;
-}
-
-.trends-summary {
-  margin-top: 16px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-color);
-  text-align: center;
-  color: var(--text-secondary);
-}
-
-/* ===== Table Panel ===== */
-.table-panel {
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-color);
-  padding: 20px;
-}
-
-.table-container {
-  overflow-x: auto;
-}
-
-.comparison-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.comparison-table th,
-.comparison-table td {
-  padding: 12px 16px;
-  text-align: left;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.comparison-table th {
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  font-weight: 600;
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.comparison-table tbody tr:hover {
-  background: rgba(139, 92, 246, 0.05);
-}
-
-.comparison-table .employee-name {
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.comparison-table .employee-name.clickable {
-  cursor: pointer;
-}
-
-.comparison-table .employee-name.clickable:hover {
-  color: var(--accent-purple);
-  text-decoration: underline;
-}
-
-.team-badge {
-  display: inline-block;
-  padding: 4px 8px;
-  font-size: 11px;
-  font-weight: 600;
-  border-radius: 4px;
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-}
-
-.hours-cell {
-  font-weight: 500;
-  color: var(--text-primary);
-}
-
-.variance-cell {
-  font-weight: 600;
-}
-
-.variance-cell .variance-percent {
-  display: block;
-  font-size: 11px;
-  font-weight: 400;
-  color: var(--text-muted);
-}
-
-.variance-cell.variance-over {
-  color: var(--accent-amber);
-}
-
-.variance-cell.variance-under {
-  color: var(--accent-red);
-}
-
-.variance-cell.variance-ok {
-  color: var(--accent-green);
-}
-
-.accuracy-cell {
-  font-weight: 600;
-}
-
-.accuracy-cell.accuracy-excellent {
-  color: var(--accent-green);
-}
-
-.accuracy-cell.accuracy-good {
-  color: var(--accent-cyan);
-}
-
-.accuracy-cell.accuracy-fair {
-  color: var(--accent-amber);
-}
-
-.accuracy-cell.accuracy-poor {
-  color: var(--accent-red);
-}
-
-.detail-btn {
-  padding: 6px 12px;
-  background: var(--bg-tertiary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  font-size: 12px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.detail-btn:hover {
-  background: var(--accent-purple);
-  border-color: var(--accent-purple);
-  color: white;
-}
-
-/* ===== Loading & Error States ===== */
-.plan-comparison-module .loading-state,
-.plan-comparison-module .error-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 80px 20px;
-  color: var(--text-secondary);
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-}
-
-.plan-comparison-module .spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid var(--border-color);
-  border-top-color: var(--accent-purple);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: 16px;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-/* ===== Employee Detail Modal ===== */
-.employee-detail-modal {
-  max-width: 700px;
-}
-
-.employee-detail-modal .modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 20px;
-  border-bottom: 1px solid var(--border-color);
-}
-
-.employee-detail-modal .modal-header h3 {
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--text-primary);
-}
-
-.employee-detail-modal .modal-close {
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg-tertiary);
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--text-primary);
-  font-size: 20px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.employee-detail-modal .modal-close:hover {
-  background: var(--accent-red);
-  color: white;
-}
-
-.employee-detail-modal .modal-body {
-  padding: 20px;
-}
-
-.employee-summary {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-.summary-item {
-  text-align: center;
-  padding: 16px;
-  background: var(--bg-tertiary);
-  border-radius: var(--radius-md);
-}
-
-.summary-item .label {
-  display: block;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-bottom: 4px;
-}
-
-.summary-item .value {
-  display: block;
-  font-size: 20px;
-  font-weight: 700;
-  color: var(--text-primary);
-}
-
-.summary-item.variance-over .value { color: var(--accent-amber); }
-.summary-item.variance-under .value { color: var(--accent-red); }
-.summary-item.variance-ok .value { color: var(--accent-green); }
-.summary-item.accuracy-excellent .value { color: var(--accent-green); }
-.summary-item.accuracy-good .value { color: var(--accent-cyan); }
-.summary-item.accuracy-fair .value { color: var(--accent-amber); }
-.summary-item.accuracy-poor .value { color: var(--accent-red); }
-
-.employee-detail-modal h4 {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text-secondary);
-  margin-bottom: 12px;
-  margin-top: 20px;
-}
-
-.ticket-table {
-  width: 100%;
-  border-collapse: collapse;
-  margin-bottom: 16px;
-}
-
-.ticket-table th,
-.ticket-table td {
-  padding: 10px 12px;
-  text-align: left;
-  border-bottom: 1px solid var(--border-color);
-  font-size: 13px;
-}
-
-.ticket-table th {
-  background: var(--bg-tertiary);
-  color: var(--text-secondary);
-  font-weight: 600;
-}
-
-.ticket-table .positive { color: var(--accent-amber); }
-.ticket-table .negative { color: var(--accent-red); }
-
-.task-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.task-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  background: var(--bg-tertiary);
-  border-radius: var(--radius-sm);
-}
-
-.task-item .task-ticket {
-  font-weight: 600;
-  color: var(--accent-blue);
-  min-width: 80px;
-}
-
-.task-item .task-title {
-  flex: 1;
-  color: var(--text-primary);
-  font-size: 13px;
-}
-
-.task-item .task-hours {
-  font-weight: 600;
-  color: var(--text-secondary);
-}
-
-.task-item .task-status {
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-
-.task-status.status-planned {
-  background: rgba(59, 130, 246, 0.2);
-  color: var(--accent-blue);
-}
-
-.task-status.status-in_progress {
-  background: rgba(139, 92, 246, 0.2);
-  color: var(--accent-purple);
-}
-
-.task-status.status-completed {
+.plan-comparison-badge-over {
   background: rgba(34, 197, 94, 0.2);
   color: var(--accent-green);
 }
 
-/* ===== Modal Overlay ===== */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+.plan-comparison-badge-under {
+  background: rgba(245, 158, 11, 0.2);
+  color: var(--accent-amber);
+}
+
+.plan-comparison-badge-match {
+  background: rgba(59, 130, 246, 0.2);
+  color: var(--accent-blue);
+}
+
+.plan-comparison-row-detail td {
+  padding: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-primary);
+  vertical-align: top;
+}
+
+.plan-comparison-detail {
+  padding: 1.25rem 1.5rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2rem;
+}
+
+@media (max-width: 768px) {
+  .plan-comparison-detail {
+    grid-template-columns: 1fr;
+  }
+}
+
+.plan-comparison-detail-section h4 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 0 0 0.6rem 0;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.plan-comparison-detail-table {
+  width: 100%;
+  font-size: 0.9rem;
+  border-collapse: collapse;
+}
+
+.plan-comparison-detail-table th,
+.plan-comparison-detail-table td {
+  padding: 0.5rem 0.65rem;
+  text-align: center;
+  border: none;
+}
+
+.plan-comparison-detail-table th:first-child,
+.plan-comparison-detail-table td:first-child {
+  text-align: left;
+}
+
+.plan-comparison-detail-table th {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.plan-comparison-detail-table td.num {
+  text-align: center;
+}
+
+.plan-comparison-empty {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin: 0.5rem 0 0 0;
+  font-style: italic;
+}
+
+.plan-comparison-empty-state {
+  padding: 2.5rem;
+  text-align: center;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  margin-top: 1rem;
+}
+
+/* View toggle */
+.plan-comparison-view-toggle {
+  margin-bottom: 1.5rem;
   display: flex;
   align-items: center;
-  justify-content: center;
-  z-index: 1000;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
 }
 
-.modal-content {
-  background: var(--bg-card);
-  border-radius: var(--radius-lg);
-  width: 90%;
-  max-height: 90vh;
-  overflow: auto;
-  border: 1px solid var(--border-color);
+.plan-comparison-view-btns {
+  display: flex;
+  gap: 0.25rem;
 }
 
-/* ===== Responsive ===== */
-@media (max-width: 1024px) {
-  .plan-comparison-module .main-content {
-    margin-left: 0;
-    padding: 16px;
-  }
+.plan-comparison-view-btn {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-weight: 500;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
 
-  .summary-cards {
-    grid-template-columns: repeat(2, 1fr);
-  }
+.plan-comparison-view-btn:hover {
+  background: var(--bg-tertiary);
+}
 
-  .charts-grid {
+.plan-comparison-view-btn.active {
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+  color: #fff;
+}
+
+/* Daily view */
+.plan-comparison-daily-view {
+  margin-bottom: 1.5rem;
+}
+
+.plan-comparison-day-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+
+.plan-comparison-day-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.plan-comparison-day-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.plan-comparison-day-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.plan-comparison-day-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* Day status styles */
+.plan-comparison-day-status-badge {
+  display: inline-block;
+  padding: 0.25rem 0.7rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.plan-comparison-badge-match {
+  background: rgba(59, 130, 246, 0.2);
+  color: var(--accent-blue);
+}
+
+.plan-comparison-badge-over {
+  background: rgba(34, 197, 94, 0.2);
+  color: var(--accent-green);
+}
+
+.plan-comparison-badge-under {
+  background: rgba(245, 158, 11, 0.2);
+  color: var(--accent-amber);
+}
+
+.plan-comparison-badge-warning {
+  background: rgba(239, 68, 68, 0.2);
+  color: var(--accent-red);
+}
+
+.plan-comparison-badge-muted {
+  background: rgba(100, 116, 139, 0.15);
+  color: var(--text-muted);
+}
+
+/* Day card status border styling */
+.plan-comparison-day-card.plan-comparison-day-on-track {
+  border-left: 4px solid var(--accent-blue);
+}
+
+.plan-comparison-day-card.plan-comparison-day-over {
+  border-left: 4px solid var(--accent-green);
+}
+
+.plan-comparison-day-card.plan-comparison-day-under {
+  border-left: 4px solid var(--accent-amber);
+}
+
+.plan-comparison-day-card.plan-comparison-day-no-timesheet {
+  border-left: 4px solid var(--accent-red);
+}
+
+.plan-comparison-day-card.plan-comparison-day-no-data {
+  border-left: 4px solid var(--text-muted);
+  opacity: 0.7;
+}
+
+/* Day accordion status border styling */
+.plan-comparison-day-accordion.plan-comparison-day-on-track {
+  border-left: 4px solid var(--accent-blue);
+}
+
+.plan-comparison-day-accordion.plan-comparison-day-over {
+  border-left: 4px solid var(--accent-green);
+}
+
+.plan-comparison-day-accordion.plan-comparison-day-under {
+  border-left: 4px solid var(--accent-amber);
+}
+
+.plan-comparison-day-accordion.plan-comparison-day-no-timesheet {
+  border-left: 4px solid var(--accent-red);
+}
+
+.plan-comparison-day-accordion.plan-comparison-day-no-data {
+  border-left: 4px solid var(--text-muted);
+  opacity: 0.7;
+}
+
+.plan-comparison-day-totals {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.plan-comparison-day-total {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+}
+
+.plan-comparison-day-total strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.plan-comparison-day-total.planned strong {
+  color: var(--accent-blue);
+}
+
+.plan-comparison-day-total.actual strong {
+  color: var(--accent-teal);
+}
+
+.plan-comparison-day-total.available strong {
+  color: var(--text-muted);
+}
+
+.plan-comparison-day-total.variance.over strong {
+  color: var(--accent-green);
+}
+
+.plan-comparison-day-total.variance.under strong {
+  color: var(--accent-amber);
+}
+
+.plan-comparison-day-body {
+  padding: 0 1.25rem 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.plan-comparison-day-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  padding-top: 1rem;
+}
+
+@media (max-width: 900px) {
+  .plan-comparison-day-grid {
     grid-template-columns: 1fr;
-  }
-
-  .comparison-controls {
-    flex-direction: column;
-    gap: 16px;
-  }
-
-  .comparison-controls .control-group {
-    width: 100%;
-    justify-content: center;
-  }
-
-  .comparison-controls .date-navigation {
-    width: 100%;
-    justify-content: center;
-  }
-
-  .employee-summary {
-    grid-template-columns: repeat(2, 1fr);
   }
 }
 
-@media (max-width: 640px) {
-  .summary-cards {
-    grid-template-columns: 1fr;
-  }
+.plan-comparison-day-section h4 {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin: 0 0 0.6rem 0;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
 
-  .employee-summary {
+.plan-comparison-day-table {
+  width: 100%;
+  font-size: 0.9rem;
+  border-collapse: collapse;
+}
+
+.plan-comparison-day-table th,
+.plan-comparison-day-table td {
+  padding: 0.5rem 0.65rem;
+  text-align: center;
+  border: 1px solid var(--border);
+}
+
+.plan-comparison-day-table th:first-child,
+.plan-comparison-day-table td:first-child {
+  text-align: left;
+}
+
+.plan-comparison-day-table th:nth-child(2),
+.plan-comparison-day-table td:nth-child(2) {
+  text-align: left;
+}
+
+.plan-comparison-day-table th {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  background: var(--bg-tertiary);
+}
+
+.plan-comparison-day-table td.num {
+  text-align: center;
+}
+
+/* Employee by Day view */
+.plan-comparison-employee-daily {
+  margin-bottom: 1.5rem;
+}
+
+.plan-comparison-employee-daily-header {
+  margin-bottom: 1rem;
+}
+
+.plan-comparison-employee-daily-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.5rem;
+}
+
+.plan-comparison-sort-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.plan-comparison-sort-select {
+  padding: 0.35rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.plan-comparison-sort-select:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+.plan-comparison-subtitle-small {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.plan-comparison-day-accordion {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 0.75rem;
+  overflow: hidden;
+}
+
+.plan-comparison-day-accordion-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.9rem 1.25rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.plan-comparison-day-accordion-header:hover {
+  background: var(--bg-tertiary);
+}
+
+.plan-comparison-day-accordion-header.expanded {
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+}
+
+.plan-comparison-day-accordion-icon {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  width: 1rem;
+}
+
+.plan-comparison-day-accordion-title {
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  min-width: 160px;
+}
+
+.plan-comparison-day-accordion-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-left: auto;
+}
+
+.plan-comparison-tag {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: 5px;
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+.plan-comparison-tag.planned {
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--accent-blue);
+}
+
+.plan-comparison-tag.actual {
+  background: rgba(20, 184, 166, 0.15);
+  color: var(--accent-teal);
+}
+
+.plan-comparison-tag.variance.over {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--accent-green);
+}
+
+.plan-comparison-tag.variance.under {
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--accent-amber);
+}
+
+.plan-comparison-tag.employees {
+  background: rgba(139, 92, 246, 0.15);
+  color: var(--accent-purple);
+}
+
+.plan-comparison-day-accordion-body {
+  padding: 1rem 1.25rem;
+  background: var(--bg-primary);
+}
+
+.plan-comparison-employee-day-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.plan-comparison-employee-day-item {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.plan-comparison-employee-day-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.plan-comparison-employee-day-row:hover {
+  background: var(--bg-tertiary);
+}
+
+.plan-comparison-employee-day-row.expanded {
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border);
+}
+
+.plan-comparison-emp-expand-icon {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  width: 0.8rem;
+}
+
+.plan-comparison-emp-name-cell {
+  font-weight: 600;
+  color: var(--text-primary);
+  min-width: 140px;
+  flex: 1;
+}
+
+.plan-comparison-emp-hours {
+  font-size: 0.85rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+}
+
+.plan-comparison-emp-hours.planned {
+  background: rgba(59, 130, 246, 0.12);
+  color: var(--accent-blue);
+}
+
+.plan-comparison-emp-hours.actual {
+  background: rgba(20, 184, 166, 0.12);
+  color: var(--accent-teal);
+}
+
+.plan-comparison-emp-hours.variance.over {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--accent-green);
+}
+
+.plan-comparison-emp-hours.variance.under {
+  background: rgba(245, 158, 11, 0.12);
+  color: var(--accent-amber);
+}
+
+.plan-comparison-emp-status {
+  min-width: 80px;
+  text-align: right;
+}
+
+.plan-comparison-employee-day-details {
+  padding: 1rem;
+  background: var(--bg-primary);
+}
+
+.plan-comparison-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+@media (max-width: 768px) {
+  .plan-comparison-detail-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.plan-comparison-detail-section h5 {
+  font-size: 0.8rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem 0;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.plan-comparison-task-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.plan-comparison-task-list li {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.plan-comparison-task-list li:last-child {
+  border-bottom: none;
+}
+
+.plan-comparison-task-hours {
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: var(--bg-tertiary);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.plan-comparison-empty-small {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin: 0;
+}
+
+/* Ticket link styling */
+.plan-comparison-ticket-link {
+  color: var(--accent-blue);
+  text-decoration: none;
+  font-weight: 600;
+  transition: color 0.15s, text-decoration 0.15s;
+}
+
+.plan-comparison-ticket-link:hover {
+  color: var(--accent-teal);
+  text-decoration: underline;
+}
+
+.plan-comparison-ticket-link:visited {
+  color: var(--accent-purple);
+}
+
+/* Count columns */
+.plan-comparison-count {
+  font-weight: 600;
+  color: var(--text-secondary);
 }

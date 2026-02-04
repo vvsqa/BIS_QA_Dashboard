@@ -21,6 +21,7 @@ from openpyxl import load_workbook
 
 from database import SessionLocal
 from models import Employee
+from passlib.context import CryptContext
 
 # Column mapping from Excel headers to database fields
 COLUMN_MAPPING = {
@@ -33,7 +34,11 @@ COLUMN_MAPPING = {
     "Team": "team",
     "Category": "category",
     "Lead": "lead",
+    "User Role": "user_role",
+    "Password": "password",
 }
+
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 def parse_string(value):
@@ -72,6 +77,16 @@ def parse_datetime_value(value):
             except ValueError:
                 continue
     return None
+
+
+def normalize_role(role: str) -> str:
+    if not role:
+        return "EMPLOYEE"
+    return role.strip().upper()
+
+
+def hash_password(password: str) -> str:
+    return pwd_context.hash(password)
 
 
 def find_header_row(ws):
@@ -193,6 +208,14 @@ def import_employees(filepath):
                             elif 'DEV' in team_value or 'DEVELOPMENT' in team_value:
                                 team_value = 'DEVELOPMENT'
                         setattr(record, db_field, team_value)
+                    elif db_field == 'user_role':
+                        role_value = parse_string(value)
+                        if role_value:
+                            setattr(record, db_field, normalize_role(role_value))
+                    elif db_field == 'password':
+                        password_value = parse_string(value)
+                        if password_value:
+                            record.password_hash = hash_password(password_value)
                     else:
                         setattr(record, db_field, parse_string(value))
                 

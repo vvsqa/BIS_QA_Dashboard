@@ -209,8 +209,21 @@ def get_ticket_details(db, ticket):
         qa_testers.append(ticket.qc_tester)
     qa_testers = list(set(qa_testers))
     
+    # Title and priority from PM API (TicketTracking)
+    ticket_title = (getattr(ticket, 'title', None) or '').strip()
+    if not ticket_title and bugs:
+        first_bug = bugs[0]
+        if first_bug.subject:
+            parts = first_bug.subject.split(' - ')
+            ticket_title = parts[0] if parts else first_bug.subject
+    if not ticket_title:
+        ticket_title = f"Ticket #{ticket_id}"
+    ticket_priority = (getattr(ticket, 'priority', None) or '').strip() or 'Not Set'
+
     return {
         'ticket_id': ticket_id,
+        'title': ticket_title,
+        'priority': ticket_priority,
         'status': ticket.status or 'Unknown',
         'eta': ticket.eta.strftime('%Y-%m-%d') if ticket.eta else 'Not Set',
         'developers': ', '.join(developers) if developers else 'Not Assigned',
@@ -416,26 +429,30 @@ def create_tickets_table(tickets, title, styles, show_details=True):
         return elements
     
     # Header row
-    header = ['Ticket ID', 'Status', 'ETA', 'Dev', 'QA', 'Bugs', 'Tests']
+    header = ['Ticket ID', 'Title', 'Priority', 'Status', 'ETA', 'Dev', 'QA', 'Bugs', 'Tests']
     
     # Data rows
     table_data = [header]
     for ticket in tickets:
         bugs_text = f"{ticket['bugs_fixed']}/{ticket['bugs_count']}"
         tests_text = f"{ticket['test_cases_passed']}/{ticket['test_cases_total']}"
-        
+        title_short = (ticket.get('title') or '')[:20]
+        if len(ticket.get('title') or '') > 20:
+            title_short += '…'
         row = [
             str(ticket['ticket_id']),
-            ticket['status'][:15],
+            title_short or '—',
+            (ticket.get('priority') or '—')[:10],
+            ticket['status'][:12],
             ticket['eta'],
-            ticket['developers'][:20] if len(ticket['developers']) > 20 else ticket['developers'],
-            ticket['qa_testers'][:15] if len(ticket['qa_testers']) > 15 else ticket['qa_testers'],
+            ticket['developers'][:18] if len(ticket['developers']) > 18 else ticket['developers'],
+            ticket['qa_testers'][:12] if len(ticket['qa_testers']) > 12 else ticket['qa_testers'],
             bugs_text,
             tests_text
         ]
         table_data.append(row)
     
-    table = Table(table_data, colWidths=[0.8*inch, 1.1*inch, 0.9*inch, 1.5*inch, 1.2*inch, 0.7*inch, 0.7*inch])
+    table = Table(table_data, colWidths=[0.7*inch, 1.5*inch, 0.75*inch, 1*inch, 0.85*inch, 1.3*inch, 1*inch, 0.6*inch, 0.6*inch])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),

@@ -10,7 +10,7 @@ Generates a comprehensive PDF report for a single ticket including:
 
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, date
 from io import BytesIO
 
 # Fix Unicode output on Windows
@@ -30,7 +30,7 @@ LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "frontend", "public", 
 
 from sqlalchemy import func
 from database import SessionLocal
-from models import Bug, TicketTracking, TestResult, TestCase, TestRun
+from models import Bug, TicketTracking, TestResult, TestCase, TestRun, TicketPriorityHistory
 
 # Configuration
 REPORTS_FOLDER = os.path.join(os.path.dirname(__file__), "reports")
@@ -50,8 +50,10 @@ def get_ticket_data(ticket_id):
         # Get all bugs for this ticket
         bugs = db.query(Bug).filter(Bug.ticket_id == ticket_id).order_by(Bug.created_on.desc()).all()
         
-        # Get test results
-        test_results = db.query(TestResult).filter(TestResult.ticket_id == ticket_id).all()
+        # Get test results with case title
+        test_results_query = db.query(TestResult, TestCase.title).outerjoin(
+            TestCase, TestResult.case_id == TestCase.case_id
+        ).filter(TestResult.ticket_id == ticket_id).all()
         
         # Categorize bugs
         bugs_by_status = {}
@@ -68,10 +70,10 @@ def get_ticket_data(ticket_id):
             bugs_by_environment[environment] = bugs_by_environment.get(environment, 0) + 1
         
         # Categorize test results
-        test_passed = len([t for t in test_results if t.status_name and t.status_name.lower() == 'passed'])
-        test_failed = len([t for t in test_results if t.status_name and t.status_name.lower() == 'failed'])
-        test_blocked = len([t for t in test_results if t.status_name and t.status_name.lower() == 'blocked'])
-        test_untested = len([t for t in test_results if t.status_name and t.status_name.lower() == 'untested'])
+        test_passed = len([t for t, _ in test_results_query if t.status_name and t.status_name.lower() == 'passed'])
+        test_failed = len([t for t, _ in test_results_query if t.status_name and t.status_name.lower() == 'failed'])
+        test_blocked = len([t for t, _ in test_results_query if t.status_name and t.status_name.lower() == 'blocked'])
+        test_untested = len([t for t, _ in test_results_query if t.status_name and t.status_name.lower() == 'untested'])
         
         # Combine developers
         developers = []
@@ -82,9 +84,52 @@ def get_ticket_data(ticket_id):
         if ticket.developer_assigned:
             developers.append(f"Assigned: {ticket.developer_assigned}")
         
+        # Title and priority from PM API (TicketTracking)
+        ticket_title = (getattr(ticket, 'title', None) or '').strip()
+        if not ticket_title and bugs:
+            first_bug = bugs[0]
+            if first_bug.subject:
+                parts = first_bug.subject.split(' - ')
+                ticket_title = parts[0] if parts else first_bug.subject
+        if not ticket_title:
+            ticket_title = f"Ticket #{ticket_id}"
+        ticket_priority = (getattr(ticket, 'priority', None) or '').strip() or 'Not Set'
+
+        # Ageing: created_on -> closed_on or today
+        created_dt = getattr(ticket, 'created_on', None)
+        closed_dt = getattr(ticket, 'closed_on', None)
+        created_date = created_dt.date() if created_dt and hasattr(created_dt, 'date') else (created_dt if isinstance(created_dt, date) else None)
+        closed_date = closed_dt.date() if closed_dt and hasattr(closed_dt, 'date') else (closed_dt if isinstance(closed_dt, date) else None)
+        is_closed = (ticket.status or '').lower() in ['closed', 'moved to live', 'completed']
+        ageing_days = None
+        days_to_close = None
+        if created_date:
+            if is_closed and closed_date:
+                ageing_days = (closed_date - created_date).days
+                days_to_close = ageing_days
+            else:
+                today = date.today()
+                ageing_days = (today - created_date).days
+
+        # Priority change history
+        priority_history = db.query(TicketPriorityHistory).filter(
+            TicketPriorityHistory.ticket_id == ticket_id
+        ).order_by(TicketPriorityHistory.changed_on.asc()).all()
+        priority_history_list = [
+            {
+                'previous_priority': h.previous_priority,
+                'new_priority': h.new_priority,
+                'changed_on': h.changed_on.strftime('%Y-%m-%d %H:%M') if h.changed_on else None,
+                'source': h.source or None
+            }
+            for h in priority_history
+        ]
+
         return {
             'ticket_id': ticket_id,
             'ticket': {
+                'title': ticket_title,
+                'priority': ticket_priority,
                 'status': ticket.status or 'Unknown',
                 'eta': ticket.eta.strftime('%Y-%m-%d') if ticket.eta else 'Not Set',
                 'current_assignee': ticket.current_assignee or 'Unassigned',
@@ -94,7 +139,12 @@ def get_ticket_data(ticket_id):
                 'actual_dev_hours': ticket.actual_dev_hours or 0,
                 'qa_estimate_hours': ticket.qa_estimate_hours or 0,
                 'actual_qa_hours': ticket.actual_qa_hours or 0,
-                'updated_on': ticket.updated_on.strftime('%Y-%m-%d %H:%M') if ticket.updated_on else 'Unknown'
+                'updated_on': ticket.updated_on.strftime('%Y-%m-%d %H:%M') if ticket.updated_on else 'Unknown',
+                'created_on': ticket.created_on.strftime('%Y-%m-%d %H:%M') if getattr(ticket, 'created_on', None) else None,
+                'closed_on': ticket.closed_on.strftime('%Y-%m-%d %H:%M') if getattr(ticket, 'closed_on', None) else None,
+                'ageing_days': ageing_days,
+                'days_to_close': days_to_close,
+                'priority_history': priority_history_list
             },
             'bugs': {
                 'total': len(bugs),
@@ -115,19 +165,19 @@ def get_ticket_data(ticket_id):
                 } for b in bugs]
             },
             'tests': {
-                'total': len(test_results),
+                'total': len(test_results_query),
                 'passed': test_passed,
                 'failed': test_failed,
                 'blocked': test_blocked,
                 'untested': test_untested,
-                'pass_rate': round((test_passed / len(test_results) * 100), 1) if len(test_results) > 0 else 0,
+                'pass_rate': round((test_passed / len(test_results_query) * 100), 1) if len(test_results_query) > 0 else 0,
                 'list': [{
                     'case_id': t.case_id,
-                    'title': t.title or 'No Title',
+                    'title': title or 'No Title',
                     'status': t.status_name or 'Unknown',
                     'assigned_to': t.assigned_to or 'Unassigned',
                     'created_on': t.created_on.strftime('%Y-%m-%d') if t.created_on else 'Unknown'
-                } for t in test_results[:50]]  # Limit to 50 test results
+                } for t, title in test_results_query[:50]]  # Limit to 50 test results
             }
         }
         
@@ -207,13 +257,21 @@ def generate_ticket_pdf(data, output_path):
     """Generate the PDF report for a ticket"""
     styles = create_styles()
     
+    ticket_id = data['ticket_id']
+    ticket = data['ticket']
+    report_title = ticket.get('title') or f"Ticket #{ticket_id}"
+    report_subject = ticket.get('title') or f"Ticket #{ticket_id}"
+
     doc = SimpleDocTemplate(
         output_path,
         pagesize=A4,
         rightMargin=0.5*inch,
         leftMargin=0.5*inch,
         topMargin=0.5*inch,
-        bottomMargin=0.5*inch
+        bottomMargin=0.5*inch,
+        title=report_title[:100],
+        author="QA Dashboard",
+        subject=report_subject[:100]
     )
     
     elements = []
@@ -231,6 +289,10 @@ def generate_ticket_pdf(data, output_path):
     # Title
     elements.append(Paragraph("Ticket Report", styles['ReportTitle']))
     elements.append(Paragraph(f"#{data['ticket_id']}", styles['TicketId']))
+    if ticket.get('title'):
+        elements.append(Paragraph(ticket['title'][:120], styles['SubSection']))
+    if ticket.get('priority'):
+        elements.append(Paragraph(f"Priority: {ticket['priority']}", styles['SmallText']))
     elements.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles['SmallText']))
     elements.append(Spacer(1, 15))
     
@@ -241,15 +303,24 @@ def generate_ticket_pdf(data, output_path):
     # Ticket Information Section
     elements.append(Paragraph("Ticket Information", styles['SectionTitle']))
     
-    ticket = data['ticket']
+    # Ageing: closed = created→closed date, open = created→today (visual distinction in report)
+    ageing_text = '—'
+    ageing_is_closed = False
+    if ticket.get('days_to_close') is not None:
+        ageing_text = f"Closed ageing: {ticket['days_to_close']} days (created → closed)"
+        ageing_is_closed = True
+    elif ticket.get('ageing_days') is not None:
+        ageing_text = f"Open ageing: {ticket['ageing_days']} days (created → today)"
+    
     info_data = [
-        ['Status', ticket['status'], 'ETA', ticket['eta']],
+        ['Status', ticket['status'], 'Priority', ticket.get('priority') or 'Not Set'],
         ['Current Assignee', ticket['current_assignee'], 'QC Tester', ticket['qc_tester']],
-        ['Last Updated', ticket['updated_on'], '', '']
+        ['ETA', ticket['eta'], 'Last Updated', ticket['updated_on']],
+        ['Created', ticket.get('created_on') or '—', 'Closed', ticket.get('closed_on') or '—'],
+        ['Ageing', ageing_text, '', '']
     ]
     
-    info_table = Table(info_data, colWidths=[1.5*inch, 2*inch, 1.5*inch, 2*inch])
-    info_table.setStyle(TableStyle([
+    table_style = [
         ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f1f5f9')),
         ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#f1f5f9')),
         ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
@@ -262,9 +333,42 @@ def generate_ticket_pdf(data, output_path):
         ('TOPPADDING', (0, 0), (-1, -1), 8),
         ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
         ('LEFTPADDING', (0, 0), (-1, -1), 8),
-    ]))
+    ]
+    # Visual distinction for ageing row: green = closed (created→closed), blue = open (created→today)
+    if ageing_text != '—':
+        ageing_cell_bg = colors.HexColor('#dcfce7') if ageing_is_closed else colors.HexColor('#dbeafe')
+        table_style.append(('BACKGROUND', (1, 4), (3, 4), ageing_cell_bg))
+    
+    info_table = Table(info_data, colWidths=[1.5*inch, 2*inch, 1.5*inch, 2*inch])
+    info_table.setStyle(TableStyle(table_style))
     elements.append(info_table)
     elements.append(Spacer(1, 10))
+
+    # Priority change history
+    priority_history = ticket.get('priority_history') or []
+    if priority_history:
+        elements.append(Paragraph("Priority change history", styles['SectionTitle']))
+        ph_data = [['From', 'To', 'Changed on', 'Source']]
+        for h in priority_history:
+            ph_data.append([
+                h.get('previous_priority') or '—',
+                h.get('new_priority') or '—',
+                h.get('changed_on') or '—',
+                h.get('source') or '—'
+            ])
+        ph_table = Table(ph_data, colWidths=[1.5*inch, 1.5*inch, 1.5*inch, 1*inch])
+        ph_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#3b82f6')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('BOX', (0, 0), (-1, -1), 1, colors.HexColor('#e2e8f0')),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e2e8f0')),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(ph_table)
+        elements.append(Spacer(1, 10))
     
     # Developers
     if ticket['developers']:

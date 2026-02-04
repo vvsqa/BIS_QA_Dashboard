@@ -15,8 +15,20 @@ import {
   Filler,
 } from 'chart.js';
 import { formatDisplayDate, formatDisplayDateWithDay, formatAPIDate } from './dateUtils';
+import { TicketExternalLink } from './ticketUtils';
+import { apiFetch, API_BASE } from './api';
+import { useAuth } from './AuthContext';
 import './dashboard.css';
 import './CalendarModule.css';
+
+// Access role options for dropdown
+const ACCESS_ROLE_OPTIONS = [
+  { value: 'EMPLOYEE', label: 'Employee' },
+  { value: 'LEAD_DEV', label: 'Development Lead' },
+  { value: 'LEAD_QA', label: 'QA Lead' },
+  { value: 'MANAGER_DEV', label: 'Development Manager' },
+  { value: 'MANAGER_QA', label: 'QA Manager' },
+];
 
 ChartJS.register(
   CategoryScale,
@@ -30,8 +42,6 @@ ChartJS.register(
   ArcElement,
   Filler
 );
-
-const API_BASE = 'http://localhost:8000';
 
 // Circular Progress Component
 function CircularProgress({ value, maxValue = 100, size = 120, strokeWidth = 10, color, label }) {
@@ -96,6 +106,7 @@ function EmployeeProfile() {
   const { employeeId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const { canChangeUserRoles, user } = useAuth();
   const [employee, setEmployee] = useState(null);
   const [performance, setPerformance] = useState(null);
   const [goals, setGoals] = useState({ goals: [], strengths: [], improvements: [] });
@@ -110,6 +121,7 @@ function EmployeeProfile() {
   const [calendarData, setCalendarData] = useState(null);
   const [calendarPeriod, setCalendarPeriod] = useState('week');
   const [calendarDate, setCalendarDate] = useState(new Date());
+  const [planningTimesheetData, setPlanningTimesheetData] = useState(null);
   const [kpiQuarter, setKpiQuarter] = useState(() => {
     const now = new Date();
     const year = now.getFullYear();
@@ -117,12 +129,16 @@ function EmployeeProfile() {
     return `${year}-Q${quarter}`;
   });
   const [kpiRatingsData, setKpiRatingsData] = useState({});
-  const [reportees, setReportees] = useState([]);
+  const [reportees, setReportees] = useState({ direct_reportees: [], indirect_reportees: [], total_direct: 0, total_indirect: 0 });
   const [showEditModal, setShowEditModal] = useState(false);
+  const [leadManagerOptions, setLeadManagerOptions] = useState([]);
+  const [photoUploading, setPhotoUploading] = useState(false);
+  const [accessError, setAccessError] = useState(null);
   const [editForm, setEditForm] = useState({
     name: '',
     email: '',
     role: '',
+    access_role: '',
     location: '',
     team: '',
     category: '',
@@ -153,33 +169,37 @@ function EmployeeProfile() {
     try {
       console.log('Loading employee data for:', employeeId);
       
-      const [empRes, perfRes, goalsRes, reviewsRes, ragRes, kpiRes, reporteesRes] = await Promise.all([
-        fetch(`${API_BASE}/employees/${employeeId}`).catch(err => {
+      const [empRes, perfRes, goalsRes, reviewsRes, ragRes, kpiRes, reporteesRes, planningRes] = await Promise.all([
+        apiFetch(`/employees/${employeeId}`).catch(err => {
           console.error('Failed to fetch employee:', err);
           return { ok: false };
         }),
-        fetch(`${API_BASE}/employees/${employeeId}/performance?period=${period}`).catch(err => {
+        apiFetch(`/employees/${employeeId}/performance?period=${period}`).catch(err => {
           console.error('Failed to fetch performance:', err);
           return { ok: false };
         }),
-        fetch(`${API_BASE}/employees/${employeeId}/goals`).catch(err => {
+        apiFetch(`/employees/${employeeId}/goals`).catch(err => {
           console.error('Failed to fetch goals:', err);
           return { ok: false };
         }),
-        fetch(`${API_BASE}/employees/${employeeId}/reviews`).catch(err => {
+        apiFetch(`/employees/${employeeId}/reviews`).catch(err => {
           console.error('Failed to fetch reviews:', err);
           return { ok: false };
         }),
-        fetch(`${API_BASE}/employees/${employeeId}/rag-history`).catch(err => {
+        apiFetch(`/employees/${employeeId}/rag-history`).catch(err => {
           console.error('Failed to fetch rag-history:', err);
           return { ok: false };
         }),
-        fetch(`${API_BASE}/employees/${employeeId}/kpi-ratings?quarter=${kpiQuarter}`).catch(err => {
+        apiFetch(`/employees/${employeeId}/kpi-ratings?quarter=${kpiQuarter}`).catch(err => {
           console.error('Failed to fetch kpi-ratings:', err);
           return { ok: false };
         }),
-        fetch(`${API_BASE}/employees/${employeeId}/reportees`).catch(err => {
+        apiFetch(`/employees/${employeeId}/reportees`).catch(err => {
           console.error('Failed to fetch reportees:', err);
+          return { ok: false };
+        }),
+        apiFetch(`/employees/${employeeId}/planning-timesheet?weeks=5`).catch(err => {
+          console.error('Failed to fetch planning-timesheet:', err);
           return { ok: false };
         })
       ]);
@@ -191,8 +211,23 @@ function EmployeeProfile() {
         console.log('Employee data:', empData);
         console.log('Previous experience value:', empData.previous_experience, 'Type:', typeof empData.previous_experience);
         setEmployee(empData);
+        setAccessError(null);
+      } else if (empRes.status === 403) {
+        const errorData = await empRes.json().catch(() => ({}));
+        setAccessError(errorData.detail || 'You do not have permission to view this profile');
+        setEmployee(null);
+      } else if (empRes.status === 404) {
+        setAccessError('Employee not found');
+        setEmployee(null);
+      } else if (!empRes.status) {
+        // Network error - no status means the request didn't complete
+        console.error('Network error loading employee');
+        setAccessError('Unable to connect. Please check your network connection.');
+        setEmployee(null);
       } else {
         console.error('Employee fetch failed with status:', empRes.status);
+        setAccessError('Failed to load employee profile');
+        setEmployee(null);
       }
       
       if (perfRes.ok) setPerformance(await perfRes.json());
@@ -220,8 +255,16 @@ function EmployeeProfile() {
         const reporteesData = await reporteesRes.json();
         setReportees(reporteesData);
       }
+      if (planningRes.ok) {
+        const planningData = await planningRes.json();
+        setPlanningTimesheetData(planningData);
+      } else {
+        setPlanningTimesheetData(null);
+      }
     } catch (error) {
       console.error('Error loading employee data:', error);
+      setAccessError('Failed to load employee profile. Please try again.');
+      setEmployee(null);
     } finally {
       setLoading(false);
     }
@@ -267,8 +310,7 @@ function EmployeeProfile() {
     if (!employeeId) return;
     try {
       const dateStr = formatAPIDate(calendarDate);
-      const url = `${API_BASE}/calendar/employee/${employeeId}?period=${calendarPeriod}&date_str=${dateStr}`;
-      const response = await fetch(url);
+      const response = await apiFetch(`/calendar/employee/${employeeId}?period=${calendarPeriod}&date_str=${dateStr}`);
       if (response.ok) {
         const data = await response.json();
         setCalendarData(data);
@@ -400,22 +442,27 @@ function EmployeeProfile() {
                               key={idx} 
                               className={`entry-ticket ${isTicket ? 'clickable-ticket' : ''}`}
                               title={entry.task_description || entry.ticket_id}
-                              onClick={(e) => {
-                                if (isTicket) {
-                                  e.stopPropagation();
-                                  navigate(`/tickets?ticket=${entry.ticket_id}`);
-                                }
-                              }}
                             >
-                              <span className={`ticket-id ${isTicket ? 'ticket-link' : ''}`}>
-                                {isTicket 
-                                  ? `#${entry.ticket_id}`
-                                  : (entry.task_description 
-                                      ? (entry.task_description.length > 12 
-                                          ? entry.task_description.slice(0, 12) + '...' 
-                                          : entry.task_description)
-                                      : entry.ticket_id || 'Task')}
-                              </span>
+                              {isTicket ? (
+                                <>
+                                  <Link 
+                                    to={`/tickets?ticket=${entry.ticket_id}`} 
+                                    className="ticket-id ticket-link"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    #{entry.ticket_id}
+                                  </Link>
+                                  <TicketExternalLink ticketId={entry.ticket_id} />
+                                </>
+                              ) : (
+                                <span className="ticket-id">
+                                  {entry.task_description 
+                                    ? (entry.task_description.length > 12 
+                                        ? entry.task_description.slice(0, 12) + '...' 
+                                        : entry.task_description)
+                                    : entry.ticket_id || 'Task'}
+                                </span>
+                              )}
                               <span className="ticket-hours">{parseFloat(entry.hours || 0).toFixed(1)}h</span>
                             </div>
                           );
@@ -656,6 +703,7 @@ function EmployeeProfile() {
         name: employee.name || '',
         email: employee.email || '',
         role: employee.role || '',
+        access_role: employee.access_role || 'EMPLOYEE',
         location: employee.location || '',
         team: employee.team || '',
         category: employee.category || '',
@@ -671,10 +719,31 @@ function EmployeeProfile() {
     }
   }, [employee]);
 
+  // Load lead/manager dropdown options when edit modal opens
+  useEffect(() => {
+    if (!showEditModal) return;
+    const loadLeadManagerOptions = async () => {
+      try {
+        const res = await apiFetch(`/employees?is_active=true`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const options = (data || [])
+          .map(emp => emp.name)
+          .filter(name => name && name.trim().length > 0)
+          .filter(name => !employee?.name || name.toLowerCase() !== employee.name.toLowerCase())
+          .sort((a, b) => a.localeCompare(b));
+        setLeadManagerOptions(options);
+      } catch (error) {
+        console.error('Error loading lead/manager options:', error);
+      }
+    };
+    loadLeadManagerOptions();
+  }, [showEditModal, employee?.name]);
+
   const handleUpdateEmployee = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch(`${API_BASE}/employees/${employeeId}`, {
+      const res = await apiFetch(`/employees/${employeeId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(editForm)
@@ -693,9 +762,35 @@ function EmployeeProfile() {
     }
   };
 
+  const handlePhotoUpload = async (file) => {
+    if (!file) return;
+    setPhotoUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await apiFetch(`/employees/${employeeId}/photo`, {
+        method: 'POST',
+        body: formData
+      });
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to upload photo');
+      }
+      const data = await res.json();
+      if (data?.photo_url) {
+        setEditForm(prev => ({ ...prev, photo_url: data.photo_url }));
+        loadEmployeeData();
+      }
+    } catch (error) {
+      alert('Error uploading photo: ' + error.message);
+    } finally {
+      setPhotoUploading(false);
+    }
+  };
+
   const handleExportProfile = async () => {
     try {
-      const response = await fetch(`${API_BASE}/employees/${employeeId}/export`);
+      const response = await apiFetch(`/employees/${employeeId}/export`);
       if (!response.ok) {
         throw new Error('Failed to export profile');
       }
@@ -728,7 +823,7 @@ function EmployeeProfile() {
   const handleAddGoal = async (e) => {
     e.preventDefault();
     try {
-      const res = await fetch(`${API_BASE}/employees/${employeeId}/goals`, {
+      const res = await apiFetch(`/employees/${employeeId}/goals`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newGoal)
@@ -789,7 +884,7 @@ function EmployeeProfile() {
         return ratingPayload;
       });
 
-      const res = await fetch(`${API_BASE}/employees/${employeeId}/kpi-ratings`, {
+      const res = await apiFetch(`/employees/${employeeId}/kpi-ratings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(ratings)
@@ -819,7 +914,7 @@ function EmployeeProfile() {
   const handleDeleteGoal = async (goalId) => {
     if (!window.confirm('Delete this item?')) return;
     try {
-      await fetch(`${API_BASE}/goals/${goalId}`, { method: 'DELETE' });
+      await apiFetch(`/goals/${goalId}`, { method: 'DELETE' });
       loadEmployeeData();
     } catch (error) {
       alert('Error deleting goal: ' + error.message);
@@ -861,10 +956,40 @@ function EmployeeProfile() {
   if (!employee) {
     return (
       <div className="dashboard">
-        <div className="error-screen">
-          <h2>Employee not found</h2>
-          <button onClick={() => navigate('/employees')} className="btn-primary">
-            Back to Employees
+        <div className="error-screen" style={{ textAlign: 'center', padding: '60px 20px' }}>
+          {accessError ? (
+            <>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '64px', height: '64px', margin: '0 auto 20px', color: (accessError.toLowerCase().includes('permission') || accessError.toLowerCase().includes('access denied')) ? '#ef4444' : '#f59e0b' }}>
+                {(accessError.toLowerCase().includes('permission') || accessError.toLowerCase().includes('access denied')) ? (
+                  <><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></>
+                ) : (
+                  <><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></>
+                )}
+              </svg>
+              <h2 style={{ color: 'var(--text-primary)', marginBottom: '12px' }}>
+                {(accessError.toLowerCase().includes('permission') || accessError.toLowerCase().includes('access denied')) ? 'Access Denied' : 'Error'}
+              </h2>
+              <p style={{ color: 'var(--text-muted)', marginBottom: '24px', maxWidth: '400px', margin: '0 auto 24px' }}>
+                {accessError}
+              </p>
+              {(accessError.toLowerCase().includes('permission') || accessError.toLowerCase().includes('access denied')) && user?.employee_id && (
+                <button onClick={() => navigate(`/employees/${user.employee_id}`)} className="btn-primary" style={{ marginRight: '12px' }}>
+                  View My Profile
+                </button>
+              )}
+            </>
+          ) : (
+            <h2>Employee not found</h2>
+          )}
+          <button onClick={() => navigate((user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) ? '/employees' : '/')} className="btn-secondary" style={{ 
+            background: 'var(--bg-tertiary)', 
+            color: 'var(--text-primary)', 
+            border: '1px solid var(--border-color)',
+            padding: '10px 20px',
+            borderRadius: '8px',
+            cursor: 'pointer'
+          }}>
+            {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) ? 'Back to Employees' : 'Back to Dashboard'}
           </button>
         </div>
       </div>
@@ -969,33 +1094,22 @@ function EmployeeProfile() {
             </svg>
             Tickets Overview
           </Link>
-          <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
-            </svg>
-            Employees
-          </Link>
+          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+            <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+                <circle cx="9" cy="7" r="4"/>
+                <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+              </svg>
+              Employees
+            </Link>
+          )}
           <Link to="/calendar" className={`nav-item ${location.pathname === '/calendar' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <rect x="3" y="4" width="18" height="18" rx="2"/>
               <path d="M16 2v4M8 2v4M3 10h18"/>
             </svg>
             Calendar
-          </Link>
-          <Link to="/planning" className={`nav-item ${location.pathname === '/planning' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4"/>
-            </svg>
-            Task Planning
-          </Link>
-          <Link to="/comparison" className={`nav-item ${location.pathname === '/comparison' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M3 3v18h18"/>
-              <path d="M18 9l-5 5-4-4-3 3"/>
-            </svg>
-            Plan vs Actual
           </Link>
           <Link to="/reports" className={`nav-item ${location.pathname === '/reports' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1017,12 +1131,14 @@ function EmployeeProfile() {
               </svg>
               Dashboard
             </button>
-            <button className="btn-back" onClick={() => navigate('/employees')} style={{ marginLeft: '8px' }}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M19 12H5M12 19l-7-7 7-7"/>
-              </svg>
-              Back to Employees
-            </button>
+            {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+              <button className="btn-back" onClick={() => navigate('/employees')} style={{ marginLeft: '8px' }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M19 12H5M12 19l-7-7 7-7"/>
+                </svg>
+                Back to Employees
+              </button>
+            )}
           </div>
         </div>
 
@@ -1055,7 +1171,8 @@ function EmployeeProfile() {
               <button 
                 className="btn-upload-photo"
                 onClick={() => document.getElementById('photo-upload-input')?.click()}
-                title="Upload Photo"
+                title={photoUploading ? 'Uploading photo...' : 'Upload Photo'}
+                disabled={photoUploading}
               >
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
@@ -1069,12 +1186,11 @@ function EmployeeProfile() {
                 accept="image/*"
                 style={{ display: 'none' }}
                 onChange={(e) => {
-                  // TODO: Implement photo upload
                   const file = e.target.files[0];
                   if (file) {
-                    // For now, just show a message
-                    alert('Photo upload functionality will be implemented. Please update photo_url in edit form.');
+                    handlePhotoUpload(file);
                   }
+                  e.target.value = '';
                 }}
               />
             </div>
@@ -1111,6 +1227,23 @@ function EmployeeProfile() {
                   </>
                 )}
               </div>
+              {employee.access_role && employee.access_role !== 'EMPLOYEE' && (
+                <div style={{ marginTop: '8px' }}>
+                  <span style={{
+                    background: employee.access_role?.includes('MANAGER') ? 'linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%)' : 
+                               employee.access_role?.includes('LEAD') ? 'linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%)' : '#6b7280',
+                    color: 'white',
+                    padding: '4px 12px',
+                    borderRadius: '12px',
+                    fontSize: '11px',
+                    fontWeight: '500',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px'
+                  }}>
+                    {ACCESS_ROLE_OPTIONS.find(r => r.value === employee.access_role)?.label || employee.access_role}
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -1123,7 +1256,9 @@ function EmployeeProfile() {
               <span className="experience-label">Previous Experience</span>
               <span className="experience-value">
                 {(employee.previous_experience !== null && employee.previous_experience !== undefined)
-                  ? `${parseFloat(employee.previous_experience || 0).toFixed(1)} years` 
+                  ? (employee.previous_experience === 0 || employee.previous_experience === 0.0
+                      ? 'Techversant Grown'
+                      : `${parseFloat(employee.previous_experience || 0).toFixed(1)} years`)
                   : 'N/A'}
               </span>
             </div>
@@ -1207,6 +1342,12 @@ function EmployeeProfile() {
             </svg>
             New Review
           </button>
+          <button className="btn-action" onClick={() => navigate(`/planning?employee_id=${employeeId}`)} title="Plan development tasks for this resource">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3"/>
+            </svg>
+            Plan tasks
+          </button>
         </div>
 
         {/* Key Metrics Row - Different for DEV vs QA */}
@@ -1241,6 +1382,16 @@ function EmployeeProfile() {
                 trendValue={`${timesheet.utilization_percent || 0}%`}
                 color="cyan"
               />
+              {planningTimesheetData?.summary?.estimation_accuracy != null && (
+                <MetricCard
+                  icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>}
+                  value={`${planningTimesheetData.summary.estimation_accuracy}%`}
+                  label="Plan vs Actual"
+                  trend={planningTimesheetData.summary.estimation_accuracy >= 85 ? 'up' : planningTimesheetData.summary.estimation_accuracy >= 70 ? 'neutral' : 'down'}
+                  trendValue="5 weeks"
+                  color="teal"
+                />
+              )}
             </>
           ) : (
             // QA Team Key Metrics - Focused on Testing & Bug Finding
@@ -1266,6 +1417,16 @@ function EmployeeProfile() {
                 trend={(100 - (bugs.rejected_percent || 0)) >= 85 ? 'up' : 'down'}
                 color="cyan"
               />
+              {planningTimesheetData?.summary?.estimation_accuracy != null && (
+                <MetricCard
+                  icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>}
+                  value={`${planningTimesheetData.summary.estimation_accuracy}%`}
+                  label="Plan vs Actual"
+                  trend={planningTimesheetData.summary.estimation_accuracy >= 85 ? 'up' : planningTimesheetData.summary.estimation_accuracy >= 70 ? 'neutral' : 'down'}
+                  trendValue="5 weeks"
+                  color="teal"
+                />
+              )}
             </>
           )}
         </div>
@@ -1300,6 +1461,17 @@ function EmployeeProfile() {
                     ) : (
                       <span className="trend-neutral">No change from last period</span>
                     )}
+                  </div>
+                )}
+                {planningTimesheetData?.summary && (
+                  <div className="emp-rag-plan-context">
+                    <span className="emp-rag-plan-label">Plan vs Actual (5w):</span>
+                    <span className={`emp-rag-plan-value ${(planningTimesheetData.summary.estimation_accuracy ?? 0) >= 80 ? 'good' : (planningTimesheetData.summary.estimation_accuracy ?? 0) >= 60 ? 'neutral' : 'low'}`}>
+                      {planningTimesheetData.summary.estimation_accuracy != null ? `${planningTimesheetData.summary.estimation_accuracy}% accuracy` : `${planningTimesheetData.summary.total_planned_hours ?? 0}h planned, ${planningTimesheetData.summary.total_actual_hours ?? 0}h actual`}
+                    </span>
+                    <button type="button" className="emp-rag-plan-link" onClick={() => setActiveTab('time-tasks')}>
+                      View details →
+                    </button>
                   </div>
                 )}
               </div>
@@ -1583,6 +1755,7 @@ function EmployeeProfile() {
                       onClick={() => navigate(`/?ticket=${id}`)}
                     >
                       #{id}
+                      <TicketExternalLink ticketId={id} />
                     </div>
                   ))}
                   {(tickets.ticket_ids || []).length === 0 && (
@@ -1708,6 +1881,7 @@ function EmployeeProfile() {
                       onClick={() => navigate(`/?ticket=${id}`)}
                     >
                       #{id}
+                      <TicketExternalLink ticketId={id} />
                     </div>
                   ))}
                   {(tickets.ticket_ids || []).length === 0 && (
@@ -1744,6 +1918,12 @@ function EmployeeProfile() {
             onClick={() => setActiveTab('kpi')}
           >
             KPI Ratings
+          </button>
+          <button 
+            className={`emp-tab ${activeTab === 'time-tasks' ? 'active' : ''}`}
+            onClick={() => setActiveTab('time-tasks')}
+          >
+            Time & Tasks
           </button>
           <button 
             className={`emp-tab ${activeTab === 'calendar' ? 'active' : ''}`}
@@ -1785,22 +1965,111 @@ function EmployeeProfile() {
                 </div>
                 <div className="detail-row">
                   <span className="detail-label">Reporting To (Lead)</span>
-                  <span className="detail-value">{employee.lead || 'N/A'}</span>
+                  <span className="detail-value">
+                    {employee.lead ? (
+                      <span 
+                        className="clickable-name"
+                        onClick={async () => {
+                          // Find lead's employee ID and navigate
+                          try {
+                            const res = await apiFetch(`/employees?search=${encodeURIComponent(employee.lead)}`);
+                            if (res.ok) {
+                              const employees = await res.json();
+                              const leadEmp = employees.find(e => e.name.toLowerCase() === employee.lead.toLowerCase());
+                              if (leadEmp) {
+                                navigate(`/employees/${leadEmp.employee_id}`);
+                              }
+                            }
+                          } catch (err) {
+                            console.error('Error finding lead:', err);
+                          }
+                        }}
+                        style={{ cursor: 'pointer', color: 'var(--accent-cyan)' }}
+                      >
+                        {employee.lead}
+                      </span>
+                    ) : 'N/A'}
+                  </span>
                 </div>
                 {employee.manager && (
                   <div className="detail-row">
                     <span className="detail-label">Manager</span>
-                    <span className="detail-value">{employee.manager}</span>
+                    <span className="detail-value">
+                      <span 
+                        className="clickable-name"
+                        onClick={async () => {
+                          // Find manager's employee ID and navigate
+                          try {
+                            const res = await apiFetch(`/employees?search=${encodeURIComponent(employee.manager)}`);
+                            if (res.ok) {
+                              const employees = await res.json();
+                              const mgrEmp = employees.find(e => e.name.toLowerCase() === employee.manager.toLowerCase());
+                              if (mgrEmp) {
+                                navigate(`/employees/${mgrEmp.employee_id}`);
+                              }
+                            }
+                          } catch (err) {
+                            console.error('Error finding manager:', err);
+                          }
+                        }}
+                        style={{ cursor: 'pointer', color: 'var(--accent-cyan)' }}
+                      >
+                        {employee.manager}
+                      </span>
+                    </span>
                   </div>
                 )}
               </div>
 
 
-              {reportees.length > 0 && (
+              {/* Team Breakdown Summary */}
+              {reportees.team_breakdown && (reportees.total_direct > 0 || reportees.total_indirect > 0) && (
                 <div className="emp-detail-card">
-                  <h4>Direct Reportees ({reportees.length})</h4>
+                  <h4>Team Overview</h4>
+                  <div className="team-breakdown-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '8px' }}>
+                    <div className="team-stat" style={{ 
+                      background: 'linear-gradient(135deg, rgba(59, 130, 246, 0.15) 0%, rgba(59, 130, 246, 0.05) 100%)',
+                      borderRadius: '8px', padding: '12px', textAlign: 'center', border: '1px solid rgba(59, 130, 246, 0.2)'
+                    }}>
+                      <div style={{ fontSize: '24px', fontWeight: '700', color: '#3b82f6' }}>
+                        {reportees.team_breakdown.development?.total || 0}
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Developers</div>
+                      {reportees.team_breakdown.development?.direct > 0 && (
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          {reportees.team_breakdown.development.direct} direct
+                          {reportees.team_breakdown.development.indirect > 0 && `, ${reportees.team_breakdown.development.indirect} indirect`}
+                        </div>
+                      )}
+                    </div>
+                    <div className="team-stat" style={{ 
+                      background: 'linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(16, 185, 129, 0.05) 100%)',
+                      borderRadius: '8px', padding: '12px', textAlign: 'center', border: '1px solid rgba(16, 185, 129, 0.2)'
+                    }}>
+                      <div style={{ fontSize: '24px', fontWeight: '700', color: '#10b981' }}>
+                        {reportees.team_breakdown.qa?.total || 0}
+                      </div>
+                      <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>QA Engineers</div>
+                      {reportees.team_breakdown.qa?.direct > 0 && (
+                        <div style={{ fontSize: '10px', color: 'var(--text-muted)', marginTop: '2px' }}>
+                          {reportees.team_breakdown.qa.direct} direct
+                          {reportees.team_breakdown.qa.indirect > 0 && `, ${reportees.team_breakdown.qa.indirect} indirect`}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center' }}>
+                    Total Team: {reportees.total_direct + reportees.total_indirect} members
+                  </div>
+                </div>
+              )}
+
+              {/* Direct Reportees Section */}
+              {reportees.direct_reportees && reportees.direct_reportees.length > 0 && (
+                <div className="emp-detail-card">
+                  <h4>Direct Reportees ({reportees.total_direct})</h4>
                   <div className="reportees-list">
-                    {reportees.map((reportee) => (
+                    {reportees.direct_reportees.map((reportee) => (
                       <div 
                         key={reportee.employee_id} 
                         className="reportee-item clickable-name"
@@ -1810,7 +2079,44 @@ function EmployeeProfile() {
                         <div className="reportee-info">
                           <span className="reportee-name">{reportee.name}</span>
                           <span className="reportee-role">{reportee.role}</span>
-                          <span className="reportee-team">{reportee.team}</span>
+                          <span className={`reportee-team-badge ${(reportee.team || '').toLowerCase()}`} style={{
+                            background: reportee.team === 'DEVELOPMENT' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                            color: reportee.team === 'DEVELOPMENT' ? '#3b82f6' : '#10b981',
+                            padding: '2px 8px', borderRadius: '10px', fontSize: '10px', fontWeight: '500'
+                          }}>
+                            {reportee.team === 'DEVELOPMENT' ? 'DEV' : 'QA'}
+                          </span>
+                          <span className={`reportee-category ${reportee.category?.toLowerCase()}`}>
+                            {reportee.category}
+                          </span>
+                        </div>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="reportee-arrow">
+                          <path d="M9 18l6-6-6-6"/>
+                        </svg>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Indirect Reportees Section (for managers) */}
+              {reportees.indirect_reportees && reportees.indirect_reportees.length > 0 && (
+                <div className="emp-detail-card">
+                  <h4>Indirect Reportees ({reportees.total_indirect})</h4>
+                  <div className="reportees-list">
+                    {reportees.indirect_reportees.map((reportee) => (
+                      <div 
+                        key={reportee.employee_id} 
+                        className="reportee-item clickable-name"
+                        onClick={() => navigate(`/employees/${reportee.employee_id}`)}
+                        style={{ cursor: 'pointer' }}
+                      >
+                        <div className="reportee-info">
+                          <span className="reportee-name">{reportee.name}</span>
+                          <span className="reportee-role">{reportee.role}</span>
+                          {reportee.reports_to && (
+                            <span className="reportee-reports-to">via {reportee.reports_to}</span>
+                          )}
                         </div>
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="reportee-arrow">
                           <path d="M9 18l6-6-6-6"/>
@@ -1842,6 +2148,42 @@ function EmployeeProfile() {
                   <span className="detail-value">{timesheet.avg_daily_hours || 0}h</span>
                 </div>
               </div>
+
+              {planningTimesheetData?.summary && (
+                <div className="emp-detail-card">
+                  <h4>Plan vs Actual (5 weeks)</h4>
+                  <div className="detail-row">
+                    <span className="detail-label">Planned</span>
+                    <span className="detail-value">{planningTimesheetData.summary.total_planned_hours ?? 0}h</span>
+                  </div>
+                  <div className="detail-row">
+                    <span className="detail-label">Actual</span>
+                    <span className="detail-value">{planningTimesheetData.summary.total_actual_hours ?? 0}h</span>
+                  </div>
+                  <div className="detail-row">
+                    <span className="detail-label">Variance</span>
+                    <span className={`detail-value ${(planningTimesheetData.summary.total_variance ?? 0) >= 0 ? 'text-green' : 'text-amber'}`}>
+                      {(planningTimesheetData.summary.total_variance ?? 0) >= 0 ? '+' : ''}
+                      {planningTimesheetData.summary.total_variance ?? 0}h
+                    </span>
+                  </div>
+                  <div className="detail-row">
+                    <span className="detail-label">Estimation Accuracy</span>
+                    <span className="detail-value">
+                      {planningTimesheetData.summary.estimation_accuracy != null
+                        ? `${planningTimesheetData.summary.estimation_accuracy}%`
+                        : '—'}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="emp-inline-link"
+                    onClick={() => setActiveTab('time-tasks')}
+                  >
+                    View full Time & Tasks details →
+                  </button>
+                </div>
+              )}
 
               <div className="emp-detail-card">
                 <h4>{isDev ? 'Bug Resolution Metrics' : 'Bug Detection Metrics'}</h4>
@@ -2361,6 +2703,157 @@ function EmployeeProfile() {
           </div>
         )}
 
+        {activeTab === 'time-tasks' && (
+          <div className="emp-tab-content">
+            <div className="emp-time-tasks-header">
+              <h3>Plan vs Actual & Task Details</h3>
+              <p className="emp-time-tasks-subtitle">
+                Timesheet and planning data from the last 5 weeks. Links to planning module and ticket dashboard.
+              </p>
+              {planningTimesheetData?.planning_module_link && (
+                <Link
+                  to={`${planningTimesheetData.planning_module_link}${planningTimesheetData.planning_employee_filter ? `&employee=${encodeURIComponent(planningTimesheetData.planning_employee_filter)}` : ''}`}
+                  className="emp-link-btn"
+                >
+                  View Full Plan vs Actual →
+                </Link>
+              )}
+            </div>
+
+            {planningTimesheetData ? (
+              <>
+                <div className="emp-time-tasks-summary">
+                  <div className="emp-metric-card planned">
+                    <span className="emp-metric-icon">📋</span>
+                    <span className="emp-metric-value">{planningTimesheetData.summary?.total_planned_hours ?? 0}h</span>
+                    <span className="emp-metric-label">Planned</span>
+                  </div>
+                  <div className="emp-metric-card actual">
+                    <span className="emp-metric-icon">✓</span>
+                    <span className="emp-metric-value">{planningTimesheetData.summary?.total_actual_hours ?? 0}h</span>
+                    <span className="emp-metric-label">Actual</span>
+                  </div>
+                  <div className={`emp-metric-card variance ${(planningTimesheetData.summary?.total_variance ?? 0) >= 0 ? 'over' : 'under'}`}>
+                    <span className="emp-metric-icon">Δ</span>
+                    <span className="emp-metric-value">
+                      {(planningTimesheetData.summary?.total_variance ?? 0) >= 0 ? '+' : ''}
+                      {planningTimesheetData.summary?.total_variance ?? 0}h
+                    </span>
+                    <span className="emp-metric-label">Variance</span>
+                  </div>
+                  <div className="emp-metric-card accuracy">
+                    <span className="emp-metric-icon">%</span>
+                    <span className="emp-metric-value">
+                      {planningTimesheetData.summary?.estimation_accuracy != null
+                        ? `${planningTimesheetData.summary.estimation_accuracy}%`
+                        : '—'}
+                    </span>
+                    <span className="emp-metric-label">Estimation Accuracy</span>
+                  </div>
+                  <div className="emp-metric-card">
+                    <span className="emp-metric-icon">📝</span>
+                    <span className="emp-metric-value">{planningTimesheetData.summary?.total_planned_tasks ?? 0}</span>
+                    <span className="emp-metric-label">Planned Tasks</span>
+                  </div>
+                  <div className="emp-metric-card">
+                    <span className="emp-metric-icon">🎫</span>
+                    <span className="emp-metric-value">{planningTimesheetData.summary?.unique_tickets_worked ?? 0}</span>
+                    <span className="emp-metric-label">Tickets Worked</span>
+                  </div>
+                </div>
+
+                <div className="emp-time-tasks-grid">
+                  <div className="emp-detail-card">
+                    <h4>Recent Planned Tasks</h4>
+                    {planningTimesheetData.recent_planned_tasks?.length ? (
+                      <div className="emp-task-list">
+                        {planningTimesheetData.recent_planned_tasks.slice(0, 15).map((t, i) => (
+                          <div key={i} className="emp-task-item">
+                            <span className="emp-task-date">{formatDisplayDate(t.date)}</span>
+                            <span className="emp-task-desc">
+                              {t.ticket_id ? (
+                                <Link to={`/tickets?ticket=${t.ticket_id}`} className="ticket-link" onClick={(e) => e.stopPropagation()}>
+                                  #{t.ticket_id}
+                                </Link>
+                              ) : null}
+                              {t.ticket_id && ' '}
+                              {t.ticket_title || t.activity_description || t.generic_category || '—'}
+                            </span>
+                            <span className="emp-task-hours">{t.hours}h</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="emp-empty-msg">No planned tasks in the last 5 weeks.</p>
+                    )}
+                  </div>
+                  <div className="emp-detail-card">
+                    <h4>Recent Timesheet Entries</h4>
+                    {planningTimesheetData.recent_timesheet_entries?.length ? (
+                      <div className="emp-task-list">
+                        {planningTimesheetData.recent_timesheet_entries.slice(0, 15).map((e, i) => (
+                          <div key={i} className="emp-task-item">
+                            <span className="emp-task-date">{formatDisplayDate(e.date)}</span>
+                            <span className="emp-task-desc">
+                              {e.ticket_id ? (
+                                <>
+                                  <Link to={`/tickets?ticket=${e.ticket_id}`} className="ticket-link" onClick={(ev) => ev.stopPropagation()}>
+                                    #{e.ticket_id}
+                                  </Link>
+                                  <TicketExternalLink ticketId={e.ticket_id} />
+                                  {' '}
+                                </>
+                              ) : null}
+                              {e.task_description || e.project_name || '—'}
+                            </span>
+                            <span className="emp-task-hours">{e.hours}h</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="emp-empty-msg">No timesheet entries in the last 5 weeks.</p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="emp-detail-card">
+                  <h4>Weekly Breakdown</h4>
+                  {planningTimesheetData.weekly_summaries?.length ? (
+                    <table className="emp-weekly-table">
+                      <thead>
+                        <tr>
+                          <th>Week</th>
+                          <th className="num">Planned (h)</th>
+                          <th className="num">Actual (h)</th>
+                          <th className="num">Variance</th>
+                          <th className="num">Accuracy</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {planningTimesheetData.weekly_summaries.map((w, i) => (
+                          <tr key={i}>
+                            <td>{formatDisplayDate(w.week_start)} – {formatDisplayDate(w.week_end)}</td>
+                            <td className="num">{w.planned_hours}h</td>
+                            <td className="num">{w.actual_hours}h</td>
+                            <td className={`num ${w.variance >= 0 ? 'over' : 'under'}`}>
+                              {w.variance >= 0 ? '+' : ''}{w.variance}h
+                            </td>
+                            <td className="num">{w.estimation_accuracy != null ? `${w.estimation_accuracy}%` : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  ) : (
+                    <p className="emp-empty-msg">No weekly data available.</p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="emp-loading-msg">Loading plan vs actual data…</div>
+            )}
+          </div>
+        )}
+
         {activeTab === 'calendar' && (
           <div className="emp-tab-content">
             <div className="calendar-header">
@@ -2570,11 +3063,12 @@ function EmployeeProfile() {
               </div>
               <div className="form-row">
                 <div className="form-group">
-                  <label>Role</label>
+                  <label>Job Title</label>
                   <input 
                     type="text"
                     value={editForm.role}
                     onChange={e => setEditForm({...editForm, role: e.target.value})}
+                    placeholder="e.g., SOFTWARE ENGINEER"
                   />
                 </div>
                 <div className="form-group">
@@ -2586,6 +3080,24 @@ function EmployeeProfile() {
                   />
                 </div>
               </div>
+              {canChangeUserRoles() && (
+                <div className="form-row">
+                  <div className="form-group">
+                    <label>Access Role (System Permissions)</label>
+                    <select
+                      value={editForm.access_role || 'EMPLOYEE'}
+                      onChange={e => setEditForm({...editForm, access_role: e.target.value})}
+                    >
+                      {ACCESS_ROLE_OPTIONS.map(opt => (
+                        <option key={opt.value} value={opt.value}>{opt.label}</option>
+                      ))}
+                    </select>
+                    <small style={{ color: 'var(--text-muted)', fontSize: '0.75rem', marginTop: '4px', display: 'block' }}>
+                      Manager: Full access to all profiles. Lead: Access to team members. Employee: Own profile only.
+                    </small>
+                  </div>
+                </div>
+              )}
               <div className="form-row">
                 <div className="form-group">
                   <label>Team *</label>
@@ -2622,19 +3134,27 @@ function EmployeeProfile() {
               <div className="form-row">
                 <div className="form-group">
                   <label>Reporting To (Lead)</label>
-                  <input 
-                    type="text"
+                  <select
                     value={editForm.lead || ''}
                     onChange={e => setEditForm({...editForm, lead: e.target.value})}
-                  />
+                  >
+                    <option value="">Select Lead</option>
+                    {leadManagerOptions.map((name) => (
+                      <option key={`lead-${name}`} value={name}>{name}</option>
+                    ))}
+                  </select>
                 </div>
                 <div className="form-group">
                   <label>Manager</label>
-                  <input 
-                    type="text"
+                  <select
                     value={editForm.manager || ''}
                     onChange={e => setEditForm({...editForm, manager: e.target.value})}
-                  />
+                  >
+                    <option value="">Select Manager</option>
+                    {leadManagerOptions.map((name) => (
+                      <option key={`manager-${name}`} value={name}>{name}</option>
+                    ))}
+                  </select>
                 </div>
               </div>
               <div className="form-row">
