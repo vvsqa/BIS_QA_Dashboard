@@ -831,7 +831,7 @@ function TimeSheetModule() {
               {error && (
                 <div className="error-state">
                   <p>⚠️ {error}</p>
-                  {canLogTime && user?.employee_id && <button onClick={handleRetry}>Retry</button>}
+                  <button type="button" className="sync-btn" onClick={handleRetry}>Retry</button>
                 </div>
               )}
               {!loading && !error && timesheetData && view === 'weekly' && (

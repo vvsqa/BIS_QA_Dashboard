@@ -162,6 +162,7 @@ function QATaskPlanning({ showParentTitle = false }) {
   const [showTicketSuggestions, setShowTicketSuggestions] = useState(false);
   const [ticketSuggestionsCategorized, setTicketSuggestionsCategorized] = useState(null); // { next_in_queue, on_hold, for_retesting, ageing }
   const [ticketSuggestionsLoading, setTicketSuggestionsLoading] = useState(false);
+  const [showInQc10List, setShowInQc10List] = useState(false);
   const ticketInputRef = useRef(null);
   const ticketSuggestionsRef = useRef(null);
   const [allocationPreview, setAllocationPreview] = useState(null);
@@ -190,6 +191,13 @@ function QATaskPlanning({ showParentTitle = false }) {
   const [multiPlanErrors, setMultiPlanErrors] = useState({});
   const [multiPlanSubmitting, setMultiPlanSubmitting] = useState(false);
   const [multiPlanResults, setMultiPlanResults] = useState(null);
+
+  // Edit task modal (Manager / Lead)
+  const [editTaskOpen, setEditTaskOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState(null);
+  const [editTaskForm, setEditTaskForm] = useState({ start_date: '', total_hours: 8, max_hours_per_day: 8 });
+  const [editTaskError, setEditTaskError] = useState(null);
+  const [editTaskSubmitting, setEditTaskSubmitting] = useState(false);
 
   // Calendar state
   const [calendarData, setCalendarData] = useState(null);
@@ -834,7 +842,7 @@ function QATaskPlanning({ showParentTitle = false }) {
     task_category: 'Ticket',
     ticket_id: null,
     ticket_id_input: '',
-    task_type: '',
+    task_type: 'Manual Testing',
     activity_description: '',
     start_date: formatAPIDate(new Date()), // Default to current date
     total_hours: 8,
@@ -910,6 +918,48 @@ function QATaskPlanning({ showParentTitle = false }) {
     }
   }, []);
 
+  /** Refresh: fetch this ticket only from PM API and reload details (faster than full sync). */
+  const refreshTicketFromPM = useCallback(async (ticketId) => {
+    const id = ticketId != null ? Number(ticketId) : null;
+    if (id == null || Number.isNaN(id)) return;
+    setTicketLookupLoading(true);
+    setFormErrors((e) => ({ ...e, ticket_id: null }));
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/ticket/${id}/refresh`, { method: 'POST' });
+      let data = null;
+      let errorDetail = null;
+      try {
+        const text = await res.text();
+        const body = text ? JSON.parse(text) : {};
+        if (res.ok) data = body;
+        else errorDetail = body?.detail || body?.message || (res.status === 400 ? 'Invalid ticket ID' : 'Ticket not found or not in applicable statuses');
+      } catch (_) {
+        if (res.ok) {
+          data = null;
+          errorDetail = 'Invalid response from server';
+        } else {
+          errorDetail = res.status === 400 ? 'Invalid ticket ID' : 'Failed to refresh ticket from PM';
+        }
+      }
+      setLookedUpTicket(data);
+      if (data) {
+        setForm((f) => ({
+          ...f,
+          ticket_id: data.ticket_id ?? id,
+          activity_description: data.title || f.activity_description,
+          total_hours: data.qa_estimate_hours ?? f.total_hours,
+        }));
+      } else if (errorDetail) {
+        setFormErrors((e) => ({ ...e, ticket_id: errorDetail }));
+      }
+    } catch (e) {
+      setLookedUpTicket(null);
+      setFormErrors((e) => ({ ...e, ticket_id: e.message || 'Failed to refresh ticket from PM' }));
+    } finally {
+      setTicketLookupLoading(false);
+    }
+  }, []);
+
   const selectTicket = useCallback((ticket) => {
     setForm((f) => ({ ...f, ticket_id: ticket.ticket_id, ticket_id_input: String(ticket.ticket_id) }));
     setShowTicketSuggestions(false);
@@ -933,8 +983,10 @@ function QATaskPlanning({ showParentTitle = false }) {
           err.ticket_id = 'QA Estimate is required in PM Tracker. Add it and click Refresh.';
         } else if (!(lookedUpTicket.qc_tester || '').trim()) {
           err.ticket_id = 'QC Tester is required in PM Tracker. Assign and click Refresh.';
-        } else if (!form.task_type) {
-          err.task_type = 'Task Type is required';
+        } else if ((lookedUpTicket.status || '').trim() !== 'QC Testing in Progress') {
+          err.ticket_id = 'Ticket status must be "QC Testing in Progress" in PM Tracker to create a task. Update in PM and click Refresh.';
+        } else {
+          if (!form.task_type) err.task_type = 'Task Type is required';
         }
       }
     }
@@ -1050,6 +1102,55 @@ function QATaskPlanning({ showParentTitle = false }) {
     }
   };
 
+  const openEditTask = (task) => {
+    setEditingTask(task);
+    const totalH = task.total_planned_hours ?? (task.allocations?.reduce((s, a) => s + (a.hours || 0), 0) ?? 8);
+    setEditTaskForm({
+      start_date: task.start_date || formatAPIDate(new Date()),
+      total_hours: totalH,
+      max_hours_per_day: 8,
+    });
+    setEditTaskError(null);
+    setEditTaskOpen(true);
+  };
+
+  const closeEditTask = () => {
+    setEditTaskOpen(false);
+    setEditingTask(null);
+    setEditTaskError(null);
+  };
+
+  const submitEditTask = async () => {
+    if (!editingTask) return;
+    setEditTaskSubmitting(true);
+    setEditTaskError(null);
+    try {
+      const body = {
+        start_date: editTaskForm.start_date,
+        total_hours: Number(editTaskForm.total_hours),
+        max_hours_per_day: Number(editTaskForm.max_hours_per_day) || 8,
+      };
+      const res = await apiFetch(`${API_BASE}/qa-planning/tasks/${editingTask.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        const detail = data.detail;
+        const msg = typeof detail === 'string' ? detail : Array.isArray(detail) ? (detail.map((d) => d.msg || JSON.stringify(d)).join('; ')) : (detail?.message || JSON.stringify(detail) || 'Failed to update task');
+        throw new Error(msg);
+      }
+      closeEditTask();
+      loadWeekData();
+      if (view === 'calendar') loadCalendarData();
+    } catch (e) {
+      setEditTaskError(e.message || 'Error updating task');
+    } finally {
+      setEditTaskSubmitting(false);
+    }
+  };
+
   const openDayDetail = async (employeeName, dateStr) => {
     setDayDetailEmployee(employeeName);
     setDayDetailDate(dateStr);
@@ -1080,9 +1181,14 @@ function QATaskPlanning({ showParentTitle = false }) {
   const weekState = weekData?.state || 'draft';
   const canEdit = weekState === 'draft' || weekState === 'submitted';
   const tasksByEmployee = tasks.reduce((acc, t) => {
-    const key = t.employee_name || t.employee_id || 'Unknown';
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(t);
+    const nameKey = t.employee_name || t.employee_id || 'Unknown';
+    const idKey = t.employee_id != null ? String(t.employee_id) : null;
+    if (!acc[nameKey]) acc[nameKey] = [];
+    acc[nameKey].push(t);
+    if (idKey && idKey !== nameKey) {
+      if (!acc[idKey]) acc[idKey] = [];
+      acc[idKey].push(t);
+    }
     return acc;
   }, {});
   const getTaskDisplayHours = (t) => {
@@ -1673,6 +1779,41 @@ function QATaskPlanning({ showParentTitle = false }) {
                 )}
               </section>
 
+              {/* In QC 10+ days: count (click to see list) */}
+              {overviewData && (overviewData.in_qc_10_plus?.length ?? 0) >= 0 && (
+                <section className="qa-in-qc-15-section">
+                  <button
+                    type="button"
+                    className="qa-in-qc-15-trigger"
+                    onClick={() => setShowInQc10List((v) => !v)}
+                    aria-expanded={showInQc10List}
+                  >
+                    <span className="qa-in-qc-15-label">In QC testing 10+ days (all priorities)</span>
+                    <span className="qa-in-qc-15-count">{(overviewData.in_qc_10_plus?.length ?? 0)} tickets</span>
+                  </button>
+                  {showInQc10List && (
+                    <div className="qa-in-qc-15-list-wrap">
+                      {(overviewData.in_qc_10_plus?.length ?? 0) === 0 ? (
+                        <p className="qa-in-qc-15-none">No tickets in QC for 10+ days.</p>
+                      ) : (
+                        <ul className="qa-in-qc-15-list">
+                          {(overviewData.in_qc_10_plus || []).map((t) => (
+                            <li key={t.ticket_id} className="qa-in-qc-15-item">
+                              <Link to={`/tickets?ticket=${t.ticket_id}`} onClick={() => setShowInQc10List(false)}>
+                                #{t.ticket_id}
+                              </Link>
+                              <span className="qa-in-qc-15-meta">{t.title?.slice(0, 50)}{(t.title?.length || 0) > 50 ? '…' : ''}</span>
+                              <span className="qa-in-qc-15-pill" style={{ backgroundColor: PRIORITY_COLORS[t.priority] || '#6b7280' }}>{t.priority}</span>
+                              <span className="qa-in-qc-15-days">{t.days_in_qc}d</span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
+
               {/* Ticket Table */}
               <section className="qa-tickets-section">
                 <div className="qa-tickets-header">
@@ -2018,7 +2159,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                       )}
                       <div className={`dev-planner-resource-grid ${plannerViewMode === 'list' ? 'list-mode' : ''}`}>
                         {(group.members || []).map((emp) => {
-                    const empTasks = tasksByEmployee[emp.employee_name] || [];
+                    const empTasks = tasksByEmployee[emp.employee_name] || (emp.employee_id != null ? tasksByEmployee[String(emp.employee_id)] : null) || [];
                     const statusKey = (emp.allocation_status || '').toLowerCase().replace(/\s+/g, '-');
                     const initials = (emp.employee_name || 'XX').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
                     return (
@@ -2071,8 +2212,8 @@ function QATaskPlanning({ showParentTitle = false }) {
                                       <button
                                         type="button"
                                         className="dev-planner-task-edit"
-                                        title="Edit not available"
-                                        disabled
+                                        title="Edit task"
+                                        onClick={() => openEditTask(t)}
                                       >
                                         ✎
                                       </button>
@@ -2080,7 +2221,8 @@ function QATaskPlanning({ showParentTitle = false }) {
                                         type="button"
                                         className="dev-planner-task-remove"
                                         onClick={() => deleteTask(t.id)}
-                                        title="Remove"
+                                        title={!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()) ? 'Past tasks cannot be deleted' : 'Remove'}
+                                        disabled={!!(!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()))}
                                       >
                                         ×
                                       </button>
@@ -2233,6 +2375,13 @@ function QATaskPlanning({ showParentTitle = false }) {
                     const days = Object.values(row.days || {});
                     const totalHours = days.reduce((s, d) => s + (d.hours || 0), 0);
                     const avgHours = days.length > 0 ? (totalHours / days.length).toFixed(1) : 0;
+                    const rowPriorities = [];
+                    days.forEach((cell) => {
+                      (cell.items || []).forEach((it) => {
+                        if (it.ticket_priority && !rowPriorities.includes(it.ticket_priority)) rowPriorities.push(it.ticket_priority);
+                      });
+                    });
+                    rowPriorities.sort((a, b) => (PRIORITY_ORDER.indexOf(a) - PRIORITY_ORDER.indexOf(b)) || a.localeCompare(b));
                     return (
                       <tr key={row.employee_id || row.employee_name}>
                         <td className="emp-cell">
@@ -2251,6 +2400,13 @@ function QATaskPlanning({ showParentTitle = false }) {
                             )}
                             {row.remaining_hours != null && (
                               <span className="calendar-remaining-hint">{row.remaining_hours}h left</span>
+                            )}
+                            {rowPriorities.length > 0 && (
+                              <div className="calendar-priority-pills" title="Working on priority tickets">
+                                {rowPriorities.map((p) => (
+                                  <span key={p} className="calendar-priority-pill" style={{ backgroundColor: PRIORITY_COLORS[p] || '#6b7280' }}>{p}</span>
+                                ))}
+                              </div>
                             )}
                           </div>
                         </td>
@@ -2289,10 +2445,18 @@ function QATaskPlanning({ showParentTitle = false }) {
                                     const cat = it.category || (it.ticket_id ? 'Ticket' : 'Miscellaneous');
                                     const color = TASK_CATEGORY_COLORS[cat] || TASK_CATEGORY_COLORS.Miscellaneous;
                                     const baseLabel = it.text || (it.ticket_id ? `#${it.ticket_id}` : (it.category || it.description || 'Task'));
-                                    const labelWithPriority = it.ticket_priority ? `${baseLabel} (${it.ticket_priority})` : baseLabel;
                                     return (
-                                      <span key={i} className="cell-label-wrap">
-                                        {i > 0 && ', '}
+                                      <span key={i} className="qa-calendar-cell-task">
+                                        {i > 0 && ' '}
+                                        {it.ticket_priority && (
+                                          <span
+                                            className="qa-calendar-cell-priority-pill"
+                                            style={{ backgroundColor: PRIORITY_COLORS[it.ticket_priority] || '#6b7280' }}
+                                            title={`Priority: ${it.ticket_priority}`}
+                                          >
+                                            {it.ticket_priority}
+                                          </span>
+                                        )}
                                         {it.ticket_id ? (
                                           <a
                                             href={getTicketTrackingUrl(it.ticket_id)}
@@ -2303,10 +2467,10 @@ function QATaskPlanning({ showParentTitle = false }) {
                                             onClick={(e) => e.stopPropagation()}
                                             title={it.ticket_priority ? `Priority: ${it.ticket_priority}` : undefined}
                                           >
-                                            {labelWithPriority}
+                                            {baseLabel}
                                           </a>
                                         ) : (
-                                          <span className="cell-task-label" style={{ color }} title={it.ticket_priority ? `Priority: ${it.ticket_priority}` : undefined}>{labelWithPriority}</span>
+                                          <span className="cell-task-label" style={{ color }} title={it.ticket_priority ? `Priority: ${it.ticket_priority}` : undefined}>{baseLabel}</span>
                                         )}
                                       </span>
                                     );
@@ -2374,7 +2538,9 @@ function QATaskPlanning({ showParentTitle = false }) {
                     let maxDate = null;
                     const empTasks = [];
                     for (const t of tasks) {
-                      if (t.employee_name !== emp.employee_name) continue;
+                      const nameMatch = t.employee_name === emp.employee_name;
+                      const idMatch = t.employee_id != null && emp.employee_id != null && String(t.employee_id) === String(emp.employee_id);
+                      if (!nameMatch && !idMatch) continue;
                       for (const a of t.allocations || []) {
                         if (a.date && (!maxDate || a.date > maxDate)) maxDate = a.date;
                       }
@@ -2398,12 +2564,15 @@ function QATaskPlanning({ showParentTitle = false }) {
                               {empTasks.map((task, idx) => (
                                 <span key={idx} className="resource-blocked-task-item">
                                   {idx > 0 && ', '}
+                                  {task.priority && (
+                                    <span className="resource-blocked-priority-pill" style={{ backgroundColor: PRIORITY_COLORS[task.priority] || '#6b7280' }} title={`Priority: ${task.priority}`}>{task.priority}</span>
+                                  )}
                                   {task.ticket_id ? (
                                     <Link to={`/tickets?ticket=${task.ticket_id}`} className="resource-blocked-task-link" onClick={(e) => e.stopPropagation()}>
-                                      {task.full}
+                                      {task.label}
                                     </Link>
                                   ) : (
-                                    task.full
+                                    task.label
                                   )}
                                 </span>
                               ))}
@@ -2603,7 +2772,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                   value={form.task_category} 
                   onChange={(e) => {
                     const cat = e.target.value;
-                    const updates = { task_category: cat, ticket_id: null, ticket_id_input: '', task_type: '', generic_category: cat !== 'Ticket' ? cat : '' };
+                    const updates = { task_category: cat, ticket_id: null, ticket_id_input: '', task_type: cat === 'Ticket' ? 'Manual Testing' : '', generic_category: cat !== 'Ticket' ? cat : '' };
                     if (cat === 'Leave') {
                       updates.total_hours = 8;
                       updates.max_hours_per_day = 8;
@@ -2760,9 +2929,9 @@ function QATaskPlanning({ showParentTitle = false }) {
                     <button
                       type="button"
                       className="qa-ticket-card-refresh"
-                      onClick={() => form.ticket_id && fetchTicketDetails(form.ticket_id)}
+                      onClick={() => form.ticket_id && refreshTicketFromPM(form.ticket_id)}
                       disabled={ticketLookupLoading}
-                      title="Refresh from PM Tracker (if you updated QC Tester or QA Estimate there)"
+                      title="Refresh this ticket from PM Tracker (QC Tester, QA Estimate, Status)"
                     >
                       {ticketLookupLoading ? '…' : '↻ Refresh'}
                     </button>
@@ -2778,7 +2947,10 @@ function QATaskPlanning({ showParentTitle = false }) {
                     </div>
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">Status</span>
-                      <span className="qa-field-value">{lookedUpTicket.status}</span>
+                      <span className={`qa-field-value ${(lookedUpTicket.status || '').trim() !== 'QC Testing in Progress' ? 'qa-field-missing' : ''}`}>
+                        {lookedUpTicket.status || '—'}
+                        {(lookedUpTicket.status || '').trim() !== 'QC Testing in Progress' && ' (Must be QC Testing in Progress)'}
+                      </span>
                     </div>
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">QC Tester</span>
@@ -2789,6 +2961,12 @@ function QATaskPlanning({ showParentTitle = false }) {
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">Actual QA</span>
                       <span className="qa-field-value">{lookedUpTicket.actual_qa_hours != null ? `${lookedUpTicket.actual_qa_hours}h` : '—'}</span>
+                    </div>
+                    <div className="qa-ticket-card-field">
+                      <span className="qa-field-label">ETA</span>
+                      <span className="qa-field-value">
+                        {(lookedUpTicket.eta || '').trim() ? formatDisplayDate(lookedUpTicket.eta.slice(0, 10)) : '— (Optional)'}
+                      </span>
                     </div>
                   </div>
                   {['QC Review Fail', 'Code Review Failed'].includes(lookedUpTicket.status) && (
@@ -2804,6 +2982,16 @@ function QATaskPlanning({ showParentTitle = false }) {
                   {!(lookedUpTicket.qc_tester || '').trim() && (
                     <div className="qa-ticket-card-warning">
                       QC Tester is required in PM Tracker. Assign and click Refresh.
+                    </div>
+                  )}
+                  {(lookedUpTicket.status || '').trim() !== 'QC Testing in Progress' && (
+                    <div className="qa-ticket-card-warning">
+                      Ticket status must be &quot;QC Testing in Progress&quot; in PM Tracker to create a task. Update in PM and click Refresh.
+                    </div>
+                  )}
+                  {(lookedUpTicket.eta || '').trim() && lookedUpTicket.eta.slice(0, 10) < formatAPIDate(new Date()) && (
+                    <div className="qa-ticket-card-warning">
+                      ETA is past. Update ETA in PM Tracker and click Refresh before creating the task.
                     </div>
                   )}
                 </div>
@@ -2942,7 +3130,58 @@ function QATaskPlanning({ showParentTitle = false }) {
                 </button>
               </div>
             </form>
-            )}
+          </div>
+        </div>
+      )}
+
+      {/* Edit Task Modal (Manager / Lead) */}
+      {editTaskOpen && editingTask && (
+        <div className="qa-modal-overlay" onClick={closeEditTask}>
+          <div className="qa-modal" onClick={(e) => e.stopPropagation()} style={{ minWidth: '400px' }}>
+            <div className="qa-modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0 }}>Edit Task</h3>
+              <button type="button" className="qa-modal-close" onClick={closeEditTask} title="Close">×</button>
+            </div>
+            <p className="qa-form-group" style={{ marginBottom: '1rem', color: 'var(--text-muted)' }}>
+              {editingTask.ticket_id ? `#${editingTask.ticket_id}` : editingTask.activity_description?.slice(0, 50)} — {editingTask.employee_name}
+            </p>
+            <div className="qa-form-group">
+              <label>Start Date *</label>
+              <input
+                type="date"
+                value={editTaskForm.start_date}
+                min={formatAPIDate(new Date())}
+                onChange={(e) => setEditTaskForm({ ...editTaskForm, start_date: e.target.value })}
+              />
+            </div>
+            <div className="qa-form-group">
+              <label>Total hours *</label>
+              <input
+                type="number"
+                min={0.5}
+                step={0.5}
+                value={editTaskForm.total_hours}
+                onChange={(e) => setEditTaskForm({ ...editTaskForm, total_hours: e.target.value })}
+              />
+            </div>
+            <div className="qa-form-group">
+              <label>Max hours per day</label>
+              <select
+                value={editTaskForm.max_hours_per_day}
+                onChange={(e) => setEditTaskForm({ ...editTaskForm, max_hours_per_day: Number(e.target.value) })}
+              >
+                {MAX_HOURS_PER_DAY_OPTIONS.map((h) => (
+                  <option key={h} value={h}>{h}h</option>
+                ))}
+              </select>
+            </div>
+            {editTaskError && <div className="qa-form-error qa-form-error-block">{editTaskError}</div>}
+            <div className="qa-modal-actions" style={{ marginTop: '1rem' }}>
+              <button type="button" onClick={closeEditTask}>Cancel</button>
+              <button type="button" className="qa-btn-primary" onClick={submitEditTask} disabled={editTaskSubmitting}>
+                {editTaskSubmitting ? 'Saving…' : 'Save'}
+              </button>
+            </div>
           </div>
         </div>
       )}

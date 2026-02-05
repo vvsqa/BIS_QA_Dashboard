@@ -849,9 +849,14 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
 
   // Tasks grouped by employee for developer cards
   const tasksByEmployee = tasks.reduce((acc, t) => {
-    const key = t.employee_name || t.employee_id || 'Unknown';
-    if (!acc[key]) acc[key] = [];
-    acc[key].push(t);
+    const nameKey = t.employee_name || t.employee_id || 'Unknown';
+    const idKey = t.employee_id != null ? String(t.employee_id) : null;
+    if (!acc[nameKey]) acc[nameKey] = [];
+    acc[nameKey].push(t);
+    if (idKey && idKey !== nameKey) {
+      if (!acc[idKey]) acc[idKey] = [];
+      acc[idKey].push(t);
+    }
     return acc;
   }, {});
 
@@ -1749,7 +1754,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
               ) : (
                 <div className={`dev-planner-resource-grid ${plannerViewMode === 'list' ? 'list-mode' : ''}`}>
                   {sortedEmployees.map((emp) => {
-                    const empTasks = tasksByEmployee[emp.employee_name] || [];
+                    const empTasks = tasksByEmployee[emp.employee_name] || (emp.employee_id != null ? tasksByEmployee[String(emp.employee_id)] : null) || [];
                     const statusKey = (emp.allocation_status || '').toLowerCase().replace(/\s+/g, '-');
                     const initials = (emp.employee_name || 'XX').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
                     return (
@@ -1805,8 +1810,8 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                                         type="button"
                                         className="dev-planner-task-edit"
                                         onClick={() => openEditTask(t)}
-                                        title={t.start_date && t.start_date < formatAPIDate(new Date()) ? 'Past tasks cannot be edited' : 'Edit allocations'}
-                                        disabled={t.start_date && t.start_date < formatAPIDate(new Date())}
+                                        title={!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()) ? 'Past tasks cannot be edited' : 'Edit allocations'}
+                                        disabled={!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date())}
                                       >
                                         ✎
                                       </button>
@@ -1814,8 +1819,8 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                                         type="button"
                                         className="dev-planner-task-remove"
                                         onClick={() => deleteTask(t.id)}
-                                        title={t.start_date && t.start_date < formatAPIDate(new Date()) ? 'Past tasks cannot be edited' : 'Remove'}
-                                        disabled={t.start_date && t.start_date < formatAPIDate(new Date())}
+                                        title={!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()) ? 'Past tasks cannot be deleted' : 'Remove'}
+                                        disabled={!!(!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()))}
                                       >
                                         ×
                                       </button>
@@ -1983,6 +1988,12 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                     const days = Object.values(row.days || {});
                     const totalHours = days.reduce((s, d) => s + (d.hours || 0), 0);
                     const avgHours = days.length > 0 ? (totalHours / days.length).toFixed(1) : 0;
+                    const rowPriorities = [];
+                    days.forEach((cell) => {
+                      (cell.items || []).forEach((it) => {
+                        if (it.ticket_priority && !rowPriorities.includes(it.ticket_priority)) rowPriorities.push(it.ticket_priority);
+                      });
+                    });
                     return (
                       <tr key={row.employee_id}>
                         <td className="emp-cell">
@@ -2001,6 +2012,13 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                             )}
                             {row.remaining_hours != null && (
                               <span className="calendar-remaining-hint">{row.remaining_hours}h left</span>
+                            )}
+                            {rowPriorities.length > 0 && (
+                              <div className="calendar-priority-pills" title="Working on priority tickets">
+                                {rowPriorities.map((p) => (
+                                  <span key={p} className="calendar-priority-pill" style={{ backgroundColor: PRIORITY_COLORS[p] || '#6b7280' }}>{p}</span>
+                                ))}
+                              </div>
                             )}
                           </div>
                         </td>
@@ -2138,12 +2156,15 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                               {empTasks.map((task, idx) => (
                                 <span key={idx} className="resource-blocked-task-item">
                                   {idx > 0 && ', '}
+                                  {task.priority && (
+                                    <span className="resource-blocked-priority-pill" style={{ backgroundColor: PRIORITY_COLORS[task.priority] || '#6b7280' }} title={`Priority: ${task.priority}`}>{task.priority}</span>
+                                  )}
                                   {task.ticket_id && getTicketTrackingUrl(task.ticket_id) ? (
                                     <a href={getTicketTrackingUrl(task.ticket_id)} target="_blank" rel="noopener noreferrer" className="resource-blocked-task-link" onClick={(e) => e.stopPropagation()}>
-                                      {task.full}
+                                      {task.label}
                                     </a>
                                   ) : (
-                                    task.full
+                                    task.label
                                   )}
                                 </span>
                               ))}

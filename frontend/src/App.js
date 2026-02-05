@@ -47,13 +47,8 @@ function EmployeesRoute() {
   return <Navigate to="/" replace />;
 }
 
-// Task module (My Tasks, Task Planning) is hidden from managers — redirect them to dashboard
-function TaskModuleGuard({ children, allowManager = false }) {
-  const { user } = useAuth();
-  const isManager = user?.role?.includes('MANAGER') && user?.role !== 'ADMIN';
-  if (isManager && !allowManager) {
-    return <Navigate to="/" replace />;
-  }
+// Task module (My Tasks, Task Planning): managers can access same as admins/leads (QA + Dev planning).
+function TaskModuleGuard({ children }) {
   return children;
 }
 

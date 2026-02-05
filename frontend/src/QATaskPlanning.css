@@ -155,6 +155,18 @@
   white-space: nowrap;
 }
 
+.resource-blocked-priority-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  margin-right: 0.35rem;
+}
+
 .resource-blocked-task-link {
   color: #22c55e;
   text-decoration: none;
@@ -617,6 +629,112 @@
 
 .qa-active-filter-badge button:hover {
   color: #16a34a;
+}
+
+/* In QC 15+ days: clickable count, expand to list */
+.qa-in-qc-15-section {
+  margin-bottom: 1rem;
+}
+
+.qa-in-qc-15-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: var(--bg-secondary, #1e293b);
+  border: 1px solid var(--border, #334155);
+  border-radius: 8px;
+  color: var(--text-primary, #f1f5f9);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.qa-in-qc-15-trigger:hover {
+  border-color: var(--accent-blue, #3b82f6);
+  background: rgba(59, 130, 246, 0.08);
+}
+
+.qa-in-qc-15-label {
+  font-weight: 500;
+}
+
+.qa-in-qc-15-count {
+  font-weight: 600;
+  color: var(--accent-amber, #f59e0b);
+  padding: 0.15rem 0.5rem;
+  background: rgba(245, 158, 11, 0.2);
+  border-radius: 6px;
+}
+
+.qa-in-qc-15-list-wrap {
+  margin-top: 0.5rem;
+  padding: 1rem;
+  background: var(--bg-secondary, #1e293b);
+  border: 1px solid var(--border, #334155);
+  border-radius: 8px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.qa-in-qc-15-none {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted, #94a3b8);
+}
+
+.qa-in-qc-15-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.qa-in-qc-15-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--border, #334155);
+  font-size: 0.875rem;
+}
+
+.qa-in-qc-15-item:last-child {
+  border-bottom: none;
+}
+
+.qa-in-qc-15-item a {
+  color: var(--accent-blue, #3b82f6);
+  text-decoration: none;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.qa-in-qc-15-item a:hover {
+  text-decoration: underline;
+}
+
+.qa-in-qc-15-meta {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-muted, #94a3b8);
+}
+
+.qa-in-qc-15-pill {
+  flex-shrink: 0;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.qa-in-qc-15-days {
+  flex-shrink: 0;
+  font-weight: 600;
+  color: var(--accent-amber, #f59e0b);
 }
 
 /* Tickets Section */
@@ -1516,9 +1634,61 @@
   min-width: 140px;
 }
 
+.calendar-priority-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+}
+
+.calendar-priority-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+}
+
 .qa-calendar-cell {
   min-width: 120px;
   vertical-align: top;
+}
+
+.qa-calendar-cell-task {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-right: 0.35rem;
+  margin-bottom: 0.2rem;
+}
+
+.qa-calendar-cell-task + .qa-calendar-cell-task {
+  margin-top: 0.15rem;
+}
+
+.qa-calendar-cell-priority-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.12rem 0.35rem;
+  border-radius: 3px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+/* Ensure calendar day cell labels and priority pills are visible (weekly/monthly) */
+.dev-planning-calendar-view .dev-planning-calendar-grid td.cell-hours .labels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.35rem;
+  align-items: center;
+  margin-top: 0.2rem;
 }
 
 .qa-calendar-item {

@@ -34,11 +34,14 @@ class PMApiClient:
         self.max_retries = PM_API_MAX_RETRIES
         self.retry_delay = PM_API_RETRY_DELAY
         
-    def fetch_tickets(self, **kwargs) -> Tuple[bool, Optional[List[Dict]], str]:
+    def fetch_tickets(self, ticket_id: Optional[int] = None, **kwargs) -> Tuple[bool, Optional[List[Dict]], str]:
         """
-        Fetch ticket data from PM API
+        Fetch ticket data from PM API.
+        If ticket_id is provided, pass it as a query param so the API may return only that ticket (faster).
+        Response is always filtered to that ticket when ticket_id is set.
         
         Args:
+            ticket_id: Optional single ticket to fetch (sends TicketNumber/ticketId query param if supported).
             **kwargs: Additional query parameters to pass to API
             
         Returns:
@@ -54,14 +57,19 @@ class PMApiClient:
             "authID": self.api_key,
             "Accept": "application/json",
         }
-        
+        params = dict(kwargs)
+        if ticket_id is not None:
+            # Many PM APIs support filtering by ticket; try common param names
+            if "TicketNumber" not in params and "ticketId" not in params and "ticket_id" not in params:
+                params["TicketNumber"] = ticket_id
+
         last_error = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                logger.info(f"Fetching PM tickets from API (attempt {attempt}/{self.max_retries})")
+                logger.info(f"Fetching PM tickets from API (attempt {attempt}/{self.max_retries})" + (f" ticket_id={ticket_id}" if ticket_id else ""))
                 response = requests.get(
                     self.api_url,
-                    params=kwargs,
+                    params=params,
                     timeout=self.timeout,
                     headers=headers
                 )
@@ -73,6 +81,15 @@ class PMApiClient:
                     tickets = self._parse_response(data)
                     
                     if tickets is not None:
+                        if ticket_id is not None:
+                            # Keep only the requested ticket (API may still return all)
+                            def _tid(t):
+                                v = t.get("ticket_id") or t.get("id") or t.get("TicketNumber") or t.get("ticket_number")
+                                try:
+                                    return int(v) == int(ticket_id)
+                                except (TypeError, ValueError):
+                                    return v == ticket_id
+                            tickets = [t for t in tickets if _tid(t)]
                         logger.info(f"Successfully fetched {len(tickets)} tickets from API")
                         return True, tickets, f"Fetched {len(tickets)} tickets"
                     else:
@@ -212,7 +229,7 @@ class PMApiClient:
             'backend_developer': ['backenddeveloper', 'backend_developer', 'backend', 'backend_dev', 'backend_assigned'],
             'frontend_developer': ['frontenddeveloper', 'frontend_developer', 'frontend', 'frontend_dev', 'frontend_assigned'],
             'qc_tester': ['qctester', 'qc_tester', 'qc', 'tester', 'qa', 'qa_tester'],
-            'eta': ['eta', 'due_date', 'deadline', 'expected_completion'],
+            'eta': ['eta', 'due_date', 'deadline', 'expected_completion', 'expectedcompletiondate', 'expected_completion_date', 'targetdate', 'target_date', 'completiondate', 'completion_date', 'targetcompletiondate'],
             'current_assignee': ['currentassignee', 'current_assignee', 'assignee', 'assigned_to', 'owner'],
             'dev_estimate_hours': ['devestimatedhours', 'dev_estimate_hours', 'dev_estimate', 'development_estimate', 'estimate_hours', 'dev_estimate_time'],
             'actual_dev_hours': ['actualdevhours', 'actual_dev_hours', 'actual_development', 'dev_actual', 'development_spent', 'actual_hours'],
@@ -244,11 +261,17 @@ class PMApiClient:
                         mapped[db_field] = value
                         break
             
-            # Fallback: API often uses PascalCase (e.g. "Priority") – ensure we capture it
+            # Fallback: API often uses PascalCase – ensure we capture common fields
             if 'priority' not in mapped and 'Priority' in ticket:
                 val = ticket.get('Priority')
                 if val is not None and str(val).strip():
                     mapped['priority'] = str(val).strip()
+            if 'eta' not in mapped:
+                for pascal in ('ETA', 'ExpectedCompletionDate', 'TargetDate', 'DueDate', 'CompletionDate', 'ExpectedCompletion'):
+                    val = ticket.get(pascal)
+                    if val is not None and (isinstance(val, (str, datetime)) or (isinstance(val, (int, float)) and val)):
+                        mapped['eta'] = val
+                        break
             
             if mapped:
                 mapped_tickets.append(mapped)

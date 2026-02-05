@@ -52,14 +52,40 @@ def parse_field_value(value, field_type='str'):
             return float(value)
         elif field_type == 'datetime':
             if isinstance(value, str):
-                # Try common date formats
-                for fmt in ['%Y-%m-%d', '%d-%m-%Y', '%Y-%m-%d %H:%M:%S', '%d-%m-%Y %H:%M:%S']:
+                s = value.strip()
+                if not s:
+                    return None
+                # ISO format (e.g. from PM API: 2026-02-15T00:00:00 or 2026-02-15T00:00:00.000Z)
+                if 'T' in s:
                     try:
-                        return datetime.strptime(value, fmt)
+                        normalized = s.replace('Z', '+00:00')
+                        dt = datetime.fromisoformat(normalized)
+                        return dt.replace(tzinfo=None) if dt.tzinfo else dt
+                    except ValueError:
+                        pass
+                # Common date formats (including PM/Excel-style: dd-mm-yyyy, dd/mm/yyyy, etc.)
+                for fmt in [
+                    '%Y-%m-%d', '%d-%m-%Y', '%Y-%m-%d %H:%M:%S', '%d-%m-%Y %H:%M:%S',
+                    '%d/%m/%Y', '%m/%d/%Y', '%Y/%m/%d', '%d/%m/%Y %H:%M:%S',
+                    '%d-%b-%Y', '%d %b %Y', '%b %d %Y',  # 15-Feb-2026, 15 Feb 2026
+                ]:
+                    try:
+                        return datetime.strptime(s, fmt)
                     except ValueError:
                         continue
             elif isinstance(value, datetime):
                 return value
+            elif isinstance(value, (int, float)):
+                # Excel serial date or Unix timestamp (seconds or ms)
+                try:
+                    if value > 1e10:  # milliseconds
+                        return datetime.utcfromtimestamp(value / 1000.0).replace(tzinfo=None)
+                    elif value > 1e9:  # seconds
+                        return datetime.utcfromtimestamp(value).replace(tzinfo=None)
+                    elif value >= 1:  # Excel serial (days since 1899-12-30)
+                        return (datetime(1899, 12, 30) + timedelta(days=float(value))).replace(tzinfo=None)
+                except (ValueError, OSError):
+                    pass
             return None
         else:  # str
             return str(value).strip() if value else None

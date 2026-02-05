@@ -3,7 +3,7 @@ from models import (
     Base, Bug, TestPlan, TestRun, TestCase, TestResult, TicketTracking,
     Employee, Timesheet, EmployeeGoal, EmployeeReview, KPI, KPIRating,
     TicketStatusHistory, BugStatusHistory,
-    EnhancedTimesheet, LeaveEntry, TimeSheetSubmission, TimeSheetEntry, TimeSheetApprovalLog, PlannedTask, WeeklyPlan
+    EnhancedTimesheet, LeaveEntry, TimeSheetSubmission, TimeSheetEntry, TimeSheetEntryReview, TimeSheetApprovalLog, PlannedTask, WeeklyPlan
 )
 
 print("Creating tables...")
@@ -26,6 +26,7 @@ print("  - EnhancedTimesheet (Google Sheets timesheet with leave/task details)")
 print("  - LeaveEntry (Leave tracking)")
 print("  - TimeSheetSubmission (Weekly submissions, approvals)")
 print("  - TimeSheetEntry (Manual timesheet entries)")
+print("  - TimeSheetEntryReview (Per-entry approval/revision)")
 print("  - TimeSheetApprovalLog (Approval audit log)")
 print("  - PlannedTask (Task planning by leads)")
 print("  - WeeklyPlan (Weekly ticket assignments)")

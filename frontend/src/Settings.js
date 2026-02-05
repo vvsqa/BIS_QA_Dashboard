@@ -114,7 +114,7 @@ function Settings() {
               type="email"
               value={adminEmail}
               onChange={(e) => setAdminEmail(e.target.value)}
-              placeholder="admin@company.com"
+              placeholder="e.g. admin@techversantinfotech.com (use a dedicated email, not a manager user)"
               style={{ width: '100%', padding: '0.5rem' }}
             />
           </div>

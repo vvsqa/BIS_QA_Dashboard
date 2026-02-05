@@ -13,7 +13,9 @@ from sqlalchemy import text
 from database import engine
 from models import Base, User, AdminConfig, Employee
 
-ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "vishnu.vs@techversantinfotech.com")
+# Use a dedicated admin email so it does not conflict with manager/user logins (e.g. vishnu.vs@...).
+# Set ADMIN_EMAIL in env to override (e.g. for existing deployments).
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@techversantinfotech.com")
 ADMIN_DEFAULT_PASSWORD = os.getenv("ADMIN_DEFAULT_PASSWORD", "admin123")
 
 

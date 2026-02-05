@@ -14,6 +14,8 @@ import shutil
 import time
 import logging
 
+logger = logging.getLogger(__name__)
+
 # Load .env from backend directory so PM_API_KEY etc. are available
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
@@ -7019,7 +7021,7 @@ def get_status_history_summary(
 def generate_weekly_report(
     date: str = Query(None, description="Reference date (YYYY-MM-DD) for the week. Defaults to current week."),
     download: bool = Query(True, description="If true, returns the PDF file. If false, returns report data as JSON."),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user_optional),
 ):
     """Generate weekly QA report for the specified week"""
     from weekly_report import get_week_dates, get_weekly_data, generate_pdf_report
@@ -7067,7 +7069,7 @@ def generate_weekly_report(
 @app.get("/reports/weekly/preview")
 def preview_weekly_report(
     date: str = Query(None, description="Reference date (YYYY-MM-DD) for the week"),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user_optional),
 ):
     """Get preview data for weekly report without generating PDF"""
     from weekly_report import get_week_dates, get_weekly_data
@@ -7092,7 +7094,7 @@ def preview_weekly_report(
 @app.get("/reports/ticket/{ticket_id}")
 def generate_ticket_report_endpoint(
     ticket_id: int,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user_optional),
 ):
     """Generate PDF report for a specific ticket with all its data"""
     from ticket_report import get_ticket_data, generate_ticket_pdf
@@ -7132,7 +7134,7 @@ def generate_weekly_report_v2(
     date: str = Query(None, description="Reference date (YYYY-MM-DD) for the week"),
     project: str = Query(None, description="Project/Client name for the cover page"),
     last7days: bool = Query(True, description="If true, show last 7 days. If false, show Mon-Fri week."),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user_optional),
 ):
     """Generate comprehensive multi-page QA weekly report (V2)"""
     from qa_weekly_report_v2 import get_week_dates, get_comprehensive_data, generate_comprehensive_report
@@ -7171,7 +7173,7 @@ def generate_weekly_report_v2(
 def preview_weekly_report_v2(
     date: str = Query(None, description="Reference date (YYYY-MM-DD) for the week"),
     last7days: bool = Query(True, description="If true, show last 7 days. If false, show Mon-Fri week."),
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(get_current_user_optional),
 ):
     """Get preview data for the comprehensive weekly report"""
     from qa_weekly_report_v2 import get_week_dates, get_comprehensive_data
@@ -8215,7 +8217,14 @@ def get_timesheet_week(
     """Return timesheet entries and aggregated hours for the week."""
     db: Session = SessionLocal()
     try:
-        target_date = date and datetime.fromisoformat(date).date() or datetime.utcnow().date()
+        # Parse date safely (YYYY-MM-DD); parameter 'date' is the query string
+        if date and str(date).strip():
+            try:
+                target_date = datetime.fromisoformat(str(date).strip()[:10]).date()
+            except (ValueError, TypeError):
+                target_date = datetime.utcnow().date()
+        else:
+            target_date = datetime.utcnow().date()
         ws, we = _get_week_boundaries(target_date)
 
         # Determine which employee to fetch for
@@ -8228,7 +8237,10 @@ def get_timesheet_week(
             target_employee_id = current_user.get("employee_id")
 
         if not target_employee_id:
-            raise HTTPException(status_code=400, detail="employee_id is required for this user")
+            raise HTTPException(
+                status_code=400,
+                detail="Your account is not linked to an employee. Ask an admin to set your employee ID in Settings, or use a manager/lead account linked to an employee to view timesheets."
+            )
 
         # Get enhanced timesheet entries (synced) and manual entries
         enhanced_entries = db.query(EnhancedTimesheet).filter(
@@ -8333,6 +8345,12 @@ def get_timesheet_week(
             } if submission else None,
             "entries": entries,
         }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.exception("Timesheet week failed")
+        raise HTTPException(status_code=500, detail=f"Timesheet error: {str(e)}. Ensure DB tables exist: run backend create_tables.py (includes timesheet_entry_reviews).")
     finally:
         db.close()
 
@@ -9797,6 +9815,12 @@ class QAPlanningTaskCreate(BaseModel):
     justification: Optional[str] = None
 
 
+class QAPlanningTaskUpdate(BaseModel):
+    start_date: Optional[date] = None
+    total_hours: Optional[float] = None
+    max_hours_per_day: Optional[float] = None
+
+
 @app.get("/qa-planning/week/{week_start_str}")
 def qa_planning_get_week(
     week_start_str: str,
@@ -9855,30 +9879,65 @@ def qa_planning_get_week(
             })
 
         tasks_list = []
+        seen_task_ids = set()
+
+        def append_task(t, allocs_to_show):
+            alloc_sum = sum(a.hours or 0 for a in allocs_to_show)
+            display_hours = (t.total_planned_hours or 0) if (t.total_planned_hours and t.total_planned_hours > 0) else alloc_sum
+            tasks_list.append({
+                "id": t.id,
+                "employee_name": t.employee_name,
+                "employee_id": t.employee_id,
+                "ticket_id": t.ticket_id,
+                "ticket_title": t.ticket_title,
+                "ticket_priority": t.ticket_priority,
+                "generic_category": t.generic_category,
+                "activity_description": t.activity_description,
+                "start_date": t.start_date.isoformat(),
+                "end_date": t.end_date.isoformat() if t.end_date else None,
+                "total_planned_hours": round(display_hours, 1),
+                "created_by": t.created_by,
+                "allocations": [{"date": a.allocation_date.isoformat(), "hours": a.hours} for a in allocs_to_show],
+                "spillover": (pw is None) or (t.planning_week_id != pw.id),
+            })
+
         if pw:
             tasks = db.query(QAPlannedTask).filter(
                 QAPlannedTask.planning_week_id == pw.id,
                 QAPlannedTask.status == "active",
             ).order_by(QAPlannedTask.employee_name, QAPlannedTask.start_date).all()
             for t in tasks:
+                seen_task_ids.add(t.id)
                 allocs = db.query(QAPlannedAllocation).filter(QAPlannedAllocation.task_id == t.id).order_by(QAPlannedAllocation.allocation_date).all()
-                alloc_sum = sum(a.hours or 0 for a in allocs)
-                display_hours = (t.total_planned_hours or 0) if (t.total_planned_hours and t.total_planned_hours > 0) else alloc_sum
-                tasks_list.append({
-                    "id": t.id,
-                    "employee_name": t.employee_name,
-                    "employee_id": t.employee_id,
-                    "ticket_id": t.ticket_id,
-                    "ticket_title": t.ticket_title,
-                    "ticket_priority": t.ticket_priority,
-                    "generic_category": t.generic_category,
-                    "activity_description": t.activity_description,
-                    "start_date": t.start_date.isoformat(),
-                    "end_date": t.end_date.isoformat() if t.end_date else None,
-                    "total_planned_hours": round(display_hours, 1),
-                    "created_by": t.created_by,
-                    "allocations": [{"date": a.allocation_date.isoformat(), "hours": a.hours} for a in allocs],
-                })
+                append_task(t, allocs)
+
+        # Include spillover tasks: tasks that have allocations in this week but belong to another planning week (active only)
+        spillover_allocs = (
+            db.query(QAPlannedAllocation.task_id)
+            .join(QAPlannedTask, QAPlannedTask.id == QAPlannedAllocation.task_id)
+            .filter(
+                QAPlannedTask.status == "active",
+                QAPlannedAllocation.allocation_date >= week_start,
+                QAPlannedAllocation.allocation_date <= week_end,
+            )
+            .distinct()
+            .all()
+        )
+        spillover_task_ids = [tid for (tid,) in spillover_allocs if tid not in seen_task_ids]
+        if spillover_task_ids:
+            spillover_tasks = db.query(QAPlannedTask).filter(
+                QAPlannedTask.id.in_(spillover_task_ids),
+                QAPlannedTask.status == "active",
+            ).all()
+            for t in spillover_tasks:
+                allocs_in_week = db.query(QAPlannedAllocation).filter(
+                    QAPlannedAllocation.task_id == t.id,
+                    QAPlannedAllocation.allocation_date >= week_start,
+                    QAPlannedAllocation.allocation_date <= week_end,
+                ).order_by(QAPlannedAllocation.allocation_date).all()
+                if allocs_in_week:
+                    seen_task_ids.add(t.id)
+                    append_task(t, allocs_in_week)
 
         return {
             "week_start": week_start.isoformat(),
@@ -10039,6 +10098,30 @@ def qa_planning_tickets(
         db.close()
 
 
+def _qa_planning_ticket_payload(t):
+    """Build the JSON payload for a ticket in QA add-task (shared by get and refresh)."""
+    if not t:
+        return None
+    qa_est = t.qa_estimate_hours or 0
+    qa_actual = t.actual_qa_hours or 0
+    remaining = max(0, qa_est - qa_actual) if qa_est else None
+    eta_val = None
+    if getattr(t, "eta", None):
+        eta_val = t.eta.isoformat() if hasattr(t.eta, "isoformat") else str(t.eta)
+    return {
+        "ticket_id": t.ticket_id,
+        "title": t.title,
+        "status": t.status,
+        "priority": t.priority,
+        "qc_tester": t.qc_tester,
+        "qa_estimate_hours": t.qa_estimate_hours,
+        "actual_qa_hours": t.actual_qa_hours,
+        "remaining_qa_hours": remaining,
+        "dev_estimate_hours": t.dev_estimate_hours,
+        "eta": eta_val,
+    }
+
+
 @app.get("/qa-planning/ticket/{ticket_id}")
 def qa_planning_get_ticket(ticket_id: int):
     """Get ticket details for QA add-task. Returns null if not in QC statuses."""
@@ -10048,22 +10131,54 @@ def qa_planning_get_ticket(ticket_id: int):
             TicketTracking.ticket_id == ticket_id,
             TicketTracking.status.in_(QA_QC_STATUSES),
         ).first()
-        if not t:
-            return None
-        qa_est = t.qa_estimate_hours or 0
-        qa_actual = t.actual_qa_hours or 0
-        remaining = max(0, qa_est - qa_actual) if qa_est else None
-        return {
-            "ticket_id": t.ticket_id,
-            "title": t.title,
-            "status": t.status,
-            "priority": t.priority,
-            "qc_tester": t.qc_tester,
-            "qa_estimate_hours": t.qa_estimate_hours,
-            "actual_qa_hours": t.actual_qa_hours,
-            "remaining_qa_hours": remaining,
-            "dev_estimate_hours": t.dev_estimate_hours,
-        }
+        return _qa_planning_ticket_payload(t)
+    finally:
+        db.close()
+
+
+@app.post("/qa-planning/ticket/{ticket_id}/refresh")
+def qa_planning_refresh_ticket(ticket_id: str):
+    """Fetch this ticket from PM API only, upsert into DB, return ticket details for QA add-task. Fast single-ticket refresh.
+    Returns ticket data even when not in QC status (with in_qc_status=false) so Add Task can show details and warnings."""
+    try:
+        tid = int(ticket_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid ticket ID")
+    db = SessionLocal()
+    try:
+        client = PMApiClient()
+        success, tickets, message = client.fetch_tickets(ticket_id=tid)
+        if success and tickets:
+            try:
+                mapped = client.map_api_fields(tickets)
+                upsert_tickets(db, mapped, sync_source="api")
+            except Exception as e:
+                logger.exception(f"Refresh ticket {tid}: map/upsert failed")
+                raise HTTPException(status_code=500, detail=f"Failed to update ticket from PM: {str(e)}")
+        elif not success:
+            logger.warning(f"Refresh ticket {tid}: API returned success=False - {message}")
+        # Prefer ticket in QC statuses; if not found, return ticket by id anyway so UI can show data and status warning
+        t_qc = db.query(TicketTracking).filter(
+            TicketTracking.ticket_id == tid,
+            TicketTracking.status.in_(QA_QC_STATUSES),
+        ).first()
+        if t_qc:
+            payload = _qa_planning_ticket_payload(t_qc)
+            if payload:
+                payload["in_qc_status"] = True
+            return payload
+        t_any = db.query(TicketTracking).filter(TicketTracking.ticket_id == tid).first()
+        if t_any:
+            payload = _qa_planning_ticket_payload(t_any)
+            if payload:
+                payload["in_qc_status"] = False
+            return payload
+        return None
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Refresh ticket {tid} failed")
+        raise HTTPException(status_code=500, detail=f"Refresh failed: {str(e)}")
     finally:
         db.close()
 
@@ -10248,12 +10363,104 @@ def qa_planning_delete_task(
         task = db.query(QAPlannedTask).filter(QAPlannedTask.id == task_id).first()
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
-        if not can_manage_tasks_for(db, current_user, task.employee_id):
-            raise HTTPException(status_code=403, detail="You can only remove tasks for your reportees")
+        _emp = db.query(Employee).filter(Employee.name == task.employee_name).first()
+        task_employee_id = (task.employee_id or (_emp.employee_id if _emp else None)) or ""
+        if not can_manage_tasks_for(db, current_user, task_employee_id):
+            raise HTTPException(status_code=403, detail="You can only remove tasks for employees you manage")
+        pw = db.query(QAPlanningWeek).filter(QAPlanningWeek.id == task.planning_week_id).first()
+        if pw and getattr(pw, "state", None) in ("approved", "locked"):
+            raise HTTPException(status_code=403, detail="Cannot delete task; plan is approved or locked")
         db.query(QAPlannedAllocation).filter(QAPlannedAllocation.task_id == task_id).delete()
         task.status = "removed"
         db.commit()
         return {"success": True}
+    finally:
+        db.close()
+
+
+def _qa_planning_update_task_impl(task_id: int, body: QAPlanningTaskUpdate, current_user: dict, db: Session):
+    """Shared logic for PATCH/PUT update of a QA planned task."""
+    role = current_user.get("role", "")
+    if not _planning_can_edit(role):
+        raise HTTPException(status_code=403, detail="Only Manager or Lead can edit tasks")
+    task = db.query(QAPlannedTask).filter(QAPlannedTask.id == task_id, QAPlannedTask.status == "active").first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    _emp = db.query(Employee).filter(Employee.name == task.employee_name).first()
+    task_employee_id = (task.employee_id or (_emp.employee_id if _emp else None)) or ""
+    if not can_manage_tasks_for(db, current_user, task_employee_id):
+        raise HTTPException(status_code=403, detail="You can only edit tasks for employees you manage")
+    pw = db.query(QAPlanningWeek).filter(QAPlanningWeek.id == task.planning_week_id).first()
+    if not pw:
+        raise HTTPException(status_code=400, detail="Planning week not found")
+    if getattr(pw, "state", None) in ("approved", "locked"):
+        raise HTTPException(status_code=403, detail="Cannot edit task; plan is approved or locked")
+    week_start = pw.week_start
+    week_end = week_start + timedelta(days=4)
+    start_date = body.start_date if body.start_date is not None else task.start_date
+    total_hours = body.total_hours if body.total_hours is not None else task.total_planned_hours
+    max_hours_per_day = body.max_hours_per_day if body.max_hours_per_day is not None else 8.0
+    if total_hours is None or total_hours < 0.5:
+        raise HTTPException(status_code=400, detail="Duration must be at least 0.5 hours")
+    # Delete existing allocations first so simulate sees correct free capacity (otherwise current task's hours are double-counted)
+    db.query(QAPlannedAllocation).filter(QAPlannedAllocation.task_id == task_id).delete()
+    db.flush()
+    try:
+        simulate_qa_allocation_distribution(
+            task.employee_name, start_date, total_hours, week_start, week_end, db,
+            planning_week_id=pw.id, exclude_task_id=task_id, max_hours_per_day=max_hours_per_day
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    task.start_date = start_date
+    task.total_planned_hours = round(total_hours, 1)
+    create_qa_allocations_for_task(task.id, task.employee_name, start_date, task.total_planned_hours, db, max_hours_per_day)
+    alloc_sum = db.query(func.coalesce(func.sum(QAPlannedAllocation.hours), 0)).filter(QAPlannedAllocation.task_id == task.id).scalar()
+    last_date = db.query(func.max(QAPlannedAllocation.allocation_date)).filter(QAPlannedAllocation.task_id == task.id).scalar()
+    task.total_planned_hours = round(float(alloc_sum or 0), 1)
+    if last_date:
+        task.end_date = last_date
+    task.updated_by = _get_user_display_name(db, current_user)
+    db.commit()
+    db.refresh(task)
+    allocs = db.query(QAPlannedAllocation).filter(QAPlannedAllocation.task_id == task.id).order_by(QAPlannedAllocation.allocation_date).all()
+    return {
+        "success": True,
+        "task": {
+            "id": task.id,
+            "employee_name": task.employee_name,
+            "start_date": task.start_date.isoformat() if task.start_date else None,
+            "end_date": task.end_date.isoformat() if task.end_date else None,
+            "total_planned_hours": task.total_planned_hours,
+            "allocations": [{"date": a.allocation_date.isoformat(), "hours": a.hours} for a in allocs],
+        }
+    }
+
+
+@app.patch("/qa-planning/tasks/{task_id}")
+def qa_planning_update_task_patch(
+    task_id: int,
+    body: QAPlanningTaskUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update a QA planned task (start date, total hours). Recreates allocations. Only Manager/Lead. Blocked if week approved/locked."""
+    db = SessionLocal()
+    try:
+        return _qa_planning_update_task_impl(task_id, body, current_user, db)
+    finally:
+        db.close()
+
+
+@app.put("/qa-planning/tasks/{task_id}")
+def qa_planning_update_task_put(
+    task_id: int,
+    body: QAPlanningTaskUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update a QA planned task (same as PATCH). PUT supported for compatibility where PATCH is blocked."""
+    db = SessionLocal()
+    try:
+        return _qa_planning_update_task_impl(task_id, body, current_user, db)
     finally:
         db.close()
 
@@ -10306,9 +10513,16 @@ def qa_planning_calendar(
             QAPlannedAllocation.allocation_date >= start_range,
             QAPlannedAllocation.allocation_date <= end_range,
         ).all()
+        # Resolve priority from TicketTracking when task.ticket_priority is null (e.g. older tasks)
+        ticket_ids_qa = list({t.ticket_id for t, _ in tasks if t.ticket_id})
+        ticket_priority_map = {}
+        if ticket_ids_qa:
+            tkts = db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(ticket_ids_qa)).all()
+            ticket_priority_map = {tk.ticket_id: tk.priority for tk in tkts if getattr(tk, "priority", None)}
         for t, a in tasks:
             key = (t.ticket_id and f"#{t.ticket_id}") or (t.generic_category or "")
             category = "Ticket" if t.ticket_id else (t.generic_category or "Miscellaneous")
+            priority = t.ticket_priority or (ticket_priority_map.get(t.ticket_id) if t.ticket_id else None)
             tasks_by_emp_date[t.employee_name][a.allocation_date]["hours"] += a.hours
             cell_key = (t.employee_name, a.allocation_date)
             if key and key not in seen_keys[cell_key]:
@@ -10316,7 +10530,7 @@ def qa_planning_calendar(
                 tasks_by_emp_date[t.employee_name][a.allocation_date]["items"].append({
                     "text": key,
                     "ticket_id": t.ticket_id,
-                    "ticket_priority": t.ticket_priority,
+                    "ticket_priority": priority,
                     "category": category,
                     "over_estimate": False,
                 })
@@ -10344,6 +10558,20 @@ def qa_planning_calendar(
         except Exception:
             # If EnhancedTimesheet table isn't populated or other issues occur, continue without actuals
             times_by_emp_date = defaultdict(lambda: defaultdict(lambda: {"hours": 0, "items": []}))
+
+        # Add priorities for ticket_ids that appear only in actual (timesheet) items
+        actual_only_ids = set()
+        for _en, by_date in times_by_emp_date.items():
+            for _dt, data in by_date.items():
+                for it in data.get("items", []):
+                    tid = it.get("ticket_id")
+                    if tid and tid not in ticket_priority_map:
+                        actual_only_ids.add(tid)
+        if actual_only_ids:
+            tkts_extra = db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(actual_only_ids)).all()
+            for tk in tkts_extra:
+                if getattr(tk, "priority", None):
+                    ticket_priority_map[tk.ticket_id] = tk.priority
 
         working_days_list = get_working_days_list(start_range, end_range, db)
         capacity_hours = len(working_days_list) * 8
@@ -10377,7 +10605,17 @@ def qa_planning_calendar(
                 cell["items"] = tasks_by_emp_date[e.name][d]["items"][:5]
                 # Actual (timesheet) hours and ticket items for the date (if available)
                 actual_h = times_by_emp_date.get(e.name, {}).get(d, {}).get("hours", 0)
-                actual_items = times_by_emp_date.get(e.name, {}).get(d, {}).get("items", [])[:5]
+                raw_actual = times_by_emp_date.get(e.name, {}).get(d, {}).get("items", [])[:5]
+                # Enrich actual items with ticket_priority and text for calendar display
+                actual_items = []
+                for it in raw_actual:
+                    tid = it.get("ticket_id")
+                    priority = ticket_priority_map.get(tid) if tid else None
+                    item = dict(it)
+                    if tid:
+                        item["text"] = f"#{tid}"
+                        item["ticket_priority"] = priority
+                    actual_items.append(item)
                 cell["actual_hours"] = round(actual_h, 1)
                 cell["actual_items"] = actual_items
                 row["days"][d.isoformat()] = cell
@@ -10627,36 +10865,79 @@ def dev_planning_get_week(
                 "can_manage_tasks": can_manage,
             })
 
-        # Tasks and allocations for the week
+        # Tasks and allocations for the week (include spillover: tasks from other weeks with allocations in this week)
         tasks_list = []
+        seen_task_ids = set()
+
+        def append_dev_task(t, allocs_to_show):
+            tasks_list.append({
+                "id": t.id,
+                "employee_name": t.employee_name,
+                "employee_id": t.employee_id,
+                "ticket_id": t.ticket_id,
+                "ticket_title": t.ticket_title,
+                "ticket_priority": ticket_priority_map.get(t.ticket_id) if t.ticket_id else None,
+                "generic_category": t.generic_category,
+                "activity_description": t.activity_description,
+                "start_date": t.start_date.isoformat(),
+                "end_date": t.end_date.isoformat() if t.end_date else None,
+                "allocation_pct": t.allocation_pct,
+                "total_planned_hours": t.total_planned_hours,
+                "created_by": t.created_by,
+                "allocations": [{"date": a.allocation_date.isoformat(), "hours": a.hours} for a in allocs_to_show],
+                "spillover": (pw is None) or (t.planning_week_id != pw.id),
+            })
+
+        week_tasks = []
+        ticket_ids = []
         if pw:
-            tasks = db.query(DevPlannedTask).filter(
+            week_tasks = db.query(DevPlannedTask).filter(
                 DevPlannedTask.planning_week_id == pw.id,
                 DevPlannedTask.status == "active",
             ).order_by(DevPlannedTask.employee_name, DevPlannedTask.start_date).all()
-            ticket_ids = [t.ticket_id for t in tasks if t.ticket_id]
-            ticket_priority_map = {}
-            if ticket_ids:
-                tkts = db.query(TicketTracking.ticket_id, TicketTracking.priority).filter(TicketTracking.ticket_id.in_(ticket_ids)).all()
-                ticket_priority_map = {tk.ticket_id: tk.priority for tk in tkts if tk.priority}
-            for t in tasks:
-                allocs = db.query(DevPlannedAllocation).filter(DevPlannedAllocation.task_id == t.id).order_by(DevPlannedAllocation.allocation_date).all()
-                tasks_list.append({
-                    "id": t.id,
-                    "employee_name": t.employee_name,
-                    "employee_id": t.employee_id,
-                    "ticket_id": t.ticket_id,
-                    "ticket_title": t.ticket_title,
-                    "ticket_priority": ticket_priority_map.get(t.ticket_id) if t.ticket_id else None,
-                    "generic_category": t.generic_category,
-                    "activity_description": t.activity_description,
-                    "start_date": t.start_date.isoformat(),
-                    "end_date": t.end_date.isoformat() if t.end_date else None,
-                    "allocation_pct": t.allocation_pct,
-                    "total_planned_hours": t.total_planned_hours,
-                    "created_by": t.created_by,
-                    "allocations": [{"date": a.allocation_date.isoformat(), "hours": a.hours} for a in allocs],
-                })
+            for t in week_tasks:
+                seen_task_ids.add(t.id)
+            ticket_ids = [t.ticket_id for t in week_tasks if t.ticket_id]
+
+        # Spillover: tasks that have allocations in this week but belong to another planning week (active only)
+        spillover_allocs = (
+            db.query(DevPlannedAllocation.task_id)
+            .join(DevPlannedTask, DevPlannedTask.id == DevPlannedAllocation.task_id)
+            .filter(
+                DevPlannedTask.status == "active",
+                DevPlannedAllocation.allocation_date >= week_start,
+                DevPlannedAllocation.allocation_date <= week_end,
+            )
+            .distinct()
+            .all()
+        )
+        spillover_task_ids = [tid for (tid,) in spillover_allocs if tid not in seen_task_ids]
+        spillover_tasks = []
+        if spillover_task_ids:
+            spillover_tasks = db.query(DevPlannedTask).filter(
+                DevPlannedTask.id.in_(spillover_task_ids),
+                DevPlannedTask.status == "active",
+            ).all()
+            for t in spillover_tasks:
+                seen_task_ids.add(t.id)
+            ticket_ids = list(set(ticket_ids) | {t.ticket_id for t in spillover_tasks if t.ticket_id})
+
+        ticket_priority_map = {}
+        if ticket_ids:
+            tkts = db.query(TicketTracking.ticket_id, TicketTracking.priority).filter(TicketTracking.ticket_id.in_(ticket_ids)).all()
+            ticket_priority_map = {tk.ticket_id: tk.priority for tk in tkts if tk.priority}
+
+        for t in week_tasks:
+            allocs = db.query(DevPlannedAllocation).filter(DevPlannedAllocation.task_id == t.id).order_by(DevPlannedAllocation.allocation_date).all()
+            append_dev_task(t, allocs)
+        for t in spillover_tasks:
+            allocs_in_week = db.query(DevPlannedAllocation).filter(
+                DevPlannedAllocation.task_id == t.id,
+                DevPlannedAllocation.allocation_date >= week_start,
+                DevPlannedAllocation.allocation_date <= week_end,
+            ).order_by(DevPlannedAllocation.allocation_date).all()
+            if allocs_in_week:
+                append_dev_task(t, allocs_in_week)
 
         return {
             "week_start": week_start.isoformat(),
@@ -11057,6 +11338,10 @@ def dev_planning_update_task(
         task = db.query(DevPlannedTask).filter(DevPlannedTask.id == task_id).first()
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
+        _emp = db.query(Employee).filter(Employee.name == task.employee_name).first()
+        task_employee_id = (task.employee_id or (_emp.employee_id if _emp else None)) or ""
+        if not can_manage_tasks_for(db, current_user, task_employee_id):
+            raise HTTPException(status_code=403, detail="You can only edit tasks for employees you manage")
         pw = db.query(DevPlanningWeek).filter(DevPlanningWeek.id == task.planning_week_id).first()
         if pw and pw.state in ("approved", "locked"):
             raise HTTPException(status_code=403, detail="Cannot edit task; plan is approved or locked")
@@ -11105,8 +11390,19 @@ def dev_planning_delete_task(
         task = db.query(DevPlannedTask).filter(DevPlannedTask.id == task_id).first()
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
-        if task.start_date and task.start_date < date.today():
-            raise HTTPException(status_code=403, detail="Cannot delete task; past tasks cannot be edited")
+        _emp = db.query(Employee).filter(Employee.name == task.employee_name).first()
+        task_employee_id = (task.employee_id or (_emp.employee_id if _emp else None)) or ""
+        if not can_manage_tasks_for(db, current_user, task_employee_id):
+            raise HTTPException(status_code=403, detail="You can only delete tasks for employees you manage")
+        today = date.today()
+        # Block delete only if task is entirely in the past (no allocation on or after today); allow spillover tasks with future work
+        if task.start_date and task.start_date < today:
+            has_future_allocation = db.query(DevPlannedAllocation).filter(
+                DevPlannedAllocation.task_id == task_id,
+                DevPlannedAllocation.allocation_date >= today,
+            ).first() is not None
+            if not has_future_allocation:
+                raise HTTPException(status_code=403, detail="Cannot delete task; past tasks cannot be edited")
         pw = db.query(DevPlanningWeek).filter(DevPlanningWeek.id == task.planning_week_id).first()
         if pw and pw.state in ("approved", "locked"):
             raise HTTPException(status_code=403, detail="Cannot delete task; plan is approved or locked")

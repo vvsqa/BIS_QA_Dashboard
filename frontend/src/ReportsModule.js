@@ -6,7 +6,8 @@ import { apiFetch, API_BASE } from './api';
 import { useAuth } from './AuthContext';
 import './dashboard.css';
 
-const BACKEND_URL = API_BASE;
+// Ensure no double slash when API_BASE has trailing slash
+const BACKEND_URL = (API_BASE || '').replace(/\/$/, '');
 
 function ReportsModule() {
   const navigate = useNavigate();
@@ -54,32 +55,37 @@ function ReportsModule() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  // Fetch preview data
+  // Fetch preview data (reports are public; works with or without login)
   const fetchPreview = async () => {
     setLoading(true);
     setError('');
     try {
       const useLast7Days = dateRangeType === 'last7days';
-      let url;
-      
-      if (reportType === 'v2') {
-        url = `${BACKEND_URL}/reports/weekly-v2/preview?last7days=${useLast7Days}`;
-        if (selectedDate) {
-          url += `&date=${selectedDate}`;
-        }
-      } else {
-        url = selectedDate 
-          ? `${BACKEND_URL}/reports/weekly/preview?date=${selectedDate}`
-          : `${BACKEND_URL}/reports/weekly/preview`;
+      const base = (BACKEND_URL || '').replace(/\/$/, '');
+      let path = reportType === 'v2'
+        ? `/reports/weekly-v2/preview?last7days=${useLast7Days}${selectedDate ? `&date=${selectedDate}` : ''}`
+        : (selectedDate ? `/reports/weekly/preview?date=${selectedDate}` : '/reports/weekly/preview');
+      const requestUrl = base ? `${base}${path}` : path;
+      const headers = { 'Content-Type': 'application/json' };
+      const token = localStorage.getItem('qa_dashboard_token');
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const response = await fetch(requestUrl, { headers });
+      if (!response.ok) {
+        let msg = 'Failed to fetch report preview';
+        try {
+          const j = await response.json();
+          if (j?.detail) msg = typeof j.detail === 'string' ? j.detail : (Array.isArray(j.detail) ? j.detail.map((d) => d.msg || JSON.stringify(d)).join('; ') : String(j.detail));
+        } catch (_) {}
+        throw new Error(msg);
       }
-      
-      const response = await fetch(url);
-      if (!response.ok) throw new Error('Failed to fetch report preview');
-      
       const data = await response.json();
       setPreviewData(data);
     } catch (err) {
-      setError(err.message);
+      const msg = err?.message || '';
+      const isNetworkError = msg === 'Failed to fetch' || msg.includes('NetworkError') || err?.name === 'TypeError';
+      setError(isNetworkError
+        ? 'Backend not reachable. Start it with: cd backend && python -m uvicorn main:app --reload (or run start-backend.bat). In dev, leave REACT_APP_API_BASE empty so the proxy is used.'
+        : msg || 'Failed to fetch report preview');
     } finally {
       setLoading(false);
     }
@@ -91,30 +97,28 @@ function ReportsModule() {
     setError('');
     try {
       const useLast7Days = dateRangeType === 'last7days';
-      let url;
-      
-      if (reportType === 'v2') {
-        url = `${BACKEND_URL}/reports/weekly-v2?last7days=${useLast7Days}`;
-        if (selectedDate) {
-          url += `&date=${selectedDate}`;
-        }
-        if (projectName) {
-          url += `&project=${encodeURIComponent(projectName)}`;
-        }
-      } else {
-        url = selectedDate 
-          ? `${BACKEND_URL}/reports/weekly?date=${selectedDate}`
-          : `${BACKEND_URL}/reports/weekly`;
+      const base = (BACKEND_URL || '').replace(/\/$/, '');
+      let path = reportType === 'v2'
+        ? `/reports/weekly-v2?last7days=${useLast7Days}${selectedDate ? `&date=${selectedDate}` : ''}${projectName ? `&project=${encodeURIComponent(projectName)}` : ''}`
+        : (selectedDate ? `/reports/weekly?date=${selectedDate}` : '/reports/weekly');
+      const requestUrl = base ? `${base}${path}` : path;
+      const headers = {};
+      const token = localStorage.getItem('qa_dashboard_token');
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      const response = await fetch(requestUrl, { headers });
+      if (!response.ok) {
+        let msg = 'Failed to generate report';
+        try {
+          const j = await response.json();
+          if (j?.detail) msg = typeof j.detail === 'string' ? j.detail : String(j.detail);
+        } catch (_) {}
+        throw new Error(msg);
       }
-      
-      const response = await apiFetch(url);
-      if (!response.ok) throw new Error('Failed to generate report');
-      
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = downloadUrl;
-      const filename = reportType === 'v2' 
+      const filename = reportType === 'v2'
         ? `QA_Weekly_Report_V2_${previewData?.week_start || 'report'}.pdf`
         : `QA_Weekly_Report_${previewData?.week_start || 'report'}.pdf`;
       a.download = filename;
@@ -122,9 +126,12 @@ function ReportsModule() {
       a.click();
       window.URL.revokeObjectURL(downloadUrl);
       a.remove();
-
     } catch (err) {
-      setError(err.message);
+      const msg = err?.message || '';
+      const isNetworkError = msg === 'Failed to fetch' || msg.includes('NetworkError') || err?.name === 'TypeError';
+      setError(isNetworkError
+        ? 'Backend not reachable. Start it with: cd backend && python -m uvicorn main:app --reload (or run start-backend.bat). In dev, leave REACT_APP_API_BASE empty so the proxy is used.'
+        : msg || 'Failed to generate report');
     } finally {
       setLoading(false);
     }

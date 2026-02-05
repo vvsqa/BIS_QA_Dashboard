@@ -1304,6 +1304,24 @@
   color: var(--text-muted);
 }
 
+.calendar-priority-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.35rem;
+}
+
+.calendar-priority-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+}
+
 .dev-planning-calendar-grid td.cell-hours {
   min-width: 80px;
 }
@@ -1926,6 +1944,18 @@
 
 .resource-blocked-task-item {
   white-space: nowrap;
+}
+
+.resource-blocked-priority-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  margin-right: 0.35rem;
 }
 
 .resource-blocked-task-link {

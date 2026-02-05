@@ -483,6 +483,9 @@ def get_qa_overview_data(db: Session, today: Optional[date] = None) -> Dict[str,
     for t in queue:
         t['is_next_in_queue'] = t['ticket_id'] in next_ticket_ids
 
+    # Tickets in QC testing for 10+ days (all priorities) — for count and list on click
+    in_qc_10_plus = [t for t in queue if t.get('days_in_qc', 0) >= 10]
+
     return {
         'status_cards': {
             'QC Testing': status_counts['QC Testing'],
@@ -493,6 +496,7 @@ def get_qa_overview_data(db: Session, today: Optional[date] = None) -> Dict[str,
         'queue': queue,
         'by_module': {k: {'count': len(v), 'tickets': v} for k, v in by_module.items()},
         'priority_order': list(PRIORITY_ORDER.keys()),
+        'in_qc_10_plus': in_qc_10_plus,
     }
 
 
