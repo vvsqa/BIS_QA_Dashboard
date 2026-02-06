@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { formatAPIDate, formatDisplayDate, formatDateRange, formatTime } from './dateUtils';
 import { TicketExternalLink } from './ticketUtils';
+import AppSidebar from './AppSidebar';
 import './CalendarModule.css';
 
 import { apiFetch } from './api';
@@ -62,7 +63,6 @@ function CalendarModule() {
   const [selectedEmployee, setSelectedEmployee] = useState(null);
   const [syncStatus, setSyncStatus] = useState(null);
   const [syncing, setSyncing] = useState(false);
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
   const [filterOptions, setFilterOptions] = useState({ teams: [], categories: [] });
   
   // Update team filter when user data loads
@@ -277,11 +277,6 @@ function CalendarModule() {
     
     return () => clearInterval(statusInterval);
   }, [lastKnownSyncTime, view, team, currentDate]);
-
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('theme', theme);
-  }, [theme]);
 
   // Get hours color class
   const getHoursColorClass = (hours) => {
@@ -942,54 +937,7 @@ function CalendarModule() {
 
   return (
     <div className="calendar-module">
-      {/* Sidebar */}
-      <aside className="sidebar">
-        <div className="logo-section">
-          <img src="/techversant-logo.png" alt="Techversant" className="company-logo" />
-          <div className="logo-text">
-            <span className="logo-title">QA Dashboard</span>
-            <span className="logo-subtitle">Calendar</span>
-          </div>
-        </div>
-
-        <nav className="sidebar-nav">
-          <a href="/" className="nav-item">
-            <span className="nav-icon">📊</span>
-            <span>Dashboard</span>
-          </a>
-          <a href="/tickets" className="nav-item">
-            <span className="nav-icon">🎫</span>
-            <span>Tickets</span>
-          </a>
-          <a href="/all-bugs" className="nav-item">
-            <span className="nav-icon">🐛</span>
-            <span>All Bugs</span>
-          </a>
-          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
-            <a href="/employees" className="nav-item">
-              <span className="nav-icon">👥</span>
-              <span>Employees</span>
-            </a>
-          )}
-          <a href="/calendar" className="nav-item active">
-            <span className="nav-icon">📅</span>
-            <span>Calendar</span>
-          </a>
-          <a href="/reports" className="nav-item">
-            <span className="nav-icon">📈</span>
-            <span>Reports</span>
-          </a>
-        </nav>
-
-        <div className="sidebar-footer">
-          <button 
-            className="theme-toggle" 
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          >
-            {theme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode'}
-          </button>
-        </div>
-      </aside>
+      <AppSidebar />
 
       {/* Main Content */}
       <main className="main-content">

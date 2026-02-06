@@ -6772,6 +6772,41 @@ tbody tr:last-child td {
   border-bottom: 1px solid var(--border-color);
 }
 
+.emp-photo-cell {
+  width: 64px;
+}
+
+.emp-photo {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  overflow: hidden;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
+}
+
+.emp-photo-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  z-index: 1;
+}
+
+.emp-photo-fallback {
+  position: relative;
+  z-index: 0;
+}
+
 .emp-table th.align-center,
 .emp-table td.align-center {
   text-align: center;
@@ -12139,37 +12174,146 @@ tbody tr:last-child td {
 
 /* ===== Login Page ===== */
 .login-page {
+  height: 100vh;
   min-height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  background: var(--bg-primary);
+  padding: 0;
+}
+
+/* Split layout: left = login form, right = image - no page scroll */
+.login-split {
+  display: flex;
+  flex-direction: row;
+  height: 100vh;
+  min-height: 100vh;
+  max-height: 100vh;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+
+.login-left {
+  flex: 0 0 40%;
   display: flex;
   align-items: center;
   justify-content: center;
+  height: 100%;
+  min-height: 0;
+  padding: 24px;
   background: var(--bg-primary);
-  padding: 20px;
+  box-sizing: border-box;
+  overflow: auto;
+}
+
+.login-right {
+  flex: 1;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  background: var(--bg-secondary);
+}
+
+.login-panel-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  display: block;
+}
+
+.login-left .login-card {
+  position: relative;
+  width: 100%;
+  max-width: 420px;
+  align-self: center;
+  margin: auto 0;
+}
+
+@media (max-width: 900px) {
+  .login-page {
+    max-height: none;
+    min-height: 100vh;
+    overflow-y: auto;
+  }
+  .login-split {
+    flex-direction: column;
+    max-height: none;
+    overflow: visible;
+  }
+  .login-left {
+    flex: 1 1 auto;
+    min-height: auto;
+    padding: 40px 24px;
+    align-items: center;
+    justify-content: center;
+  }
+  .login-left .login-card {
+    min-height: auto;
+    border-radius: var(--radius-lg);
+    max-width: 420px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+  }
+  .login-split .login-card {
+    padding: 40px;
+  }
+  .login-right {
+    min-height: 40vh;
+    height: 40vh;
+    flex: 0 0 40vh;
+  }
 }
 
 .login-card {
   width: 100%;
-  max-width: 400px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color);
+  max-width: 420px;
+  background: rgba(30, 41, 59, 0.95);
+  border: 1px solid rgba(148, 163, 184, 0.2);
   border-radius: var(--radius-lg);
   padding: 40px;
-  box-shadow: var(--shadow-lg);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+}
+
+.login-split .login-card {
+  border-radius: var(--radius-lg);
+  padding: 40px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+}
+
+.login-brand {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.login-logo {
+  display: block;
+  margin: 0 auto 16px;
+  max-height: 48px;
+  width: auto;
+  object-fit: contain;
 }
 
 .login-title {
-  font-size: 24px;
+  font-size: 22px;
   font-weight: 700;
   color: var(--text-primary);
   text-align: center;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .login-subtitle {
   font-size: 14px;
   color: var(--text-muted);
   text-align: center;
-  margin-bottom: 32px;
+  margin-bottom: 0;
 }
 
 .login-form {
@@ -12208,6 +12352,46 @@ tbody tr:last-child td {
 .login-field input:focus {
   outline: none;
   border-color: var(--accent-teal);
+}
+
+.login-password-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.login-password-wrap input {
+  padding-right: 48px;
+}
+
+.login-password-toggle {
+  position: absolute;
+  right: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: color 0.2s;
+}
+
+.login-password-toggle:hover {
+  color: var(--text-primary);
+}
+
+.login-copyright {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+  padding-top: 20px;
+  border-top: 1px solid var(--border-color);
 }
 
 .login-btn {

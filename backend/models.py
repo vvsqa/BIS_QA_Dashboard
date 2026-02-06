@@ -132,6 +132,16 @@ class TicketTracking(Base):
     closed_on = Column(DateTime, nullable=True)          # Ticket closed date from PM API (TicketClosedDate); set when status is closed
 
 
+class QATicketFlag(Base):
+    """App-only flags for QA tickets (e.g. Tested By Dev). Not synced from PM."""
+    __tablename__ = "qa_ticket_flags"
+
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, unique=True, index=True, nullable=False)
+    tested_by_dev = Column(Boolean, default=False, nullable=False)
+    updated_on = Column(DateTime, onupdate=datetime.utcnow)
+
+
 class TicketPriorityHistory(Base):
     """
     Tracks priority changes for tickets.
@@ -509,6 +519,8 @@ class TimeSheetEntry(Base):
     project_name = Column(String(150), nullable=True)
     planned_task_id = Column(Integer, nullable=True)
     planned_task_source = Column(String(20), nullable=True)  # dev | qa | other
+    variance_notes = Column(Text, nullable=True)  # required when hours differ from planned (explain why planned not achieved)
+    variance_reason_type = Column(String(50), nullable=True)  # unplanned_task | estimate_ineffective | other
     created_on = Column(DateTime, default=datetime.utcnow)
     updated_on = Column(DateTime, onupdate=datetime.utcnow)
 
@@ -866,6 +878,8 @@ class QAPlannedTask(Base):
     end_date = Column(Date, nullable=True)
     total_planned_hours = Column(Float)
     status = Column(String(30), default="active", index=True)
+    # When set, from this date onward the task no longer blocks the resource (QA resource is free for other tasks)
+    resource_released_at = Column(DateTime, nullable=True, index=True)
 
     created_by = Column(String(100))
     updated_by = Column(String(100), nullable=True)

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
+import AppSidebar from './AppSidebar';
 import { apiFetch, API_BASE } from './api';
 import './dashboard.css';
 
@@ -93,14 +94,22 @@ function Settings() {
 
   if (user?.role !== 'ADMIN') {
     return (
-      <div className="page-container" style={{ padding: '2rem' }}>
-        <h2>Access Denied</h2>
-        <p>Only administrators can access Settings.</p>
+      <div className="dashboard">
+        <AppSidebar />
+        <main className="main-content">
+          <div className="page-container" style={{ padding: '2rem' }}>
+            <h2>Access Denied</h2>
+            <p>Only administrators can access Settings.</p>
+          </div>
+        </main>
       </div>
     );
   }
 
   return (
+    <div className="dashboard">
+      <AppSidebar />
+      <main className="main-content">
     <div className="page-container" style={{ padding: '2rem', maxWidth: 900 }}>
       <h1 style={{ marginBottom: '1.5rem' }}>Settings</h1>
 
@@ -189,6 +198,8 @@ function Settings() {
           </div>
         )}
       </section>
+    </div>
+      </main>
     </div>
   );
 }

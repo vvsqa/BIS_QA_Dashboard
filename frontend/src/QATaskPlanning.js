@@ -204,6 +204,10 @@ function QATaskPlanning({ showParentTitle = false }) {
   const [calendarView, setCalendarView] = useState('weekly');
   const [plannerEmployeeSearch, setPlannerEmployeeSearch] = useState('');
 
+  // QC Review Fail tab state
+  const [qcReviewFailData, setQcReviewFailData] = useState(null);
+  const [qcReviewFailLoading, setQcReviewFailLoading] = useState(false);
+
   const loadOverviewData = useCallback(async () => {
     setOverviewLoading(true);
     setError(null);
@@ -226,6 +230,30 @@ function QATaskPlanning({ showParentTitle = false }) {
       setOverviewData(null);
     } finally {
       setOverviewLoading(false);
+    }
+  }, []);
+
+  const loadQcReviewFailData = useCallback(async () => {
+    setQcReviewFailLoading(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/qc-review-fail`);
+      if (!res.ok) {
+        const text = await res.text();
+        let msg = text;
+        try {
+          const j = JSON.parse(text);
+          msg = j.detail || msg;
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      setQcReviewFailData(data);
+    } catch (e) {
+      setError(e.message || 'Failed to load QC Review Fail list');
+      setQcReviewFailData(null);
+    } finally {
+      setQcReviewFailLoading(false);
     }
   }, []);
 
@@ -274,9 +302,14 @@ function QATaskPlanning({ showParentTitle = false }) {
 
   const loadCalendarData = useCallback(async () => {
     setError(null);
+    const dateParam = (weekStart || '').slice(0, calendarView === 'monthly' ? 7 : 10);
+    if (!dateParam || dateParam.length < (calendarView === 'monthly' ? 7 : 10)) {
+      setError('Please select a week or month.');
+      return;
+    }
     try {
       const params = new URLSearchParams({ view: calendarView });
-      params.append(calendarView === 'weekly' ? 'date_str' : 'month_str', weekStart.slice(0, calendarView === 'monthly' ? 7 : 10));
+      params.append(calendarView === 'weekly' ? 'date_str' : 'month_str', dateParam);
       const res = await apiFetch(`${API_BASE}/qa-planning/calendar?${params}`);
       if (!res.ok) {
         const errText = await res.text();
@@ -291,7 +324,8 @@ function QATaskPlanning({ showParentTitle = false }) {
       setCalendarData(data);
     } catch (e) {
       setCalendarData(null);
-      setError(e?.message || 'Failed to load calendar. Ensure the backend is running.');
+      const msg = e?.message || '';
+      setError(msg.includes('fetch') ? 'Could not reach the server. Ensure the backend is running and try again.' : (msg || 'Failed to load calendar.'));
     }
   }, [calendarView, weekStart]);
 
@@ -311,6 +345,9 @@ function QATaskPlanning({ showParentTitle = false }) {
   useEffect(() => {
     if (view === 'calendar') loadCalendarData();
   }, [view, calendarView, weekStart, loadCalendarData]);
+  useEffect(() => {
+    if (view === 'qc-review-fail') loadQcReviewFailData();
+  }, [view, loadQcReviewFailData]);
 
   // Sync view when user role is determined (e.g. user loads after mount)
   useEffect(() => {
@@ -588,6 +625,26 @@ function QATaskPlanning({ showParentTitle = false }) {
     return queue;
   }, [overviewData, searchQuery, priorityFilter, testerFilter, moduleFilter, statusFilter, platformFilter, planningFilter, selectedCard]);
 
+  // Ticket IDs planned in the current week (for "Active tickets for ongoing week" table)
+  const activeTicketIdsThisWeek = useMemo(() => {
+    const tasks = weekData?.tasks || [];
+    return new Set(tasks.map((t) => t.ticket_id).filter(Boolean));
+  }, [weekData?.tasks]);
+
+  // Pending priority queue: tickets with no QC tester assigned
+  const pendingQueue = useMemo(() => filteredQueue.filter((t) => !(t.qc_tester || '').trim()), [filteredQueue]);
+  // Pending not yet marked as tested by Dev (show in first table)
+  const pendingNotTestedByDev = useMemo(() => pendingQueue.filter((t) => !t.tested_by_dev), [pendingQueue]);
+  // Pending that are marked Tested by Dev (show in second table)
+  const pendingTestedByDev = useMemo(() => pendingQueue.filter((t) => t.tested_by_dev), [pendingQueue]);
+  // Assigned tickets: tickets that have a QC tester
+  const assignedQueue = useMemo(() => filteredQueue.filter((t) => (t.qc_tester || '').trim()), [filteredQueue]);
+  // Active tickets for ongoing week: tickets that appear in this week's planned tasks
+  const activeThisWeekQueue = useMemo(
+    () => filteredQueue.filter((t) => t.ticket_id && activeTicketIdsThisWeek.has(t.ticket_id)),
+    [filteredQueue, activeTicketIdsThisWeek]
+  );
+
   // Statistics for charts
   const chartData = useMemo(() => {
     const queue = overviewData?.queue || [];
@@ -700,6 +757,34 @@ function QATaskPlanning({ showParentTitle = false }) {
 
   const goToTicket = (ticketId) => {
     navigate(`/tickets?ticket=${ticketId}`);
+  };
+
+  const setTestedByDev = async (ticketId, testedByDev) => {
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/ticket/${ticketId}/tested-by-dev`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tested_by_dev: testedByDev }),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || 'Failed to update');
+      await loadOverviewData();
+    } catch (e) {
+      setError(e?.message || 'Failed to update Tested by Dev flag');
+    }
+  };
+
+  const releaseQAResource = async (taskId) => {
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/task/${taskId}/release-resource`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || 'Failed to release resource');
+      await loadWeekData();
+    } catch (e) {
+      setError(e?.message || 'Failed to release QA resource');
+    }
   };
 
   // Open multi-plan modal for a ticket
@@ -1266,8 +1351,7 @@ function QATaskPlanning({ showParentTitle = false }) {
   }, [calendarRows]);
   const calendarSummary = useMemo(() => {
     if (!calendarRows.length) return null;
-    const allDays = calendarRows.flatMap((row) => Object.values(row.days || {}));
-    const totalHours = allDays.reduce((s, d) => s + (d.hours || 0), 0);
+    const totalHours = calendarRows.reduce((s, row) => s + (Number(row.allocated_hours) || 0), 0);
     const numDays = calendarDayKeys.length || 1;
     const numEmps = calendarRows.length || 1;
     const avgHours = (totalHours / numEmps / numDays).toFixed(1);
@@ -1295,11 +1379,14 @@ function QATaskPlanning({ showParentTitle = false }) {
           <button type="button" className={view === 'planner' ? 'active' : ''} onClick={() => setView('planner')}>
             Weekly Planner
           </button>
-          <button type="button" className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')}>
-            Calendar
+          <button type="button" className={view === 'calendar' ? 'active' : ''} onClick={() => setView('calendar')} title="Planning allocations by week/month">
+            Planner Calendar
           </button>
           <button type="button" className={view === 'resource-blocked' ? 'active' : ''} onClick={() => setView('resource-blocked')}>
             Resource Blocked Until
+          </button>
+          <button type="button" className={view === 'qc-review-fail' ? 'active' : ''} onClick={() => setView('qc-review-fail')}>
+            QC Review Fail
           </button>
         </div>
       )}
@@ -1814,126 +1901,294 @@ function QATaskPlanning({ showParentTitle = false }) {
                 </section>
               )}
 
-              {/* Ticket Table */}
-              <section className="qa-tickets-section">
-                <div className="qa-tickets-header">
-                  <h3 className="qa-tickets-title">
-                    Priority Queue
-                    <span className="qa-tickets-count">{filteredQueue.length} tickets</span>
-                  </h3>
-                </div>
-
-                <div className="qa-tickets-table-wrap">
-                  <table className="qa-tickets-table">
-                    <thead>
-                      <tr>
-                        <th>#</th>
-                        <th>Ticket</th>
-                        <th>Title</th>
-                        <th>Priority</th>
-                        <th>Status</th>
-                        <th>Activity</th>
-                        <th>Ageing</th>
-                        <th>Module</th>
-                        <th>Platform</th>
-                        <th>QC Tester</th>
-                        <th>QA Lead</th>
-                        <th>Dev(s)</th>
-                        <th>QA Est</th>
-                        <th>QA Actual</th>
-                        <th>ETA</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {filteredQueue.length === 0 ? (
-                        <tr>
-                          <td colSpan={16} className="qa-table-empty">
-                            {searchQuery || priorityFilter || testerFilter || moduleFilter || statusFilter || platformFilter || planningFilter || selectedCard
-                              ? 'No tickets match your filters.'
-                              : 'No QC tickets in queue.'}
-                          </td>
-                        </tr>
-                      ) : (
-                        filteredQueue.map((t, idx) => {
-                          const isNotPlanned = t.qa_estimate_hours == null || t.qa_estimate_hours === 0;
-                          return (
-                            <tr
-                              key={t.ticket_id}
-                              className={`qa-ticket-row ${t.is_next_in_queue ? 'qa-next-in-queue' : ''} ${isNotPlanned ? 'qa-not-planned' : ''}`}
-                            >
-                              <td className="qa-rank">{idx + 1}</td>
-                              <td className="qa-ticket-id-cell">
-                                <Link to={`/tickets?ticket=${t.ticket_id}`} className="qa-ticket-link">
-                                  #{t.ticket_id}
-                                </Link>
-                                <TicketExternalLink ticketId={t.ticket_id} />
-                              </td>
-                              <td className="qa-title-cell" title={t.title}>
-                                {t.title?.slice(0, 45)}{(t.title?.length || 0) > 45 ? '…' : ''}
-                              </td>
-                              <td>
-                                <span
-                                  className="qa-priority-pill"
-                                  style={{ backgroundColor: PRIORITY_COLORS[t.priority] || '#6b7280' }}
-                                >
-                                  {t.priority}
-                                </span>
-                              </td>
-                              <td>
-                                <span className="qa-status-pill" style={{ borderColor: STATUS_COLORS[t.status] || '#6b7280' }}>
-                                  {t.status}
-                                </span>
-                              </td>
-                              <td>
-                                <span className={`qa-activity-pill qa-activity-${t.activity_type}`}>
-                                  {t.activity_label}
-                                </span>
-                              </td>
-                              <td className="qa-ageing-cell">
-                                <span title={t.moved_to_qc_on ? `Moved to QC: ${t.moved_to_qc_on}` : ''}>
-                                  {t.days_in_qc > 0 ? `${t.days_in_qc}d` : '-'}
-                                </span>
-                                {t.days_on_hold > 0 && (
-                                  <span className="qa-hold-badge">({t.days_on_hold}d hold)</span>
-                                )}
-                              </td>
-                              <td title={t.module || ''}>{t.module || '—'}</td>
-                              <td>
-                                <span className={`qa-platform-badge ${(t.platform || 'Web').toLowerCase()}`}>
-                                  {t.platform || 'Web'}
-                                </span>
-                              </td>
-                              <td title={t.qc_tester || ''}>{t.qc_tester || '—'}</td>
-                              <td title={t.qa_lead || ''}>{t.qa_lead || '—'}</td>
-                              <td title={t.developers_str || ''}>{t.developers_str || 'Not Assigned'}</td>
-                              <td className={isNotPlanned ? 'qa-estimate-missing' : ''}>
-                                {isNotPlanned ? (
-                                  <span className="qa-not-planned-badge">Not Planned</span>
-                                ) : (
-                                  `${t.qa_estimate_hours}h`
-                                )}
-                              </td>
-                              <td>{t.qa_actual_hours != null ? `${t.qa_actual_hours}h` : '—'}</td>
-                              <td>{t.eta ? formatDisplayDate(t.eta) : '—'}</td>
-                              <td className="qa-actions-cell">
-                                <button
-                                  type="button"
-                                  className="qa-action-btn qa-btn-view"
-                                  onClick={() => goToTicket(t.ticket_id)}
-                                  title="View in Tickets"
-                                >
-                                  View
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })
+              {/* QA Priority Queue: two tables (Pending + Assigned) + Active tickets for ongoing week */}
+              {(() => {
+                const renderTicketRow = (t, idx, opts = {}) => {
+                  const isNotPlanned = t.qa_estimate_hours == null || t.qa_estimate_hours === 0;
+                  const showTestedByDev = opts.showTestedByDev === true;
+                  return (
+                    <tr
+                      key={t.ticket_id}
+                      className={`qa-ticket-row ${t.is_next_in_queue ? 'qa-next-in-queue' : ''} ${isNotPlanned ? 'qa-not-planned' : ''}`}
+                    >
+                      <td className="qa-rank">{idx + 1}</td>
+                      <td className="qa-ticket-id-cell">
+                        <Link to={`/tickets?ticket=${t.ticket_id}`} className="qa-ticket-link">
+                          #{t.ticket_id}
+                        </Link>
+                        <TicketExternalLink ticketId={t.ticket_id} />
+                      </td>
+                      <td className="qa-title-cell" title={t.title}>
+                        {t.title?.slice(0, 45)}{(t.title?.length || 0) > 45 ? '…' : ''}
+                      </td>
+                      <td>
+                        <span
+                          className="qa-priority-pill"
+                          style={{ backgroundColor: PRIORITY_COLORS[t.priority] || '#6b7280' }}
+                        >
+                          {t.priority}
+                        </span>
+                      </td>
+                      <td>
+                        <span className="qa-status-pill" style={{ borderColor: STATUS_COLORS[t.status] || '#6b7280' }}>
+                          {t.status}
+                        </span>
+                      </td>
+                      <td>
+                        <span className={`qa-activity-pill qa-activity-${t.activity_type}`} title={t.retest_cycle_count > 0 ? `Retest cycle: ${t.retest_cycle_count}` : undefined}>
+                          {t.activity_label}
+                        </span>
+                      </td>
+                      <td className="qa-retest-cycle-cell" title={t.retest_cycle_count > 0 ? `Times returned to QA after failure: ${t.retest_cycle_count}` : ''}>
+                        {t.retest_cycle_count > 0 ? t.retest_cycle_count : '—'}
+                      </td>
+                      <td className="qa-ageing-cell">
+                        <span title={t.moved_to_qc_on ? `Moved to QC: ${t.moved_to_qc_on}` : ''}>
+                          {t.days_in_qc > 0 ? `${t.days_in_qc}d` : '-'}
+                        </span>
+                        {t.days_on_hold > 0 && (
+                          <span className="qa-hold-badge">({t.days_on_hold}d hold)</span>
+                        )}
+                      </td>
+                      <td title={t.module || ''}>{t.module || '—'}</td>
+                      <td>
+                        <span className={`qa-platform-badge ${(t.platform || 'Web').toLowerCase()}`}>
+                          {t.platform || 'Web'}
+                        </span>
+                      </td>
+                      <td title={t.qc_tester || ''}>{t.qc_tester || '—'}</td>
+                      <td title={t.qa_lead || ''}>{t.qa_lead || '—'}</td>
+                      <td title={t.developers_str || ''}>{t.developers_str || 'Not Assigned'}</td>
+                      <td className={isNotPlanned ? 'qa-estimate-missing' : ''}>
+                        {isNotPlanned ? (
+                          <span className="qa-not-planned-badge">Not Planned</span>
+                        ) : (
+                          `${t.qa_estimate_hours}h`
+                        )}
+                      </td>
+                      <td>{t.qa_actual_hours != null ? `${t.qa_actual_hours}h` : '—'}</td>
+                      <td>{t.eta ? formatDisplayDate(t.eta) : '—'}</td>
+                      {showTestedByDev && (
+                        <td className="qa-tested-by-dev-cell">
+                          <label className="qa-tested-by-dev-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={opts.testedByDev === true}
+                              onChange={() => opts.onTestedByDevToggle && opts.onTestedByDevToggle()}
+                              title={opts.testedByDev ? 'Uncheck to move back to Pending queue' : 'Check to mark as Tested by Dev'}
+                            />
+                            <span>Tested by Dev</span>
+                          </label>
+                        </td>
                       )}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
+                      <td className="qa-actions-cell">
+                        <button
+                          type="button"
+                          className="qa-action-btn qa-btn-view"
+                          onClick={() => goToTicket(t.ticket_id)}
+                          title="View in Tickets"
+                        >
+                          View
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                };
+                const emptyMessage = searchQuery || priorityFilter || testerFilter || moduleFilter || statusFilter || platformFilter || planningFilter || selectedCard
+                  ? 'No tickets match your filters.'
+                  : 'No QC tickets in queue.';
+                return (
+                  <>
+                    <section className="qa-tickets-section">
+                      <div className="qa-tickets-header">
+                        <h3 className="qa-tickets-title">
+                          Pending priority queue
+                          <span className="qa-tickets-count">{pendingNotTestedByDev.length} tickets</span>
+                        </h3>
+                        <p className="qa-tickets-description">Tickets with no QC tester assigned (not yet marked Tested by Dev). Check &quot;Tested by Dev&quot; to move to the table below.</p>
+                      </div>
+                      <div className="qa-tickets-table-wrap">
+                        <table className="qa-tickets-table">
+                          <thead>
+                            <tr>
+                              <th>#</th>
+                              <th>Ticket</th>
+                              <th>Title</th>
+                              <th>Priority</th>
+                              <th>Status</th>
+                              <th>Activity</th>
+                              <th>Retest cycle</th>
+                              <th>Ageing</th>
+                              <th>Module</th>
+                              <th>Platform</th>
+                              <th>QC Tester</th>
+                              <th>QA Lead</th>
+                              <th>Dev(s)</th>
+                              <th>QA Est</th>
+                              <th>QA Actual</th>
+                              <th>ETA</th>
+                              <th>Tested by Dev</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pendingNotTestedByDev.length === 0 ? (
+                              <tr>
+                                <td colSpan={18} className="qa-table-empty">{emptyMessage}</td>
+                              </tr>
+                            ) : (
+                              pendingNotTestedByDev.map((t, idx) => renderTicketRow(t, idx, {
+                                showTestedByDev: true,
+                                testedByDev: false,
+                                onTestedByDevToggle: () => setTestedByDev(t.ticket_id, true),
+                              }))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+
+                    <section className="qa-tickets-section">
+                      <div className="qa-tickets-header">
+                        <h3 className="qa-tickets-title">
+                          Tickets tested by Dev
+                          <span className="qa-tickets-count">{pendingTestedByDev.length} tickets</span>
+                        </h3>
+                        <p className="qa-tickets-description">Pending tickets (no QC tester) marked as tested by Dev. Uncheck to move back to Pending priority queue.</p>
+                      </div>
+                      <div className="qa-tickets-table-wrap">
+                        <table className="qa-tickets-table">
+                          <thead>
+                            <tr>
+                              <th>#</th>
+                              <th>Ticket</th>
+                              <th>Title</th>
+                              <th>Priority</th>
+                              <th>Status</th>
+                              <th>Activity</th>
+                              <th>Retest cycle</th>
+                              <th>Ageing</th>
+                              <th>Module</th>
+                              <th>Platform</th>
+                              <th>QC Tester</th>
+                              <th>QA Lead</th>
+                              <th>Dev(s)</th>
+                              <th>QA Est</th>
+                              <th>QA Actual</th>
+                              <th>ETA</th>
+                              <th>Tested by Dev</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {pendingTestedByDev.length === 0 ? (
+                              <tr>
+                                <td colSpan={18} className="qa-table-empty">No tickets marked as Tested by Dev.</td>
+                              </tr>
+                            ) : (
+                              pendingTestedByDev.map((t, idx) => renderTicketRow(t, idx, {
+                                showTestedByDev: true,
+                                testedByDev: true,
+                                onTestedByDevToggle: () => setTestedByDev(t.ticket_id, false),
+                              }))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+
+                    <section className="qa-tickets-section">
+                      <div className="qa-tickets-header">
+                        <h3 className="qa-tickets-title">
+                          Assigned tickets
+                          <span className="qa-tickets-count">{assignedQueue.length} tickets</span>
+                        </h3>
+                        <p className="qa-tickets-description">Tickets with QC tester assigned</p>
+                      </div>
+                      <div className="qa-tickets-table-wrap">
+                        <table className="qa-tickets-table">
+                          <thead>
+                            <tr>
+                              <th>#</th>
+                              <th>Ticket</th>
+                              <th>Title</th>
+                              <th>Priority</th>
+                              <th>Status</th>
+                              <th>Activity</th>
+                              <th>Retest cycle</th>
+                              <th>Ageing</th>
+                              <th>Module</th>
+                              <th>Platform</th>
+                              <th>QC Tester</th>
+                              <th>QA Lead</th>
+                              <th>Dev(s)</th>
+                              <th>QA Est</th>
+                              <th>QA Actual</th>
+                              <th>ETA</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {assignedQueue.length === 0 ? (
+                              <tr>
+                                <td colSpan={17} className="qa-table-empty">{emptyMessage}</td>
+                              </tr>
+                            ) : (
+                              assignedQueue.map((t, idx) => renderTicketRow(t, idx))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+
+                    <section className="qa-tickets-section">
+                      <div className="qa-tickets-header">
+                        <h3 className="qa-tickets-title">
+                          Active tickets for ongoing week
+                          <span className="qa-tickets-count">{activeThisWeekQueue.length} tickets</span>
+                        </h3>
+                        <p className="qa-tickets-description">Tickets planned in the current week</p>
+                      </div>
+                      <div className="qa-tickets-table-wrap">
+                        <table className="qa-tickets-table">
+                          <thead>
+                            <tr>
+                              <th>#</th>
+                              <th>Ticket</th>
+                              <th>Title</th>
+                              <th>Priority</th>
+                              <th>Status</th>
+                              <th>Activity</th>
+                              <th>Retest cycle</th>
+                              <th>Ageing</th>
+                              <th>Module</th>
+                              <th>Platform</th>
+                              <th>QC Tester</th>
+                              <th>QA Lead</th>
+                              <th>Dev(s)</th>
+                              <th>QA Est</th>
+                              <th>QA Actual</th>
+                              <th>ETA</th>
+                              <th>Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {activeThisWeekQueue.length === 0 ? (
+                              <tr>
+                                <td colSpan={17} className="qa-table-empty">
+                                  No tickets planned for the current week.
+                                </td>
+                              </tr>
+                            ) : (
+                              activeThisWeekQueue.map((t, idx) => renderTicketRow(t, idx))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </section>
+                  </>
+                );
+              })()}
             </>
           )}
         </div>
@@ -2252,6 +2507,10 @@ function QATaskPlanning({ showParentTitle = false }) {
       {view === 'calendar' && (
         <div className="dev-planning-calendar-view">
           <div className="dev-planning-calendar-header">
+            <div className="planner-calendar-heading">
+              <h3 className="planner-calendar-title">Planner Calendar</h3>
+              <p className="planner-calendar-subtitle">Planning module allocations by employee and week</p>
+            </div>
             <div className="dev-planning-calendar-controls">
               <div className="calendar-view-toggle">
                 <button type="button" className={calendarView === 'weekly' ? 'active' : ''} onClick={() => setCalendarView('weekly')}>Weekly</button>
@@ -2373,8 +2632,9 @@ function QATaskPlanning({ showParentTitle = false }) {
                 <tbody>
                   {calendarRows.map((row) => {
                     const days = Object.values(row.days || {});
-                    const totalHours = days.reduce((s, d) => s + (d.hours || 0), 0);
-                    const avgHours = days.length > 0 ? (totalHours / days.length).toFixed(1) : 0;
+                    const numDays = days.length || calendarDayKeys.length || 1;
+                    const totalHours = row.allocated_hours != null ? Number(row.allocated_hours) : days.reduce((s, d) => s + (Number(d.hours) || 0), 0);
+                    const avgHours = numDays > 0 ? (totalHours / numDays).toFixed(1) : '0.0';
                     const rowPriorities = [];
                     days.forEach((cell) => {
                       (cell.items || []).forEach((it) => {
@@ -2414,14 +2674,15 @@ function QATaskPlanning({ showParentTitle = false }) {
                           const items = cell.items || [];
                           const actualItems = cell.actual_items || [];
                           const isPastDay = new Date(day) < new Date(new Date().setHours(0, 0, 0, 0));
-                          const displayHours = isPastDay && cell.actual_hours != null ? cell.actual_hours : cell.hours;
-                          const displayItems = isPastDay && actualItems.length > 0 ? actualItems : items;
+                          const hasActuals = isPastDay && ((cell.actual_hours != null && cell.actual_hours > 0) || (actualItems && actualItems.length > 0));
+                          const displayHours = hasActuals ? cell.actual_hours : cell.hours;
+                          const displayItems = hasActuals && actualItems.length > 0 ? actualItems : items;
                           
                           return (
                             <td
                               key={day}
-                              className={`cell-hours clickable ${cell.total >= 8 ? 'full' : cell.hours > 0 ? 'partial' : 'empty'} ${isPastDay && cell.actual_hours != null ? 'has-actuals' : ''}`}
-                              title={isPastDay 
+                              className={`cell-hours clickable ${cell.total >= 8 ? 'full' : cell.hours > 0 ? 'partial' : 'empty'} ${hasActuals ? 'has-actuals' : ''}`}
+                              title={hasActuals
                                 ? `Plan: ${cell.hours}h | Actual: ${cell.actual_hours}h${cell.leave_hours > 0 ? ` | Leave: ${cell.leave_hours}h` : ''}. Click for details.`
                                 : `${cell.hours}h allocated${cell.leave_hours > 0 ? `, ${cell.leave_hours}h leave` : ''}. Click for details.`}
                               onClick={() => openDayDetail(row.employee_name, day)}
@@ -2430,13 +2691,13 @@ function QATaskPlanning({ showParentTitle = false }) {
                               onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDayDetail(row.employee_name, day); } }}
                             >
                               <span className="hours">
-                                {isPastDay && cell.actual_hours != null ? (
+                                {hasActuals ? (
                                   <>
                                     <span className="plan-hours" title="planned">{cell.hours}h</span>
                                     <span className="actual-hours" title="actual">{cell.actual_hours}h</span>
                                   </>
                                 ) : (
-                                  displayHours + 'h'
+                                  (displayHours != null ? displayHours : 0) + 'h'
                                 )}
                               </span>
                               {displayItems.length > 0 && (
@@ -2497,7 +2758,7 @@ function QATaskPlanning({ showParentTitle = false }) {
         <div className="resource-blocked-view">
           <div className="resource-blocked-header">
             <h2 className="resource-blocked-title">Resource Blocked Until – QA Planning</h2>
-            <p className="resource-blocked-subtitle">See when each QA resource is blocked based on current allocations. Helps plan new tasks.</p>
+            <p className="resource-blocked-subtitle">See when each QA resource is blocked based on current allocations. If a task fails early (e.g. after one hour or one day), use &quot;QA resource is free&quot; so another task can be assigned—optional.</p>
             <div className="resource-blocked-week-nav">
               <button type="button" className="dev-planner-nav-btn" onClick={() => { const d = new Date(weekStart + 'T12:00:00'); d.setDate(d.getDate() - 7); setWeekStart(formatAPIDate(d)); }} aria-label="Previous week">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
@@ -2541,12 +2802,22 @@ function QATaskPlanning({ showParentTitle = false }) {
                       const nameMatch = t.employee_name === emp.employee_name;
                       const idMatch = t.employee_id != null && emp.employee_id != null && String(t.employee_id) === String(emp.employee_id);
                       if (!nameMatch && !idMatch) continue;
+                      const releaseDateStr = t.resource_released_at ? (t.resource_released_at.slice && t.resource_released_at.slice(0, 10)) || null : null;
                       for (const a of t.allocations || []) {
-                        if (a.date && (!maxDate || a.date > maxDate)) maxDate = a.date;
+                        if (!a.date) continue;
+                        if (releaseDateStr && a.date >= releaseDateStr) continue;
+                        if (!maxDate || a.date > maxDate) maxDate = a.date;
                       }
                       const label = t.ticket_id ? `#${t.ticket_id}` : (t.generic_category || 'Task');
                       const pri = t.ticket_priority ? ` (${t.ticket_priority})` : '';
-                      empTasks.push({ ticket_id: t.ticket_id, label, priority: t.ticket_priority, full: `${label}${pri}` });
+                      empTasks.push({
+                        task_id: t.id,
+                        ticket_id: t.ticket_id,
+                        label,
+                        priority: t.ticket_priority,
+                        full: `${label}${pri}`,
+                        resource_released_at: t.resource_released_at,
+                      });
                     }
                     const statusKey = (emp.allocation_status || '').toLowerCase().replace(/\s+/g, '-');
                     return (
@@ -2574,6 +2845,16 @@ function QATaskPlanning({ showParentTitle = false }) {
                                   ) : (
                                     task.label
                                   )}
+                                  {!task.resource_released_at && task.task_id && emp.can_manage_tasks && (
+                                    <button
+                                      type="button"
+                                      className="resource-blocked-release-btn"
+                                      onClick={(e) => { e.stopPropagation(); releaseQAResource(task.task_id); }}
+                                      title="Task failed or stopped early? Mark QA resource as free so another task can be assigned (optional)"
+                                    >
+                                      QA resource is free
+                                    </button>
+                                  )}
                                 </span>
                               ))}
                             </span>
@@ -2593,6 +2874,103 @@ function QATaskPlanning({ showParentTitle = false }) {
                 </tbody>
               </table>
             </div>
+          )}
+        </div>
+      )}
+
+      {view === 'qc-review-fail' && (
+        <div className="qa-overview-container qa-qc-review-fail-view">
+          <div className="qa-overview-header">
+            <h2 className="qa-overview-title">QC Review Fail Status – Tickets List</h2>
+            <span className="qa-overview-subtitle">
+              Tickets in QC Review Fail, Tested - Awaiting Fixes, or Code Review Failed. Sorted by priority and days in fail status.
+            </span>
+          </div>
+          {qcReviewFailLoading ? (
+            <div className="qa-planning-skeleton">Loading QC Review Fail list…</div>
+          ) : !qcReviewFailData ? (
+            <div className="qa-planning-empty">
+              <p>Failed to load QC Review Fail tickets.</p>
+              <button type="button" className="btn-secondary" onClick={() => loadQcReviewFailData()}>Retry</button>
+            </div>
+          ) : (
+            <section className="qa-tickets-section">
+              <div className="qa-tickets-header">
+                <h3 className="qa-tickets-title">
+                  Tickets in QC Review Fail status
+                  <span className="qa-tickets-count">{qcReviewFailData.total ?? (qcReviewFailData.tickets?.length ?? 0)} tickets</span>
+                </h3>
+              </div>
+              <div className="qa-tickets-table-wrap">
+                <table className="qa-tickets-table">
+                  <thead>
+                    <tr>
+                      <th>#</th>
+                      <th>Ticket</th>
+                      <th>Title</th>
+                      <th>Priority</th>
+                      <th>Status</th>
+                      <th>Days in fail</th>
+                      <th>Times in fail</th>
+                      <th>Module</th>
+                      <th>Platform</th>
+                      <th>QC Tester</th>
+                      <th>QA Lead</th>
+                      <th>Dev(s)</th>
+                      <th>QA Est</th>
+                      <th>QA Actual</th>
+                      <th>Moved to QC</th>
+                      <th>Moved to fail</th>
+                      <th>ETA</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(!qcReviewFailData.tickets || qcReviewFailData.tickets.length === 0) ? (
+                      <tr>
+                        <td colSpan={18} className="qa-table-empty">No tickets in QC Review Fail status.</td>
+                      </tr>
+                    ) : (
+                      qcReviewFailData.tickets.map((t, idx) => (
+                        <tr key={t.ticket_id} className="qa-ticket-row">
+                          <td className="qa-rank">{idx + 1}</td>
+                          <td className="qa-ticket-id-cell">
+                            <Link to={`/tickets?ticket=${t.ticket_id}`} className="qa-ticket-link">#{t.ticket_id}</Link>
+                            <TicketExternalLink ticketId={t.ticket_id} />
+                          </td>
+                          <td className="qa-title-cell" title={t.title}>{t.title?.slice(0, 45)}{(t.title?.length || 0) > 45 ? '…' : ''}</td>
+                          <td>
+                            <span className="qa-priority-pill" style={{ backgroundColor: PRIORITY_COLORS[t.priority] || '#6b7280' }}>{t.priority}</span>
+                          </td>
+                          <td>
+                            <span className="qa-status-pill" style={{ borderColor: STATUS_COLORS[t.status] || '#6b7280' }}>{t.status}</span>
+                          </td>
+                          <td className="qa-ageing-cell">{t.days_in_fail != null ? `${t.days_in_fail}d` : '—'}</td>
+                          <td className="qa-times-in-fail-cell" title="Number of times this ticket has been moved to QC Review Fail (or Tested - Awaiting Fixes, Code Review Failed)">
+                            {t.times_moved_to_fail != null && t.times_moved_to_fail > 0 ? t.times_moved_to_fail : (t.times_moved_to_fail === 0 ? '0' : '—')}
+                          </td>
+                          <td title={t.module || ''}>{t.module || '—'}</td>
+                          <td>
+                            <span className={`qa-platform-badge ${(t.platform || 'Web').toLowerCase()}`}>{t.platform || 'Web'}</span>
+                          </td>
+                          <td title={t.qc_tester || ''}>{t.qc_tester || '—'}</td>
+                          <td title={t.qa_lead || ''}>{t.qa_lead || '—'}</td>
+                          <td title={t.developers_str || ''}>{t.developers_str || 'Not Assigned'}</td>
+                          <td>{t.qa_estimate_hours != null ? `${t.qa_estimate_hours}h` : '—'}</td>
+                          <td>{t.qa_actual_hours != null ? `${t.qa_actual_hours}h` : '—'}</td>
+                          <td>{t.moved_to_qc_on ? formatDisplayDate(t.moved_to_qc_on) : '—'}</td>
+                          <td>{t.moved_to_fail_on ? formatDisplayDate(t.moved_to_fail_on) : '—'}</td>
+                          <td>{t.eta ? formatDisplayDate(t.eta) : '—'}</td>
+                          <td className="qa-actions-cell">
+                            <button type="button" className="qa-action-btn qa-btn-view" onClick={() => goToTicket(t.ticket_id)} title="View in Tickets">View</button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
           )}
         </div>
       )}

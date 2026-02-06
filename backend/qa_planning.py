@@ -8,12 +8,14 @@ import math
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, cast
+from sqlalchemy.types import Date
 
 from models import (
     TicketTracking, TicketStatusHistory, Bug, Employee,
     Holiday, LeaveEntry,
     QAPlanningWeek, QAPlannedTask, QAPlannedAllocation,
+    QATicketFlag,
 )
 from dev_planning import (
     get_working_days_list,
@@ -114,6 +116,33 @@ def get_moved_to_hold_date(db: Session, ticket_id: int) -> Optional[datetime]:
     return h.changed_on if h else None
 
 
+def get_moved_to_qc_fail_date(db: Session, ticket_id: int) -> Optional[datetime]:
+    """Most recent date ticket moved to any QC fail status (QC Review Fail, Tested - Awaiting Fixes, Code Review Failed)."""
+    h = (
+        db.query(TicketStatusHistory)
+        .filter(
+            TicketStatusHistory.ticket_id == ticket_id,
+            TicketStatusHistory.new_status.in_(QC_FAIL_STATUSES),
+        )
+        .order_by(TicketStatusHistory.changed_on.desc())
+        .first()
+    )
+    return h.changed_on if h else None
+
+
+def get_qc_fail_count(db: Session, ticket_id: int) -> int:
+    """Number of times this ticket has been moved to QC Review Fail (or Tested - Awaiting Fixes, Code Review Failed)."""
+    count = (
+        db.query(TicketStatusHistory)
+        .filter(
+            TicketStatusHistory.ticket_id == ticket_id,
+            TicketStatusHistory.new_status.in_(QC_FAIL_STATUSES),
+        )
+        .count()
+    )
+    return count or 0
+
+
 def _build_qa_module_expertise(db: Session) -> Dict[str, set]:
     """Build { employee_name: set(modules) } from TicketTracking (qc_tester) + Bug (module), and Bug.assignee."""
     result = {}
@@ -202,7 +231,15 @@ def _suggest_qa_for_ticket(
 def is_retesting_after_failure(db: Session, ticket_id: int) -> bool:
     """
     True if ticket previously had QC Review Fail / Tested - Awaiting Fixes and then moved back to QC.
-    Indicates "Retesting after failure" activity type.
+    Indicates "Pending for retest" / "Retesting after failure" activity type.
+    """
+    return get_retest_cycle_count(db, ticket_id) > 0
+
+
+def get_retest_cycle_count(db: Session, ticket_id: int) -> int:
+    """
+    Number of times this ticket has repeated the cycle: in QC -> failed (QC Review Fail etc.) -> back to QC.
+    Each transition from a fail status back to a QC status counts as one cycle.
     """
     history = (
         db.query(TicketStatusHistory)
@@ -210,13 +247,16 @@ def is_retesting_after_failure(db: Session, ticket_id: int) -> bool:
         .order_by(TicketStatusHistory.changed_on.asc())
         .all()
     )
-    seen_fail = False
+    count = 0
+    in_fail = False
     for h in history:
         if h.new_status in QC_FAIL_STATUSES:
-            seen_fail = True
-        elif seen_fail and h.new_status in QA_QC_STATUSES:
-            return True  # Came back to QC after failure
-    return False
+            in_fail = True
+        elif h.new_status in QA_QC_STATUSES:
+            if in_fail:
+                count += 1
+            in_fail = False
+    return count
 
 
 def get_qa_ticket_suggestions(
@@ -250,6 +290,7 @@ def get_qa_ticket_suggestions(
         hold_date = moved_hold.date() if moved_hold and hasattr(moved_hold, 'date') else (moved_hold if isinstance(moved_hold, date) else None)
         days_on_hold = (today - hold_date).days if (t.status == 'QC Testing Hold') and hold_date else 0
         retesting = is_retesting_after_failure(db, t.ticket_id)
+        retest_cycle_count = get_retest_cycle_count(db, t.ticket_id)
         subdepartment = getattr(t, 'subdepartment', None)
         platform = get_platform_for_ticket(db, t.ticket_id, subdepartment)
         qc = (t.qc_tester or "").strip().lower()
@@ -266,6 +307,7 @@ def get_qa_ticket_suggestions(
             "days_in_qc": days_in_qc,
             "days_on_hold": days_on_hold,
             "retesting": retesting,
+            "retest_cycle_count": retest_cycle_count,
             "_sort": {
                 "priority_order": _priority_sort_key(t.priority or ''),
                 "is_unassigned": not bool(qc),
@@ -389,6 +431,7 @@ def get_qa_overview_data(db: Session, today: Optional[date] = None) -> Dict[str,
         subdepartment = getattr(ticket, 'subdepartment', None)
         platform = get_platform_for_ticket(db, ticket.ticket_id, subdepartment)
         retesting = is_retesting_after_failure(db, ticket.ticket_id)
+        retest_cycle_count = get_retest_cycle_count(db, ticket.ticket_id)
 
         # Ageing
         moved_qc_date = moved_qc.date() if moved_qc and hasattr(moved_qc, 'date') else (moved_qc if isinstance(moved_qc, date) else None)
@@ -397,19 +440,23 @@ def get_qa_overview_data(db: Session, today: Optional[date] = None) -> Dict[str,
         hold_date = moved_hold.date() if moved_hold and hasattr(moved_hold, 'date') else (moved_hold if isinstance(moved_hold, date) else None)
         days_on_hold = (today - hold_date).days if status == 'QC Testing Hold' and hold_date else 0
 
-        # Activity type (use flexible matching: status may vary by source, and time logged = in progress)
+        # Activity type: first time in QA, on hold, in progress, or pending/retesting after failure (with cycle count)
         status_lower = (status or '').lower().replace(' ', '')
         has_time_logged = (ticket.actual_qa_hours or 0) > 0
         is_in_progress = 'inprogress' in status_lower or has_time_logged
         if status == 'QC Testing Hold':
             activity_type = 'on_hold'
             activity_label = f'On hold ({days_on_hold} days)'
+        elif retesting:
+            activity_type = 'pending_retest'
+            # When back in QC after failure: "Pending for retest" and show how many times this cycle repeated
+            if is_in_progress:
+                activity_label = f'Pending for retest – In progress (cycle {retest_cycle_count})' if retest_cycle_count else 'Pending for retest – In progress'
+            else:
+                activity_label = f'Pending for retest (cycle {retest_cycle_count})' if retest_cycle_count else 'Pending for retest'
         elif is_in_progress:
             activity_type = 'in_progress'
             activity_label = 'In progress'
-        elif retesting:
-            activity_type = 'retesting_after_failure'
-            activity_label = 'Retesting after failure'
         else:
             activity_type = 'to_be_started'
             activity_label = 'To be started'
@@ -462,12 +509,22 @@ def get_qa_overview_data(db: Session, today: Optional[date] = None) -> Dict[str,
             'days_on_hold': days_on_hold,
             'activity_type': activity_type,
             'activity_label': activity_label,
+            'retest_cycle_count': retest_cycle_count,
         }
 
         queue.append(item)
         if module not in by_module:
             by_module[module] = []
         by_module[module].append(item)
+
+    # Load "Tested By Dev" flags for all tickets in queue
+    ticket_ids = [t["ticket_id"] for t in queue]
+    tested_by_dev_map = {}
+    if ticket_ids:
+        for row in db.query(QATicketFlag).filter(QATicketFlag.ticket_id.in_(ticket_ids)).all():
+            tested_by_dev_map[row.ticket_id] = bool(row.tested_by_dev)
+    for t in queue:
+        t["tested_by_dev"] = tested_by_dev_map.get(t["ticket_id"], False)
 
     # Sort queue: priority (asc), then days_in_qc desc (older first), then ticket_id
     queue.sort(key=lambda t: (t['priority_order'], -t['days_in_qc'], t['ticket_id']))
@@ -498,6 +555,70 @@ def get_qa_overview_data(db: Session, today: Optional[date] = None) -> Dict[str,
         'priority_order': list(PRIORITY_ORDER.keys()),
         'in_qc_10_plus': in_qc_10_plus,
     }
+
+
+def get_qa_qc_review_fail_data(db: Session, today: Optional[date] = None) -> Dict[str, Any]:
+    """
+    Tickets currently in QC Review Fail status (or Tested - Awaiting Fixes, Code Review Failed).
+    Returns a list with same relevant details as overview queue: ticket_id, title, status, priority,
+    qc_tester, qa_lead, developers, module, platform, eta, estimates, moved_to_qc_on, moved_to_fail_on, days_in_fail.
+    """
+    today = today or date.today()
+    tickets = (
+        db.query(TicketTracking)
+        .filter(TicketTracking.status.in_(QC_FAIL_STATUSES))
+        .order_by(TicketTracking.ticket_id.desc())
+        .all()
+    )
+    queue = []
+    for ticket in tickets:
+        status = ticket.status or 'Unknown'
+        module = get_module_for_ticket(db, ticket.ticket_id) or 'Unassigned'
+        subdepartment = getattr(ticket, 'subdepartment', None)
+        platform = get_platform_for_ticket(db, ticket.ticket_id, subdepartment)
+        moved_qc = get_moved_to_qc_date(db, ticket.ticket_id)
+        moved_fail = get_moved_to_qc_fail_date(db, ticket.ticket_id)
+        moved_fail_date = moved_fail.date() if moved_fail and hasattr(moved_fail, 'date') else (moved_fail if isinstance(moved_fail, date) else None)
+        days_in_fail = (today - moved_fail_date).days if moved_fail_date else 0
+        times_moved_to_fail = get_qc_fail_count(db, ticket.ticket_id)
+        priority = (ticket.priority or '').strip() or 'Unspecified'
+        developers = []
+        if ticket.backend_developer:
+            developers.append(ticket.backend_developer)
+        if ticket.frontend_developer:
+            developers.append(ticket.frontend_developer)
+        developers = list(set(developers))
+        qa_lead = None
+        qc_tester_str = (ticket.qc_tester or '').strip()
+        if qc_tester_str:
+            primary_tester = qc_tester_str.split(',')[0].strip()
+            if primary_tester:
+                emp = db.query(Employee).filter(Employee.name.ilike(f"%{primary_tester}%")).first()
+                if emp and emp.lead:
+                    qa_lead = emp.lead.strip()
+        queue.append({
+            'ticket_id': ticket.ticket_id,
+            'title': (getattr(ticket, 'title', None) or '').strip() or f"Ticket #{ticket.ticket_id}",
+            'status': status,
+            'priority': priority,
+            'priority_order': _priority_sort_key(priority),
+            'qc_tester': (ticket.qc_tester or '').strip() or None,
+            'qa_lead': qa_lead,
+            'developers': developers,
+            'developers_str': ', '.join(developers) if developers else 'Not Assigned',
+            'eta': ticket.eta.isoformat() if ticket.eta else None,
+            'qa_estimate_hours': ticket.qa_estimate_hours,
+            'qa_actual_hours': ticket.actual_qa_hours,
+            'dev_estimate_hours': ticket.dev_estimate_hours,
+            'module': module,
+            'platform': platform,
+            'moved_to_qc_on': moved_qc.isoformat() if moved_qc else None,
+            'moved_to_fail_on': moved_fail.isoformat() if moved_fail else None,
+            'days_in_fail': days_in_fail,
+            'times_moved_to_fail': times_moved_to_fail,
+        })
+    queue.sort(key=lambda t: (t['priority_order'], -t['days_in_fail'], t['ticket_id']))
+    return {'tickets': queue, 'total': len(queue)}
 
 
 # Names to exclude from QA planner display (e.g. manager)
@@ -629,10 +750,18 @@ def get_qa_employees(db: Session, visible_employee_ids: Optional[set] = None) ->
 
 # ===== QA PLANNER (Weekly planning, allocations) =====
 
+def _allocation_not_released():
+    """Condition: allocation counts (task not released, or allocation date before release date)."""
+    return or_(
+        QAPlannedTask.resource_released_at.is_(None),
+        QAPlannedAllocation.allocation_date < cast(QAPlannedTask.resource_released_at, Date),
+    )
+
+
 def get_qa_allocated_hours_for_week(
     week_start: date, week_end: date, db: Session, planning_week_id: Optional[int] = None
 ) -> Dict[str, Dict[date, float]]:
-    """Return { employee_name: { date: hours } } from QAPlannedAllocation for the week."""
+    """Return { employee_name: { date: hours } } from QAPlannedAllocation for the week. Excludes allocations on or after resource_released_at."""
     q = (
         db.query(QAPlannedTask.employee_name, QAPlannedAllocation.allocation_date, QAPlannedAllocation.hours)
         .join(QAPlannedAllocation, QAPlannedAllocation.task_id == QAPlannedTask.id)
@@ -640,6 +769,7 @@ def get_qa_allocated_hours_for_week(
             QAPlannedTask.status == "active",
             QAPlannedAllocation.allocation_date >= week_start,
             QAPlannedAllocation.allocation_date <= week_end,
+            _allocation_not_released(),
         )
     )
     if planning_week_id is not None:
@@ -675,7 +805,7 @@ def get_qa_available_hours_on_date(
     db: Session,
     exclude_task_id: Optional[int] = None,
 ) -> float:
-    """Get available hours for QA employee on a specific date."""
+    """Get available hours for QA employee on a specific date. Excludes released allocations."""
     q = (
         db.query(func.coalesce(func.sum(QAPlannedAllocation.hours), 0))
         .join(QAPlannedTask, QAPlannedTask.id == QAPlannedAllocation.task_id)
@@ -683,6 +813,7 @@ def get_qa_available_hours_on_date(
             QAPlannedTask.employee_name == employee_name,
             QAPlannedTask.status == "active",
             QAPlannedAllocation.allocation_date == target_date,
+            _allocation_not_released(),
         )
     )
     if exclude_task_id:

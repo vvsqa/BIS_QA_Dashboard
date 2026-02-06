@@ -22,7 +22,7 @@ load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 
 from database import SessionLocal
 from models import (
-    Bug, TestPlan, TestRun, TestCase, TestResult, TicketTracking,
+    Bug, TestPlan, TestRun, TestCase, TestResult, TicketTracking, QATicketFlag,
     Employee, Timesheet, EmployeeGoal, EmployeeReview, KPI, KPIRating,
     TicketStatusHistory, TicketPriorityHistory, BugStatusHistory,
     EnhancedTimesheet, LeaveEntry, TimeSheetSubmission, TimeSheetEntry, TimeSheetEntryReview, TimeSheetApprovalLog, PlannedTask, WeeklyPlan,
@@ -33,7 +33,7 @@ from models import (
 )
 from auth import (
     authenticate_user, hash_password, create_access_token,
-    get_current_user, get_current_user_optional, require_role,
+    get_current_user, get_current_user_optional, require_role, require_reports_access,
     get_visible_employee_ids, is_planning_lead, can_access_employee, get_db,
     can_access_employee_profile, can_edit_employee_profile, can_manage_tasks_for,
 )
@@ -67,8 +67,10 @@ from sync_utils import upsert_tickets, log_sync_operation, get_last_sync_info, c
 from config.pm_tracker_config import ENABLE_SYNC_LOGGING
 from sync_redmine_to_db import sync_redmine_bugs
 from qa_planning import (
-    get_qa_overview_data, get_qa_employees, get_qa_employees_for_planner, PRIORITY_ORDER as QA_PRIORITY_ORDER,
+    get_qa_overview_data, get_qa_employees, get_qa_employees_for_planner,
+    get_qa_qc_review_fail_data, get_qc_fail_count, QC_FAIL_STATUSES, PRIORITY_ORDER as QA_PRIORITY_ORDER,
     get_qa_allocated_hours_for_week, get_or_create_qa_planning_week, get_qa_planning_week,
+    _allocation_not_released,
     get_qa_available_hours_on_date, simulate_qa_allocation_distribution, create_qa_allocations_for_task,
     QA_QC_STATUSES,
     get_qa_ticket_suggestions,
@@ -246,10 +248,12 @@ def login(req: LoginRequest):
             "id": str(user.get("id", "")),
         })
         name = None
+        designation = None
         if user.get("employee_id"):
             emp = db.query(Employee).filter(Employee.employee_id == user["employee_id"]).first()
             if emp:
                 name = emp.name
+                designation = emp.role
         return {
             "access_token": token,
             "token_type": "bearer",
@@ -259,6 +263,7 @@ def login(req: LoginRequest):
                 "employee_id": user.get("employee_id"),
                 "password_changed_at": user.get("password_changed_at"),
                 "name": name,
+                "designation": designation,
             },
         }
     finally:
@@ -271,6 +276,7 @@ def auth_me(current_user: dict = Depends(get_current_user)):
     db = SessionLocal()
     try:
         name = None
+        designation = None
         team = None
         password_changed_at = None
         user_role = current_user.get("role", "EMPLOYEE")
@@ -281,6 +287,7 @@ def auth_me(current_user: dict = Depends(get_current_user)):
             emp = db.query(Employee).filter(Employee.employee_id == employee_id).first()
             if emp:
                 name = emp.name
+                designation = emp.role
                 team = emp.team  # Get employee's team (DEVELOPMENT or QA)
                 # Derive planning_team from User.role (LEAD_QA, LEAD_DEV, etc.) then Employee.team
                 ur = (user_role or "").upper()
@@ -309,6 +316,7 @@ def auth_me(current_user: dict = Depends(get_current_user)):
             "role": current_user["role"],
             "employee_id": employee_id,
             "name": name,
+            "designation": designation,
             "team": team,  # Include team for calendar filtering
             "planning_team": planning_team,  # QA or DEVELOPMENT for Task Planning (Dev/QA tab visibility)
             "password_changed_at": password_changed_at,
@@ -2206,6 +2214,7 @@ def get_ticket_tracking(ticket_id: int):
         
         if not tracking:
             # Return just Redmine data if no tracking data
+            times_moved_to_fail = get_qc_fail_count(db, ticket_id)
             if redmine_developers:
                 return {
                     "ticket_id": ticket_id,
@@ -2221,9 +2230,10 @@ def get_ticket_tracking(ticket_id: int):
                     "dev_deviation": None,
                     "qa_deviation": None,
                     "qa_vs_dev_ratio": None,
-                    "updated_on": None
+                    "updated_on": None,
+                    "times_moved_to_fail": times_moved_to_fail,
                 }
-            return None
+            return {"ticket_id": ticket_id, "times_moved_to_fail": times_moved_to_fail}
         
         # Collect all developers (from tracking + Redmine)
         developers = set()
@@ -2270,6 +2280,7 @@ def get_ticket_tracking(ticket_id: int):
             for h in priority_history
         ]
         
+        times_moved_to_fail = get_qc_fail_count(db, ticket_id)
         return {
             "ticket_id": tracking.ticket_id,
             "title": (getattr(tracking, 'title', None) or '').strip() or None,
@@ -2280,6 +2291,7 @@ def get_ticket_tracking(ticket_id: int):
             "ageing_days": ageing_days,
             "days_to_close": days_to_close,
             "priority_history": priority_history_list,
+            "times_moved_to_fail": times_moved_to_fail,
             "developers": developers,
             "qc_testers": qc_testers,
             "eta": tracking.eta.isoformat() if tracking.eta else None,
@@ -3278,6 +3290,15 @@ def calculate_total_experience(date_of_joining, previous_experience):
     return round(techversant_exp + prev_exp, 1)  # One decimal place
 
 
+def _resolve_lead_or_manager_name(db: Session, value: str) -> Optional[str]:
+    """Resolve lead/manager string to canonical Employee.name (case-insensitive match)."""
+    if not value or not str(value).strip():
+        return None
+    v = str(value).strip()
+    emp = db.query(Employee).filter(func.lower(Employee.name) == func.lower(v)).first()
+    return emp.name if emp else v
+
+
 @app.get("/employees")
 def list_employees(
     team: Optional[str] = Query(None),
@@ -3287,6 +3308,8 @@ def list_employees(
     search: Optional[str] = Query(None),
     employment_status: Optional[str] = Query(None),
     for_display: Optional[bool] = Query(False, description="If true, return all employees for name lookup in dashboards (Tickets, Bugs, etc.) - no role filtering"),
+    for_lead_dropdown: Optional[bool] = Query(False, description="If true, return only employees eligible to be assigned as Lead (LEAD/MANAGER/ADMIN role or job title containing Lead)"),
+    for_manager_dropdown: Optional[bool] = Query(False, description="If true, return only employees eligible to be assigned as Manager (MANAGER/ADMIN role or job title containing Manager)"),
     current_user: dict = Depends(get_current_user),
 ):
     """List all employees with optional filters. Filtered by role visibility unless for_display=True."""
@@ -3313,9 +3336,38 @@ def list_employees(
                 )
             )
 
+        if for_lead_dropdown or for_manager_dropdown:
+            sub = db.query(User.employee_id).filter(User.employee_id.isnot(None))
+            if for_lead_dropdown and not for_manager_dropdown:
+                sub = sub.filter(or_(
+                    User.role.ilike("%LEAD%"),
+                    User.role.ilike("%MANAGER%"),
+                    User.role == "ADMIN",
+                ))
+            elif for_manager_dropdown:
+                sub = sub.filter(or_(
+                    User.role.ilike("%MANAGER%"),
+                    User.role == "ADMIN",
+                ))
+            role_eligible_ids = [r[0] for r in sub.distinct().all()]
+            if for_lead_dropdown and not for_manager_dropdown:
+                job_title_cond = or_(
+                    func.upper(Employee.role).like("%LEAD%"),
+                    func.upper(Employee.role).like("%MANAGER%"),
+                )
+            elif for_manager_dropdown:
+                job_title_cond = func.upper(Employee.role).like("%MANAGER%")
+            else:
+                job_title_cond = None
+            if job_title_cond is not None:
+                if role_eligible_ids:
+                    query = query.filter(or_(Employee.employee_id.in_(role_eligible_ids), job_title_cond))
+                else:
+                    query = query.filter(job_title_cond)
+
         # For dashboard/ticket display (Tickets Dashboard, All Bugs, main Dashboard), return all employees
         # so developer/QA names can be resolved for display and linking - all users see all names
-        if not for_display:
+        if not for_display and not for_lead_dropdown and not for_manager_dropdown:
             visible = get_visible_employee_ids(db, current_user)
             if visible is not None:
                 query = query.filter(Employee.employee_id.in_(visible))
@@ -3336,6 +3388,7 @@ def list_employees(
                 "category": emp.category,
                 "employment_status": emp.employment_status or "Ongoing Employee",
                 "lead": emp.lead,
+                "photo_url": emp.photo_url,
                 "experience_years": calculate_experience_years(emp.date_of_joining),
                 "is_active": emp.is_active
             })
@@ -4336,6 +4389,10 @@ def update_employee(
             if value is not None:
                 if field == 'team' and value:
                     value = value.upper()
+                if field == 'lead' and value:
+                    value = _resolve_lead_or_manager_name(db, value) or value
+                if field == 'manager' and value:
+                    value = _resolve_lead_or_manager_name(db, value) or value
                 setattr(employee, field, value)
         
         new_name = employee.name
@@ -4345,26 +4402,18 @@ def update_employee(
         # Cascade updates to related records
         update_count = 0
         
-        # If employee name changed, update all employees who have this person as lead or manager
-        if 'name' in update_data and old_name and new_name and old_name != new_name:
-            # Update employees where this person is the lead
-            lead_reportees = db.query(Employee).filter(
-                Employee.lead.ilike(f"%{old_name}%")
-            ).all()
+        # If employee name changed, update all employees who have this person as lead or manager (exact match, case-insensitive)
+        if 'name' in update_data and old_name and new_name and old_name.strip().lower() != new_name.strip().lower():
+            old_lower = old_name.strip().lower()
+            lead_reportees = db.query(Employee).filter(Employee.lead.ilike(f"%{old_name}%")).all()
             for reportee in lead_reportees:
-                # Replace old name with new name in lead field
-                if reportee.lead and old_name in reportee.lead:
-                    reportee.lead = reportee.lead.replace(old_name, new_name)
+                if (reportee.lead or "").strip().lower() == old_lower:
+                    reportee.lead = new_name
                     update_count += 1
-            
-            # Update employees where this person is the manager
-            manager_reportees = db.query(Employee).filter(
-                Employee.manager.ilike(f"%{old_name}%")
-            ).all()
+            manager_reportees = db.query(Employee).filter(Employee.manager.ilike(f"%{old_name}%")).all()
             for reportee in manager_reportees:
-                # Replace old name with new name in manager field
-                if reportee.manager and old_name in reportee.manager:
-                    reportee.manager = reportee.manager.replace(old_name, new_name)
+                if (reportee.manager or "").strip().lower() == old_lower:
+                    reportee.manager = new_name
                     update_count += 1
             
             # Update WeeklyPlan.planned_by
@@ -4385,30 +4434,11 @@ def update_employee(
                     task.assigned_by = task.assigned_by.replace(old_name, new_name)
                     update_count += 1
         
-        # If lead field changed, update all employees who have the same lead value
-        # This ensures consistency when a lead name is corrected
-        if 'lead' in update_data and old_lead and new_lead and old_lead != new_lead:
-            # Only update if the old lead exactly matches (to avoid partial matches)
-            employees_with_same_lead = db.query(Employee).filter(
-                Employee.lead == old_lead,
-                Employee.employee_id != employee.employee_id  # Don't update the employee being edited
-            ).all()
-            for emp in employees_with_same_lead:
-                emp.lead = new_lead
-                update_count += 1
-        
-        # If manager field changed, update all employees who have the same manager value
-        # This ensures consistency when a manager name is corrected
-        if 'manager' in update_data and old_manager and new_manager and old_manager != new_manager:
-            # Only update if the old manager exactly matches (to avoid partial matches)
-            employees_with_same_manager = db.query(Employee).filter(
-                Employee.manager == old_manager,
-                Employee.employee_id != employee.employee_id  # Don't update the employee being edited
-            ).all()
-            for emp in employees_with_same_manager:
-                emp.manager = new_manager
-                update_count += 1
-        
+        # Do NOT cascade lead/manager changes to other employees. Changing one employee's
+        # lead (e.g. Amala -> Aravind) must only update that employee; others who report
+        # to Amala must keep Amala as lead. Name-change cascade above handles correcting
+        # a person's name when they are lead/manager (e.g. "Amala" -> "Amala R").
+
         employee.updated_on = datetime.utcnow()
         db.commit()
         
@@ -5169,6 +5199,97 @@ def get_employee_planning_timesheet(
             "recent_timesheet_entries": sorted(all_actual_entries, key=lambda x: x["date"], reverse=True)[:50],
             "planning_module_link": f"/planning?module=comparison",
             "planning_employee_filter": employee.name,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/employees/{employee_id}/times-failed")
+def get_employee_times_failed(
+    employee_id: str,
+    period: str = Query("past_quarter", description="past_week, past_month, past_quarter, one_year, overall"),
+    start_date: Optional[str] = Query(None, description="Start date YYYY-MM-DD (optional, for custom range)"),
+    end_date: Optional[str] = Query(None, description="End date YYYY-MM-DD (optional)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Get count of times tickets (assigned to this resource as backend/frontend developer)
+    were moved to QC Review Fail (or Tested - Awaiting Fixes, Code Review Failed) in the selected period.
+    """
+    db: Session = SessionLocal()
+    try:
+        employee = db.query(Employee).filter(
+            or_(
+                Employee.employee_id == employee_id,
+                Employee.id == int(employee_id) if employee_id.isdigit() else False
+            )
+        ).first()
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        if not can_access_employee_profile(db, current_user, employee.employee_id):
+            raise HTTPException(status_code=403, detail="Access denied to this employee profile")
+
+        if start_date and end_date:
+            try:
+                range_start = datetime.strptime(start_date, "%Y-%m-%d").date()
+                range_end = datetime.strptime(end_date, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid start_date or end_date; use YYYY-MM-DD")
+        else:
+            range_start, range_end = get_date_range(period)
+            if range_start is None:
+                range_start = datetime.now() - timedelta(days=365 * 2)
+            if range_end is None:
+                range_end = datetime.now()
+
+        start_dt = range_start if isinstance(range_start, datetime) else datetime.combine(range_start, datetime.min.time())
+        end_dt = range_end if isinstance(range_end, datetime) else datetime.combine(range_end, datetime.max.time())
+        range_start_date = start_dt.date() if hasattr(start_dt, 'date') else range_start
+        range_end_date = end_dt.date() if hasattr(end_dt, 'date') else range_end
+
+        employee_name = (employee.name or "").strip()
+        ticket_query = db.query(TicketTracking.ticket_id).filter(
+            or_(
+                TicketTracking.backend_developer.ilike(f"%{employee_name}%"),
+                TicketTracking.frontend_developer.ilike(f"%{employee_name}%")
+            )
+        ).distinct()
+        ticket_ids = [r[0] for r in ticket_query.all()]
+
+        if not ticket_ids:
+            return {
+                "employee_id": employee.employee_id,
+                "employee_name": employee.name,
+                "period": period,
+                "start_date": range_start_date.isoformat() if hasattr(range_start_date, 'isoformat') else str(range_start_date),
+                "end_date": range_end_date.isoformat() if hasattr(range_end_date, 'isoformat') else str(range_end_date),
+                "total_times_failed": 0,
+                "by_ticket": [],
+            }
+
+        from sqlalchemy import func
+        rows = (
+            db.query(TicketStatusHistory.ticket_id, func.count(TicketStatusHistory.id).label("cnt"))
+            .filter(
+                TicketStatusHistory.ticket_id.in_(ticket_ids),
+                TicketStatusHistory.new_status.in_(QC_FAIL_STATUSES),
+                TicketStatusHistory.changed_on >= start_dt,
+                TicketStatusHistory.changed_on <= end_dt,
+            )
+            .group_by(TicketStatusHistory.ticket_id)
+            .all()
+        )
+        by_ticket = [{"ticket_id": r.ticket_id, "times_failed_in_period": r.cnt} for r in rows]
+        total_times_failed = sum(r.cnt for r in rows)
+
+        return {
+            "employee_id": employee.employee_id,
+            "employee_name": employee.name,
+            "period": period,
+            "start_date": range_start_date.isoformat() if hasattr(range_start_date, 'isoformat') else str(range_start_date),
+            "end_date": range_end_date.isoformat() if hasattr(range_end_date, 'isoformat') else str(range_end_date),
+            "total_times_failed": total_times_failed,
+            "by_ticket": by_ticket,
         }
     finally:
         db.close()
@@ -7021,7 +7142,7 @@ def get_status_history_summary(
 def generate_weekly_report(
     date: str = Query(None, description="Reference date (YYYY-MM-DD) for the week. Defaults to current week."),
     download: bool = Query(True, description="If true, returns the PDF file. If false, returns report data as JSON."),
-    current_user: dict = Depends(get_current_user_optional),
+    current_user: dict = Depends(require_reports_access),
 ):
     """Generate weekly QA report for the specified week"""
     from weekly_report import get_week_dates, get_weekly_data, generate_pdf_report
@@ -7069,7 +7190,7 @@ def generate_weekly_report(
 @app.get("/reports/weekly/preview")
 def preview_weekly_report(
     date: str = Query(None, description="Reference date (YYYY-MM-DD) for the week"),
-    current_user: dict = Depends(get_current_user_optional),
+    current_user: dict = Depends(require_reports_access),
 ):
     """Get preview data for weekly report without generating PDF"""
     from weekly_report import get_week_dates, get_weekly_data
@@ -7094,7 +7215,7 @@ def preview_weekly_report(
 @app.get("/reports/ticket/{ticket_id}")
 def generate_ticket_report_endpoint(
     ticket_id: int,
-    current_user: dict = Depends(get_current_user_optional),
+    current_user: dict = Depends(require_reports_access),
 ):
     """Generate PDF report for a specific ticket with all its data"""
     from ticket_report import get_ticket_data, generate_ticket_pdf
@@ -7134,7 +7255,7 @@ def generate_weekly_report_v2(
     date: str = Query(None, description="Reference date (YYYY-MM-DD) for the week"),
     project: str = Query(None, description="Project/Client name for the cover page"),
     last7days: bool = Query(True, description="If true, show last 7 days. If false, show Mon-Fri week."),
-    current_user: dict = Depends(get_current_user_optional),
+    current_user: dict = Depends(require_reports_access),
 ):
     """Generate comprehensive multi-page QA weekly report (V2)"""
     from qa_weekly_report_v2 import get_week_dates, get_comprehensive_data, generate_comprehensive_report
@@ -7173,7 +7294,7 @@ def generate_weekly_report_v2(
 def preview_weekly_report_v2(
     date: str = Query(None, description="Reference date (YYYY-MM-DD) for the week"),
     last7days: bool = Query(True, description="If true, show last 7 days. If false, show Mon-Fri week."),
-    current_user: dict = Depends(get_current_user_optional),
+    current_user: dict = Depends(require_reports_access),
 ):
     """Get preview data for the comprehensive weekly report"""
     from qa_weekly_report_v2 import get_week_dates, get_comprehensive_data
@@ -8112,6 +8233,8 @@ class TimeEntryCreate(BaseModel):
     project_name: Optional[str] = None
     planned_task_id: Optional[int] = None
     planned_task_source: Optional[str] = None
+    variance_notes: Optional[str] = None  # required when hours differ from planned
+    variance_reason_type: Optional[str] = None  # unplanned_task | estimate_ineffective | other
     employee_id: Optional[str] = None  # optional for leads/managers
 
 class SubmitRequest(BaseModel):
@@ -8142,6 +8265,29 @@ def _next_working_day(start_date: date, db: Session) -> date:
     while not is_working_day(d, db, include_optional_holidays=False):
         d += timedelta(days=1)
     return d
+
+
+def _submission_due_after_week(week_end: date, db: Session) -> date:
+    """Return submission due date: next Tuesday after week end (second working day after week_end)."""
+    first_wd = _next_working_day(week_end, db)  # Monday
+    return _next_working_day(first_wd, db)  # Tuesday
+
+
+def _get_planned_hours_for_entry(db: Session, entry_date: date, planned_task_id: int, planned_task_source: Optional[str]) -> Optional[float]:
+    """Return planned hours for the given task on the given date, or None if not found."""
+    if planned_task_source == "dev":
+        alloc = db.query(DevPlannedAllocation).filter(
+            DevPlannedAllocation.task_id == planned_task_id,
+            DevPlannedAllocation.allocation_date == entry_date,
+        ).first()
+        return round(float(alloc.hours or 0), 1) if alloc else None
+    if planned_task_source == "qa":
+        alloc = db.query(QAPlannedAllocation).filter(
+            QAPlannedAllocation.task_id == planned_task_id,
+            QAPlannedAllocation.allocation_date == entry_date,
+        ).first()
+        return round(float(alloc.hours or 0), 1) if alloc else None
+    return None
 
 
 def _apply_entry_reviews(db: Session, submission: TimeSheetSubmission, reviews: Optional[List[EntryReview]], current_user: dict):
@@ -8242,12 +8388,8 @@ def get_timesheet_week(
                 detail="Your account is not linked to an employee. Ask an admin to set your employee ID in Settings, or use a manager/lead account linked to an employee to view timesheets."
             )
 
-        # Get enhanced timesheet entries (synced) and manual entries
-        enhanced_entries = db.query(EnhancedTimesheet).filter(
-            EnhancedTimesheet.employee_id == target_employee_id,
-            EnhancedTimesheet.date >= ws,
-            EnhancedTimesheet.date <= we,
-        ).all()
+        # NOTE: Enhanced entries are NOT included - timesheet module uses only manual entries
+        enhanced_entries = []  # Empty - timesheet module uses only manual entries
 
         manual_entries = db.query(TimeSheetEntry).filter(
             TimeSheetEntry.employee_id == target_employee_id,
@@ -8262,7 +8404,7 @@ def get_timesheet_week(
             LeaveEntry.status == 'approved'
         ).all()
 
-        hours_logged = sum((e.hours_logged or 0) for e in enhanced_entries) + sum((m.hours or 0) for m in manual_entries)
+        hours_logged = sum((m.hours or 0) for m in manual_entries)
         leave_hours = sum((l.hours or 0) for l in leave_entries)
 
         # Check if a submission exists for this week
@@ -8324,6 +8466,8 @@ def get_timesheet_week(
                 "project_name": m.project_name,
                 "planned_task_id": m.planned_task_id,
                 "planned_task_source": m.planned_task_source,
+                "variance_notes": getattr(m, "variance_notes", None),
+                "variance_reason_type": getattr(m, "variance_reason_type", None),
                 "review_status": review_map.get(rkey, {}).get("status"),
                 "review_notes": review_map.get(rkey, {}).get("notes"),
                 "review_productive_hours": review_map.get(rkey, {}).get("productive_hours"),
@@ -8355,6 +8499,237 @@ def get_timesheet_week(
         db.close()
 
 
+@app.get("/timesheet/team-weekly")
+def get_team_timesheet_weekly(
+    team: str = Query("QA", description="Team: QA or DEVELOPMENT"),
+    date_str: str = Query(None, description="Any date in the week (YYYY-MM-DD). Defaults to current week."),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Get weekly timesheet view showing daily time entries per employee for a team.
+    Returns employees as rows with days as columns. Accessible to all authenticated users.
+    """
+    db = SessionLocal()
+    try:
+        # Parse date and calculate week boundaries (Monday to Sunday)
+        if date_str:
+            try:
+                target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+        else:
+            target_date = date.today()
+        
+        # Calculate week start (Monday) and end (Sunday)
+        week_start = target_date - timedelta(days=target_date.weekday())
+        week_end = week_start + timedelta(days=6)
+        
+        # Map team filter: "DEV" -> "DEVELOPMENT" for Employee table
+        employee_team_filter = team.upper()
+        if employee_team_filter == "DEV":
+            employee_team_filter = "DEVELOPMENT"
+        
+        # Map team for timesheet filter: EnhancedTimesheet uses "DEV", Employee uses "DEVELOPMENT"
+        timesheet_team_filter = team.upper()
+        if timesheet_team_filter == "DEVELOPMENT":
+            timesheet_team_filter = "DEV"
+        
+        # Get employees for the team
+        emp_query = db.query(Employee).filter(
+            Employee.is_active == True,
+            Employee.team == employee_team_filter
+        )
+        employees = emp_query.all()
+        
+        # Get employee IDs and names
+        employee_ids = [emp.employee_id for emp in employees]
+        employee_names = [emp.name for emp in employees]
+        
+        # NOTE: Enhanced timesheet entries (synced from Google Sheets) are NOT included
+        # in the Timesheet Module. They are only used by the Calendar Module.
+        # The Timesheet Module only shows manual entries and leave entries.
+        enhanced_entries = []  # Empty - timesheet module uses only manual entries
+        
+        # Query manual timesheet entries
+        manual_entries = db.query(TimeSheetEntry).filter(
+            TimeSheetEntry.date >= week_start,
+            TimeSheetEntry.date <= week_end,
+            TimeSheetEntry.employee_id.in_(employee_ids)
+        ).all()
+        
+        # Query leave entries
+        leave_entries = db.query(LeaveEntry).filter(
+            LeaveEntry.date >= week_start,
+            LeaveEntry.date <= week_end,
+            LeaveEntry.team == timesheet_team_filter,
+            LeaveEntry.status == 'approved'
+        ).all()
+        
+        # Build employee data structure
+        employees_data = []
+        for emp in employees:
+            emp_data = {
+                "employee_id": emp.employee_id,
+                "employee_name": emp.name,
+                "team": emp.team,
+                "days": {}
+            }
+            
+            # Initialize all days in the week
+            for i in range(7):
+                day_date = week_start + timedelta(days=i)
+                day_key = day_date.isoformat()
+                emp_data["days"][day_key] = {
+                    "entries": [],
+                    "total_hours": 0,
+                    "leave_hours": 0
+                }
+            
+            # Add enhanced entries
+            for entry in enhanced_entries:
+                if entry.employee_id == emp.employee_id:
+                    day_key = entry.date.isoformat()
+                    if day_key in emp_data["days"]:
+                        emp_data["days"][day_key]["entries"].append({
+                            "source": "sync",
+                            "id": entry.id,
+                            "date": day_key,
+                            "activity_type": entry.ticket_id or entry.leave_type or 'Work',
+                            "hours": entry.hours_logged or 0,
+                            "ticket_id": entry.ticket_id,
+                            "task_description": entry.task_description,
+                            "project_name": entry.project_name,
+                        })
+                        emp_data["days"][day_key]["total_hours"] += entry.hours_logged or 0
+            
+            # Add manual entries
+            for entry in manual_entries:
+                if entry.employee_id == emp.employee_id:
+                    day_key = entry.date.isoformat()
+                    if day_key in emp_data["days"]:
+                        emp_data["days"][day_key]["entries"].append({
+                            "source": "manual",
+                            "id": entry.id,
+                            "date": day_key,
+                            "activity_type": entry.activity_type,
+                            "task_category": getattr(entry, "task_category", None),
+                            "hours": entry.hours or 0,
+                            "ticket_id": entry.ticket_id,
+                            "task_description": entry.description,
+                            "project_name": entry.project_name,
+                            "variance_notes": getattr(entry, "variance_notes", None),
+                            "variance_reason_type": getattr(entry, "variance_reason_type", None),
+                        })
+                        emp_data["days"][day_key]["total_hours"] += entry.hours or 0
+            
+            # Add leave entries
+            for leave in leave_entries:
+                if leave.employee_id == emp.employee_id:
+                    day_key = leave.date.isoformat()
+                    if day_key in emp_data["days"]:
+                        emp_data["days"][day_key]["leave_hours"] += leave.hours or 0
+            
+            # Calculate weekly total
+            weekly_total = sum(
+                day["total_hours"] + day["leave_hours"]
+                for day in emp_data["days"].values()
+            )
+            emp_data["weekly_total"] = round(weekly_total, 2)
+            
+            employees_data.append(emp_data)
+        
+        # Non-managers see only their own row; managers see all DEV and QA data
+        role = (current_user.get("role") or "").upper()
+        is_manager = role == "ADMIN" or "MANAGER" in role
+        viewer_team = team
+        if not is_manager:
+            viewer_employee_id = current_user.get("employee_id")
+            if viewer_employee_id:
+                employees_data = [e for e in employees_data if e.get("employee_id") == viewer_employee_id]
+                if employees_data:
+                    viewer_team = employees_data[0].get("team") or team
+                else:
+                    # Viewer is in the other team: build their row from their actual team
+                    viewer_emp = db.query(Employee).filter(
+                        Employee.employee_id == viewer_employee_id,
+                        Employee.is_active == True,
+                    ).first()
+                    if viewer_emp:
+                        viewer_team = viewer_emp.team or "QA"
+                        v_team_ts = "DEV" if (viewer_team or "").upper() in ("DEV", "DEVELOPMENT") else "QA"
+                        # NOTE: Enhanced entries are NOT included - timesheet module uses only manual entries
+                        enhanced_v = []  # Empty - timesheet module uses only manual entries
+                        manual_v = db.query(TimeSheetEntry).filter(
+                            TimeSheetEntry.employee_id == viewer_employee_id,
+                            TimeSheetEntry.date >= week_start,
+                            TimeSheetEntry.date <= week_end,
+                        ).all()
+                        leave_v = db.query(LeaveEntry).filter(
+                            LeaveEntry.employee_id == viewer_employee_id,
+                            LeaveEntry.date >= week_start,
+                            LeaveEntry.date <= week_end,
+                            LeaveEntry.status == "approved",
+                        ).all()
+                        emp_data = {
+                            "employee_id": viewer_emp.employee_id,
+                            "employee_name": viewer_emp.name,
+                            "team": viewer_emp.team,
+                            "days": {},
+                        }
+                        for i in range(7):
+                            day_date = week_start + timedelta(days=i)
+                            day_key = day_date.isoformat()
+                            emp_data["days"][day_key] = {"entries": [], "total_hours": 0, "leave_hours": 0}
+                        for entry in enhanced_v:
+                            day_key = entry.date.isoformat()
+                            if day_key in emp_data["days"]:
+                                emp_data["days"][day_key]["entries"].append({
+                                    "source": "sync", "id": entry.id, "date": day_key,
+                                    "activity_type": entry.ticket_id or entry.leave_type or "Work",
+                                    "hours": entry.hours_logged or 0, "ticket_id": entry.ticket_id,
+                                    "task_description": entry.task_description, "project_name": entry.project_name,
+                                })
+                                emp_data["days"][day_key]["total_hours"] += entry.hours_logged or 0
+                        for entry in manual_v:
+                            day_key = entry.date.isoformat()
+                            if day_key in emp_data["days"]:
+                                emp_data["days"][day_key]["entries"].append({
+                                    "source": "manual", "id": entry.id, "date": day_key,
+                                    "activity_type": entry.activity_type, "task_category": getattr(entry, "task_category", None),
+                                    "hours": entry.hours or 0, "ticket_id": entry.ticket_id,
+                                    "task_description": entry.description, "project_name": entry.project_name,
+                                    "variance_notes": getattr(entry, "variance_notes", None),
+                                    "variance_reason_type": getattr(entry, "variance_reason_type", None),
+                                })
+                                emp_data["days"][day_key]["total_hours"] += entry.hours or 0
+                        for leave in leave_v:
+                            day_key = leave.date.isoformat()
+                            if day_key in emp_data["days"]:
+                                emp_data["days"][day_key]["leave_hours"] += leave.hours or 0
+                        emp_data["weekly_total"] = round(sum(
+                            d["total_hours"] + d["leave_hours"] for d in emp_data["days"].values()
+                        ), 2)
+                        employees_data = [emp_data]
+            else:
+                employees_data = []
+        
+        return {
+            "team": viewer_team,
+            "week_start": week_start.isoformat(),
+            "week_end": week_end.isoformat(),
+            "employees": employees_data,
+            "viewer_can_see_all": is_manager,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.exception("Team timesheet weekly failed")
+        raise HTTPException(status_code=500, detail=f"Team timesheet error: {str(e)}")
+    finally:
+        db.close()
+
+
 @app.get("/timesheet/month")
 def get_timesheet_month(
     month: str = Query(..., description="Month YYYY-MM"),
@@ -8380,11 +8755,8 @@ def get_timesheet_month(
         if employee_id and not ("LEAD" in current_user.get("role", "") or "MANAGER" in current_user.get("role", "") or current_user.get("role") == "ADMIN"):
             raise HTTPException(status_code=403, detail="Insufficient permissions")
 
-        enhanced_entries = db.query(EnhancedTimesheet).filter(
-            EnhancedTimesheet.employee_id == target_employee_id,
-            EnhancedTimesheet.date >= month_start,
-            EnhancedTimesheet.date <= month_end,
-        ).all()
+        # NOTE: Enhanced entries are NOT included - timesheet module uses only manual entries
+        enhanced_entries = []  # Empty - timesheet module uses only manual entries
         manual_entries = db.query(TimeSheetEntry).filter(
             TimeSheetEntry.employee_id == target_employee_id,
             TimeSheetEntry.date >= month_start,
@@ -8551,6 +8923,16 @@ def add_timesheet_entry(
         if req.task_category == "Ticket" and not (req.ticket_id and str(req.ticket_id).strip()):
             raise HTTPException(status_code=400, detail="Ticket ID is required when task category is Ticket")
 
+        # When linked to a planned task and hours differ from planned, require variance_notes
+        if req.planned_task_id and req.planned_task_source:
+            planned_hours = _get_planned_hours_for_entry(db, req.date, req.planned_task_id, req.planned_task_source)
+            if planned_hours is not None and abs(req.hours - planned_hours) > 0.01:
+                if not (req.variance_notes and str(req.variance_notes).strip()):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Comment (variance notes) is required when entered hours differ from planned hours",
+                    )
+
         entry = TimeSheetEntry(
             employee_id=target_employee,
             employee_name=emp.name,
@@ -8564,6 +8946,8 @@ def add_timesheet_entry(
             project_name=req.project_name,
             planned_task_id=req.planned_task_id,
             planned_task_source=req.planned_task_source,
+            variance_notes=req.variance_notes.strip() if req.variance_notes and str(req.variance_notes).strip() else None,
+            variance_reason_type=req.variance_reason_type.strip() if req.variance_reason_type and str(req.variance_reason_type).strip() else None,
         )
         db.add(entry)
         db.commit()
@@ -8626,6 +9010,16 @@ def update_timesheet_entry(
         if req.task_category == "Ticket" and not (req.ticket_id and str(req.ticket_id).strip()):
             raise HTTPException(status_code=400, detail="Ticket ID is required when task category is Ticket")
 
+        # When linked to a planned task and hours differ from planned, require variance_notes
+        if req.planned_task_id and req.planned_task_source:
+            planned_hours = _get_planned_hours_for_entry(db, req.date, req.planned_task_id, req.planned_task_source)
+            if planned_hours is not None and abs(req.hours - planned_hours) > 0.01:
+                if not (req.variance_notes and str(req.variance_notes).strip()):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Comment (variance notes) is required when entered hours differ from planned hours",
+                    )
+
         entry.date = req.date
         entry.activity_type = req.activity_type
         entry.task_category = req.task_category
@@ -8635,6 +9029,8 @@ def update_timesheet_entry(
         entry.project_name = req.project_name
         entry.planned_task_id = req.planned_task_id
         entry.planned_task_source = req.planned_task_source
+        entry.variance_notes = req.variance_notes.strip() if req.variance_notes and str(req.variance_notes).strip() else None
+        entry.variance_reason_type = req.variance_reason_type.strip() if req.variance_reason_type and str(req.variance_reason_type).strip() else None
         db.commit()
         return {"ok": True}
     finally:
@@ -8654,11 +9050,7 @@ def submit_timesheet(req: SubmitRequest, current_user: dict = Depends(get_curren
         ws, we = _get_week_boundaries(week_end)
 
         # Aggregate hours and leave
-        enhanced_entries = db.query(EnhancedTimesheet).filter(
-            EnhancedTimesheet.employee_id == employee_id,
-            EnhancedTimesheet.date >= ws,
-            EnhancedTimesheet.date <= we,
-        ).all()
+        # NOTE: Enhanced entries are NOT included - timesheet module uses only manual entries
         manual_entries = db.query(TimeSheetEntry).filter(
             TimeSheetEntry.employee_id == employee_id,
             TimeSheetEntry.date >= ws,
@@ -8671,7 +9063,7 @@ def submit_timesheet(req: SubmitRequest, current_user: dict = Depends(get_curren
             LeaveEntry.status == 'approved'
         ).all()
 
-        hours_logged = sum((e.hours_logged or 0) for e in enhanced_entries) + sum((m.hours or 0) for m in manual_entries)
+        hours_logged = sum((m.hours or 0) for m in manual_entries)
         leave_hours = sum((l.hours or 0) for l in leave_entries)
         total = hours_logged + leave_hours
 
@@ -8768,6 +9160,49 @@ def get_pending_approvals(team: Optional[str] = Query(None), current_user: dict 
         db.close()
 
 
+@app.get("/timesheet/completed-approvals")
+def get_completed_approvals(team: Optional[str] = Query(None), current_user: dict = Depends(get_current_user)):
+    """Return submissions that have been acted on (completed) by the current approver: lead or manager."""
+    db: Session = SessionLocal()
+    try:
+        role = current_user.get("role")
+        if role == "ADMIN" or "MANAGER" in role:
+            status_filter = ["Approved", "Rejected", "Revision Required"]
+        elif "LEAD" in role:
+            status_filter = ["Lead Approved", "Approved", "Rejected", "Revision Required"]
+        else:
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        q = db.query(TimeSheetSubmission).filter(TimeSheetSubmission.status.in_(status_filter))
+
+        if "LEAD" in role and not ("MANAGER" in role or role == 'ADMIN'):
+            employee = db.query(Employee).filter(Employee.employee_id == current_user.get("employee_id")).first()
+            if employee and employee.team:
+                q = q.join(Employee, Employee.employee_id == TimeSheetSubmission.employee_id).filter(Employee.team == employee.team)
+        elif team:
+            q = q.join(Employee, Employee.employee_id == TimeSheetSubmission.employee_id).filter(Employee.team == team)
+
+        subs = q.order_by(TimeSheetSubmission.week_start.desc()).limit(100).all()
+        result = []
+        for s in subs:
+            result.append({
+                "id": s.id,
+                "employee_id": s.employee_id,
+                "employee_name": s.employee_name,
+                "week_start": s.week_start.isoformat(),
+                "week_end": s.week_end.isoformat(),
+                "status": s.status,
+                "submitted_on": s.submitted_on.isoformat() if s.submitted_on else None,
+                "lead_approved_on": s.lead_approved_on.isoformat() if getattr(s, 'lead_approved_on', None) else None,
+                "manager_approved_on": s.manager_approved_on.isoformat() if getattr(s, 'manager_approved_on', None) else None,
+                "total_hours": s.total_hours_logged,
+                "leave_hours": s.leave_hours,
+            })
+        return {"completed_timesheets": result}
+    finally:
+        db.close()
+
+
 @app.get("/timesheet/submission/{submission_id}")
 def get_timesheet_submission(submission_id: int, current_user: dict = Depends(get_current_user)):
     db: Session = SessionLocal()
@@ -8780,11 +9215,8 @@ def get_timesheet_submission(submission_id: int, current_user: dict = Depends(ge
             raise HTTPException(status_code=403, detail="Access denied")
 
         ws, we = s.week_start, s.week_end
-        enhanced_entries = db.query(EnhancedTimesheet).filter(
-            EnhancedTimesheet.employee_id == s.employee_id,
-            EnhancedTimesheet.date >= ws,
-            EnhancedTimesheet.date <= we,
-        ).all()
+        # NOTE: Enhanced entries are NOT included - timesheet module uses only manual entries
+        enhanced_entries = []  # Empty - timesheet module uses only manual entries
         manual_entries = db.query(TimeSheetEntry).filter(
             TimeSheetEntry.employee_id == s.employee_id,
             TimeSheetEntry.date >= ws,
@@ -8842,6 +9274,8 @@ def get_timesheet_submission(submission_id: int, current_user: dict = Depends(ge
                 "project_name": m.project_name,
                 "planned_task_id": m.planned_task_id,
                 "planned_task_source": m.planned_task_source,
+                "variance_notes": getattr(m, "variance_notes", None),
+                "variance_reason_type": getattr(m, "variance_reason_type", None),
                 "review_status": review_map.get(rkey, {}).get("status"),
                 "review_notes": review_map.get(rkey, {}).get("notes"),
                 "review_productive_hours": review_map.get(rkey, {}).get("productive_hours"),
@@ -8973,6 +9407,96 @@ def request_revision(submission_id: int, req: ApprovalRequest, current_user: dic
         db.close()
 
 
+@app.get("/timesheet/my-week-summary")
+def get_my_week_summary(
+    date_str: str = Query(..., description="Any date in week (YYYY-MM-DD)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Return current user's week summary: total_hours, leave_hours, by_category, ticket_count for submit 36h check and summary display."""
+    db: Session = SessionLocal()
+    try:
+        employee_id = current_user.get("employee_id")
+        if not employee_id:
+            raise HTTPException(status_code=400, detail="Employee account required")
+        try:
+            target_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+        ws, we = _get_week_boundaries(target_date)
+
+        manual_entries = db.query(TimeSheetEntry).filter(
+            TimeSheetEntry.employee_id == employee_id,
+            TimeSheetEntry.date >= ws,
+            TimeSheetEntry.date <= we,
+        ).all()
+        leave_entries = db.query(LeaveEntry).filter(
+            LeaveEntry.employee_id == employee_id,
+            LeaveEntry.date >= ws,
+            LeaveEntry.date <= we,
+            LeaveEntry.status == "approved",
+        ).all()
+        # NOTE: Enhanced entries are NOT included - timesheet module uses only manual entries
+
+        hours_logged = sum(e.hours or 0 for e in manual_entries)
+        leave_hours = sum(l.hours or 0 for l in leave_entries)
+        total_hours = round(hours_logged + leave_hours, 2)
+
+        by_category = {}
+        for e in manual_entries:
+            cat = getattr(e, "task_category", None) or "Miscellaneous"
+            by_category[cat] = by_category.get(cat, 0) + (e.hours or 0)
+
+        ticket_ids = set()
+        for e in manual_entries:
+            if e.ticket_id and str(e.ticket_id).strip():
+                ticket_ids.add(str(e.ticket_id).strip())
+
+        return {
+            "week_start": ws.isoformat(),
+            "week_end": we.isoformat(),
+            "hours_logged": round(hours_logged, 2),
+            "leave_hours": round(leave_hours, 2),
+            "total_hours": total_hours,
+            "by_category": by_category,
+            "ticket_count": len(ticket_ids),
+        }
+    finally:
+        db.close()
+
+
+@app.get("/timesheet/my-submissions")
+def get_my_submissions(current_user: dict = Depends(get_current_user)):
+    """Return current user's own timesheet submissions (for My submissions tab)."""
+    db: Session = SessionLocal()
+    try:
+        employee_id = current_user.get("employee_id")
+        if not employee_id:
+            raise HTTPException(status_code=400, detail="Employee account required")
+
+        subs = (
+            db.query(TimeSheetSubmission)
+            .filter(TimeSheetSubmission.employee_id == employee_id)
+            .order_by(TimeSheetSubmission.week_start.desc())
+            .all()
+        )
+        return [
+            {
+                "id": s.id,
+                "week_start": s.week_start.isoformat(),
+                "week_end": s.week_end.isoformat(),
+                "status": s.status,
+                "submitted_on": s.submitted_on.isoformat() if s.submitted_on else None,
+                "total_hours_logged": s.total_hours_logged,
+                "leave_hours": s.leave_hours,
+                "lead_approved_on": s.lead_approved_on.isoformat() if s.lead_approved_on else None,
+                "manager_approved_on": s.manager_approved_on.isoformat() if s.manager_approved_on else None,
+            }
+            for s in subs
+        ]
+    finally:
+        db.close()
+
+
 @app.get("/timesheet/lock-status")
 def get_timesheet_lock_status(current_user: dict = Depends(get_current_user)):
     """
@@ -8986,11 +9510,11 @@ def get_timesheet_lock_status(current_user: dict = Depends(get_current_user)):
         role = current_user.get("role", "")
         employee_id = current_user.get("employee_id")
 
-        # Check missing submission for last week
+        # Check missing submission for last week (due: next Tuesday after week end)
         if employee_id:
             last_week_ref = today - timedelta(days=7)
             last_ws, last_we = _get_week_boundaries(last_week_ref)
-            submission_due = _next_working_day(last_we, db)
+            submission_due = _submission_due_after_week(last_we, db)
 
             if today >= submission_due:
                 submission = db.query(TimeSheetSubmission).filter(
@@ -9709,6 +10233,91 @@ def qa_planning_overview(current_user: dict = Depends(get_current_user)):
         db.close()
 
 
+@app.get("/qa-planning/qc-review-fail")
+def qa_planning_qc_review_fail(current_user: dict = Depends(get_current_user)):
+    """
+    List tickets in QC Review Fail status (and Tested - Awaiting Fixes, Code Review Failed).
+    Returns tickets with full details for the QC Review Fail tab.
+    """
+    db = SessionLocal()
+    try:
+        data = get_qa_qc_review_fail_data(db)
+        return data
+    finally:
+        db.close()
+
+
+class QATicketTestedByDevUpdate(BaseModel):
+    tested_by_dev: bool
+
+
+@app.patch("/qa-planning/ticket/{ticket_id}/tested-by-dev")
+def qa_planning_set_tested_by_dev(
+    ticket_id: int,
+    body: QATicketTestedByDevUpdate,
+    current_user: dict = Depends(get_current_user),
+):
+    """Set or unset the 'Tested By Dev' flag for a ticket (pending QA). Only applies to tickets in QC statuses."""
+    db = SessionLocal()
+    try:
+        t = db.query(TicketTracking).filter(
+            TicketTracking.ticket_id == ticket_id,
+            TicketTracking.status.in_(QA_QC_STATUSES),
+        ).first()
+        if not t:
+            raise HTTPException(status_code=404, detail="Ticket not found or not in QA QC statuses")
+        flag = db.query(QATicketFlag).filter(QATicketFlag.ticket_id == ticket_id).first()
+        if flag is None:
+            flag = QATicketFlag(ticket_id=ticket_id, tested_by_dev=body.tested_by_dev)
+            db.add(flag)
+        else:
+            flag.tested_by_dev = body.tested_by_dev
+        db.commit()
+        db.refresh(flag)
+        return {"ticket_id": ticket_id, "tested_by_dev": flag.tested_by_dev}
+    finally:
+        db.close()
+
+
+class QAReleaseResourceBody(BaseModel):
+    release_date: Optional[str] = None  # YYYY-MM-DD; default today
+
+
+@app.post("/qa-planning/task/{task_id}/release-resource")
+def qa_planning_release_resource(
+    task_id: int,
+    body: Optional[QAReleaseResourceBody] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """Mark QA resource as free from a given date (e.g. task failed early). From that date onward the task no longer blocks the resource. Optional; use when task fails and another task can be assigned."""
+    db = SessionLocal()
+    try:
+        task = db.query(QAPlannedTask).filter(
+            QAPlannedTask.id == task_id,
+            QAPlannedTask.status == "active",
+        ).first()
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found or not active")
+        if not can_manage_tasks_for(db, current_user, task.employee_id):
+            raise HTTPException(status_code=403, detail="Not allowed to manage this task")
+        date_str = (body and body.release_date) or date.today().isoformat()
+        try:
+            release_date = datetime.strptime(date_str.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="release_date must be YYYY-MM-DD")
+        # Set resource_released_at to start of that day (so allocations on that date and later are excluded)
+        task.resource_released_at = datetime.combine(release_date, datetime.min.time())
+        db.commit()
+        db.refresh(task)
+        return {
+            "task_id": task_id,
+            "resource_released_at": task.resource_released_at.isoformat() if task.resource_released_at else None,
+            "message": "QA resource is free from this date; another task can be assigned (not mandatory).",
+        }
+    finally:
+        db.close()
+
+
 @app.get("/qa-planning/overview/export-excel")
 def qa_planning_export_excel(
     search: Optional[str] = Query(None),
@@ -9899,6 +10508,7 @@ def qa_planning_get_week(
                 "created_by": t.created_by,
                 "allocations": [{"date": a.allocation_date.isoformat(), "hours": a.hours} for a in allocs_to_show],
                 "spillover": (pw is None) or (t.planning_week_id != pw.id),
+                "resource_released_at": t.resource_released_at.isoformat() if getattr(t, "resource_released_at", None) else None,
             })
 
         if pw:
@@ -10482,10 +11092,13 @@ def qa_planning_calendar(
         else:
             visible = get_visible_employee_ids(db, current_user)
         lead_groups = get_qa_employees_for_planner(db, visible)
-        ref = date_str or month_str or date.today().isoformat()
+        ref = (date_str or month_str or "").strip() or date.today().isoformat()
         if len(ref) == 7:  # YYYY-MM
             ref = ref + "-01"
-        ref_date = datetime.strptime(ref, "%Y-%m-%d").date()
+        try:
+            ref_date = datetime.strptime(ref, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid date format. Use YYYY-MM-DD or YYYY-MM, got: {ref!r}")
         week_start, week_end = get_planning_week_dates(ref_date)
 
         if view == "monthly" and month_str:
@@ -10512,9 +11125,21 @@ def qa_planning_calendar(
             QAPlannedTask.status == "active",
             QAPlannedAllocation.allocation_date >= start_range,
             QAPlannedAllocation.allocation_date <= end_range,
+            _allocation_not_released(),
         ).all()
         # Resolve priority from TicketTracking when task.ticket_priority is null (e.g. older tasks)
-        ticket_ids_qa = list({t.ticket_id for t, _ in tasks if t.ticket_id})
+        # Only integer ticket_ids: TicketTracking.ticket_id is integer; planned tasks use int, timesheet may have strings
+        def _int_ticket_ids(ids):
+            out = []
+            for x in ids:
+                if x is None:
+                    continue
+                try:
+                    out.append(int(x) if not isinstance(x, int) else x)
+                except (TypeError, ValueError):
+                    continue
+            return list(set(out))
+        ticket_ids_qa = _int_ticket_ids([t.ticket_id for t, _ in tasks if t.ticket_id])
         ticket_priority_map = {}
         if ticket_ids_qa:
             tkts = db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(ticket_ids_qa)).all()
@@ -10535,43 +11160,8 @@ def qa_planning_calendar(
                     "over_estimate": False,
                 })
 
-        # Also gather actual timesheet entries (to show plan vs actual for past days)
+        # Planner Calendar shows only planning-module data (no EnhancedTimesheet / Google Sheet actuals here)
         times_by_emp_date = defaultdict(lambda: defaultdict(lambda: {"hours": 0, "items": []}))
-        try:
-            ts_entries = db.query(EnhancedTimesheet).filter(
-                EnhancedTimesheet.date >= start_range,
-                EnhancedTimesheet.date <= end_range,
-                EnhancedTimesheet.employee_name.in_(emp_names)
-            ).all()
-            for ent in ts_entries:
-                name = ent.employee_name
-                ddate = ent.date
-                hours = ent.productive_hours if ent.productive_hours and ent.productive_hours > 0 else (ent.hours_logged or 0)
-                times_by_emp_date[name][ddate]["hours"] += hours
-                # Include ticket references where present
-                times_by_emp_date[name][ddate]["items"].append({
-                    "ticket_id": ent.ticket_id,
-                    "hours": hours,
-                    "task_description": ent.task_description,
-                    "project_name": ent.project_name,
-                })
-        except Exception:
-            # If EnhancedTimesheet table isn't populated or other issues occur, continue without actuals
-            times_by_emp_date = defaultdict(lambda: defaultdict(lambda: {"hours": 0, "items": []}))
-
-        # Add priorities for ticket_ids that appear only in actual (timesheet) items
-        actual_only_ids = set()
-        for _en, by_date in times_by_emp_date.items():
-            for _dt, data in by_date.items():
-                for it in data.get("items", []):
-                    tid = it.get("ticket_id")
-                    if tid and tid not in ticket_priority_map:
-                        actual_only_ids.add(tid)
-        if actual_only_ids:
-            tkts_extra = db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(actual_only_ids)).all()
-            for tk in tkts_extra:
-                if getattr(tk, "priority", None):
-                    ticket_priority_map[tk.ticket_id] = tk.priority
 
         working_days_list = get_working_days_list(start_range, end_range, db)
         capacity_hours = len(working_days_list) * 8
@@ -10599,9 +11189,12 @@ def qa_planning_calendar(
             while d <= end_range:
                 leave_h = leave_map.get(e.name, {}).get(d, 0)
                 alloc_h = alloc_map.get(e.name, {}).get(d, 0)
-                total = leave_h + alloc_h
+                # Use same source as items (tasks_by_emp_date) so cell hours match displayed tasks
+                planned_h = tasks_by_emp_date[e.name][d]["hours"]
+                cell_hours = round(planned_h, 1) if planned_h else round(alloc_h, 1)
+                total = leave_h + cell_hours
                 # Planned hours and items
-                cell = {"hours": round(alloc_h, 1), "leave_hours": round(leave_h, 1), "total": round(total, 1)}
+                cell = {"hours": cell_hours, "leave_hours": round(leave_h, 1), "total": round(total, 1)}
                 cell["items"] = tasks_by_emp_date[e.name][d]["items"][:5]
                 # Actual (timesheet) hours and ticket items for the date (if available)
                 actual_h = times_by_emp_date.get(e.name, {}).get(d, {}).get("hours", 0)
@@ -10610,10 +11203,14 @@ def qa_planning_calendar(
                 actual_items = []
                 for it in raw_actual:
                     tid = it.get("ticket_id")
-                    priority = ticket_priority_map.get(tid) if tid else None
+                    try:
+                        tid_int = int(tid) if tid is not None and (isinstance(tid, int) or (isinstance(tid, str) and str(tid).strip().isdigit())) else None
+                    except (TypeError, ValueError):
+                        tid_int = None
+                    priority = ticket_priority_map.get(tid_int) if tid_int is not None else None
                     item = dict(it)
                     if tid:
-                        item["text"] = f"#{tid}"
+                        item["text"] = f"#{tid}" if tid_int is not None else str(tid)[:30]
                         item["ticket_priority"] = priority
                     actual_items.append(item)
                 cell["actual_hours"] = round(actual_h, 1)
@@ -10622,6 +11219,10 @@ def qa_planning_calendar(
                 d += timedelta(days=1)
             rows.append(row)
         return {"view": view, "start": start_range.isoformat(), "end": end_range.isoformat(), "employees": rows}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"QA calendar error: {str(e)}")
     finally:
         db.close()
 
@@ -11597,11 +12198,14 @@ def dev_planning_calendar(
         # Also gather actual timesheet entries (to show plan vs actual for past days)
         times_by_emp_date = defaultdict(lambda: defaultdict(lambda: {"hours": 0, "items": []}))
         try:
-            ts_entries = db.query(EnhancedTimesheet).filter(
-                EnhancedTimesheet.date >= start_range,
-                EnhancedTimesheet.date <= end_range,
-                EnhancedTimesheet.employee_name.in_(emp_names)
-            ).all()
+            if emp_names:
+                ts_entries = db.query(EnhancedTimesheet).filter(
+                    EnhancedTimesheet.date >= start_range,
+                    EnhancedTimesheet.date <= end_range,
+                    EnhancedTimesheet.employee_name.in_(emp_names)
+                ).all()
+            else:
+                ts_entries = []
             for ent in ts_entries:
                 name = ent.employee_name
                 ddate = ent.date
@@ -12068,7 +12672,7 @@ def get_plan_vs_actual_planning(
         for name in planned_by_employee:
             planned_by_employee[name]["hours"] = round(planned_by_employee[name]["hours"], 2)
 
-        # Get actual timesheet entries
+        # Get actual timesheet entries (Enhanced + manual TimeSheetEntry for source of truth)
         actual_query = db.query(EnhancedTimesheet).filter(
             EnhancedTimesheet.date >= week_start,
             EnhancedTimesheet.date <= week_end,
@@ -12077,6 +12681,23 @@ def get_plan_vs_actual_planning(
         if employee_name:
             actual_query = actual_query.filter(EnhancedTimesheet.employee_name == employee_name)
         actual_entries = actual_query.order_by(EnhancedTimesheet.employee_name, EnhancedTimesheet.date).all()
+
+        # Also get manual timesheet entries for the same week/team
+        if team_lower == "dev":
+            active_employees = get_development_employees(db)
+        else:
+            active_employees = get_qa_employees(db)
+        employee_ids_planning = [e.employee_id for e in active_employees if e.employee_id]
+        if employee_name:
+            emp_lookup_plan = {e.name: e for e in active_employees if e.name}
+            employee_ids_planning = [emp_lookup_plan[employee_name].employee_id] if employee_name in emp_lookup_plan else []
+        manual_actuals = []
+        if employee_ids_planning:
+            manual_actuals = db.query(TimeSheetEntry).filter(
+                TimeSheetEntry.date >= week_start,
+                TimeSheetEntry.date <= week_end,
+                TimeSheetEntry.employee_id.in_(employee_ids_planning),
+            ).order_by(TimeSheetEntry.employee_name, TimeSheetEntry.date).all()
 
         # Build actual by employee, by ticket, and by day
         actual_by_employee = defaultdict(lambda: {"hours": 0, "entries": [], "by_ticket": defaultdict(float), "by_day": defaultdict(float)})
@@ -12088,10 +12709,27 @@ def get_plan_vs_actual_planning(
             actual_by_employee[name]["by_ticket"][ticket_key] += h
             actual_by_employee[name]["by_day"][e.date.isoformat()] += h
             actual_by_employee[name]["entries"].append({
+                "source": "sync",
                 "ticket_id": e.ticket_id,
                 "hours": round(h, 2),
                 "task_description": e.task_description,
                 "date": e.date.isoformat(),
+            })
+        for e in manual_actuals:
+            name = e.employee_name
+            h = float(e.hours or 0)
+            actual_by_employee[name]["hours"] += h
+            ticket_key = str(e.ticket_id) if e.ticket_id is not None else "(no ticket)"
+            actual_by_employee[name]["by_ticket"][ticket_key] += h
+            actual_by_employee[name]["by_day"][e.date.isoformat()] += h
+            actual_by_employee[name]["entries"].append({
+                "source": "manual",
+                "ticket_id": e.ticket_id,
+                "hours": round(h, 2),
+                "task_description": e.description,
+                "date": e.date.isoformat(),
+                "variance_notes": getattr(e, "variance_notes", None),
+                "variance_reason_type": getattr(e, "variance_reason_type", None),
             })
         for name in actual_by_employee:
             actual_by_employee[name]["hours"] = round(actual_by_employee[name]["hours"], 2)

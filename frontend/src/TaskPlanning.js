@@ -4,6 +4,7 @@ import DevelopmentTaskPlanning from './DevelopmentTaskPlanning';
 import QATaskPlanning from './QATaskPlanning';
 import PlanComparison from './PlanComparison';
 import { useAuth } from './AuthContext';
+import AppSidebar from './AppSidebar';
 import './TaskPlanning.css';
 
 // Use planning_team from /auth/me when present; else derive from role/team (Dev tab hidden for QA, QA tab hidden for Dev).
@@ -68,43 +69,46 @@ function TaskPlanning() {
   };
 
   return (
-    <div className="task-planning-page">
-      <header className="task-planning-main-header">
-        <div className="task-planning-main-title-row">
-          <Link to="/" className="task-planning-back">← Dashboard</Link>
-          <h1 className="task-planning-main-title">Task Planning</h1>
-        </div>
-        <nav className="task-planning-sub-nav" aria-label="Task Planning sub-modules">
-          {/* Show Dev tab for DEV team/role or Managers/Admins */}
-          {(canViewAllModules || effectiveTeam === 'DEVELOPMENT') && (
-            <button
-              type="button"
-              className={`task-planning-sub-tab ${subModule === 'dev' ? 'active' : ''}`}
-              onClick={() => selectModule('dev')}
-            >
-              Dev
-            </button>
-          )}
-          {/* Show QA tab for QA team/role or Managers/Admins */}
-          {(canViewAllModules || effectiveTeam === 'QA') && (
-            <button
-              type="button"
-              className={`task-planning-sub-tab ${subModule === 'qa' ? 'active' : ''}`}
-              onClick={() => selectModule('qa')}
-            >
-              QA
-            </button>
-          )}
-          {/* Plan vs Actual is available to everyone */}
-          <button
-            type="button"
-            className={`task-planning-sub-tab ${subModule === 'comparison' ? 'active' : ''}`}
-            onClick={() => selectModule('comparison')}
-          >
-            Plan vs Actual
-          </button>
-        </nav>
-      </header>
+    <div className="dashboard">
+      <AppSidebar />
+      <main className="main-content">
+        <div className="task-planning-page">
+          <header className="task-planning-main-header">
+            <div className="task-planning-main-title-row">
+              <Link to="/" className="task-planning-back">← Dashboard</Link>
+              <h1 className="task-planning-main-title">Task Planning</h1>
+            </div>
+            <nav className="task-planning-sub-nav" aria-label="Task Planning sub-modules">
+              {/* Show Dev tab for DEV team/role or Managers/Admins */}
+              {(canViewAllModules || effectiveTeam === 'DEVELOPMENT') && (
+                <button
+                  type="button"
+                  className={`task-planning-sub-tab ${subModule === 'dev' ? 'active' : ''}`}
+                  onClick={() => selectModule('dev')}
+                >
+                  Dev
+                </button>
+              )}
+              {/* Show QA tab for QA team/role or Managers/Admins */}
+              {(canViewAllModules || effectiveTeam === 'QA') && (
+                <button
+                  type="button"
+                  className={`task-planning-sub-tab ${subModule === 'qa' ? 'active' : ''}`}
+                  onClick={() => selectModule('qa')}
+                >
+                  QA
+                </button>
+              )}
+              {/* Plan vs Actual is available to everyone */}
+              <button
+                type="button"
+                className={`task-planning-sub-tab ${subModule === 'comparison' ? 'active' : ''}`}
+                onClick={() => selectModule('comparison')}
+              >
+                Plan vs Actual
+              </button>
+            </nav>
+          </header>
 
       {subModule === 'dev' && (
         <DevelopmentTaskPlanning showParentTitle={false} />
@@ -117,6 +121,8 @@ function TaskPlanning() {
       {subModule === 'comparison' && (
         <PlanComparison showParentTitle={false} />
       )}
+    </div>
+      </main>
     </div>
   );
 }

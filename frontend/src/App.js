@@ -15,6 +15,7 @@ import Login from "./Login";
 import ChangePassword from "./ChangePassword";
 import Settings from "./Settings";
 import { AuthProvider, useAuth } from "./AuthContext";
+import { ThemeProvider } from "./ThemeContext";
 import "./dashboard.css";
 
 // ScrollToTop component that scrolls to top on route change
@@ -53,7 +54,7 @@ function TaskModuleGuard({ children }) {
 }
 
 function ProtectedRoute({ children, allowPasswordChange = false }) {
-  const { isAuthenticated, loading, needsPasswordChange, lockStatus } = useAuth();
+  const { isAuthenticated, loading, needsPasswordChange } = useAuth();
   const location = useLocation();
   
   if (loading) {
@@ -69,9 +70,6 @@ function ProtectedRoute({ children, allowPasswordChange = false }) {
   // If user needs password change and not already on change-password page, redirect
   if (needsPasswordChange() && !allowPasswordChange && location.pathname !== '/change-password') {
     return <Navigate to="/change-password" replace />;
-  }
-  if (lockStatus?.locked && location.pathname !== '/timesheet') {
-    return <Navigate to="/timesheet" replace />;
   }
   return children;
 }
@@ -105,7 +103,9 @@ function App() {
   return (
     <Router>
       <AuthProvider>
-        <AppRoutes />
+        <ThemeProvider>
+          <AppRoutes />
+        </ThemeProvider>
       </AuthProvider>
     </Router>
   );

@@ -159,3 +159,20 @@
 .day-detail-task-list::-webkit-scrollbar-thumb:hover {
   background: rgba(100, 116, 139, 0.8);
 }
+
+/* Planner Calendar view title */
+.planner-calendar-heading {
+  flex: 0 0 auto;
+  margin-bottom: 8px;
+}
+.planner-calendar-title {
+  margin: 0 0 2px 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary, #e2e8f0);
+}
+.planner-calendar-subtitle {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted, #94a3b8);
+}

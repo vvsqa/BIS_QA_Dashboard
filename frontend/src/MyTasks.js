@@ -14,6 +14,7 @@ import { Bar, Doughnut } from 'react-chartjs-2';
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { apiFetch } from './api';
 import { useAuth } from './AuthContext';
+import AppSidebar from './AppSidebar';
 import { formatDisplayDate, formatDisplayDateWithDay, formatAPIDate } from './dateUtils';
 import { getTicketTrackingUrl, TicketExternalLink } from './ticketUtils';
 import './dashboard.css';
@@ -405,69 +406,77 @@ function MyTasks() {
 
   if (!user?.employee_id) {
     return (
-      <div className="my-tasks-page">
-        <div className="my-tasks-header">
-          <Link to="/" className="my-tasks-back">← Dashboard</Link>
-          <h1>My Tasks</h1>
-        </div>
-        <div className="my-tasks-empty">
-          <p>My Tasks is available only for employee accounts.</p>
-          <Link to="/" className="btn-secondary">Back to Dashboard</Link>
-        </div>
+      <div className="dashboard">
+        <AppSidebar />
+        <main className="main-content">
+          <div className="my-tasks-page">
+            <div className="my-tasks-header">
+              <Link to="/" className="my-tasks-back">← Dashboard</Link>
+              <h1>My Tasks</h1>
+            </div>
+            <div className="my-tasks-empty">
+              <p>My Tasks is available only for employee accounts.</p>
+              <Link to="/" className="btn-secondary">Back to Dashboard</Link>
+            </div>
+          </div>
+        </main>
       </div>
     );
   }
 
   return (
-    <div className="my-tasks-page">
-      <header className="my-tasks-header">
-        <div className="my-tasks-header-left">
-          <Link to="/" className="my-tasks-back">← Dashboard</Link>
-          <div>
-            <h1 className="my-tasks-title">My Tasks</h1>
-            <p className="my-tasks-subtitle">
-              {activeTab === 'my-tasks' ? 'Your planned tasks and completed work' : 'Team tickets and task status'}
-            </p>
-          </div>
-        </div>
-        <div className="my-tasks-header-right">
-          <div className="my-tasks-main-tabs">
-            <button type="button" className={activeTab === 'my-tasks' ? 'active' : ''} onClick={() => setActiveTab('my-tasks')}>
-              My Tasks
-            </button>
-            {hasReportees && (
-              <button type="button" className={activeTab === 'my-team' ? 'active' : ''} onClick={() => setActiveTab('my-team')}>
-                My Team
-              </button>
-            )}
-          </div>
-          <div className="my-tasks-controls">
-          <div className="my-tasks-view-toggle">
-            <button type="button" className={view === 'week' ? 'active' : ''} onClick={() => setView('week')}>Week</button>
-            <button type="button" className={view === 'month' ? 'active' : ''} onClick={() => setView('month')}>Month</button>
-            <button type="button" className={view === 'all' ? 'active' : ''} onClick={() => setView('all')}>All</button>
-          </div>
-          {view !== 'all' && (
-            <div className="my-tasks-date-nav">
-              <button type="button" className="my-tasks-nav-btn" onClick={navPrev} aria-label="Previous">‹</button>
-              <label className="my-tasks-date-display">
-                <input
-                  type={view === 'month' ? 'month' : 'date'}
-                  value={view === 'month' ? refDate.slice(0, 7) : refDate}
-                  onChange={(e) => setRefDate(view === 'month' ? e.target.value + '-01' : e.target.value)}
-                  className="my-tasks-date-picker"
-                />
-                <span className="my-tasks-date-label">
-                  {view === 'week' ? formatPlanningWeek(refDate) : formatMonthLabel(refDate)}
-                </span>
-              </label>
-              <button type="button" className="my-tasks-nav-btn" onClick={navNext} aria-label="Next">›</button>
-              <button type="button" className="my-tasks-today-btn" onClick={goToday}>Today</button>
+    <div className="dashboard">
+      <AppSidebar />
+      <main className="main-content">
+        <div className="my-tasks-page">
+          <header className="my-tasks-header">
+            <div className="my-tasks-header-left">
+              <Link to="/" className="my-tasks-back">← Dashboard</Link>
+              <div>
+                <h1 className="my-tasks-title">My Tasks</h1>
+                <p className="my-tasks-subtitle">
+                  {activeTab === 'my-tasks' ? 'Your planned tasks and completed work' : 'Team tickets and task status'}
+                </p>
+              </div>
             </div>
-          )}
-          </div>
-        </div>
-      </header>
+            <div className="my-tasks-header-right">
+              <div className="my-tasks-main-tabs">
+                <button type="button" className={activeTab === 'my-tasks' ? 'active' : ''} onClick={() => setActiveTab('my-tasks')}>
+                  My Tasks
+                </button>
+                {hasReportees && (
+                  <button type="button" className={activeTab === 'my-team' ? 'active' : ''} onClick={() => setActiveTab('my-team')}>
+                    My Team
+                  </button>
+                )}
+              </div>
+              <div className="my-tasks-controls">
+              <div className="my-tasks-view-toggle">
+                <button type="button" className={view === 'week' ? 'active' : ''} onClick={() => setView('week')}>Week</button>
+                <button type="button" className={view === 'month' ? 'active' : ''} onClick={() => setView('month')}>Month</button>
+                <button type="button" className={view === 'all' ? 'active' : ''} onClick={() => setView('all')}>All</button>
+              </div>
+              {view !== 'all' && (
+                <div className="my-tasks-date-nav">
+                  <button type="button" className="my-tasks-nav-btn" onClick={navPrev} aria-label="Previous">‹</button>
+                  <label className="my-tasks-date-display">
+                    <input
+                      type={view === 'month' ? 'month' : 'date'}
+                      value={view === 'month' ? refDate.slice(0, 7) : refDate}
+                      onChange={(e) => setRefDate(view === 'month' ? e.target.value + '-01' : e.target.value)}
+                      className="my-tasks-date-picker"
+                    />
+                    <span className="my-tasks-date-label">
+                      {view === 'week' ? formatPlanningWeek(refDate) : formatMonthLabel(refDate)}
+                    </span>
+                  </label>
+                  <button type="button" className="my-tasks-nav-btn" onClick={navNext} aria-label="Next">›</button>
+                  <button type="button" className="my-tasks-today-btn" onClick={goToday}>Today</button>
+                </div>
+              )}
+              </div>
+            </div>
+          </header>
 
       {error && activeTab === 'my-tasks' && <div className="my-tasks-error">{error}</div>}
       {teamError && activeTab === 'my-team' && <div className="my-tasks-error">{teamError}</div>}
@@ -588,6 +597,8 @@ function MyTasks() {
       ) : activeTab === 'my-tasks' ? null : (
         <div className="my-tasks-empty">No team data available.</div>
       )}
+        </div>
+      </main>
     </div>
   );
 }

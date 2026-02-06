@@ -71,7 +71,7 @@ They must be on the same network (same Wi‑Fi or LAN). Your firewall may need t
 ### If the shared URL does not load
 
 1. **On this PC:** Try **http://localhost:3000**. If that works but **http://10.1.0.165:3000** (or your IP) does not, the frontend may be bound to localhost only. Restart it with `start-frontend-network.bat` or `set HOST=0.0.0.0 && npm start` in the `frontend` folder.
-2. **From another device:** Windows Firewall often blocks port 3000. **Right‑click `allow-network-access-firewall.bat` → Run as administrator** to add a rule that allows inbound TCP on port 3000. Then try the URL again (e.g. **http://10.1.0.165:3000**).
+2. **From another device:** Windows Firewall often blocks port 3000. **Double‑click `allow-network-access-firewall.bat`** (or right‑click → Run as administrator). When UAC asks, click Yes. If it still doesn’t work, add the rule manually: open **Command Prompt as Administrator** and run: `netsh advfirewall firewall add rule name="QA Dashboard 3000" dir=in action=allow protocol=TCP localport=3000`
 3. **Same network:** The other device must be on the same Wi‑Fi or LAN (same subnet). Use the host PC’s IPv4 address from `ipconfig` (e.g. `10.1.0.165`), not `localhost`.
 4. **Backend:** Keep the backend running (e.g. `start-backend.bat`). The frontend proxy will send API traffic to it.
 

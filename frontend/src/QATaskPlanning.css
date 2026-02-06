@@ -176,6 +176,23 @@
   text-decoration: underline;
 }
 
+.resource-blocked-release-btn {
+  margin-left: 0.35rem;
+  padding: 0.15rem 0.4rem;
+  font-size: 0.7rem;
+  color: var(--text-muted, #94a3b8);
+  background: transparent;
+  border: 1px solid var(--border, #334155);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.resource-blocked-release-btn:hover {
+  color: #22c55e;
+  border-color: #22c55e;
+}
+
 .resource-blocked-status {
   padding: 0.2rem 0.5rem;
   border-radius: 4px;
@@ -769,6 +786,13 @@
   border-radius: 12px;
 }
 
+.qa-tickets-description {
+  font-size: 0.85rem;
+  color: var(--text-muted, #94a3b8);
+  margin: 0.25rem 0 0 0;
+  font-weight: 400;
+}
+
 .qa-tickets-table-wrap {
   overflow-x: auto;
   overflow-y: auto;
@@ -1072,7 +1096,8 @@
   color: #93c5fd;
 }
 
-.qa-activity-retesting_after_failure {
+.qa-activity-retesting_after_failure,
+.qa-activity-pending_retest {
   background: rgba(245, 158, 11, 0.2);
   color: #fcd34d;
 }
@@ -1080,6 +1105,32 @@
 .qa-activity-on_hold {
   background: rgba(245, 158, 11, 0.2);
   color: #fcd34d;
+}
+
+.qa-retest-cycle-cell,
+.qa-times-in-fail-cell {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted, #94a3b8);
+}
+
+.qa-tested-by-dev-cell {
+  text-align: center;
+  vertical-align: middle;
+}
+
+.qa-tested-by-dev-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: var(--text-muted, #94a3b8);
+  white-space: nowrap;
+}
+
+.qa-tested-by-dev-checkbox input {
+  cursor: pointer;
 }
 
 .qa-ageing-cell {

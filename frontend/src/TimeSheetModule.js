@@ -1,14 +1,36 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Link } from 'react-router-dom';
-import { formatAPIDate, formatDateRange, formatDisplayDateWithDay } from './dateUtils';
+import { Link, useNavigate } from 'react-router-dom';
+import { formatAPIDate, formatDateRange } from './dateUtils';
+import { TicketExternalLink } from './ticketUtils';
+import AppSidebar from './AppSidebar';
 import './CalendarModule.css';
 import './TimeSheetModule.css';
-import { apiFetch, API_BASE } from './api';
+import { apiFetch } from './api';
 import { useAuth } from './AuthContext';
-import { TicketExternalLink } from './ticketUtils';
 
-const BACKEND_BASE = (API_BASE || 'http://localhost:8000').replace(/\/$/, '');
-const TIMESHEET_HEALTH_URL = `${BACKEND_BASE}/timesheet/health`;
+// Helper function to get week start (Monday)
+const getWeekStart = (date) => {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  return new Date(d.setDate(diff));
+};
+
+// Helper function to get week days
+const getWeekDays = (weekStart) => {
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const day = new Date(weekStart);
+    day.setDate(day.getDate() + i);
+    days.push(day);
+  }
+  return days;
+};
+
+// Day names
+const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 
+                     'July', 'August', 'September', 'October', 'November', 'December'];
 
 const ACTIVITY_TYPES = [
   'Development',
@@ -21,381 +43,372 @@ const ACTIVITY_TYPES = [
 
 const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous'];
 
-const DAY_NAMES = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-
-const SUBMISSION_STATUS = {
-  DRAFT: 'Draft',
-  PENDING: 'Pending',
-  LEAD_APPROVED: 'Lead Approved',
-  APPROVED: 'Approved',
-  REJECTED: 'Rejected',
-  REVISION: 'Revision Required'
-};
-
-const MIN_HOURS_REQUIRED = 36;
-
-const getWeekStart = (date) => {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  return new Date(d.setDate(diff));
-};
-
-const getWeekDays = (weekStart) => {
-  const days = [];
-  for (let i = 0; i < 7; i++) {
-    const day = new Date(weekStart);
-    day.setDate(day.getDate() + i);
-    days.push(day);
-  }
-  return days;
-};
-
-const buildEntriesByDate = (entries = []) => {
-  const map = {};
-  entries.forEach((entry) => {
-    const key = entry.date;
-    if (!map[key]) {
-      map[key] = [];
-    }
-    map[key].push(entry);
-  });
-  Object.values(map).forEach((list) => {
-    list.sort((a, b) => new Date(a.date) - new Date(b.date));
-  });
-  return map;
-};
-
-const getDefaultActivityType = (team) => {
-  const teamUpper = (team || '').toUpperCase();
-  if (teamUpper.includes('QA')) return 'QA';
-  if (teamUpper.includes('DEV')) return 'Development';
-  return ACTIVITY_TYPES[0];
-};
-
-const getPlannedActivityType = (task, fallback) => {
-  const category = (task?.generic_category || '').toLowerCase();
-  if (category.includes('review')) return 'Code Review';
-  if (category.includes('plan')) return 'Planning';
-  if (task?.source === 'qa') return 'QA';
-  if (task?.source === 'dev') return 'Development';
-  return fallback;
-};
-
-const getHoursColorClass = (hours) => {
-  if (hours >= 8) return 'hours-full';
-  if (hours >= 4) return 'hours-half';
-  if (hours > 0) return 'hours-low';
-  return 'hours-zero';
-};
+const VARIANCE_REASON_TYPES = [
+  { value: '', label: '— Select reason (optional) —' },
+  { value: 'unplanned_task', label: 'Unplanned task' },
+  { value: 'estimate_ineffective', label: 'Estimate wasn\'t effective' },
+  { value: 'other', label: 'Other' },
+];
 
 function TimeSheetModule() {
-  const { user, refreshLockStatus, lockStatus } = useAuth();
-
-  const isLead = user?.role?.includes('LEAD');
-  const isManager = user?.role?.includes('MANAGER');
-  const isAdmin = user?.role === 'ADMIN';
-  const canApprove = isLead || isManager || isAdmin;
-  const canLogTime = !!user?.employee_id;
-
-  const [activeTab, setActiveTab] = useState('my');
-  const [view, setView] = useState('weekly');
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  
+  // State
+  const [team, setTeam] = useState('QA'); // 'QA' or 'DEVELOPMENT'
   const [currentDate, setCurrentDate] = useState(new Date());
-  const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()));
-  const weekDays = useMemo(() => getWeekDays(weekStart), [weekStart]);
-
   const [timesheetData, setTimesheetData] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-
+  
+  // Entry form state
   const [showEntryForm, setShowEntryForm] = useState(false);
   const [editingEntry, setEditingEntry] = useState(null);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
   const [entryForm, setEntryForm] = useState({
     date: formatAPIDate(new Date()),
     task_category: 'Ticket',
-    activity_type: getDefaultActivityType(user?.team),
+    activity_type: 'QA',
     hours: '',
     ticket_id: '',
     task_description: '',
     project_name: '',
-    planned_task_id: '',
-    planned_task_source: '',
   });
   const [entryFormErrors, setEntryFormErrors] = useState({});
-  const [plannedTasks, setPlannedTasks] = useState([]);
-  const [plannedLoading, setPlannedLoading] = useState(false);
-  const [addTimelogDay, setAddTimelogDay] = useState(null);
-  const [monthData, setMonthData] = useState(null);
-  const [monthLoading, setMonthLoading] = useState(false);
-
-  const [pendingApprovals, setPendingApprovals] = useState([]);
-  const [approvalsLoading, setApprovalsLoading] = useState(false);
+  // Planned tasks for add-log modal (for selected date + employee)
+  const [plannedTasksForDay, setPlannedTasksForDay] = useState([]);
+  const [loadingPlannedTasks, setLoadingPlannedTasks] = useState(false);
+  // "Add with my time" sub-form (one planned task at a time)
+  const [addWithMyTimeTask, setAddWithMyTimeTask] = useState(null);
+  const [addWithMyTimeHours, setAddWithMyTimeHours] = useState('');
+  const [addWithMyTimeVarianceNotes, setAddWithMyTimeVarianceNotes] = useState('');
+  const [addWithMyTimeReasonType, setAddWithMyTimeReasonType] = useState('');
+  const [addWithMyTimeError, setAddWithMyTimeError] = useState('');
+  // My submissions (for submit button and My submissions tab)
+  const [mySubmissions, setMySubmissions] = useState([]);
+  const [submitting, setSubmitting] = useState(false);
+  // Tab: 'log' | 'submissions'
+  const [activeTab, setActiveTab] = useState('log');
+  // My submissions detail (read-only)
   const [selectedSubmissionId, setSelectedSubmissionId] = useState(null);
-  const [approvalDetails, setApprovalDetails] = useState(null);
-  const [approvalDecisions, setApprovalDecisions] = useState({});
+  const [submissionDetail, setSubmissionDetail] = useState(null);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  // My week summary (for 36h rule and summary when viewing current week)
+  const [myWeekSummary, setMyWeekSummary] = useState(null);
+  // Plan vs actual tab
+  const [planVsActualTeam, setPlanVsActualTeam] = useState('QA');
+  const [planVsActualWeekStart, setPlanVsActualWeekStart] = useState(() => {
+    const d = new Date();
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+    const mon = new Date(d);
+    mon.setDate(diff);
+    return mon.toISOString().slice(0, 10);
+  });
+  const [planVsActualData, setPlanVsActualData] = useState(null);
+  const [planVsActualLoading, setPlanVsActualLoading] = useState(false);
+  // Timesheet Approvals (for leads/managers)
+  const canApproveTimesheets = user?.role === 'ADMIN' || (user?.role && (user.role.includes('MANAGER') || user.role.includes('LEAD')));
+  const [activeApprovalsSubTab, setActiveApprovalsSubTab] = useState('pending'); // 'pending' | 'completed'
+  const [pendingApprovals, setPendingApprovals] = useState([]);
+  const [completedApprovals, setCompletedApprovals] = useState([]);
+  const [approvalsLoading, setApprovalsLoading] = useState(false);
+  const [approvalsTeam, setApprovalsTeam] = useState(team);
+  const [selectedApprovalSubmissionId, setSelectedApprovalSubmissionId] = useState(null);
+  const [approvalDetail, setApprovalDetail] = useState(null);
+  const [approvalDetailLoading, setApprovalDetailLoading] = useState(false);
+  const [approvalActionLoading, setApprovalActionLoading] = useState(false);
   const [approvalNotes, setApprovalNotes] = useState('');
-  const [approvalError, setApprovalError] = useState(null);
+  const [approvalEntryReviews, setApprovalEntryReviews] = useState({}); // { "manual-123": "approved" | "rejected" | "revision_required" }
 
-  const [teamEmployees, setTeamEmployees] = useState([]);
-  const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
-  const [teamTimesheetData, setTeamTimesheetData] = useState(null);
-  const [teamLoading, setTeamLoading] = useState(false);
+  // Calculate week boundaries
+  const weekStart = useMemo(() => getWeekStart(currentDate), [currentDate]);
+  const weekDays = useMemo(() => getWeekDays(weekStart), [weekStart]);
 
-  useEffect(() => {
-    if (!canApprove && activeTab === 'approvals') {
-      setActiveTab('my');
-    }
-  }, [canApprove, activeTab]);
-
-  useEffect(() => {
-    setWeekStart(getWeekStart(currentDate));
-  }, [currentDate]);
-
-  const fetchTimesheet = useCallback(async (dateParam, employeeId, setter, setLoadingFn, setErrorFn) => {
-    if (setLoadingFn) setLoadingFn(true);
-    if (setErrorFn) setErrorFn(null);
+  // Fetch team timesheet data
+  const fetchTimesheetData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    
     try {
-      const dateStr = dateParam ? formatAPIDate(dateParam) : formatAPIDate(new Date());
-      const url = employeeId
-        ? `/timesheet/week?date=${encodeURIComponent(dateStr)}&employee_id=${encodeURIComponent(employeeId)}`
-        : `/timesheet/week?date=${encodeURIComponent(dateStr)}`;
-      const res = await apiFetch(url);
-      if (!res.ok) {
-        let message = 'Failed to fetch timesheet';
-        try {
-          const body = await res.json();
-          if (body.detail) message = typeof body.detail === 'string' ? body.detail : (body.detail.msg || message);
-        } catch (_) {}
-        if (res.status === 404 && (message === 'Failed to fetch timesheet' || message.toLowerCase().includes('not found'))) {
-          message = 'Timesheet API not found (404). 1) Start backend: in the backend folder run "python -m uvicorn main:app --reload". 2) Restart the frontend (npm start in the frontend folder) so the proxy forwards requests. 3) Check http://localhost:8000/timesheet/health — if you see {"status":"ok"}, the API is available.';
-        }
-        throw new Error(message);
+      const dateStr = formatAPIDate(currentDate);
+      const url = `/timesheet/team-weekly?team=${team}&date_str=${dateStr}`;
+      
+      const response = await apiFetch(url);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to fetch timesheet data: ${response.status} ${errorText}`);
       }
-      const data = await res.json();
-      setter(data);
-    } catch (err) {
-      if (setErrorFn) setErrorFn(err.message || 'Failed to load timesheet');
-    } finally {
-      if (setLoadingFn) setLoadingFn(false);
-    }
-  }, []);
-
-  const fetchPending = useCallback(async () => {
-    if (!canApprove) return;
-    setApprovalsLoading(true);
-    try {
-      const res = await apiFetch('/timesheet/pending-approvals');
-      if (!res.ok) throw new Error('Failed to fetch approvals');
-      const data = await res.json();
-      setPendingApprovals(data.pending_timesheets || []);
-    } catch (err) {
-      console.error('Failed to fetch pending approvals', err);
-    } finally {
-      setApprovalsLoading(false);
-    }
-  }, [canApprove]);
-
-  const fetchEmployees = useCallback(async () => {
-    if (!canApprove) return;
-    try {
-      const params = new URLSearchParams();
-      if (user?.team && !isAdmin) {
-        params.set('team', user.team);
-      }
-      const url = params.toString() ? `/employees?${params}` : '/employees';
-      const res = await apiFetch(url);
-      if (!res.ok) return;
-      const data = await res.json();
-      setTeamEmployees(data || []);
-      if (!selectedEmployeeId && data?.length) {
-        const own = data.find((e) => e.employee_id === user?.employee_id);
-        setSelectedEmployeeId((own && own.employee_id) || data[0].employee_id);
+      const data = await response.json();
+      setTimesheetData(data);
+      // Keep team in sync when non-manager gets their actual team from backend
+      if (data.viewer_can_see_all === false && data.team && data.team !== team) {
+        setTeam(data.team);
       }
     } catch (err) {
-      console.error('Failed to fetch employees', err);
-    }
-  }, [canApprove, isAdmin, selectedEmployeeId, user?.employee_id, user?.team]);
-
-  const loadPlannedTasks = useCallback(async (dateStr) => {
-    if (!dateStr) return;
-    setPlannedLoading(true);
-    try {
-      const res = await apiFetch(`/timesheet/planned-tasks?date_str=${encodeURIComponent(dateStr)}`);
-      if (!res.ok) {
-        setPlannedTasks([]);
-        return;
-      }
-      const data = await res.json();
-      setPlannedTasks(data.planned_tasks || []);
-    } catch (err) {
-      console.error('Failed to load planned tasks', err);
+      const isNetworkError = err.name === 'TypeError' && (err.message === 'Failed to fetch' || err.message.includes('fetch'));
+      setError(isNetworkError
+        ? 'Cannot connect to the backend. Please ensure the server is running.'
+        : (err.message || 'Failed to load timesheet data'));
     } finally {
-      setPlannedLoading(false);
-    }
-  }, []);
-
-  const fetchMonthData = useCallback(async () => {
-    const monthStr = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
-    setMonthLoading(true);
-    try {
-      const res = await apiFetch(`/timesheet/month?month=${encodeURIComponent(monthStr)}`);
-      if (!res.ok) throw new Error('Failed to fetch month');
-      const data = await res.json();
-      setMonthData(data);
-    } catch (err) {
-      setMonthData(null);
-    } finally {
-      setMonthLoading(false);
-    }
-  }, [currentDate]);
-
-  useEffect(() => {
-    if (!canLogTime) return;
-    if (!user?.employee_id) {
       setLoading(false);
-      setError('Your account is not linked to an employee profile. My Timesheet is unavailable.');
-      setTimesheetData(null);
+    }
+  }, [team, currentDate]);
+
+  useEffect(() => {
+    fetchTimesheetData();
+  }, [fetchTimesheetData]);
+
+  // Fetch planned tasks when add-log modal opens (for this date + employee)
+  useEffect(() => {
+    if (!showEntryForm || editingEntry || !entryForm.date || !selectedEmployeeId) {
+      setPlannedTasksForDay([]);
       return;
     }
     let cancelled = false;
-    setLoading(true);
-    setError(null);
-    (async () => {
-      try {
-        const healthRes = await fetch(TIMESHEET_HEALTH_URL, { method: 'GET' });
-        if (cancelled) return;
-        if (!healthRes.ok) {
-          setError(
-            'Backend not running or Timesheet API missing. Start the backend: open a terminal, cd to the project\'s backend folder, then run: python -m uvicorn main:app --reload. Wait for "Application startup complete", then click Retry.'
-          );
-          setTimesheetData(null);
-          setLoading(false);
-          return;
-        }
-        await fetchTimesheet(currentDate, null, setTimesheetData, setLoading, setError);
-      } catch (err) {
-        if (cancelled) return;
-        setError(
-          'Cannot reach backend. Start it first: in the backend folder run "python -m uvicorn main:app --reload". Then click Retry.'
-        );
-        setTimesheetData(null);
-        setLoading(false);
-      }
-    })();
+    setLoadingPlannedTasks(true);
+    const url = `/timesheet/planned-tasks?date_str=${encodeURIComponent(entryForm.date)}&employee_id=${encodeURIComponent(selectedEmployeeId)}`;
+    apiFetch(url)
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error('Failed to load planned tasks')))
+      .then((data) => {
+        if (!cancelled) setPlannedTasksForDay(data.planned_tasks || []);
+      })
+      .catch(() => {
+        if (!cancelled) setPlannedTasksForDay([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingPlannedTasks(false);
+      });
     return () => { cancelled = true; };
-  }, [canLogTime, currentDate, fetchTimesheet, user?.employee_id]);
+  }, [showEntryForm, editingEntry, entryForm.date, selectedEmployeeId]);
 
-  useEffect(() => {
-    if (canApprove) {
-      fetchPending();
-      fetchEmployees();
-    }
-  }, [canApprove, fetchPending, fetchEmployees]);
-
-  useEffect(() => {
-    if (selectedEmployeeId) {
-      fetchTimesheet(currentDate, selectedEmployeeId, setTeamTimesheetData, setTeamLoading, null);
-    }
-  }, [selectedEmployeeId, currentDate, fetchTimesheet]);
-
-  useEffect(() => {
-    if (showEntryForm && entryForm.date) {
-      loadPlannedTasks(entryForm.date);
-    }
-  }, [showEntryForm, entryForm.date, loadPlannedTasks]);
-
-  useEffect(() => {
-    if (view === 'monthly' && canLogTime) {
-      fetchMonthData();
-    }
-  }, [view, currentDate, canLogTime, fetchMonthData]);
-
-  const openAddTimelog = (dayKey) => {
-    setAddTimelogDay(dayKey);
-    loadPlannedTasks(dayKey);
-  };
-
-  const handleAddWithPlannedTime = async (task, dateStr) => {
-    const payload = {
-      activity_type: getPlannedActivityType(task, getDefaultActivityType(user?.team)),
-      task_category: task.category || 'Ticket',
-      date: dateStr,
-      hours: Number(task.hours) || 0,
-      ticket_id: task.ticket_id ? String(task.ticket_id) : null,
-      task_description: task.activity_description || null,
-      project_name: null,
-      planned_task_id: task.id,
-      planned_task_source: task.source || null,
-    };
+  // Fetch my submissions (for submit button state and My submissions tab)
+  const fetchMySubmissions = useCallback(async () => {
+    if (!user?.employee_id) return;
     try {
-      const res = await apiFetch('/timesheet/entry', { method: 'POST', body: JSON.stringify(payload) });
+      const res = await apiFetch('/timesheet/my-submissions');
+      if (res.ok) {
+        const data = await res.json();
+        setMySubmissions(Array.isArray(data) ? data : []);
+      }
+    } catch {
+      setMySubmissions([]);
+    }
+  }, [user?.employee_id]);
+
+  useEffect(() => {
+    fetchMySubmissions();
+  }, [fetchMySubmissions]);
+
+  // Fetch my week summary when viewing current week (for 36h check and summary)
+  useEffect(() => {
+    if (!user?.employee_id || activeTab !== 'log') {
+      setMyWeekSummary(null);
+      return;
+    }
+    const dateStr = formatAPIDate(weekStart);
+    let cancelled = false;
+    apiFetch(`/timesheet/my-week-summary?date_str=${encodeURIComponent(dateStr)}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then((data) => { if (!cancelled) setMyWeekSummary(data); })
+      .catch(() => { if (!cancelled) setMyWeekSummary(null); });
+    return () => { cancelled = true; };
+  }, [user?.employee_id, activeTab, weekStart]);
+
+  // Fetch plan-vs-actual when tab is active
+  useEffect(() => {
+    if (activeTab !== 'plan-vs-actual' || !planVsActualWeekStart) return;
+    let cancelled = false;
+    setPlanVsActualLoading(true);
+    const teamParam = planVsActualTeam === 'DEVELOPMENT' ? 'dev' : 'qa';
+    apiFetch(`/planning/comparison/planning?team=${teamParam}&week_start=${encodeURIComponent(planVsActualWeekStart)}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject()))
+      .then((data) => { if (!cancelled) setPlanVsActualData(data); })
+      .catch(() => { if (!cancelled) setPlanVsActualData(null); })
+      .finally(() => { if (!cancelled) setPlanVsActualLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeTab, planVsActualTeam, planVsActualWeekStart]);
+
+  // Fetch pending/completed approvals when on Approvals tab
+  const fetchPendingApprovals = useCallback(async () => {
+    setApprovalsLoading(true);
+    try {
+      const url = approvalsTeam ? `/timesheet/pending-approvals?team=${encodeURIComponent(approvalsTeam)}` : '/timesheet/pending-approvals';
+      const res = await apiFetch(url);
+      if (!res.ok) throw new Error('Failed to load pending approvals');
+      const data = await res.json();
+      setPendingApprovals(data.pending_timesheets || []);
+    } catch {
+      setPendingApprovals([]);
+    } finally {
+      setApprovalsLoading(false);
+    }
+  }, [approvalsTeam]);
+
+  const fetchCompletedApprovals = useCallback(async () => {
+    setApprovalsLoading(true);
+    try {
+      const url = approvalsTeam ? `/timesheet/completed-approvals?team=${encodeURIComponent(approvalsTeam)}` : '/timesheet/completed-approvals';
+      const res = await apiFetch(url);
+      if (!res.ok) throw new Error('Failed to load completed approvals');
+      const data = await res.json();
+      setCompletedApprovals(data.completed_timesheets || []);
+    } catch {
+      setCompletedApprovals([]);
+    } finally {
+      setApprovalsLoading(false);
+    }
+  }, [approvalsTeam]);
+
+  useEffect(() => {
+    if (!canApproveTimesheets || activeTab !== 'approvals') return;
+    if (activeApprovalsSubTab === 'pending') fetchPendingApprovals();
+    else fetchCompletedApprovals();
+  }, [canApproveTimesheets, activeTab, activeApprovalsSubTab, fetchPendingApprovals, fetchCompletedApprovals]);
+
+  // Fetch approval detail when a submission is selected in Approvals
+  useEffect(() => {
+    if (!selectedApprovalSubmissionId) {
+      setApprovalDetail(null);
+      setApprovalEntryReviews({});
+      return;
+    }
+    let cancelled = false;
+    setApprovalDetailLoading(true);
+    setApprovalEntryReviews({});
+    apiFetch(`/timesheet/submission/${selectedApprovalSubmissionId}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error('Failed to load'))))
+      .then((data) => {
+        if (!cancelled) {
+          setApprovalDetail(data);
+          const rev = {};
+          (data.entries || []).forEach((e) => {
+            const key = `${e.source}-${e.id}`;
+            if (e.review_status) rev[key] = e.review_status;
+          });
+          setApprovalEntryReviews(rev);
+        }
+      })
+      .catch(() => { if (!cancelled) setApprovalDetail(null); })
+      .finally(() => { if (!cancelled) setApprovalDetailLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedApprovalSubmissionId]);
+
+  const handleApprovalAction = async (action) => {
+    if (!selectedApprovalSubmissionId) return;
+    const entry_reviews = approvalDetail?.entries?.length
+      ? approvalDetail.entries
+          .filter((e) => approvalEntryReviews[`${e.source}-${e.id}`])
+          .map((e) => ({
+            entry_source: e.source,
+            entry_id: e.id,
+            status: approvalEntryReviews[`${e.source}-${e.id}`],
+          }))
+      : undefined;
+    const payload = { notes: approvalNotes || null, entry_reviews: entry_reviews && entry_reviews.length > 0 ? entry_reviews : null };
+    const endpoint = action === 'approve' ? 'approve' : action === 'reject' ? 'reject' : 'request-revision';
+    setApprovalActionLoading(true);
+    try {
+      const res = await apiFetch(`/timesheet/${endpoint}/${selectedApprovalSubmissionId}`, {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Failed to add entry');
+        throw new Error(err.detail || `Failed to ${action}`);
       }
-      setAddTimelogDay(null);
-      await fetchTimesheet(currentDate, null, setTimesheetData, setLoading, setError);
-      if (view === 'monthly') fetchMonthData();
-      refreshLockStatus?.();
+      setSelectedApprovalSubmissionId(null);
+      setApprovalDetail(null);
+      setApprovalNotes('');
+      setApprovalEntryReviews({});
+      if (activeApprovalsSubTab === 'pending') fetchPendingApprovals();
+      else fetchCompletedApprovals();
     } catch (err) {
-      setError(err.message || 'Failed to add entry');
+      setError(err.message || `Failed to ${action}`);
+    } finally {
+      setApprovalActionLoading(false);
     }
   };
 
-  const openEntryForm = (dateValue, entry = null, plannedTask = null) => {
-    const dateStr = typeof dateValue === 'string' ? dateValue : formatAPIDate(dateValue);
-    const activityType = entry?.activity_type || (plannedTask && getPlannedActivityType(plannedTask, getDefaultActivityType(user?.team))) || getDefaultActivityType(user?.team);
-    const category = entry?.task_category || plannedTask?.category || 'Ticket';
+  // Fetch submission detail when a row is clicked (My submissions tab)
+  useEffect(() => {
+    if (!selectedSubmissionId) {
+      setSubmissionDetail(null);
+      return;
+    }
+    let cancelled = false;
+    setLoadingDetail(true);
+    apiFetch(`/timesheet/submission/${selectedSubmissionId}`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error('Failed to load'))))
+      .then((data) => {
+        if (!cancelled) setSubmissionDetail(data);
+      })
+      .catch(() => {
+        if (!cancelled) setSubmissionDetail(null);
+      })
+      .finally(() => {
+        if (!cancelled) setLoadingDetail(false);
+      });
+    return () => { cancelled = true; };
+  }, [selectedSubmissionId]);
+
+  // Navigation handlers
+  const goToPreviousWeek = () => {
+    const newDate = new Date(currentDate);
+    newDate.setDate(newDate.getDate() - 7);
+    setCurrentDate(newDate);
+  };
+
+  const goToNextWeek = () => {
+    const newDate = new Date(currentDate);
+    newDate.setDate(newDate.getDate() + 7);
+    setCurrentDate(newDate);
+  };
+
+  const goToToday = () => {
+    setCurrentDate(new Date());
+  };
+
+  // Get hours color class
+  const getHoursColorClass = (hours) => {
+    if (hours >= 8) return 'hours-full';
+    if (hours >= 4) return 'hours-half';
+    if (hours > 0) return 'hours-low';
+    return 'hours-zero';
+  };
+
+  // Open entry form for a specific day and employee
+  const openEntryForm = (dateStr, employeeId, entry = null) => {
+    // Regular employees can only add logs for themselves
+    const targetEmployeeId = canAddLogsForOthers ? employeeId : (user?.employee_id || employeeId);
+    setSelectedEmployeeId(targetEmployeeId);
+    setEditingEntry(entry);
     setEntryForm({
       date: dateStr,
-      task_category: category,
-      activity_type: activityType,
-      hours: entry?.hours ?? (plannedTask ? plannedTask.hours : ''),
-      ticket_id: entry?.ticket_id || (plannedTask?.ticket_id ? String(plannedTask.ticket_id) : ''),
-      task_description: entry?.task_description || (plannedTask?.activity_description || ''),
+      task_category: entry?.task_category || 'Ticket',
+      activity_type: entry?.activity_type || (team === 'QA' ? 'QA' : 'Development'),
+      hours: entry?.hours || '',
+      ticket_id: entry?.ticket_id || '',
+      task_description: entry?.task_description || '',
       project_name: entry?.project_name || '',
-      planned_task_id: entry?.planned_task_id || (plannedTask ? plannedTask.id : ''),
-      planned_task_source: entry?.planned_task_source || (plannedTask ? plannedTask.source : ''),
     });
     setEntryFormErrors({});
-    setEditingEntry(entry);
     setShowEntryForm(true);
-    setAddTimelogDay(null);
-    loadPlannedTasks(dateStr);
   };
 
   const closeEntryForm = () => {
     setShowEntryForm(false);
     setEditingEntry(null);
-    setAddTimelogDay(null);
+    setSelectedEmployeeId('');
+    setPlannedTasksForDay([]);
+    setAddWithMyTimeTask(null);
+    setAddWithMyTimeHours('');
+    setAddWithMyTimeVarianceNotes('');
+    setAddWithMyTimeReasonType('');
+    setAddWithMyTimeError('');
   };
 
-  const handlePlannedTaskChange = (value) => {
-    if (!value) {
-      setEntryForm((prev) => ({
-        ...prev,
-        planned_task_id: '',
-        planned_task_source: '',
-        task_category: prev.task_category || 'Ticket',
-      }));
-      return;
-    }
-    const [source, id] = value.split(':');
-    const task = plannedTasks.find((t) => t.source === source && String(t.id) === id);
-    if (!task) return;
-    setEntryForm((prev) => ({
-      ...prev,
-      planned_task_id: task.id,
-      planned_task_source: task.source,
-      task_category: task.category || 'Ticket',
-      ticket_id: task.ticket_id ? String(task.ticket_id) : '',
-      task_description: task.activity_description || '',
-      hours: task.hours || '',
-      activity_type: getPlannedActivityType(task, prev.activity_type),
-    }));
-  };
-
+  // Save manual entry (no planned task)
   const handleSaveEntry = async () => {
     const errs = {};
     if (!entryForm.date) errs.date = 'Date is required';
@@ -418,9 +431,9 @@ function TimeSheetModule() {
       ticket_id: entryForm.ticket_id?.trim() || null,
       task_description: entryForm.task_description?.trim() || null,
       project_name: entryForm.project_name?.trim() || null,
-      planned_task_id: entryForm.planned_task_id ? Number(entryForm.planned_task_id) : null,
-      planned_task_source: entryForm.planned_task_source || null,
+      employee_id: selectedEmployeeId || user?.employee_id,
     };
+
     try {
       const res = await apiFetch(editingEntry ? `/timesheet/entry/${editingEntry.id}` : '/timesheet/entry', {
         method: editingEntry ? 'PUT' : 'POST',
@@ -431,882 +444,1055 @@ function TimeSheetModule() {
         throw new Error(err.detail || 'Failed to save entry');
       }
       closeEntryForm();
-      await fetchTimesheet(currentDate, null, setTimesheetData, setLoading, setError);
-      if (view === 'monthly') fetchMonthData();
-      refreshLockStatus?.();
+      await fetchTimesheetData();
     } catch (err) {
       setError(err.message || 'Failed to save entry');
     }
   };
 
+  // Add entry from planned task as-is (same hours as planned)
+  const handleAddFromPlannedAsIs = async (task) => {
+    const activityType = (task.task_type && ACTIVITY_TYPES.includes(task.task_type)) ? task.task_type : (team === 'QA' ? 'QA' : 'Development');
+    const payload = {
+      activity_type: activityType,
+      task_category: task.category || 'Ticket',
+      date: entryForm.date,
+      hours: Number(task.hours),
+      ticket_id: task.ticket_id?.trim() || null,
+      task_description: (task.activity_description || task.ticket_title || '').trim() || null,
+      project_name: null,
+      employee_id: selectedEmployeeId || user?.employee_id,
+      planned_task_id: task.id,
+      planned_task_source: task.source,
+    };
+    try {
+      const res = await apiFetch('/timesheet/entry', { method: 'POST', body: JSON.stringify(payload) });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to add entry');
+      }
+      await fetchTimesheetData();
+    } catch (err) {
+      setError(err.message || 'Failed to add entry');
+    }
+  };
+
+  // Add entry from planned task with user-entered hours (variance comment required if different)
+  const handleAddWithMyTime = async () => {
+    if (!addWithMyTimeTask) return;
+    const hoursNum = parseFloat(addWithMyTimeHours);
+    const plannedHours = parseFloat(addWithMyTimeTask.hours);
+    const needsVariance = Math.abs(hoursNum - plannedHours) > 0.01;
+    if (hoursNum <= 0 || isNaN(hoursNum)) {
+      setAddWithMyTimeError('Enter valid hours');
+      return;
+    }
+    if (needsVariance && !(addWithMyTimeVarianceNotes && addWithMyTimeVarianceNotes.trim())) {
+      setAddWithMyTimeError('Comment (variance reason) is required when your hours differ from planned.');
+      return;
+    }
+    setAddWithMyTimeError('');
+    const activityType = (addWithMyTimeTask.task_type && ACTIVITY_TYPES.includes(addWithMyTimeTask.task_type)) ? addWithMyTimeTask.task_type : (team === 'QA' ? 'QA' : 'Development');
+    const payload = {
+      activity_type: activityType,
+      task_category: addWithMyTimeTask.category || 'Ticket',
+      date: entryForm.date,
+      hours: hoursNum,
+      ticket_id: addWithMyTimeTask.ticket_id?.trim() || null,
+      task_description: (addWithMyTimeTask.activity_description || addWithMyTimeTask.ticket_title || '').trim() || null,
+      project_name: null,
+      employee_id: selectedEmployeeId || user?.employee_id,
+      planned_task_id: addWithMyTimeTask.id,
+      planned_task_source: addWithMyTimeTask.source,
+      variance_notes: needsVariance ? addWithMyTimeVarianceNotes.trim() : null,
+      variance_reason_type: addWithMyTimeReasonType?.trim() || null,
+    };
+    try {
+      const res = await apiFetch('/timesheet/entry', { method: 'POST', body: JSON.stringify(payload) });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to add entry');
+      }
+      setAddWithMyTimeTask(null);
+      setAddWithMyTimeHours('');
+      setAddWithMyTimeVarianceNotes('');
+      setAddWithMyTimeReasonType('');
+      await fetchTimesheetData();
+    } catch (err) {
+      setAddWithMyTimeError(err.message || 'Failed to add entry');
+    }
+  };
+
+  // Delete entry
   const handleDeleteEntry = async (entryId) => {
+    if (!window.confirm('Are you sure you want to delete this entry?')) return;
+    
     try {
       const res = await apiFetch(`/timesheet/entry/${entryId}`, { method: 'DELETE' });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to delete entry');
       }
-      await fetchTimesheet(currentDate, null, setTimesheetData, setLoading, setError);
-      refreshLockStatus?.();
+      await fetchTimesheetData();
     } catch (err) {
       setError(err.message || 'Failed to delete entry');
     }
   };
 
-  const handleSubmitTimesheet = async () => {
-    if (!timesheetData) return;
-    const total = (timesheetData.hours_logged || 0) + (timesheetData.leave_hours || 0);
-    if (total < MIN_HOURS_REQUIRED) {
-      setError(`Cannot submit: total hours (${total.toFixed(1)}) is less than required ${MIN_HOURS_REQUIRED} hours`);
-      return;
-    }
+  // Calculate daily totals
+  const dailyTotals = useMemo(() => {
+    if (!timesheetData?.employees) return [];
+    return weekDays.map((day) => {
+      const dayKey = formatAPIDate(day);
+      let total = 0;
+      let count = 0;
+      timesheetData.employees.forEach(emp => {
+        const dayData = emp.days?.[dayKey];
+        if (dayData) {
+          total += (dayData.total_hours || 0) + (dayData.leave_hours || 0);
+          if ((dayData.total_hours || 0) + (dayData.leave_hours || 0) > 0) count++;
+        }
+      });
+      return { total, count, average: count > 0 ? total / count : 0 };
+    });
+  }, [timesheetData, weekDays]);
+
+  // Calculate grand totals
+  const grandTotals = useMemo(() => {
+    if (!timesheetData?.employees) return { total: 0, averagePerDay: 0, averagePerEmployee: 0 };
+    const total = timesheetData.employees.reduce((sum, emp) => sum + (emp.weekly_total || 0), 0);
+    const avgPerDay = dailyTotals.filter(d => d.count > 0).length > 0
+      ? dailyTotals.reduce((sum, d) => sum + d.total, 0) / dailyTotals.filter(d => d.count > 0).length
+      : 0;
+    const avgPerEmployee = timesheetData.employees.length > 0
+      ? total / timesheetData.employees.length
+      : 0;
+    return { total, averagePerDay: avgPerDay, averagePerEmployee: avgPerEmployee };
+  }, [timesheetData, dailyTotals]);
+
+  // Current week (Mon–Sun) for submit: is the viewed week the current week?
+  const weekEndDate = weekDays[6];
+  const isCurrentWeek = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const start = new Date(weekStart);
+    start.setHours(0, 0, 0, 0);
+    const end = weekEndDate ? new Date(weekEndDate) : null;
+    if (end) end.setHours(23, 59, 59, 999);
+    return end && today >= start && today <= end;
+  }, [weekStart, weekEndDate]);
+
+  const submissionForThisWeek = useMemo(() => {
+    const ws = formatAPIDate(weekStart);
+    return mySubmissions.find((s) => s.week_start === ws);
+  }, [mySubmissions, weekStart]);
+
+  const submittedStatus = submissionForThisWeek?.status;
+  const myWeekTotal = myWeekSummary?.total_hours ?? 0;
+  const meets36h = myWeekTotal >= 36;
+  const canSubmitThisWeek = Boolean(
+    user?.employee_id && isCurrentWeek && meets36h && submittedStatus !== 'Pending' && submittedStatus !== 'Lead Approved' && submittedStatus !== 'Approved'
+  );
+
+  const submitDueDate = useMemo(() => {
+    if (!weekEndDate) return null;
+    const d = new Date(weekEndDate);
+    d.setDate(d.getDate() + 2);
+    return d;
+  }, [weekEndDate]);
+
+  const handleSubmitWeek = async () => {
+    if (!canSubmitThisWeek) return;
+    const we = formatAPIDate(weekDays[6]);
+    if (!window.confirm(`Submit timesheet for the week ending ${we}?`)) return;
+    setSubmitting(true);
     try {
       const res = await apiFetch('/timesheet/submit', {
         method: 'POST',
-        body: JSON.stringify({ week_ending: weekDays[6].toISOString().slice(0, 10) })
+        body: JSON.stringify({ week_ending: we }),
       });
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Submit failed');
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to submit');
       }
-      await fetchTimesheet(currentDate, null, setTimesheetData, setLoading, setError);
-      refreshLockStatus?.();
+      await fetchMySubmissions();
+      await fetchTimesheetData();
     } catch (err) {
       setError(err.message || 'Failed to submit timesheet');
+    } finally {
+      setSubmitting(false);
     }
   };
 
-  const handleSelectSubmission = async (submissionId) => {
-    setSelectedSubmissionId(submissionId);
-    setApprovalError(null);
-    setApprovalNotes('');
-    try {
-      const res = await apiFetch(`/timesheet/submission/${submissionId}`);
-      if (!res.ok) throw new Error('Failed to fetch submission');
-      const data = await res.json();
-      setApprovalDetails(data);
-      const decisions = {};
-      (data.entries || []).forEach((entry) => {
-        const key = `${entry.source}:${entry.id}`;
-        const reviewStatus = entry.review_status === 'revision_required' ? 'revision_required' : 'approved';
-        decisions[key] = {
-          entry_source: entry.source,
-          entry_id: entry.id,
-          decision: reviewStatus,
-          productive_hours: entry.review_productive_hours ?? entry.productive_hours ?? entry.hours,
-          notes: entry.review_notes || '',
-        };
-      });
-      setApprovalDecisions(decisions);
-    } catch (err) {
-      setApprovalError(err.message || 'Failed to load submission');
-    }
-  };
+  // Check if user can add logs (must have employee_id or be manager/lead/admin)
+  const canAddLogs = user?.employee_id || user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD');
 
-  const updateApprovalDecision = (key, updates) => {
-    setApprovalDecisions((prev) => ({
-      ...prev,
-      [key]: {
-        ...prev[key],
-        ...updates,
-      },
-    }));
-  };
+  // Only managers (and admin) see all team data; rest see only their own and can add log only for themselves
+  const isManagerView = timesheetData?.viewer_can_see_all === true;
+  const myDisplayName = !isManagerView && timesheetData?.employees?.length === 1
+    ? timesheetData.employees[0].employee_name
+    : null;
 
-  const buildEntryReviews = (decision) => {
-    return Object.values(approvalDecisions)
-      .filter((item) => item.decision === decision)
-      .map((item) => ({
-        entry_source: item.entry_source,
-        entry_id: item.entry_id,
-        status: decision,
-        productive_hours: decision === 'approved' ? Number(item.productive_hours || 0) : null,
-        notes: item.notes || null,
-      }));
-  };
-
-  const handleApproveSubmission = async () => {
-    if (!approvalDetails?.submission?.id) return;
-    const hasRevision = Object.values(approvalDecisions).some((item) => item.decision === 'revision_required');
-    if (hasRevision) {
-      setApprovalError('Remove revision flags before approving.');
-      return;
-    }
-    try {
-      const res = await apiFetch(`/timesheet/approve/${approvalDetails.submission.id}`, {
-        method: 'POST',
-        body: JSON.stringify({
-          notes: approvalNotes || null,
-          entry_reviews: buildEntryReviews('approved'),
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Approve failed');
-      }
-      setApprovalDetails(null);
-      setSelectedSubmissionId(null);
-      await fetchPending();
-      refreshLockStatus?.();
-    } catch (err) {
-      setApprovalError(err.message || 'Failed to approve submission');
-    }
-  };
-
-  const handleRequestRevision = async () => {
-    if (!approvalDetails?.submission?.id) return;
-    const revisions = buildEntryReviews('revision_required');
-    if (!revisions.length) {
-      setApprovalError('Select at least one entry for revision.');
-      return;
-    }
-    try {
-      const res = await apiFetch(`/timesheet/request-revision/${approvalDetails.submission.id}`, {
-        method: 'POST',
-        body: JSON.stringify({
-          notes: approvalNotes || null,
-          entry_reviews: revisions,
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Revision request failed');
-      }
-      setApprovalDetails(null);
-      setSelectedSubmissionId(null);
-      await fetchPending();
-      refreshLockStatus?.();
-    } catch (err) {
-      setApprovalError(err.message || 'Failed to request revision');
-    }
-  };
-
-  const handleRejectSubmission = async () => {
-    if (!approvalDetails?.submission?.id) return;
-    try {
-      const res = await apiFetch(`/timesheet/reject/${approvalDetails.submission.id}`, {
-        method: 'POST',
-        body: JSON.stringify({ notes: approvalNotes || null }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || 'Reject failed');
-      }
-      setApprovalDetails(null);
-      setSelectedSubmissionId(null);
-      await fetchPending();
-      refreshLockStatus?.();
-    } catch (err) {
-      setApprovalError(err.message || 'Failed to reject submission');
-    }
-  };
-
-  const goToPreviousWeek = () => {
-    const newDate = new Date(weekStart);
-    newDate.setDate(newDate.getDate() - 7);
-    setCurrentDate(newDate);
-  };
-  const goToNextWeek = () => {
-    const newDate = new Date(weekStart);
-    newDate.setDate(newDate.getDate() + 7);
-    setCurrentDate(newDate);
-  };
-  const goToToday = () => {
-    setCurrentDate(new Date());
-  };
-
-  const handleRetry = () => {
-    setError(null);
-    if (canLogTime && user?.employee_id) {
-      fetchTimesheet(currentDate, null, setTimesheetData, setLoading, setError);
-    }
-    if (view === 'monthly' && canLogTime) fetchMonthData();
-  };
-
-  const entriesByDate = useMemo(() => buildEntriesByDate(timesheetData?.entries || []), [timesheetData]);
-
-  const dailyTotals = useMemo(() => {
-    return weekDays.map((day) => {
-      const dateKey = formatAPIDate(day);
-      const entries = entriesByDate[dateKey] || [];
-      const total = entries.reduce((sum, entry) => sum + (entry.hours || 0), 0);
-      return { date: dateKey, total, entries };
-    });
-  }, [entriesByDate, weekDays]);
-
-  const submissionStatus = timesheetData?.submission?.status;
-  const canEditEntries = !submissionStatus || [SUBMISSION_STATUS.REJECTED, SUBMISSION_STATUS.REVISION].includes(submissionStatus);
-  const canSubmitTimesheet = !submissionStatus || [SUBMISSION_STATUS.REJECTED, SUBMISSION_STATUS.REVISION].includes(submissionStatus);
-
-  const plannedTaskValue = entryForm.planned_task_id && entryForm.planned_task_source
-    ? `${entryForm.planned_task_source}:${entryForm.planned_task_id}`
-    : '';
-
-  const renderEntryList = (entries, allowActions = canEditEntries) => {
-    if (!entries.length) {
-      return <div className="timesheet-empty">No entries yet.</div>;
-    }
-    return entries.map((entry) => {
-      const productive = entry.review_productive_hours ?? entry.productive_hours;
-      return (
-        <div key={`${entry.source}-${entry.id}`} className="timesheet-entry">
-          <div className="entry-main">
-            <div className="entry-title">
-              <span className="entry-hours">{(entry.hours || 0).toFixed(1)}h</span>
-              <span className="entry-activity">{entry.activity_type}</span>
-              {entry.ticket_id && <TicketExternalLink ticketId={entry.ticket_id} />}
-            </div>
-            <div className="entry-desc">{entry.task_description || entry.project_name || entry.ticket_id || 'No description'}</div>
-            {entry.project_name && <div className="entry-project">{entry.project_name}</div>}
-            {entry.review_notes && <div className="entry-review-note">Revision note: {entry.review_notes}</div>}
-          </div>
-          <div className="entry-meta">
-            <span className={`entry-source ${entry.source}`}>{entry.source === 'manual' ? 'Manual' : 'Synced'}</span>
-            {productive !== null && productive !== undefined && (
-              <span className="entry-productive">Productive: {Number(productive).toFixed(1)}h</span>
-            )}
-            {entry.review_status && (
-              <span className={`entry-review ${entry.review_status.replace(' ', '-')}`}>
-                {entry.review_status.replace('_', ' ')}
-              </span>
-            )}
-          </div>
-          {allowActions && entry.source === 'manual' && (
-            <div className="entry-actions">
-              <button className="btn btn-secondary" onClick={() => openEntryForm(entry.date, entry)}>Edit</button>
-              <button className="btn btn-ghost" onClick={() => handleDeleteEntry(entry.id)}>Delete</button>
-            </div>
-          )}
-        </div>
-      );
-    });
-  };
+  // Check if user can add logs for other employees (managers/admin only - not leads per requirement)
+  const canAddLogsForOthers = user?.role === 'ADMIN' || user?.role?.includes('MANAGER');
 
   return (
     <div className="calendar-module timesheet-module">
-      <aside className="sidebar">
-        <div className="logo-section">
-          <img src="/techversant-logo.png" alt="Techversant" className="company-logo" />
-          <div className="logo-text">
-            <span className="logo-title">QA Dashboard</span>
-            <span className="logo-subtitle">TimeSheet</span>
-          </div>
-        </div>
-        <nav className="sidebar-nav">
-          <Link to="/" className="nav-item">
-            <span className="nav-icon">📊</span>
-            <span>Dashboard</span>
-          </Link>
-          <Link to="/tickets" className="nav-item">
-            <span className="nav-icon">🎫</span>
-            <span>Tickets</span>
-          </Link>
-          <Link to="/all-bugs" className="nav-item">
-            <span className="nav-icon">🐛</span>
-            <span>All Bugs</span>
-          </Link>
-          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
-            <Link to="/employees" className="nav-item">
-              <span className="nav-icon">👥</span>
-              <span>Employees</span>
-            </Link>
-          )}
-          <Link to="/calendar" className="nav-item">
-            <span className="nav-icon">📅</span>
-            <span>Calendar</span>
-          </Link>
-          <Link to="/timesheet" className="nav-item active">
-            <span className="nav-icon">⏱</span>
-            <span>TimeSheet</span>
-          </Link>
-          <Link to="/reports" className="nav-item">
-            <span className="nav-icon">📈</span>
-            <span>Reports</span>
-          </Link>
-        </nav>
-        <div className="sidebar-footer">
-          <Link to="/" className="nav-item">
-            <span className="nav-icon">←</span>
-            <span>Back to Dashboard</span>
-          </Link>
-        </div>
-      </aside>
+      <AppSidebar />
 
       <main className="main-content">
         <header className="page-header">
           <div className="header-title">
-            <h1>⏱ Team Timesheet</h1>
-            <p>View daily time entries and log your time</p>
-          </div>
-          <div className="header-actions">
-            {canLogTime && (
-              <>
-                <button
-                  type="button"
-                  className="sync-btn"
-                  onClick={() => openEntryForm(formatAPIDate(currentDate))}
-                  disabled={!canEditEntries}
-                >
-                  + Add Entry
-                </button>
-                <button
-                  type="button"
-                  className="sync-btn start"
-                  onClick={handleSubmitTimesheet}
-                  disabled={!canSubmitTimesheet}
-                >
-                  ✓ Submit Timesheet
-                </button>
-              </>
-            )}
-            {submissionStatus && (
-              <div className="sync-info">
-                <span className="sync-text">Status: <strong>{submissionStatus}</strong></span>
-              </div>
-            )}
+            <h1>{myDisplayName ? `⏱ Your timesheet – ${myDisplayName}` : '⏱ Team Timesheet'}</h1>
+            <p>{myDisplayName ? 'View and log your daily time entries' : 'View and log daily time entries by team'}</p>
           </div>
         </header>
 
-        {lockStatus?.locked && (
-          <div className="timesheet-lock-banner">
-            {lockStatus.message || 'Timesheet action required before continuing.'}
-          </div>
-        )}
-
-        <div className="timesheet-tabs-row">
-          <button className={`toggle-btn ${activeTab === 'my' ? 'active' : ''}`} onClick={() => setActiveTab('my')}>My Timesheet</button>
-          {canApprove && (
-            <button className={`toggle-btn ${activeTab === 'approvals' ? 'active' : ''}`} onClick={() => setActiveTab('approvals')}>Approvals</button>
+        {/* Main tabs: Log time | My submissions */}
+        <div className="timesheet-main-tabs">
+          <button
+            type="button"
+            className={`main-tab ${activeTab === 'log' ? 'active' : ''}`}
+            onClick={() => setActiveTab('log')}
+          >
+            Log time
+          </button>
+          <button
+            type="button"
+            className={`main-tab ${activeTab === 'submissions' ? 'active' : ''}`}
+            onClick={() => setActiveTab('submissions')}
+          >
+            My submissions
+          </button>
+          <button
+            type="button"
+            className={`main-tab ${activeTab === 'plan-vs-actual' ? 'active' : ''}`}
+            onClick={() => setActiveTab('plan-vs-actual')}
+          >
+            Plan vs actual
+          </button>
+          {canApproveTimesheets && (
+            <button
+              type="button"
+              className={`main-tab ${activeTab === 'approvals' ? 'active' : ''}`}
+              onClick={() => setActiveTab('approvals')}
+            >
+              Timesheet Approvals
+            </button>
           )}
         </div>
 
-        {activeTab === 'my' && (
-          <>
-            <div className="calendar-controls">
-              <div className="control-group">
-                <div className="view-toggle">
-                  <button className={`toggle-btn ${view === 'weekly' ? 'active' : ''}`} onClick={() => setView('weekly')}>Weekly</button>
-                  <button className={`toggle-btn ${view === 'monthly' ? 'active' : ''}`} onClick={() => setView('monthly')}>Monthly</button>
-                </div>
-              </div>
-              <div className="date-navigation">
-                {view === 'monthly' ? (
-                  <>
-                    <select
-                      className="month-select"
-                      value={currentDate.getMonth()}
-                      onChange={(e) => { const d = new Date(currentDate); d.setMonth(parseInt(e.target.value)); setCurrentDate(d); }}
-                    >
-                      {MONTH_NAMES.map((m, i) => <option key={i} value={i}>{m}</option>)}
-                    </select>
-                    <select
-                      className="year-select"
-                      value={currentDate.getFullYear()}
-                      onChange={(e) => { const d = new Date(currentDate); d.setFullYear(parseInt(e.target.value)); setCurrentDate(d); }}
-                    >
-                      {[currentDate.getFullYear() - 1, currentDate.getFullYear(), currentDate.getFullYear() + 1].map((y) => (
-                        <option key={y} value={y}>{y}</option>
-                      ))}
-                    </select>
-                    <button className="today-btn" onClick={goToToday}>Today</button>
-                  </>
-                ) : (
-                  <>
-                    <button className="nav-btn" onClick={goToPreviousWeek}>←</button>
-                    <button className="today-btn" onClick={goToToday}>Today</button>
-                    <span className="current-period">{formatDateRange(weekDays[0], weekDays[6])}</span>
-                    <button className="nav-btn" onClick={goToNextWeek}>→</button>
-                  </>
-                )}
-              </div>
+        {activeTab === 'plan-vs-actual' && (
+          <div className="plan-vs-actual-panel">
+            <div className="plan-vs-actual-controls">
+              <label>
+                Team
+                <select value={planVsActualTeam} onChange={(e) => setPlanVsActualTeam(e.target.value)}>
+                  <option value="QA">QA</option>
+                  <option value="DEVELOPMENT">DEV</option>
+                </select>
+              </label>
+              <label>
+                Week (Monday)
+                <input
+                  type="date"
+                  value={planVsActualWeekStart}
+                  onChange={(e) => setPlanVsActualWeekStart(e.target.value)}
+                />
+              </label>
             </div>
-
-            <div className="calendar-content">
-              {loading && (
-                <div className="loading-state">
-                  <div className="spinner"></div>
-                  <p>Loading timesheet…</p>
+            {planVsActualLoading && <p className="loading-inline">Loading…</p>}
+            {!planVsActualLoading && planVsActualData && (
+              <>
+                <div className="plan-vs-actual-summary">
+                  <span>Planned: {planVsActualData.summary?.total_planned_hours ?? 0}h</span>
+                  <span>Actual: {planVsActualData.summary?.total_actual_hours ?? 0}h</span>
+                  <span>Variance: {(planVsActualData.summary?.total_actual_hours ?? 0) - (planVsActualData.summary?.total_planned_hours ?? 0)}h</span>
                 </div>
-              )}
-              {error && (
-                <div className="error-state">
-                  <p>⚠️ {error}</p>
-                  <button type="button" className="sync-btn" onClick={handleRetry}>Retry</button>
-                </div>
-              )}
-              {!loading && !error && timesheetData && view === 'weekly' && (
-                <div className="calendar-weekly">
-                  <table className="calendar-table">
-                    <thead>
-                      <tr>
-                        <th className="employee-col">Employee</th>
-                        {weekDays.map((day, idx) => {
-                          const isWeekend = day.getDay() === 0 || day.getDay() === 6;
-                          return (
-                            <th key={idx} className={`day-header ${isWeekend ? 'weekend' : ''}`}>
-                              <div className="day-name">{DAY_NAMES[idx]}</div>
-                              <div className="day-date">{day.getDate()}</div>
-                              <div className="day-month">{MONTH_NAMES[day.getMonth()].slice(0, 3)}</div>
-                            </th>
-                          );
-                        })}
-                        <th className="total-col">Weekly Total</th>
+                <table className="plan-vs-actual-table">
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th>Planned (h)</th>
+                      <th>Actual (h)</th>
+                      <th>Variance</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(planVsActualData.employees || []).map((emp, idx) => (
+                      <tr key={idx}>
+                        <td>{emp.employee_name}</td>
+                        <td>{emp.planned_hours}</td>
+                        <td>{emp.actual_hours}</td>
+                        <td className={emp.variance >= 0 ? 'variance-ok' : 'variance-under'}>{emp.variance}h</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      <tr className="employee-row">
-                        <td className="employee-cell">
-                          <div className="employee-info">
-                            <span className="employee-name">{user?.name || 'Me'}</span>
-                            {user?.team && <span className="employee-team">{user.team}</span>}
-                          </div>
-                        </td>
-                        {weekDays.map((day, idx) => {
-                          const dateKey = formatAPIDate(day);
-                          const dayEntries = entriesByDate[dateKey] || [];
-                          const dayTotal = dailyTotals.find((d) => d.date === dateKey);
-                          const totalH = dayTotal?.total ?? 0;
-                          const isWeekend = day.getDay() === 0 || day.getDay() === 6;
-                          const today = new Date();
-                          today.setHours(0, 0, 0, 0);
-                          const dayDate = new Date(day);
-                          dayDate.setHours(0, 0, 0, 0);
-                          const isPast = dayDate < today;
-                          const showNoEntry = isPast && !isWeekend && dayEntries.length === 0;
-                          return (
-                            <td
-                              key={idx}
-                              className={`day-cell ${isWeekend ? 'weekend' : ''} ${showNoEntry ? 'no-entry-past' : ''}`}
-                              onClick={() => canEditEntries && openAddTimelog(dateKey)}
-                              title={showNoEntry ? 'No time entry for this date' : ''}
-                            >
-                              {showNoEntry && (
-                                <div className="no-entry-indicator" title="No time entry for this past date">
-                                  <span className="no-entry-icon">!</span>
-                                </div>
-                              )}
-                              {dayEntries.length > 0 && (
-                                <div className="day-entries">
-                                  {dayEntries.slice(0, 3).map((entry) => {
-                                    const isTicket = entry.ticket_id && /^\d+$/.test(String(entry.ticket_id));
-                                    return (
-                                      <div key={`${entry.source}-${entry.id}`} className={`entry-ticket ${isTicket ? 'clickable-ticket' : ''}`} title={entry.task_description || entry.ticket_id}>
-                                        {isTicket ? (
-                                          <div className="ticket-actions">
-                                            <Link to={`/tickets?ticket=${entry.ticket_id}`} className="ticket-id ticket-link" onClick={(e) => e.stopPropagation()}>#{entry.ticket_id}</Link>
-                                            <TicketExternalLink ticketId={entry.ticket_id} />
-                                          </div>
-                                        ) : (
-                                          <span className="ticket-id">{(entry.task_description || entry.activity_type || 'Task').slice(0, 14)}</span>
-                                        )}
-                                        <span className="ticket-hours">{parseFloat(entry.hours || 0).toFixed(1)}h</span>
-                                      </div>
-                                    );
-                                  })}
-                                  {dayEntries.length > 3 && <div className="more-entries">+{dayEntries.length - 3} more</div>}
-                                </div>
-                              )}
-                              <div className={`day-total ${getHoursColorClass(totalH)}`}>
-                                <strong>{totalH > 0 ? `${totalH.toFixed(1)}h` : '-'}</strong>
-                              </div>
-                              {canEditEntries && (
-                                <button type="button" className="add-timelog-btn" onClick={(e) => { e.stopPropagation(); openAddTimelog(dateKey); }}>
-                                  Add timelog
-                                </button>
-                              )}
-                            </td>
-                          );
-                        })}
-                        <td className={`total-cell ${getHoursColorClass(((timesheetData.hours_logged || 0) + (timesheetData.leave_hours || 0)) / 5)}`}>
-                          <strong>{(timesheetData.hours_logged || 0) + (timesheetData.leave_hours || 0)}h</strong>
-                          <div className="weekly-avg">Avg: {(((timesheetData.hours_logged || 0) + (timesheetData.leave_hours || 0)) / 5).toFixed(1)}h/day</div>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {view === 'monthly' && (
-                <>
-                  {monthLoading && (
-                    <div className="loading-state">
-                      <div className="spinner"></div>
-                      <p>Loading month…</p>
-                    </div>
-                  )}
-                  {!monthLoading && monthData && (
-                    <div className="calendar-monthly">
-                      <div className="monthly-summary">
-                        <div className="summary-card">
-                          <span className="summary-label">Total hours this month</span>
-                          <span className="summary-value">
-                            {Object.values(monthData.days || {}).reduce((sum, d) => sum + (d.total_hours || 0) + (d.leave_hours || 0), 0).toFixed(1)}h
-                          </span>
-                        </div>
-                        <div className="summary-card">
-                          <span className="summary-label">Days with entries</span>
-                          <span className="summary-value">
-                            {Object.values(monthData.days || {}).filter((d) => (d.total_hours || 0) + (d.leave_hours || 0) > 0).length}
-                          </span>
-                        </div>
-                        <div className="summary-card">
-                          <span className="summary-label">Status</span>
-                          <span className="summary-value">{submissionStatus || 'Draft'}</span>
-                        </div>
-                      </div>
-                      <div className="timesheet-calendar-monthly">
-                        <div className="monthly-grid-header">
-                          {DAY_NAMES.map((d) => (
-                            <div key={d} className="monthly-day-name">{d}</div>
-                          ))}
-                        </div>
-                        <div className="monthly-grid-body">
-                          {(() => {
-                            const firstDay = new Date(monthData.month_start + 'T12:00:00');
-                            const startPadding = (firstDay.getDay() + 6) % 7;
-                            const daysInMonth = new Date(firstDay.getFullYear(), firstDay.getMonth() + 1, 0).getDate();
-                            const cells = [];
-                            for (let i = 0; i < startPadding; i++) cells.push(<div key={`p-${i}`} className="monthly-cell empty" />);
-                            for (let d = 1; d <= daysInMonth; d++) {
-                              const dateStr = `${monthData.month}-${String(d).padStart(2, '0')}`;
-                              const dayData = monthData.days?.[dateStr];
-                              const total = (dayData?.total_hours || 0) + (dayData?.leave_hours || 0);
-                              const entries = dayData?.entries || [];
-                              cells.push(
-                                <div
-                                  key={dateStr}
-                                  className={`monthly-cell ${getHoursColorClass(total)}`}
-                                  onClick={() => canEditEntries && openAddTimelog(dateStr)}
-                                >
-                                  <div className="monthly-cell-date">{d}</div>
-                                  <div className="monthly-cell-total">{total > 0 ? `${total.toFixed(1)}h` : '-'}</div>
-                                  {entries.length > 0 && (
-                                    <div className="monthly-cell-entries">
-                                      {entries.slice(0, 2).map((e) => (
-                                        <span key={`${e.source}-${e.id}`} className="mini">{e.ticket_id ? `#${e.ticket_id}` : '·'}</span>
-                                      ))}
-                                    </div>
-                                  )}
-                                  {canEditEntries && (
-                                    <button type="button" className="add-timelog-btn monthly" onClick={(e) => { e.stopPropagation(); openAddTimelog(dateStr); }}>+</button>
-                                  )}
-                                </div>
-                              );
-                            }
-                            return cells;
-                          })()}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-              {!loading && !error && view === 'weekly' && timesheetData && (
-                <div className="calendar-legend">
-                  <div className="legend-item">
-                    <span className="legend-color hours-full"></span>
-                    <span>8+ hours</span>
-                  </div>
-                  <div className="legend-item">
-                    <span className="legend-color hours-half"></span>
-                    <span>4-8 hours</span>
-                  </div>
-                  <div className="legend-item">
-                    <span className="legend-color hours-low"></span>
-                    <span>1-4 hours</span>
-                  </div>
-                  <div className="legend-item">
-                    <span className="legend-color hours-zero"></span>
-                    <span>No entry</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          </>
-        )}
-
-        {activeTab === 'approvals' && (
-          <div className="timesheet-approvals">
-            <div className="approval-column">
-              <h3>Pending approvals</h3>
-              {approvalsLoading && <div className="loading-state">Loading approvals...</div>}
-              {!approvalsLoading && pendingApprovals.length === 0 && (
-                <div className="timesheet-empty">No pending approvals.</div>
-              )}
-              {!approvalsLoading && pendingApprovals.map((item) => (
-                <button
-                  key={item.id}
-                  className={`approval-card ${selectedSubmissionId === item.id ? 'active' : ''}`}
-                  onClick={() => handleSelectSubmission(item.id)}
-                >
-                  <div className="approval-card-title">{item.employee_name}</div>
-                  <div className="approval-card-subtitle">{item.week_start} → {item.week_end}</div>
-                  <div className="approval-card-meta">{item.total_hours}h • {item.status}</div>
-                </button>
-              ))}
-            </div>
-
-            <div className="approval-detail">
-              {approvalError && <div className="error-message">{approvalError}</div>}
-              {!approvalDetails && <div className="timesheet-empty">Select a submission to review.</div>}
-              {approvalDetails && (
-                <>
-                  <div className="approval-header">
-                    <div>
-                      <h3>{approvalDetails.submission.employee_name}</h3>
-                      <div className="approval-subtitle">{approvalDetails.submission.week_start} → {approvalDetails.submission.week_end}</div>
-                    </div>
-                    <div className="approval-status">{approvalDetails.submission.status}</div>
-                  </div>
-
-                  <div className="approval-entries">
-                    {(approvalDetails.entries || []).map((entry) => {
-                      const key = `${entry.source}:${entry.id}`;
-                      const decision = approvalDecisions[key] || {};
-                      return (
-                        <div key={key} className="approval-entry">
-                          <div className="approval-entry-main">
-                            <div className="entry-title">
-                              <span className="entry-hours">{(entry.hours || 0).toFixed(1)}h</span>
-                              <span className="entry-activity">{entry.activity_type}</span>
-                              {entry.ticket_id && <TicketExternalLink ticketId={entry.ticket_id} />}
-                            </div>
-                            <div className="entry-desc">{entry.task_description || entry.project_name || entry.ticket_id || 'No description'}</div>
-                            <div className="entry-meta">
-                              <span className={`entry-source ${entry.source}`}>{entry.source === 'manual' ? 'Manual' : 'Synced'}</span>
-                            </div>
-                          </div>
-                          <div className="approval-entry-actions">
-                            <label>
-                              Decision
-                              <select
-                                value={decision.decision || 'approved'}
-                                onChange={(e) => updateApprovalDecision(key, { decision: e.target.value })}
-                              >
-                                <option value="approved">Productive</option>
-                                <option value="revision_required">Needs Revision</option>
-                              </select>
-                            </label>
-                            <label>
-                              Productive hours
-                              <input
-                                type="number"
-                                min="0"
-                                step="0.1"
-                                value={decision.productive_hours ?? entry.hours}
-                                onChange={(e) => updateApprovalDecision(key, { productive_hours: e.target.value })}
-                                disabled={(decision.decision || 'approved') !== 'approved'}
-                              />
-                            </label>
-                            {(decision.decision || 'approved') === 'revision_required' && (
-                              <label>
-                                Revision note
-                                <input
-                                  type="text"
-                                  value={decision.notes || ''}
-                                  onChange={(e) => updateApprovalDecision(key, { notes: e.target.value })}
-                                />
-                              </label>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="plan-vs-actual-entries">
+                  <h4>Actual entries (with variance reason when present)</h4>
+                  {(planVsActualData.employees || []).map((emp, idx) => (
+                    <div key={idx} className="plan-vs-actual-employee-block">
+                      <strong>{emp.employee_name}</strong>
+                      <ul>
+                        {(emp.actual_entries || []).map((entry, eidx) => (
+                          <li key={eidx}>
+                            {entry.date} – {entry.ticket_id ? `#${entry.ticket_id}` : entry.task_description || 'Task'} – {entry.hours}h
+                            {(entry.variance_reason_type || entry.variance_notes) && (
+                              <span className="variance-reason">
+                                {' '}({[
+                                  entry.variance_reason_type ? (VARIANCE_REASON_TYPES.find(o => o.value === entry.variance_reason_type)?.label || entry.variance_reason_type) : '',
+                                  entry.variance_notes || '',
+                                ].filter(Boolean).join(' – ')})
+                              </span>
                             )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div className="approval-actions">
-                    <label className="approval-notes">
-                      Notes (optional)
-                      <textarea
-                        value={approvalNotes}
-                        onChange={(e) => setApprovalNotes(e.target.value)}
-                        rows={3}
-                      />
-                    </label>
-                    <div className="approval-buttons">
-                      <button className="btn btn-primary" onClick={handleApproveSubmission}>Approve</button>
-                      <button className="btn btn-secondary" onClick={handleRequestRevision}>Request Revision</button>
-                      <button className="btn btn-ghost" onClick={handleRejectSubmission}>Reject</button>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
-                  </div>
-                </>
-              )}
-            </div>
+                  ))}
+                </div>
+              </>
+            )}
+            {!planVsActualLoading && activeTab === 'plan-vs-actual' && !planVsActualData && <p className="text-muted">No data for this week.</p>}
           </div>
         )}
 
-        {activeTab === 'approvals' && (
-          <div className="team-timesheet">
-            <h3>Team timesheet view</h3>
-            <div className="team-timesheet-controls">
+        {activeTab === 'approvals' && canApproveTimesheets && (
+          <div className="timesheet-approvals-panel">
+            <div className="approvals-sub-tabs">
+              <button
+                type="button"
+                className={`sub-tab ${activeApprovalsSubTab === 'pending' ? 'active' : ''}`}
+                onClick={() => setActiveApprovalsSubTab('pending')}
+              >
+                Pending approvals
+              </button>
+              <button
+                type="button"
+                className={`sub-tab ${activeApprovalsSubTab === 'completed' ? 'active' : ''}`}
+                onClick={() => setActiveApprovalsSubTab('completed')}
+              >
+                Completed approvals
+              </button>
+            </div>
+            <div className="approvals-team-filter">
               <label>
-                Employee
-                <select value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
-                  <option value="">Select employee</option>
-                  {teamEmployees.map((emp) => (
-                    <option key={emp.employee_id} value={emp.employee_id}>
-                      {emp.name} ({emp.employee_id})
-                    </option>
-                  ))}
+                Team
+                <select value={approvalsTeam} onChange={(e) => setApprovalsTeam(e.target.value)}>
+                  <option value="">All (by role)</option>
+                  <option value="QA">QA</option>
+                  <option value="DEVELOPMENT">DEV</option>
                 </select>
               </label>
             </div>
-            {teamLoading && <div className="loading-state">Loading team timesheet...</div>}
-            {!teamLoading && teamTimesheetData && (
-              <div className="team-timesheet-summary">
-                <div className="hour-progress">
-                  <strong>{teamTimesheetData.total_hours}h</strong>
-                  {teamTimesheetData.submission?.status && (
-                    <span className="submission-status">Status: {teamTimesheetData.submission.status}</span>
-                  )}
-                </div>
-                <div className="entries-section">
-                  {renderEntryList(teamTimesheetData.entries || [], false)}
-                </div>
+            {approvalDetail ? (
+              <div className="approval-detail-view">
+                <button type="button" className="btn btn-ghost back-to-list" onClick={() => { setSelectedApprovalSubmissionId(null); setApprovalDetail(null); setApprovalNotes(''); setApprovalEntryReviews({}); }}>← Back to list</button>
+                {approvalDetailLoading ? (
+                  <p>Loading…</p>
+                ) : (
+                  <>
+                    <div className="submission-detail-header">
+                      <span>{approvalDetail.submission?.employee_name} · Week: {approvalDetail.submission?.week_start} – {approvalDetail.submission?.week_end}</span>
+                      <span className={`status-badge status-badge--${(approvalDetail.submission?.status || '').toLowerCase().replace(/\s+/g, '-')}`}>{approvalDetail.submission?.status}</span>
+                    </div>
+                    <p>Submitted: {approvalDetail.submission?.submitted_on || '-'} · Total: {approvalDetail.submission?.total_hours ?? 0}h · Leave: {approvalDetail.submission?.leave_hours ?? 0}h</p>
+                    <div className="approval-notes-row">
+                      <label>Notes (optional)</label>
+                      <textarea value={approvalNotes} onChange={(e) => setApprovalNotes(e.target.value)} placeholder="Add notes for approval/reject/revision…" rows={2} />
+                    </div>
+                    <table className="submission-entries-table approval-entries-table">
+                      <thead>
+                        <tr>
+                          <th>Date</th>
+                          <th>Type</th>
+                          <th>Ticket / Description</th>
+                          <th>Hours</th>
+                          {activeApprovalsSubTab === 'pending' && (
+                            <th>Per-entry action</th>
+                          )}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(approvalDetail.entries || []).map((entry, idx) => {
+                          const key = `${entry.source}-${entry.id}`;
+                          return (
+                            <tr key={key}>
+                              <td>{entry.date}</td>
+                              <td>{entry.activity_type || entry.task_category || entry.source}</td>
+                              <td>{entry.ticket_id ? `#${entry.ticket_id}` : (entry.task_description || '-')}</td>
+                              <td>{Number(entry.hours || 0).toFixed(1)}</td>
+                              {activeApprovalsSubTab === 'pending' && (
+                                <td>
+                                  <select
+                                    value={approvalEntryReviews[key] || ''}
+                                    onChange={(e) => setApprovalEntryReviews((prev) => ({ ...prev, [key]: e.target.value || undefined }))}
+                                  >
+                                    <option value="">—</option>
+                                    <option value="approved">Approve</option>
+                                    <option value="revision_required">Revision required</option>
+                                    <option value="rejected">Reject</option>
+                                  </select>
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {activeApprovalsSubTab === 'pending' && (
+                      <div className="approval-actions">
+                        <p className="approval-actions-hint">Bulk: approve or reject the entire submission. Optionally set per-entry action above and submit with one of the buttons.</p>
+                        <div className="approval-buttons">
+                          <button type="button" className="btn btn-primary" disabled={approvalActionLoading} onClick={() => handleApprovalAction('approve')}>Approve</button>
+                          <button type="button" className="btn btn-danger" disabled={approvalActionLoading} onClick={() => handleApprovalAction('reject')}>Reject</button>
+                          <button type="button" className="btn btn-secondary" disabled={approvalActionLoading} onClick={() => handleApprovalAction('revision')}>Request revision</button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
+            ) : (
+              <>
+                {approvalsLoading ? (
+                  <p className="loading-inline">Loading…</p>
+                ) : (
+                  <>
+                    <h3>{activeApprovalsSubTab === 'pending' ? 'Pending approvals' : 'Completed approvals'}</h3>
+                    {(activeApprovalsSubTab === 'pending' ? pendingApprovals : completedApprovals).length === 0 ? (
+                      <p className="text-muted">No {activeApprovalsSubTab === 'pending' ? 'pending' : 'completed'} approvals.</p>
+                    ) : (
+                      <table className="my-submissions-table">
+                        <thead>
+                          <tr>
+                            <th>Employee</th>
+                            <th>Week (Mon–Fri)</th>
+                            <th>Submitted</th>
+                            <th>Status</th>
+                            <th>Total hours</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {(activeApprovalsSubTab === 'pending' ? pendingApprovals : completedApprovals).map((s) => {
+                            const mon = s.week_start ? new Date(s.week_start + 'T12:00:00') : null;
+                            let fri = null;
+                            if (mon) { fri = new Date(mon); fri.setDate(fri.getDate() + 4); }
+                            const weekLabel = mon && fri ? `${mon.getDate()} ${MONTH_NAMES[mon.getMonth()].slice(0, 3)} – ${fri.getDate()} ${MONTH_NAMES[fri.getMonth()].slice(0, 3)}` : (s.week_start || '') + ' – ' + (s.week_end || '');
+                            return (
+                              <tr key={s.id} className="submission-row" onClick={() => setSelectedApprovalSubmissionId(s.id)}>
+                                <td>{s.employee_name}</td>
+                                <td>{weekLabel}</td>
+                                <td>{s.submitted_on ? new Date(s.submitted_on).toLocaleDateString() : '-'}</td>
+                                <td><span className={`status-badge status-badge--${(s.status || '').toLowerCase().replace(/\s+/g, '-')}`}>{s.status}</span></td>
+                                <td>{(s.total_hours ?? 0) + (s.leave_hours ?? 0)}h</td>
+                                <td><button type="button" className="btn btn-ghost btn-small" onClick={(e) => { e.stopPropagation(); setSelectedApprovalSubmissionId(s.id); }}>View</button></td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </>
+                )}
+              </>
             )}
           </div>
         )}
 
-        {addTimelogDay && !showEntryForm && (
-          <div className="timesheet-modal-overlay" onClick={() => setAddTimelogDay(null)}>
-            <div className="timesheet-modal add-timelog-modal" onClick={(e) => e.stopPropagation()}>
-              <h3>Add timelog – {formatDisplayDateWithDay(addTimelogDay)}</h3>
-              {plannedLoading && <div className="loading-state">Loading planned tasks…</div>}
-              {!plannedLoading && plannedTasks.length > 0 && (
-                <div className="planned-tasks-quick">
-                  <p className="label">Assigned tasks for this day</p>
-                  {plannedTasks.map((task) => (
-                    <div key={`${task.source}-${task.id}`} className="planned-task-row">
-                      <span className="task-info">
-                        {task.ticket_id ? `#${task.ticket_id}` : task.category} • {(task.activity_description || '').slice(0, 40)} • {task.hours}h
-                      </span>
-                      <div className="task-actions">
-                        <button type="button" className="btn btn-primary btn-sm" onClick={() => handleAddWithPlannedTime(task, addTimelogDay)}>
-                          Add with planned time
-                        </button>
-                        <button type="button" className="btn btn-secondary btn-sm" onClick={() => { openEntryForm(addTimelogDay, null, task); }}>
-                          Add with different time
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="add-new-task-row">
-                <button type="button" className="btn btn-primary" onClick={() => openEntryForm(addTimelogDay)}>
-                  Add new task
-                </button>
-              </div>
-              <div className="timesheet-modal-actions">
-                <button type="button" className="btn btn-ghost" onClick={() => setAddTimelogDay(null)}>Cancel</button>
-              </div>
-            </div>
+        {activeTab === 'submissions' && (
+          <div className="my-submissions-panel">
+            {!user?.employee_id ? (
+              <p className="text-muted">You need an employee account to see submissions.</p>
+            ) : (
+              <>
+                {submissionDetail ? (
+                  <div className="submission-detail-view">
+                    <button type="button" className="btn btn-ghost back-to-list" onClick={() => { setSelectedSubmissionId(null); setSubmissionDetail(null); }}>← Back to list</button>
+                    {loadingDetail ? (
+                      <p>Loading…</p>
+                    ) : (
+                      <>
+                        <div className="submission-detail-header">
+                          <span>Week: {submissionDetail.submission?.week_start} – {submissionDetail.submission?.week_end}</span>
+                          <span className={`status-badge status-badge--${(submissionDetail.submission?.status || '').toLowerCase().replace(/\s+/g, '-')}`}>{submissionDetail.submission?.status}</span>
+                        </div>
+                        <p>Submitted: {submissionDetail.submission?.submitted_on || '-'} · Total: {submissionDetail.submission?.total_hours ?? 0}h · Leave: {submissionDetail.submission?.leave_hours ?? 0}h</p>
+                        <table className="submission-entries-table">
+                          <thead>
+                            <tr>
+                              <th>Date</th>
+                              <th>Type</th>
+                              <th>Ticket / Description</th>
+                              <th>Hours</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {submissionDetail.entries?.map((entry, idx) => (
+                              <tr key={`${entry.source}-${entry.id}-${idx}`}>
+                                <td>{entry.date}</td>
+                                <td>{entry.activity_type || entry.task_category || entry.source}</td>
+                                <td>{entry.ticket_id ? `#${entry.ticket_id}` : (entry.task_description || '-')}</td>
+                                <td>{Number(entry.hours || 0).toFixed(1)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  <>
+                    <h3>My submissions</h3>
+                    {mySubmissions.length === 0 ? (
+                      <p className="text-muted">No submissions yet.</p>
+                    ) : (
+                      <table className="my-submissions-table">
+                        <thead>
+                          <tr>
+                            <th>Week (Mon–Fri)</th>
+                            <th>Submitted</th>
+                            <th>Status</th>
+                            <th>Total hours</th>
+                            <th></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {mySubmissions.map((s) => {
+                            const mon = s.week_start ? new Date(s.week_start + 'T12:00:00') : null;
+                            let fri = null;
+                            if (mon) {
+                              fri = new Date(mon);
+                              fri.setDate(fri.getDate() + 4);
+                            }
+                            const weekLabel = mon && fri ? `${mon.getDate()} ${MONTH_NAMES[mon.getMonth()].slice(0, 3)} – ${fri.getDate()} ${MONTH_NAMES[fri.getMonth()].slice(0, 3)}` : s.week_start + ' – ' + s.week_end;
+                            return (
+                              <tr key={s.id} className="submission-row" onClick={() => setSelectedSubmissionId(s.id)}>
+                                <td>{weekLabel}</td>
+                                <td>{s.submitted_on ? new Date(s.submitted_on).toLocaleDateString() : '-'}</td>
+                                <td><span className={`status-badge status-badge--${(s.status || '').toLowerCase().replace(/\s+/g, '-')}`}>{s.status}</span></td>
+                                <td>{(s.total_hours_logged ?? 0) + (s.leave_hours ?? 0)}h</td>
+                                <td><button type="button" className="btn btn-ghost btn-small" onClick={(e) => { e.stopPropagation(); setSelectedSubmissionId(s.id); }}>View</button></td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    )}
+                  </>
+                )}
+              </>
+            )}
           </div>
         )}
 
-        {showEntryForm && (
-          <div className="timesheet-modal-overlay" onClick={closeEntryForm}>
-            <div className="timesheet-modal" onClick={(e) => e.stopPropagation()}>
-              <h3>{editingEntry ? 'Edit time entry' : 'Add time entry'}</h3>
-              <div className="timesheet-form">
-                <label>
-                  Task category *
-                  <select
-                    value={entryForm.task_category || 'Ticket'}
-                    onChange={(e) => setEntryForm((prev) => ({ ...prev, task_category: e.target.value, ticket_id: e.target.value !== 'Ticket' ? '' : prev.ticket_id }))}
-                  >
-                    {TASK_CATEGORIES.map((c) => (
-                      <option key={c} value={c}>{c}</option>
-                    ))}
-                  </select>
-                  {entryFormErrors.task_category && <span className="form-error">{entryFormErrors.task_category}</span>}
-                </label>
-                {entryForm.task_category === 'Ticket' && (
-                  <label>
-                    Ticket ID *
-                    <input
-                      type="text"
-                      value={entryForm.ticket_id}
-                      onChange={(e) => setEntryForm((prev) => ({ ...prev, ticket_id: e.target.value }))}
-                      placeholder="e.g. 12345"
-                    />
-                    {entryFormErrors.ticket_id && <span className="form-error">{entryFormErrors.ticket_id}</span>}
-                  </label>
+        {activeTab === 'log' && (
+          <>
+        {/* Team Tabs – only for managers who can see all team data */}
+        {isManagerView && (
+          <div className="team-tabs">
+            <button 
+              className={`team-tab ${team === 'QA' ? 'active' : ''}`}
+              onClick={() => setTeam('QA')}
+            >
+              QA Team
+            </button>
+            <button 
+              className={`team-tab ${team === 'DEVELOPMENT' ? 'active' : ''}`}
+              onClick={() => setTeam('DEVELOPMENT')}
+            >
+              DEV Team
+            </button>
+          </div>
+        )}
+
+        {/* Calendar Controls */}
+        <div className="calendar-controls">
+          <div className="date-navigation">
+            <button className="nav-btn" onClick={goToPreviousWeek}>←</button>
+            <button className="today-btn" onClick={goToToday}>Today</button>
+            <span className="current-period">
+              {weekDays[0] && weekDays[4] ? `${DAY_NAMES[0]} ${weekDays[0].getDate()} ${MONTH_NAMES[weekDays[0].getMonth()].slice(0, 3)} – ${DAY_NAMES[4]} ${weekDays[4].getDate()} ${MONTH_NAMES[weekDays[4].getMonth()].slice(0, 3)}` : formatDateRange(weekDays[0], weekDays[6])}
+            </span>
+            <button className="nav-btn" onClick={goToNextWeek}>→</button>
+          </div>
+          {user?.employee_id && (
+            <>
+              <div className="timesheet-submit-row">
+                <span className="submit-by-text">Submit by next Tuesday{submitDueDate ? ` (${submitDueDate.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' })})` : ''}</span>
+                {isCurrentWeek && (
+                  submittedStatus && submittedStatus !== 'Rejected' && submittedStatus !== 'Revision Required' ? (
+                    <span className="submission-status-badge">{submittedStatus}</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="btn btn-submit"
+                      onClick={handleSubmitWeek}
+                      disabled={!canSubmitThisWeek || submitting}
+                    >
+                      {submitting ? 'Submitting…' : 'Submit timesheet'}
+                    </button>
+                  )
                 )}
-                <label>
-                  Activity type *
-                  <select
-                    value={entryForm.activity_type}
-                    onChange={(e) => setEntryForm((prev) => ({ ...prev, activity_type: e.target.value }))}
-                  >
-                    {ACTIVITY_TYPES.map((type) => (
-                      <option key={type} value={type}>{type}</option>
-                    ))}
-                  </select>
-                  {entryFormErrors.activity_type && <span className="form-error">{entryFormErrors.activity_type}</span>}
-                </label>
-                <label>
-                  Planned task (optional)
-                  <select
-                    value={plannedTaskValue}
-                    onChange={(e) => handlePlannedTaskChange(e.target.value)}
-                  >
-                    <option value="">Add new task</option>
-                    {plannedTasks.map((task) => (
-                      <option key={`${task.source}-${task.id}`} value={`${task.source}:${task.id}`}>
-                        {task.ticket_id ? `#${task.ticket_id}` : task.category} • {(task.activity_description || '').slice(0, 30)} ({task.hours}h)
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {plannedLoading && <div className="loading-state">Loading planned tasks…</div>}
-                <label>
-                  Task description *
-                  <input
-                    type="text"
-                    value={entryForm.task_description}
-                    onChange={(e) => setEntryForm((prev) => ({ ...prev, task_description: e.target.value }))}
-                    placeholder="What was done?"
-                  />
-                  {entryFormErrors.task_description && <span className="form-error">{entryFormErrors.task_description}</span>}
-                </label>
-                <label>
-                  Date *
-                  <input
-                    type="date"
-                    value={entryForm.date}
-                    onChange={(e) => setEntryForm((prev) => ({ ...prev, date: e.target.value }))}
-                  />
-                  {entryFormErrors.date && <span className="form-error">{entryFormErrors.date}</span>}
-                </label>
-                <label>
-                  Hours spent *
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.1"
-                    value={entryForm.hours}
-                    onChange={(e) => setEntryForm((prev) => ({ ...prev, hours: e.target.value }))}
-                  />
-                  {entryFormErrors.hours && <span className="form-error">{entryFormErrors.hours}</span>}
-                </label>
-                <label>
-                  Project name (optional)
-                  <input
-                    type="text"
-                    value={entryForm.project_name}
-                    onChange={(e) => setEntryForm((prev) => ({ ...prev, project_name: e.target.value }))}
-                  />
-                </label>
               </div>
-              <div className="timesheet-modal-actions">
-                <button className="btn btn-primary" onClick={handleSaveEntry}>Save</button>
-                <button className="btn btn-ghost" onClick={closeEntryForm}>Cancel</button>
+              {isCurrentWeek && myWeekSummary && (
+                <div className="weekly-summary-card">
+                  {myWeekTotal < 36 && (
+                    <p className="weekly-summary-min-msg">Minimum 36 hours (including leave) required. Current total: {myWeekTotal.toFixed(1)}h.</p>
+                  )}
+                  <div className="weekly-summary-stats">
+                    <span><strong>Total:</strong> {myWeekSummary.total_hours.toFixed(1)}h</span>
+                    <span><strong>Daily avg:</strong> {(myWeekSummary.total_hours / 5).toFixed(1)}h</span>
+                    <span><strong>Tickets:</strong> {myWeekSummary.ticket_count ?? 0}</span>
+                    {myWeekSummary.by_category && Object.keys(myWeekSummary.by_category).length > 0 && (
+                      <span className="by-category">
+                        <strong>By category:</strong>{' '}
+                        {Object.entries(myWeekSummary.by_category)
+                          .filter(([, h]) => h > 0)
+                          .map(([cat, h]) => `${cat}: ${Number(h).toFixed(1)}h`)
+                          .join(', ')}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Calendar Content */}
+        <div className="calendar-content">
+          {loading && (
+            <div className="loading-state">
+              <div className="spinner"></div>
+              <p>Loading timesheet data…</p>
+            </div>
+          )}
+          
+          {error && (
+            <div className="error-state">
+              <p>⚠️ {error}</p>
+              <button type="button" className="sync-btn" onClick={fetchTimesheetData}>Retry</button>
+            </div>
+          )}
+
+          {!loading && !error && timesheetData && (
+            <div className="calendar-weekly">
+              <table className="calendar-table">
+                <thead>
+                  <tr>
+                    <th className="employee-col">Employee</th>
+                    {weekDays.map((day, idx) => {
+                      const isWeekend = day.getDay() === 0 || day.getDay() === 6;
+                      return (
+                        <th key={idx} className={`day-header ${isWeekend ? 'weekend' : ''}`}>
+                          <div className="day-name">{DAY_NAMES[idx]}</div>
+                          <div className="day-date">{day.getDate()}</div>
+                          <div className="day-month">{MONTH_NAMES[day.getMonth()].slice(0, 3)}</div>
+                        </th>
+                      );
+                    })}
+                    <th className="total-col">Weekly Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {timesheetData.employees.map((emp, empIdx) => (
+                    <tr key={empIdx} className="employee-row">
+                      <td className="employee-cell">
+                        <div className="employee-info">
+                          <span 
+                            className="employee-name clickable"
+                            onClick={() => emp.employee_id && navigate(`/employees/${emp.employee_id}`)}
+                          >
+                            {emp.employee_name}
+                          </span>
+                          <span className="employee-team">{emp.team}</span>
+                        </div>
+                      </td>
+                      {weekDays.map((day, dayIdx) => {
+                        const dayKey = formatAPIDate(day);
+                        const dayData = emp.days?.[dayKey] || { entries: [], total_hours: 0, leave_hours: 0 };
+                        const isWeekend = day.getDay() === 0 || day.getDay() === 6;
+                        const totalHours = (dayData.total_hours || 0) + (dayData.leave_hours || 0);
+                        
+                        return (
+                          <td 
+                            key={dayIdx} 
+                            className={`day-cell ${isWeekend ? 'weekend' : ''} ${getHoursColorClass(totalHours)}`}
+                          >
+                            {dayData.leave_hours > 0 && (
+                              <span className="leave-badge">Leave: {dayData.leave_hours.toFixed(1)}h</span>
+                            )}
+                            {dayData.entries && dayData.entries.length > 0 && (
+                              <div className="day-entries">
+                                {dayData.entries.slice(0, 2).map((entry, idx) => {
+                                  const isTicket = entry.ticket_id && /^\d+$/.test(String(entry.ticket_id));
+                                  return (
+                                    <div 
+                                      key={idx} 
+                                      className={`entry-ticket ${isTicket ? 'clickable-ticket' : ''}`}
+                                      title={entry.task_description || entry.ticket_id}
+                                    >
+                                      {isTicket ? (
+                                        <div className="ticket-actions">
+                                          <Link 
+                                            to={`/tickets?ticket=${entry.ticket_id}`} 
+                                            className="ticket-id ticket-link"
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            #{entry.ticket_id}
+                                          </Link>
+                                          <TicketExternalLink ticketId={entry.ticket_id} />
+                                        </div>
+                                      ) : (
+                                        <span className="ticket-id">
+                                          {(entry.task_description || entry.activity_type || 'Task').slice(0, 12)}
+                                        </span>
+                                      )}
+                                      <span className="ticket-hours">{parseFloat(entry.hours || 0).toFixed(1)}h</span>
+                                      {entry.source === 'manual' && canAddLogs && (
+                                        <button
+                                          className="entry-delete-btn"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDeleteEntry(entry.id);
+                                          }}
+                                          title="Delete entry"
+                                        >
+                                          ×
+                                        </button>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                                {dayData.entries.length > 2 && (
+                                  <div className="more-entries">+{dayData.entries.length - 2} more</div>
+                                )}
+                              </div>
+                            )}
+                            <div className={`day-total ${getHoursColorClass(totalHours)}`}>
+                              <strong>{totalHours > 0 ? `${totalHours.toFixed(1)}h` : '-'}</strong>
+                            </div>
+                            {canAddLogs && !isWeekend && (canAddLogsForOthers || emp.employee_id === user?.employee_id) && (
+                              <button 
+                                type="button" 
+                                className="add-log-btn" 
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openEntryForm(dayKey, emp.employee_id);
+                                }}
+                                title="Add time log"
+                              >
+                                + Add Log
+                              </button>
+                            )}
+                          </td>
+                        );
+                      })}
+                      <td className={`total-cell ${getHoursColorClass(emp.weekly_total / 5)}`}>
+                        <strong>{parseFloat(emp.weekly_total || 0).toFixed(1)}h</strong>
+                        <div className="weekly-avg">
+                          Avg: {((emp.weekly_total || 0) / 5).toFixed(1)}h/day
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="totals-row daily-totals-row">
+                    <td className="totals-label">Daily Totals</td>
+                    {dailyTotals.map((dayTotal, idx) => (
+                      <td key={idx} className="totals-cell">
+                        <div className="totals-breakdown">
+                          <span className="total-time-spent">{dayTotal.total.toFixed(1)}h</span>
+                          <span className="total-avg">Avg: {dayTotal.average.toFixed(1)}h</span>
+                        </div>
+                      </td>
+                    ))}
+                    <td className="totals-cell grand-total">
+                      <strong>{grandTotals.total.toFixed(1)}h</strong>
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+
+          {!loading && !error && timesheetData && (
+            <div className="calendar-legend">
+              <div className="legend-item">
+                <span className="legend-color hours-full"></span>
+                <span>8+ hours</span>
+              </div>
+              <div className="legend-item">
+                <span className="legend-color hours-half"></span>
+                <span>4-8 hours</span>
+              </div>
+              <div className="legend-item">
+                <span className="legend-color hours-low"></span>
+                <span>1-4 hours</span>
+              </div>
+              <div className="legend-item">
+                <span className="legend-color hours-zero"></span>
+                <span>No entry</span>
               </div>
             </div>
+          )}
+        </div>
+
+        {/* Entry Form Modal */}
+        {showEntryForm && (
+          <div className="timesheet-modal-overlay" onClick={closeEntryForm}>
+            <div className="timesheet-modal timesheet-add-log-modal" onClick={(e) => e.stopPropagation()}>
+              <h3>{editingEntry ? 'Edit time entry' : 'Add time entry'}</h3>
+
+              {editingEntry ? (
+                <>
+                  <div className="timesheet-form">
+                    <label>
+                      Task category *
+                      <select
+                        value={entryForm.task_category || 'Ticket'}
+                        onChange={(e) => setEntryForm((prev) => ({ ...prev, task_category: e.target.value, ticket_id: e.target.value !== 'Ticket' ? '' : prev.ticket_id }))}
+                      >
+                        {TASK_CATEGORIES.map((c) => (
+                          <option key={c} value={c}>{c}</option>
+                        ))}
+                      </select>
+                      {entryFormErrors.task_category && <span className="form-error">{entryFormErrors.task_category}</span>}
+                    </label>
+                    {entryForm.task_category === 'Ticket' && (
+                      <label>
+                        Ticket ID *
+                        <input
+                          type="text"
+                          value={entryForm.ticket_id}
+                          onChange={(e) => setEntryForm((prev) => ({ ...prev, ticket_id: e.target.value }))}
+                          placeholder="e.g. 12345"
+                        />
+                        {entryFormErrors.ticket_id && <span className="form-error">{entryFormErrors.ticket_id}</span>}
+                      </label>
+                    )}
+                    <label>
+                      Activity type *
+                      <select
+                        value={entryForm.activity_type}
+                        onChange={(e) => setEntryForm((prev) => ({ ...prev, activity_type: e.target.value }))}
+                      >
+                        {ACTIVITY_TYPES.map((type) => (
+                          <option key={type} value={type}>{type}</option>
+                        ))}
+                      </select>
+                      {entryFormErrors.activity_type && <span className="form-error">{entryFormErrors.activity_type}</span>}
+                    </label>
+                    <label>
+                      Task description *
+                      <input
+                        type="text"
+                        value={entryForm.task_description}
+                        onChange={(e) => setEntryForm((prev) => ({ ...prev, task_description: e.target.value }))}
+                        placeholder="What was done?"
+                      />
+                      {entryFormErrors.task_description && <span className="form-error">{entryFormErrors.task_description}</span>}
+                    </label>
+                    <label>
+                      Date *
+                      <input
+                        type="date"
+                        value={entryForm.date}
+                        onChange={(e) => setEntryForm((prev) => ({ ...prev, date: e.target.value }))}
+                      />
+                      {entryFormErrors.date && <span className="form-error">{entryFormErrors.date}</span>}
+                    </label>
+                    <label>
+                      Hours spent *
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.1"
+                        value={entryForm.hours}
+                        onChange={(e) => setEntryForm((prev) => ({ ...prev, hours: e.target.value }))}
+                      />
+                      {entryFormErrors.hours && <span className="form-error">{entryFormErrors.hours}</span>}
+                    </label>
+                    <label>
+                      Project name (optional)
+                      <input
+                        type="text"
+                        value={entryForm.project_name}
+                        onChange={(e) => setEntryForm((prev) => ({ ...prev, project_name: e.target.value }))}
+                      />
+                    </label>
+                  </div>
+                  <div className="timesheet-modal-actions">
+                    <button className="btn btn-primary" onClick={handleSaveEntry}>Save</button>
+                    <button className="btn btn-ghost" onClick={closeEntryForm}>Cancel</button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* Section 1: Planned tasks for this day */}
+                  <div className="add-log-section planned-tasks-section">
+                    <h4>Planned tasks for this day</h4>
+                    {loadingPlannedTasks ? (
+                      <p className="planned-tasks-loading">Loading planned tasks…</p>
+                    ) : plannedTasksForDay.length === 0 ? (
+                      <p className="planned-tasks-empty">No planned tasks for this date.</p>
+                    ) : (
+                      <ul className="planned-tasks-list">
+                        {plannedTasksForDay.map((task, idx) => (
+                          <li key={`${task.source}-${task.id}-${idx}`} className="planned-task-item">
+                            <div className="planned-task-info">
+                              <span className="planned-task-ticket">{task.ticket_id ? `#${task.ticket_id}` : (task.activity_description || task.generic_category || 'Task').slice(0, 30)}</span>
+                              <span className="planned-task-desc">{task.activity_description || task.ticket_title || ''}</span>
+                              <span className="planned-task-hours">{task.hours}h planned</span>
+                            </div>
+                            <div className="planned-task-actions">
+                              <button type="button" className="btn btn-small btn-ghost" onClick={() => handleAddFromPlannedAsIs(task)}>Add as-is</button>
+                              <button type="button" className="btn btn-small" onClick={() => { setAddWithMyTimeTask(task); setAddWithMyTimeHours(String(task.hours)); setAddWithMyTimeVarianceNotes(''); setAddWithMyTimeReasonType(''); setAddWithMyTimeError(''); }}>Add with my time</button>
+                            </div>
+                            {addWithMyTimeTask && addWithMyTimeTask.id === task.id && (
+                              <div className="add-with-my-time-form">
+                                <label>
+                                  Hours
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    step="0.1"
+                                    value={addWithMyTimeHours}
+                                    onChange={(e) => setAddWithMyTimeHours(e.target.value)}
+                                  />
+                                </label>
+                                {Math.abs(parseFloat(addWithMyTimeHours || 0) - parseFloat(task.hours)) > 0.01 && (
+                                  <>
+                                    <label>
+                                      Comment (variance reason) *
+                                      <input
+                                        type="text"
+                                        value={addWithMyTimeVarianceNotes}
+                                        onChange={(e) => setAddWithMyTimeVarianceNotes(e.target.value)}
+                                        placeholder="Why do hours differ from planned?"
+                                      />
+                                    </label>
+                                    <label>
+                                      Reason type (optional)
+                                      <select
+                                        value={addWithMyTimeReasonType}
+                                        onChange={(e) => setAddWithMyTimeReasonType(e.target.value)}
+                                      >
+                                        {VARIANCE_REASON_TYPES.map((opt) => (
+                                          <option key={opt.value || 'empty'} value={opt.value}>{opt.label}</option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  </>
+                                )}
+                                {addWithMyTimeError && <span className="form-error">{addWithMyTimeError}</span>}
+                                <div className="add-with-my-time-actions">
+                                  <button type="button" className="btn btn-primary" onClick={handleAddWithMyTime}>Save</button>
+                                  <button type="button" className="btn btn-ghost" onClick={() => { setAddWithMyTimeTask(null); setAddWithMyTimeHours(''); setAddWithMyTimeVarianceNotes(''); setAddWithMyTimeReasonType(''); setAddWithMyTimeError(''); }}>Cancel</button>
+                                </div>
+                              </div>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+
+                  {/* Section 2: Add manual log */}
+                  <div className="add-log-section manual-log-section">
+                    <h4>Add manual log</h4>
+                    <div className="timesheet-form">
+                      <label>
+                        Task category *
+                        <select
+                          value={entryForm.task_category || 'Ticket'}
+                          onChange={(e) => setEntryForm((prev) => ({ ...prev, task_category: e.target.value, ticket_id: e.target.value !== 'Ticket' ? '' : prev.ticket_id }))}
+                        >
+                          {TASK_CATEGORIES.map((c) => (
+                            <option key={c} value={c}>{c}</option>
+                          ))}
+                        </select>
+                        {entryFormErrors.task_category && <span className="form-error">{entryFormErrors.task_category}</span>}
+                      </label>
+                      {entryForm.task_category === 'Ticket' && (
+                        <label>
+                          Ticket ID *
+                          <input
+                            type="text"
+                            value={entryForm.ticket_id}
+                            onChange={(e) => setEntryForm((prev) => ({ ...prev, ticket_id: e.target.value }))}
+                            placeholder="e.g. 12345"
+                          />
+                          {entryFormErrors.ticket_id && <span className="form-error">{entryFormErrors.ticket_id}</span>}
+                        </label>
+                      )}
+                      <label>
+                        Activity type *
+                        <select
+                          value={entryForm.activity_type}
+                          onChange={(e) => setEntryForm((prev) => ({ ...prev, activity_type: e.target.value }))}
+                        >
+                          {ACTIVITY_TYPES.map((type) => (
+                            <option key={type} value={type}>{type}</option>
+                          ))}
+                        </select>
+                        {entryFormErrors.activity_type && <span className="form-error">{entryFormErrors.activity_type}</span>}
+                      </label>
+                      <label>
+                        Task description *
+                        <input
+                          type="text"
+                          value={entryForm.task_description}
+                          onChange={(e) => setEntryForm((prev) => ({ ...prev, task_description: e.target.value }))}
+                          placeholder="What was done?"
+                        />
+                        {entryFormErrors.task_description && <span className="form-error">{entryFormErrors.task_description}</span>}
+                      </label>
+                      <label>
+                        Date *
+                        <input
+                          type="date"
+                          value={entryForm.date}
+                          onChange={(e) => setEntryForm((prev) => ({ ...prev, date: e.target.value }))}
+                        />
+                        {entryFormErrors.date && <span className="form-error">{entryFormErrors.date}</span>}
+                      </label>
+                      <label>
+                        Hours spent *
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={entryForm.hours}
+                          onChange={(e) => setEntryForm((prev) => ({ ...prev, hours: e.target.value }))}
+                        />
+                        {entryFormErrors.hours && <span className="form-error">{entryFormErrors.hours}</span>}
+                      </label>
+                      <label>
+                        Project name (optional)
+                        <input
+                          type="text"
+                          value={entryForm.project_name}
+                          onChange={(e) => setEntryForm((prev) => ({ ...prev, project_name: e.target.value }))}
+                        />
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="timesheet-modal-actions">
+                    <button className="btn btn-primary" onClick={handleSaveEntry}>Save manual entry</button>
+                    <button className="btn btn-ghost" onClick={closeEntryForm}>Cancel</button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
+        )}
+          </>
         )}
       </main>
     </div>

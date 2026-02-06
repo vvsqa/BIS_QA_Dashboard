@@ -4,6 +4,7 @@ import { useTableSort, SortableHeader } from './useTableSort';
 import { TicketExternalLink } from './ticketUtils';
 import { apiFetch, API_BASE } from './api';
 import { useAuth } from './AuthContext';
+import AppSidebar from './AppSidebar';
 import './dashboard.css';
 
 // Ensure no double slash when API_BASE has trailing slash
@@ -48,12 +49,6 @@ function ReportsModule() {
   useEffect(() => {
     setSelectedDate(getToday());
   }, []);
-
-  // Handle theme
-  useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('theme', theme);
-  }, [theme]);
 
   // Fetch preview data (reports are public; works with or without login)
   const fetchPreview = async () => {
@@ -168,54 +163,7 @@ function ReportsModule() {
 
   return (
     <div className="dashboard-container">
-      {/* Sidebar */}
-      <aside className="sidebar">
-        <div className="logo-section">
-          <img src="/techversant-logo.png" alt="Techversant" className="company-logo" />
-          <div className="logo-text">
-            <span className="logo-title">QA Dashboard</span>
-            <span className="logo-subtitle">Reports</span>
-          </div>
-        </div>
-
-        <nav className="sidebar-nav">
-          <a href="/" className="nav-item">
-            <span className="nav-icon">📊</span>
-            <span>Dashboard</span>
-          </a>
-          <a href="/tickets" className="nav-item">
-            <span className="nav-icon">🎫</span>
-            <span>Tickets</span>
-          </a>
-          <a href="/all-bugs" className="nav-item">
-            <span className="nav-icon">🐛</span>
-            <span>All Bugs</span>
-          </a>
-          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
-            <a href="/employees" className="nav-item">
-              <span className="nav-icon">👥</span>
-              <span>Employees</span>
-            </a>
-          )}
-          <a href="/calendar" className="nav-item">
-            <span className="nav-icon">📅</span>
-            <span>Calendar</span>
-          </a>
-          <a href="/reports" className="nav-item active">
-            <span className="nav-icon">📈</span>
-            <span>Reports</span>
-          </a>
-        </nav>
-
-        <div className="sidebar-footer">
-          <button 
-            className="theme-toggle" 
-            onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-          >
-            {theme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode'}
-          </button>
-        </div>
-      </aside>
+      <AppSidebar />
 
       {/* Main Content */}
       <main className="main-content" style={{ marginLeft: 'var(--sidebar-width)' }}>

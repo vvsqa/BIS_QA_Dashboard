@@ -150,6 +150,15 @@ def require_role(allowed_roles: list):
     return _check
 
 
+def require_reports_access(current_user: dict = Depends(get_current_user)):
+    """
+    Require authenticated user. Reports are accessible to all logged-in users;
+    can_access_reports is True for everyone in auth/me. Kept as a dedicated
+    dependency so report endpoints consistently require auth (managers, leads, admins, employees).
+    """
+    return current_user
+
+
 def get_visible_employee_ids(db: Session, current_user: dict) -> Optional[Set[str]]:
     """
     Return set of employee_ids the current user can access for PROFILE viewing/editing.

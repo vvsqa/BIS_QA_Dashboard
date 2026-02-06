@@ -242,6 +242,31 @@ REACT_APP_API_BASE=https://your-backend-url npm run build
 
 ---
 
+## 8. Local vs hosted data
+
+Data you add while running the app on your machine is stored in your **local** PostgreSQL database and in **`backend/uploads/`** on your PC. When you deploy (host) the app, the hosted backend uses a **different** database (and a different `uploads` folder on the server). So the hosted app will not see your local data unless you migrate it once.
+
+- **Local:** All app data (users, QA plans, dev plans, employees, tickets, etc.) lives in the DB pointed to by `backend/.env` (e.g. `DB_HOST=localhost`, `DB_NAME=qa_dashboard`). Uploaded files (e.g. profile photos) live in `backend/uploads/`.
+- **Hosted:** The hosted app uses whatever `DB_*` or `DATABASE_URL` you set on the server—usually a new, empty DB. Your local DB and local `uploads` are not used by the hosted app.
+
+To bring your local data to the hosted app, do a one-time migration:
+
+1. **Database:** From your machine (with local PostgreSQL running), create a dump:
+   ```bash
+   pg_dump -h localhost -U postgres -d qa_dashboard -F c -f qa_dashboard_backup.dump
+   ```
+   Create the empty database on the hosted DB server, then restore the dump there (adjust host, user, and path as needed):
+   ```bash
+   pg_restore -h <hosted-db-host> -U <user> -d qa_dashboard -F c qa_dashboard_backup.dump
+   ```
+   Point the hosted app’s `.env` to this database (`DB_HOST`, `DB_NAME`, etc. or `DATABASE_URL`).
+
+2. **Uploads:** Copy the contents of your local `backend/uploads/` to the hosted server’s `backend/uploads/` (or the path the hosted app uses) so profile photos and other uploads are available there.
+
+After that, the hosted app will have the same data you had locally. Your local DB and uploads remain unchanged and can be kept as a backup.
+
+---
+
 ## 9. Checklist for Hosting
 
 - [ ] PostgreSQL created; `DB_*` or `DATABASE_URL` set.

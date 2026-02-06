@@ -18,6 +18,7 @@ import { formatDisplayDate, formatDisplayDateWithDay, formatAPIDate } from './da
 import { TicketExternalLink } from './ticketUtils';
 import { apiFetch, API_BASE } from './api';
 import { useAuth } from './AuthContext';
+import AppSidebar from './AppSidebar';
 import './dashboard.css';
 import './CalendarModule.css';
 
@@ -130,8 +131,11 @@ function EmployeeProfile() {
   });
   const [kpiRatingsData, setKpiRatingsData] = useState({});
   const [reportees, setReportees] = useState({ direct_reportees: [], indirect_reportees: [], total_direct: 0, total_indirect: 0 });
+  const [timesFailedData, setTimesFailedData] = useState(null);
+  const [timesFailedPeriod, setTimesFailedPeriod] = useState('past_quarter');
   const [showEditModal, setShowEditModal] = useState(false);
-  const [leadManagerOptions, setLeadManagerOptions] = useState([]);
+  const [leadOptions, setLeadOptions] = useState([]);
+  const [managerOptions, setManagerOptions] = useState([]);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [accessError, setAccessError] = useState(null);
   const [editForm, setEditForm] = useState({
@@ -163,6 +167,31 @@ function EmployeeProfile() {
   useEffect(() => {
     loadEmployeeData();
   }, [employeeId, period, kpiQuarter]);
+
+  const isDevelopmentTeam = (emp) => emp?.team && (String(emp.team).toUpperCase().includes('DEV') || String(emp.team).toUpperCase() === 'DEVELOPMENT');
+
+  useEffect(() => {
+    if (!employeeId || !employee) return;
+    if (!isDevelopmentTeam(employee)) {
+      setTimesFailedData(null);
+      return;
+    }
+    const loadTimesFailed = async () => {
+      try {
+        const res = await apiFetch(`/employees/${employeeId}/times-failed?period=${encodeURIComponent(timesFailedPeriod)}`);
+        if (res.ok) {
+          const data = await res.json();
+          setTimesFailedData(data);
+        } else {
+          setTimesFailedData(null);
+        }
+      } catch (err) {
+        console.error('Failed to load times-failed:', err);
+        setTimesFailedData(null);
+      }
+    };
+    loadTimesFailed();
+  }, [employeeId, timesFailedPeriod, employee]);
 
   const loadEmployeeData = async () => {
     setLoading(true);
@@ -719,26 +748,47 @@ function EmployeeProfile() {
     }
   }, [employee]);
 
-  // Load lead/manager dropdown options when edit modal opens
+  // Load lead dropdown: only people eligible as Lead (role/category). Manager dropdown: only people eligible as Manager.
   useEffect(() => {
     if (!showEditModal) return;
-    const loadLeadManagerOptions = async () => {
+    const loadOptions = async () => {
       try {
-        const res = await apiFetch(`/employees?is_active=true`);
-        if (!res.ok) return;
-        const data = await res.json();
-        const options = (data || [])
+        const [leadRes, managerRes] = await Promise.all([
+          apiFetch(`/employees?is_active=true&for_lead_dropdown=true`),
+          apiFetch(`/employees?is_active=true&for_manager_dropdown=true`),
+        ]);
+        const toNames = (data) => (data || [])
           .map(emp => emp.name)
           .filter(name => name && name.trim().length > 0)
-          .filter(name => !employee?.name || name.toLowerCase() !== employee.name.toLowerCase())
-          .sort((a, b) => a.localeCompare(b));
-        setLeadManagerOptions(options);
+          .filter(name => !employee?.name || name.toLowerCase() !== employee.name.toLowerCase());
+        const leadFromApi = leadRes.ok ? toNames(await leadRes.json()) : [];
+        const managerFromApi = managerRes.ok ? toNames(await managerRes.json()) : [];
+        const currentLead = (employee?.lead || '').trim();
+        const currentManager = (employee?.manager || '').trim();
+        const addIfMissing = (list, current) =>
+          !current ? list : list.some(x => x.trim().toLowerCase() === current.toLowerCase()) ? list : [...list, current];
+        setLeadOptions(addIfMissing(leadFromApi, currentLead).sort((a, b) => a.localeCompare(b)));
+        setManagerOptions(addIfMissing(managerFromApi, currentManager).sort((a, b) => a.localeCompare(b)));
       } catch (error) {
         console.error('Error loading lead/manager options:', error);
       }
     };
-    loadLeadManagerOptions();
-  }, [showEditModal, employee?.name]);
+    loadOptions();
+  }, [showEditModal, employee?.name, employee?.lead, employee?.manager]);
+
+  // Ensure Lead/Manager dropdowns always include current form values so they display before options load
+  const leadOptionsToShow = useMemo(() => {
+    const current = (editForm.lead || '').trim();
+    if (!current) return leadOptions;
+    const has = leadOptions.some(n => (n || '').trim().toLowerCase() === current.toLowerCase());
+    return has ? leadOptions : [current, ...leadOptions].sort((a, b) => (a || '').localeCompare(b || ''));
+  }, [leadOptions, editForm.lead]);
+  const managerOptionsToShow = useMemo(() => {
+    const current = (editForm.manager || '').trim();
+    if (!current) return managerOptions;
+    const has = managerOptions.some(n => (n || '').trim().toLowerCase() === current.toLowerCase());
+    return has ? managerOptions : [current, ...managerOptions].sort((a, b) => (a || '').localeCompare(b || ''));
+  }, [managerOptions, editForm.manager]);
 
   const handleUpdateEmployee = async (e) => {
     e.preventDefault();
@@ -1063,62 +1113,7 @@ function EmployeeProfile() {
 
   return (
     <div className="dashboard">
-      {/* Sidebar */}
-      <aside className="sidebar">
-        <div className="logo">
-          <div className="logo-icon">QA</div>
-          <span className="logo-text">Bug Tracker</span>
-        </div>
-        <nav className="nav-menu">
-          <Link to="/" className="nav-item">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="3" width="7" height="7" rx="1"/>
-              <rect x="14" y="3" width="7" height="7" rx="1"/>
-              <rect x="3" y="14" width="7" height="7" rx="1"/>
-              <rect x="14" y="14" width="7" height="7" rx="1"/>
-            </svg>
-            Ticket Dashboard
-          </Link>
-          <Link to="/all-bugs" className="nav-item">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="12" cy="12" r="10"/>
-              <path d="M12 8v4l2 2"/>
-            </svg>
-            All Bugs Dashboard
-          </Link>
-          <Link to="/tickets" className="nav-item">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="3" width="18" height="18" rx="2"/>
-              <path d="M3 9h18"/>
-              <path d="M9 21V9"/>
-            </svg>
-            Tickets Overview
-          </Link>
-          {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
-            <Link to="/employees" className={`nav-item ${location.pathname.startsWith('/employees') ? 'active' : ''}`}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
-                <circle cx="9" cy="7" r="4"/>
-                <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
-              </svg>
-              Employees
-            </Link>
-          )}
-          <Link to="/calendar" className={`nav-item ${location.pathname === '/calendar' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <rect x="3" y="4" width="18" height="18" rx="2"/>
-              <path d="M16 2v4M8 2v4M3 10h18"/>
-            </svg>
-            Calendar
-          </Link>
-          <Link to="/reports" className={`nav-item ${location.pathname === '/reports' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-            </svg>
-            Reports
-          </Link>
-        </nav>
-      </aside>
+      <AppSidebar />
 
       {/* Main Content */}
       <main className="main-content emp-profile-main">
@@ -1328,7 +1323,28 @@ function EmployeeProfile() {
             </svg>
             Export Excel
           </button>
-          <button className="btn-action" onClick={() => setShowEditModal(true)}>
+          <button className="btn-action" onClick={() => {
+            if (employee) {
+              setEditForm({
+                name: employee.name || '',
+                email: employee.email || '',
+                role: employee.role || '',
+                access_role: employee.access_role || 'EMPLOYEE',
+                location: employee.location || '',
+                team: employee.team || '',
+                category: employee.category || '',
+                employment_status: employee.employment_status || 'Ongoing Employee',
+                lead: employee.lead ?? '',
+                manager: employee.manager ?? '',
+                previous_experience: employee.previous_experience !== null && employee.previous_experience !== undefined ? employee.previous_experience : null,
+                bis_introduced_date: employee.bis_introduced_date || null,
+                platform: employee.platform || '',
+                photo_url: employee.photo_url || '',
+                is_active: employee.is_active !== undefined ? employee.is_active : true
+              });
+            }
+            setShowEditModal(true);
+          }}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
               <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
@@ -2021,6 +2037,54 @@ function EmployeeProfile() {
                 )}
               </div>
 
+              {/* Times in QC Review Fail – only for developers (backend/frontend); not shown for QA/testers */}
+              {employee && isDevelopmentTeam(employee) && timesFailedData && (
+                <div className="emp-detail-card">
+                  <h4>Times in QC Review Fail</h4>
+                  <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '8px' }}>
+                    Count of times tickets (where this resource is backend/frontend developer) were moved to QC Review Fail in the selected period.
+                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                    <label style={{ fontSize: '13px' }}>Period:</label>
+                    <select
+                      value={timesFailedPeriod}
+                      onChange={(e) => setTimesFailedPeriod(e.target.value)}
+                      style={{ padding: '6px 10px', borderRadius: '6px', border: '1px solid var(--border-color)', background: 'var(--bg-secondary)', color: 'var(--text-primary)' }}
+                    >
+                      <option value="past_week">Past week</option>
+                      <option value="past_month">Past month</option>
+                      <option value="past_quarter">Past quarter</option>
+                      <option value="one_year">One year</option>
+                      <option value="overall">Overall</option>
+                    </select>
+                    <span style={{ fontSize: '13px', color: 'var(--text-muted)' }}>
+                      {timesFailedData.start_date} – {timesFailedData.end_date}
+                    </span>
+                  </div>
+                  <div style={{
+                    background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(239, 68, 68, 0.04) 100%)',
+                    borderRadius: '8px', padding: '16px', textAlign: 'center', border: '1px solid rgba(239, 68, 68, 0.25)'
+                  }}>
+                    <div style={{ fontSize: '28px', fontWeight: '700', color: '#ef4444' }}>
+                      {timesFailedData.total_times_failed}
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '4px' }}>Total times moved to fail</div>
+                  </div>
+                  {timesFailedData.by_ticket && timesFailedData.by_ticket.length > 0 && (
+                    <div style={{ marginTop: '12px' }}>
+                      <div style={{ fontSize: '12px', fontWeight: '600', marginBottom: '6px' }}>By ticket</div>
+                      <ul style={{ listStyle: 'none', padding: 0, margin: 0, maxHeight: '120px', overflowY: 'auto' }}>
+                        {timesFailedData.by_ticket.map(({ ticket_id, times_failed_in_period }) => (
+                          <li key={ticket_id} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: '12px', borderBottom: '1px solid var(--border-color)' }}>
+                            <span><Link to={`/tickets?ticket=${ticket_id}`} style={{ color: 'var(--accent-cyan)' }}>#{ticket_id}</Link></span>
+                            <span>{times_failed_in_period} time{times_failed_in_period !== 1 ? 's' : ''}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Team Breakdown Summary */}
               {reportees.team_breakdown && (reportees.total_direct > 0 || reportees.total_indirect > 0) && (
@@ -3139,7 +3203,7 @@ function EmployeeProfile() {
                     onChange={e => setEditForm({...editForm, lead: e.target.value})}
                   >
                     <option value="">Select Lead</option>
-                    {leadManagerOptions.map((name) => (
+                    {leadOptionsToShow.map((name) => (
                       <option key={`lead-${name}`} value={name}>{name}</option>
                     ))}
                   </select>
@@ -3151,7 +3215,7 @@ function EmployeeProfile() {
                     onChange={e => setEditForm({...editForm, manager: e.target.value})}
                   >
                     <option value="">Select Manager</option>
-                    {leadManagerOptions.map((name) => (
+                    {managerOptionsToShow.map((name) => (
                       <option key={`manager-${name}`} value={name}>{name}</option>
                     ))}
                   </select>
@@ -3164,8 +3228,8 @@ function EmployeeProfile() {
                     type="number"
                     step="0.1"
                     min="0"
-                    value={editForm.previous_experience || ''}
-                    onChange={e => setEditForm({...editForm, previous_experience: e.target.value ? parseFloat(e.target.value) : null})}
+                    value={editForm.previous_experience != null && editForm.previous_experience !== '' ? editForm.previous_experience : ''}
+                    onChange={e => setEditForm({...editForm, previous_experience: e.target.value !== '' && e.target.value != null ? parseFloat(e.target.value) : null})}
                     placeholder="Years before joining Techversant"
                   />
                 </div>
@@ -3173,7 +3237,7 @@ function EmployeeProfile() {
                   <label>BIS Introduced Date</label>
                   <input 
                     type="date"
-                    value={editForm.bis_introduced_date ? editForm.bis_introduced_date.split('T')[0] : ''}
+                    value={editForm.bis_introduced_date ? (editForm.bis_introduced_date.includes('T') ? editForm.bis_introduced_date.split('T')[0] : editForm.bis_introduced_date.substring(0, 10)) : ''}
                     onChange={e => setEditForm({...editForm, bis_introduced_date: e.target.value ? new Date(e.target.value).toISOString() : null})}
                     disabled={editForm.category !== 'BILLED'}
                     title={editForm.category !== 'BILLED' ? 'Only applicable for Billed employees' : ''}
