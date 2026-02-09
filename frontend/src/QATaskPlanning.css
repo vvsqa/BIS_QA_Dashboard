@@ -103,6 +103,7 @@
 .resource-blocked-table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .resource-blocked-table th,
@@ -135,6 +136,8 @@
 .resource-blocked-date-cell {
   font-weight: 600;
   color: #22c55e;
+  min-width: 120px;
+  width: 14%;
 }
 
 .resource-blocked-available {
@@ -143,16 +146,27 @@
 }
 
 .resource-blocked-tasks-cell {
-  max-width: 220px;
+  min-width: 200px;
+  max-width: 380px;
+  width: 32%;
   font-size: 0.85rem;
+  vertical-align: top;
+  overflow: hidden;
 }
 
 .resource-blocked-task-list {
-  display: inline;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }
 
 .resource-blocked-task-item {
-  white-space: nowrap;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.25rem 0.35rem;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .resource-blocked-priority-pill {
@@ -177,7 +191,8 @@
 }
 
 .resource-blocked-release-btn {
-  margin-left: 0.35rem;
+  flex-shrink: 0;
+  margin: 0;
   padding: 0.15rem 0.4rem;
   font-size: 0.7rem;
   color: var(--text-muted, #94a3b8);
@@ -2688,4 +2703,255 @@
 .qa-queue-section,
 .qa-by-module-section {
   display: none; /* Hide old sections */
+}
+
+/* ===== ETA Calendar tab ===== */
+.qa-eta-calendar-view .qa-eta-calendar-header {
+  margin-bottom: 1.25rem;
+}
+
+.qa-eta-calendar-subtitle {
+  color: var(--text-muted, #94a3b8);
+  font-size: 0.9rem;
+  margin: 0.25rem 0 1rem;
+}
+
+.qa-eta-calendar-controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.qa-eta-calendar-month-label {
+  font-weight: 600;
+  font-size: 1.1rem;
+  min-width: 180px;
+  text-align: center;
+}
+
+.qa-eta-calendar-grid-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border, #334155);
+  border-radius: 10px;
+  background: var(--bg-secondary, #1e293b);
+}
+
+.qa-eta-calendar-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.qa-eta-calendar-th {
+  padding: 0.5rem;
+  text-align: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted, #94a3b8);
+  border-bottom: 1px solid var(--border, #334155);
+  width: 14.28%;
+}
+
+.qa-eta-calendar-td {
+  vertical-align: top;
+  padding: 0.35rem;
+  border: 1px solid var(--border, #334155);
+  min-height: 100px;
+  font-size: 0.8rem;
+}
+
+.qa-eta-calendar-td-other {
+  background: rgba(15, 23, 42, 0.5);
+  opacity: 0.7;
+}
+
+.qa-eta-calendar-day-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.qa-eta-calendar-day-num {
+  font-weight: 700;
+  color: var(--text-primary, #f1f5f9);
+}
+
+.qa-eta-calendar-day-count {
+  font-size: 0.65rem;
+  color: var(--text-muted, #94a3b8);
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid var(--border, #334155);
+  border-radius: 999px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+
+.qa-eta-calendar-day-tickets {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 190px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.qa-eta-calendar-ticket-card {
+  background: var(--bg-primary, #0f172a);
+  border: 1px solid var(--border, #334155);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
+.qa-eta-calendar-ticket-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.qa-eta-calendar-ticket-id a {
+  color: var(--accent-blue, #3b82f6);
+  text-decoration: none;
+}
+
+.qa-eta-calendar-ticket-id a:hover {
+  text-decoration: underline;
+}
+
+.qa-eta-priority-pill {
+  font-size: 0.65rem;
+  padding: 2px 5px;
+  border-radius: 4px;
+  color: #fff;
+  white-space: nowrap;
+  max-width: 70px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qa-eta-calendar-ticket-meta,
+.qa-eta-calendar-ticket-people,
+.qa-eta-calendar-ticket-counts {
+  font-size: 0.7rem;
+  color: var(--text-muted, #94a3b8);
+}
+
+.qa-eta-calendar-ticket-meta span,
+.qa-eta-calendar-ticket-people span,
+.qa-eta-calendar-ticket-counts span {
+  display: block;
+  margin-top: 2px;
+}
+
+.qa-eta-status { color: var(--text-primary, #f1f5f9); }
+.qa-eta-assigned { font-style: italic; }
+
+/* ===== HOLD TASK STYLES ===== */
+
+/* Hold badge on task item */
+.dev-planner-task-hold-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  font-size: 0.7rem;
+  background: var(--warning, #f59e0b);
+  color: #fff;
+  border-radius: 50%;
+  margin-left: 4px;
+  cursor: help;
+}
+
+/* Hold/Resume action buttons */
+.dev-planner-task-hold,
+.dev-planner-task-resume {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  border-radius: 4px;
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+
+.dev-planner-task-hold {
+  background: var(--warning, #f59e0b);
+  color: #fff;
+}
+
+.dev-planner-task-hold:hover {
+  background: #d97706;
+  transform: scale(1.05);
+}
+
+.dev-planner-task-resume {
+  background: var(--success, #22c55e);
+  color: #fff;
+}
+
+.dev-planner-task-resume:hover {
+  background: #16a34a;
+  transform: scale(1.05);
+}
+
+/* Warning button style */
+.qa-btn-warning {
+  background: var(--warning, #f59e0b);
+  color: #fff;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 600;
+  transition: background 0.15s;
+}
+
+.qa-btn-warning:hover {
+  background: #d97706;
+}
+
+.qa-btn-warning:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Refresh button in header */
+.dev-planner-btn.refresh {
+  background: var(--accent-blue, #3b82f6);
+  color: #fff;
+  border: none;
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.dev-planner-btn.refresh:hover {
+  background: #2563eb;
+}
+
+.dev-planner-btn.refresh:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Task on hold visual style */
+.dev-planner-task-item.on-hold {
+  opacity: 0.7;
+  background: rgba(245, 158, 11, 0.1);
+  border-left: 3px solid var(--warning, #f59e0b);
+}
+
+/* Warning background for hold modal */
+.bg-warning {
+  background-color: rgba(245, 158, 11, 0.1);
 }

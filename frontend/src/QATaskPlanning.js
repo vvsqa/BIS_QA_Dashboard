@@ -14,7 +14,7 @@ import { Bar, Doughnut } from 'react-chartjs-2';
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { formatDisplayDate, formatAPIDate, formatDisplayDateWithDay, formatPlanningWeek } from './dateUtils';
 import { TicketExternalLink, getTicketTrackingUrl } from './ticketUtils';
-import { useTableSort } from './useTableSort';
+import { useTableSort, SortableHeader } from './useTableSort';
 import { apiFetch } from './api';
 import { useAuth } from './AuthContext';
 import './DevelopmentTaskPlanning.css';
@@ -170,6 +170,12 @@ function QATaskPlanning({ showParentTitle = false }) {
   // Per-tester availability when multi-select: { [employee_id]: { availableOnStartDate, allocationError, employee_name } }
   const [selectedTestersAvailability, setSelectedTestersAvailability] = useState({});
 
+  // ETA calendar: displayed month (first day YYYY-MM-01)
+  const [etaCalendarMonth, setEtaCalendarMonth] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+  });
+
   // Calendar day detail modal state
   const [dayDetailOpen, setDayDetailOpen] = useState(false);
   const [dayDetailEmployee, setDayDetailEmployee] = useState(null);
@@ -199,6 +205,14 @@ function QATaskPlanning({ showParentTitle = false }) {
   const [editTaskError, setEditTaskError] = useState(null);
   const [editTaskSubmitting, setEditTaskSubmitting] = useState(false);
 
+  // Hold task modal state
+  const [holdTaskOpen, setHoldTaskOpen] = useState(false);
+  const [holdingTask, setHoldingTask] = useState(null);
+  const [holdTaskForm, setHoldTaskForm] = useState({ hold_type: 'full', hold_reason: '', hold_date: '' });
+  const [holdTaskError, setHoldTaskError] = useState(null);
+  const [holdTaskSubmitting, setHoldTaskSubmitting] = useState(false);
+  const [pmTrackerRefreshing, setPmTrackerRefreshing] = useState(false);
+
   // Calendar state
   const [calendarData, setCalendarData] = useState(null);
   const [calendarView, setCalendarView] = useState('weekly');
@@ -227,7 +241,7 @@ function QATaskPlanning({ showParentTitle = false }) {
       setLastRefresh(new Date());
     } catch (e) {
       setError(e.message || 'Failed to load QA overview data');
-      setOverviewData(null);
+      setOverviewData((prev) => prev); // keep previous data so ETA Calendar can still show last load
     } finally {
       setOverviewLoading(false);
     }
@@ -330,7 +344,7 @@ function QATaskPlanning({ showParentTitle = false }) {
   }, [calendarView, weekStart]);
 
   useEffect(() => {
-    if (view === 'overview') loadOverviewData();
+    if (view === 'overview' || view === 'eta-calendar') loadOverviewData();
   }, [view, loadOverviewData]);
   useEffect(() => {
     if (view === 'planner' || view === 'resource-blocked' || view === 'overview' || view === 'my-tasks') loadWeekData();
@@ -639,6 +653,13 @@ function QATaskPlanning({ showParentTitle = false }) {
   const pendingTestedByDev = useMemo(() => pendingQueue.filter((t) => t.tested_by_dev), [pendingQueue]);
   // Assigned tickets: tickets that have a QC tester
   const assignedQueue = useMemo(() => filteredQueue.filter((t) => (t.qc_tester || '').trim()), [filteredQueue]);
+
+  const { sortedData: sortedPendingNotTestedByDev, sortConfig: sortPendingNotTested, handleSort: handleSortPendingNotTested } = useTableSort(pendingNotTestedByDev, { defaultSortKey: 'ticket_id', defaultSortDirection: 'asc' });
+  const { sortedData: sortedPendingTestedByDev, sortConfig: sortPendingTested, handleSort: handleSortPendingTested } = useTableSort(pendingTestedByDev, { defaultSortKey: 'ticket_id', defaultSortDirection: 'asc' });
+  const { sortedData: sortedAssignedQueue, sortConfig: sortAssigned, handleSort: handleSortAssigned } = useTableSort(assignedQueue, { defaultSortKey: 'ticket_id', defaultSortDirection: 'asc' });
+  const qcReviewFailTickets = qcReviewFailData?.tickets || [];
+  const { sortedData: sortedQcReviewFailTickets, sortConfig: sortQcReviewFail, handleSort: handleSortQcReviewFail } = useTableSort(qcReviewFailTickets, { defaultSortKey: 'days_in_fail', defaultSortDirection: 'desc' });
+
   // Active tickets for ongoing week: tickets that appear in this week's planned tasks
   const activeThisWeekQueue = useMemo(
     () => filteredQueue.filter((t) => t.ticket_id && activeTicketIdsThisWeek.has(t.ticket_id)),
@@ -784,6 +805,127 @@ function QATaskPlanning({ showParentTitle = false }) {
       await loadWeekData();
     } catch (e) {
       setError(e?.message || 'Failed to release QA resource');
+    }
+  };
+
+  // Hold task - open modal for reason input
+  const openHoldTaskModal = (task) => {
+    setHoldingTask(task);
+    setHoldTaskForm({ hold_type: 'full', hold_reason: '', hold_date: '' });
+    setHoldTaskError(null);
+    setHoldTaskOpen(true);
+  };
+
+  const closeHoldTaskModal = () => {
+    setHoldTaskOpen(false);
+    setHoldingTask(null);
+    setHoldTaskForm({ hold_type: 'full', hold_reason: '', hold_date: '' });
+    setHoldTaskError(null);
+  };
+
+  // Refresh PM Tracker data for a specific ticket
+  const refreshPmTrackerForTicket = async (ticketId) => {
+    setPmTrackerRefreshing(true);
+    setHoldTaskError(null);
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/refresh-pm-tracker?ticket_id=${ticketId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || 'Failed to refresh PM Tracker');
+      const data = await res.json();
+      if (data.ticket) {
+        if (data.ticket.is_hold_status) {
+          setHoldTaskError(null);
+        } else {
+          setHoldTaskError(`Ticket status in PM Tracker is "${data.ticket.status}". Please update to "QC Testing Hold" in PM Tracker first.`);
+        }
+      }
+      return data;
+    } catch (e) {
+      setHoldTaskError(e?.message || 'Failed to refresh PM Tracker');
+      return null;
+    } finally {
+      setPmTrackerRefreshing(false);
+    }
+  };
+
+  // Submit hold task
+  const submitHoldTask = async (e) => {
+    e.preventDefault();
+    if (!holdingTask) return;
+    if (!holdTaskForm.hold_reason.trim()) {
+      setHoldTaskError('Please provide a reason for putting this task on hold.');
+      return;
+    }
+    if (holdTaskForm.hold_type === 'day' && !holdTaskForm.hold_date) {
+      setHoldTaskError('Please select a date for day-level hold.');
+      return;
+    }
+    setHoldTaskSubmitting(true);
+    setHoldTaskError(null);
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/task/${holdingTask.id}/hold`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          hold_type: holdTaskForm.hold_type,
+          hold_reason: holdTaskForm.hold_reason.trim(),
+          hold_date: holdTaskForm.hold_type === 'day' ? holdTaskForm.hold_date : null,
+        }),
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || 'Failed to put task on hold');
+      }
+      closeHoldTaskModal();
+      await loadWeekData();
+    } catch (e) {
+      setHoldTaskError(e?.message || 'Failed to put task on hold');
+    } finally {
+      setHoldTaskSubmitting(false);
+    }
+  };
+
+  // Resume a held task
+  const resumeTask = async (taskId) => {
+    if (!window.confirm('Resume this task and remove it from hold?')) return;
+    setActionLoading(true);
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/task/${taskId}/resume`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || 'Failed to resume task');
+      await loadWeekData();
+    } catch (e) {
+      setError(e?.message || 'Failed to resume task');
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  // Refresh all PM Tracker data (for refresh button in header)
+  const refreshAllPmTracker = async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      const res = await apiFetch(`${API_BASE}/qa-planning/refresh-pm-tracker`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) throw new Error((await res.json()).detail || 'Failed to refresh PM Tracker');
+      const data = await res.json();
+      setLastRefresh(new Date());
+      // Reload overview data to get fresh ticket statuses
+      await loadOverviewData();
+      return data;
+    } catch (e) {
+      setError(e?.message || 'Failed to refresh PM Tracker');
+      return null;
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -1068,8 +1210,6 @@ function QATaskPlanning({ showParentTitle = false }) {
           err.ticket_id = 'QA Estimate is required in PM Tracker. Add it and click Refresh.';
         } else if (!(lookedUpTicket.qc_tester || '').trim()) {
           err.ticket_id = 'QC Tester is required in PM Tracker. Assign and click Refresh.';
-        } else if ((lookedUpTicket.status || '').trim() !== 'QC Testing in Progress') {
-          err.ticket_id = 'Ticket status must be "QC Testing in Progress" in PM Tracker to create a task. Update in PM and click Refresh.';
         } else {
           if (!form.task_type) err.task_type = 'Task Type is required';
         }
@@ -1384,6 +1524,9 @@ function QATaskPlanning({ showParentTitle = false }) {
           </button>
           <button type="button" className={view === 'resource-blocked' ? 'active' : ''} onClick={() => setView('resource-blocked')}>
             Resource Blocked Until
+          </button>
+          <button type="button" className={view === 'eta-calendar' ? 'active' : ''} onClick={() => setView('eta-calendar')} title="Tickets by ETA date with priority, status, assignment, fail/open bug counts">
+            ETA Calendar
           </button>
           <button type="button" className={view === 'qc-review-fail' ? 'active' : ''} onClick={() => setView('qc-review-fail')}>
             QC Review Fail
@@ -2011,11 +2154,11 @@ function QATaskPlanning({ showParentTitle = false }) {
                         <table className="qa-tickets-table">
                           <thead>
                             <tr>
-                              <th>#</th>
-                              <th>Ticket</th>
-                              <th>Title</th>
-                              <th>Priority</th>
-                              <th>Status</th>
+                              <SortableHeader columnKey="ticket_id" onSort={handleSortPendingNotTested} sortConfig={sortPendingNotTested}>#</SortableHeader>
+                              <SortableHeader columnKey="ticket_id" onSort={handleSortPendingNotTested} sortConfig={sortPendingNotTested}>Ticket</SortableHeader>
+                              <SortableHeader columnKey="title" onSort={handleSortPendingNotTested} sortConfig={sortPendingNotTested}>Title</SortableHeader>
+                              <SortableHeader columnKey="priority" onSort={handleSortPendingNotTested} sortConfig={sortPendingNotTested}>Priority</SortableHeader>
+                              <SortableHeader columnKey="status" onSort={handleSortPendingNotTested} sortConfig={sortPendingNotTested}>Status</SortableHeader>
                               <th>Activity</th>
                               <th>Retest cycle</th>
                               <th>Ageing</th>
@@ -2032,12 +2175,12 @@ function QATaskPlanning({ showParentTitle = false }) {
                             </tr>
                           </thead>
                           <tbody>
-                            {pendingNotTestedByDev.length === 0 ? (
+                            {sortedPendingNotTestedByDev.length === 0 ? (
                               <tr>
                                 <td colSpan={18} className="qa-table-empty">{emptyMessage}</td>
                               </tr>
                             ) : (
-                              pendingNotTestedByDev.map((t, idx) => renderTicketRow(t, idx, {
+                              sortedPendingNotTestedByDev.map((t, idx) => renderTicketRow(t, idx, {
                                 showTestedByDev: true,
                                 testedByDev: false,
                                 onTestedByDevToggle: () => setTestedByDev(t.ticket_id, true),
@@ -2060,11 +2203,11 @@ function QATaskPlanning({ showParentTitle = false }) {
                         <table className="qa-tickets-table">
                           <thead>
                             <tr>
-                              <th>#</th>
-                              <th>Ticket</th>
-                              <th>Title</th>
-                              <th>Priority</th>
-                              <th>Status</th>
+                              <SortableHeader columnKey="ticket_id" onSort={handleSortPendingTested} sortConfig={sortPendingTested}>#</SortableHeader>
+                              <SortableHeader columnKey="ticket_id" onSort={handleSortPendingTested} sortConfig={sortPendingTested}>Ticket</SortableHeader>
+                              <SortableHeader columnKey="title" onSort={handleSortPendingTested} sortConfig={sortPendingTested}>Title</SortableHeader>
+                              <SortableHeader columnKey="priority" onSort={handleSortPendingTested} sortConfig={sortPendingTested}>Priority</SortableHeader>
+                              <SortableHeader columnKey="status" onSort={handleSortPendingTested} sortConfig={sortPendingTested}>Status</SortableHeader>
                               <th>Activity</th>
                               <th>Retest cycle</th>
                               <th>Ageing</th>
@@ -2081,12 +2224,12 @@ function QATaskPlanning({ showParentTitle = false }) {
                             </tr>
                           </thead>
                           <tbody>
-                            {pendingTestedByDev.length === 0 ? (
+                            {sortedPendingTestedByDev.length === 0 ? (
                               <tr>
                                 <td colSpan={18} className="qa-table-empty">No tickets marked as Tested by Dev.</td>
                               </tr>
                             ) : (
-                              pendingTestedByDev.map((t, idx) => renderTicketRow(t, idx, {
+                              sortedPendingTestedByDev.map((t, idx) => renderTicketRow(t, idx, {
                                 showTestedByDev: true,
                                 testedByDev: true,
                                 onTestedByDevToggle: () => setTestedByDev(t.ticket_id, false),
@@ -2109,11 +2252,11 @@ function QATaskPlanning({ showParentTitle = false }) {
                         <table className="qa-tickets-table">
                           <thead>
                             <tr>
-                              <th>#</th>
-                              <th>Ticket</th>
-                              <th>Title</th>
-                              <th>Priority</th>
-                              <th>Status</th>
+                              <SortableHeader columnKey="ticket_id" onSort={handleSortAssigned} sortConfig={sortAssigned}>#</SortableHeader>
+                              <SortableHeader columnKey="ticket_id" onSort={handleSortAssigned} sortConfig={sortAssigned}>Ticket</SortableHeader>
+                              <SortableHeader columnKey="title" onSort={handleSortAssigned} sortConfig={sortAssigned}>Title</SortableHeader>
+                              <SortableHeader columnKey="priority" onSort={handleSortAssigned} sortConfig={sortAssigned}>Priority</SortableHeader>
+                              <SortableHeader columnKey="status" onSort={handleSortAssigned} sortConfig={sortAssigned}>Status</SortableHeader>
                               <th>Activity</th>
                               <th>Retest cycle</th>
                               <th>Ageing</th>
@@ -2129,12 +2272,12 @@ function QATaskPlanning({ showParentTitle = false }) {
                             </tr>
                           </thead>
                           <tbody>
-                            {assignedQueue.length === 0 ? (
+                            {sortedAssignedQueue.length === 0 ? (
                               <tr>
                                 <td colSpan={17} className="qa-table-empty">{emptyMessage}</td>
                               </tr>
                             ) : (
-                              assignedQueue.map((t, idx) => renderTicketRow(t, idx))
+                              sortedAssignedQueue.map((t, idx) => renderTicketRow(t, idx))
                             )}
                           </tbody>
                         </table>
@@ -2228,6 +2371,15 @@ function QATaskPlanning({ showParentTitle = false }) {
               </div>
             </div>
             <div className="dev-planner-header-right">
+              <button
+                type="button"
+                className="dev-planner-btn refresh"
+                onClick={refreshAllPmTracker}
+                disabled={refreshing}
+                title="Refresh PM Tracker data"
+              >
+                {refreshing ? '↻ Syncing…' : '↻ Refresh PM Tracker'}
+              </button>
               {canEdit && (
                 <>
                   <button type="button" className={`dev-planner-btn draft ${weekState === 'draft' ? 'active' : ''}`} onClick={ensureWeek} disabled={actionLoading}>
@@ -2238,7 +2390,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                   </button>
                 </>
               )}
-              <span className="dev-planner-save-status">Last saved: 2 min ago</span>
+              <span className="dev-planner-save-status">{lastRefresh ? `Synced: ${lastRefresh.toLocaleTimeString()}` : 'Last saved: 2 min ago'}</span>
               <div className="dev-planner-view-toggle">
                 <button type="button" className={plannerViewMode === 'grid' ? 'active' : ''} onClick={() => setPlannerViewMode('grid')} title="Grid view">⊞</button>
                 <button type="button" className={plannerViewMode === 'list' ? 'active' : ''} onClick={() => setPlannerViewMode('list')} title="List view">≡</button>
@@ -2451,7 +2603,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                           ) : (
                             <>
                               {empTasks.map((t) => (
-                                <div key={t.id} className="dev-planner-task-item">
+                                <div key={t.id} className={`dev-planner-task-item ${t.is_on_hold ? 'on-hold' : ''}`}>
                                   <span className="dev-planner-task-id">
                                     {t.ticket_id ? (
                                       <Link to={`/tickets?ticket=${t.ticket_id}`} onClick={(e) => e.stopPropagation()}>#{t.ticket_id}</Link>
@@ -2462,6 +2614,9 @@ function QATaskPlanning({ showParentTitle = false }) {
                                   <span className="dev-planner-task-desc">{t.activity_description?.slice(0, 35)}{(t.activity_description?.length || 0) > 35 ? '…' : ''}</span>
                                   <span className="dev-planner-task-hours">{getTaskDisplayHours(t)}h</span>
                                   <span className="dev-planner-task-dates">{t.start_date && t.end_date ? `${formatDisplayDateWithDay(t.start_date)} → ${formatDisplayDateWithDay(t.end_date)}` : formatDisplayDate(t.start_date)}</span>
+                                  {t.is_on_hold && (
+                                    <span className="dev-planner-task-hold-badge" title={t.hold_reason || 'On Hold'}>⏸</span>
+                                  )}
                                   {canEdit && (emp.can_manage_tasks !== false) && (
                                     <div className="dev-planner-task-actions">
                                       <button
@@ -2472,6 +2627,28 @@ function QATaskPlanning({ showParentTitle = false }) {
                                       >
                                         ✎
                                       </button>
+                                      {/* Hold/Resume button for ticket tasks */}
+                                      {t.ticket_id && (
+                                        t.is_on_hold ? (
+                                          <button
+                                            type="button"
+                                            className="dev-planner-task-resume"
+                                            title="Resume task"
+                                            onClick={() => resumeTask(t.id)}
+                                          >
+                                            ▶
+                                          </button>
+                                        ) : (
+                                          <button
+                                            type="button"
+                                            className="dev-planner-task-hold"
+                                            title="Put on hold"
+                                            onClick={() => openHoldTaskModal(t)}
+                                          >
+                                            ⏸
+                                          </button>
+                                        )
+                                      )}
                                       <button
                                         type="button"
                                         className="dev-planner-task-remove"
@@ -2785,16 +2962,16 @@ function QATaskPlanning({ showParentTitle = false }) {
               <table className="resource-blocked-table">
                 <thead>
                   <tr>
-                    <th>Employee</th>
-                    <th>Role</th>
-                    <th>Allocated (h)</th>
+                    <SortableHeader columnKey="employee_name" onSort={handleSort} sortConfig={sortConfig}>Employee</SortableHeader>
+                    <SortableHeader columnKey="role" onSort={handleSort} sortConfig={sortConfig}>Role</SortableHeader>
+                    <SortableHeader columnKey="allocated_hours" onSort={handleSort} sortConfig={sortConfig}>Allocated (h)</SortableHeader>
                     <th>Tasks (Priority)</th>
                     <th>Blocked Until</th>
-                    <th>Status</th>
+                    <SortableHeader columnKey="allocation_status" onSort={handleSort} sortConfig={sortConfig}>Status</SortableHeader>
                   </tr>
                 </thead>
                 <tbody>
-                  {(employees || []).map((emp) => {
+                  {(sortedEmployees || []).map((emp) => {
                     const tasks = weekData?.tasks || [];
                     let maxDate = null;
                     const empTasks = [];
@@ -2834,7 +3011,6 @@ function QATaskPlanning({ showParentTitle = false }) {
                             <span className="resource-blocked-task-list" title={empTasks.map((x) => x.full).join(', ')}>
                               {empTasks.map((task, idx) => (
                                 <span key={idx} className="resource-blocked-task-item">
-                                  {idx > 0 && ', '}
                                   {task.priority && (
                                     <span className="resource-blocked-priority-pill" style={{ backgroundColor: PRIORITY_COLORS[task.priority] || '#6b7280' }} title={`Priority: ${task.priority}`}>{task.priority}</span>
                                   )}
@@ -2878,6 +3054,130 @@ function QATaskPlanning({ showParentTitle = false }) {
         </div>
       )}
 
+      {view === 'eta-calendar' && (
+        <div className="qa-overview-container qa-eta-calendar-view">
+          <div className="qa-eta-calendar-header">
+            <h2 className="qa-overview-title">ETA Calendar</h2>
+            <p className="qa-eta-calendar-subtitle">Tickets by ETA date: priority, status, assignment, tester, developer, times failed and open bug count</p>
+            <div className="qa-eta-calendar-controls">
+              <button type="button" className="btn-secondary" onClick={() => {
+                const [y, m] = etaCalendarMonth.split('-').map(Number);
+                const d = new Date(y, m - 2, 1);
+                setEtaCalendarMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`);
+              }}>← Previous month</button>
+              <span className="qa-eta-calendar-month-label">
+                {(() => {
+                  const [y, m] = etaCalendarMonth.split('-').map(Number);
+                  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+                  return `${monthNames[m - 1]} ${y}`;
+                })()}
+              </span>
+              <button type="button" className="btn-secondary" onClick={() => {
+                const [y, m] = etaCalendarMonth.split('-').map(Number);
+                const d = new Date(y, m, 1);
+                setEtaCalendarMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`);
+              }}>Next month →</button>
+              <button type="button" className="btn-secondary" onClick={() => {
+                const d = new Date();
+                setEtaCalendarMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`);
+              }}>Today</button>
+            </div>
+          </div>
+          {overviewLoading ? (
+            <div className="qa-planning-skeleton">Loading ETA calendar...</div>
+          ) : !overviewData ? (
+            <div className="qa-planning-empty">
+              <p>Failed to load tickets.</p>
+              <button type="button" className="btn-secondary" onClick={loadOverviewData}>Retry</button>
+            </div>
+          ) : (() => {
+            const queue = Array.isArray(overviewData.queue) ? overviewData.queue : [];
+            const monthStr = typeof etaCalendarMonth === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(etaCalendarMonth.slice(0, 10))
+              ? etaCalendarMonth.slice(0, 7)
+              : `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+            const [year, month] = monthStr.split('-').map(Number);
+            const firstDay = new Date(year, month - 1, 1);
+            const lastDay = new Date(year, month, 0);
+            const startPad = firstDay.getDay();
+            const daysInMonth = lastDay.getDate();
+            const ticketsByDate = {};
+            queue.forEach((t) => {
+              if (!t.eta) return;
+              const etaStr = t.eta.slice(0, 10);
+              if (etaStr.slice(0, 7) !== `${year}-${String(month).padStart(2, '0')}`) return;
+              ticketsByDate[etaStr] = ticketsByDate[etaStr] || [];
+              ticketsByDate[etaStr].push(t);
+            });
+            const totalCells = Math.ceil((startPad + daysInMonth) / 7) * 7;
+            const dayCells = [];
+            for (let i = 0; i < startPad; i++) dayCells.push({ day: null, dateStr: null });
+            for (let d = 1; d <= daysInMonth; d++) {
+              const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+              dayCells.push({ day: d, dateStr, tickets: ticketsByDate[dateStr] || [] });
+            }
+            while (dayCells.length < totalCells) dayCells.push({ day: null, dateStr: null });
+            const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+            return (
+              <div className="qa-eta-calendar-grid-wrap">
+                <table className="qa-eta-calendar-table">
+                  <thead>
+                    <tr>{weekDays.map((wd) => <th key={wd} className="qa-eta-calendar-th">{wd}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {Array.from({ length: totalCells / 7 }, (_, row) => (
+                      <tr key={row}>
+                        {dayCells.slice(row * 7, row * 7 + 7).map((cell, col) => (
+                          <td key={col} className={`qa-eta-calendar-td ${cell.dateStr ? '' : 'qa-eta-calendar-td-other'}`}>
+                            {cell.dateStr ? (
+                              <>
+                                <div className="qa-eta-calendar-day-header">
+                                  <div className="qa-eta-calendar-day-num">{cell.day}</div>
+                                  {(cell.tickets || []).length > 0 && (
+                                    <div className="qa-eta-calendar-day-count">
+                                      {(cell.tickets || []).length} tickets
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="qa-eta-calendar-day-tickets">
+                                  {(cell.tickets || []).map((t) => (
+                                    <div key={t.ticket_id} className="qa-eta-calendar-ticket-card">
+                                      <div className="qa-eta-calendar-ticket-header">
+                                        <span className="qa-eta-calendar-ticket-id">
+                                          {getTicketTrackingUrl(t.ticket_id) ? (
+                                            <a href={getTicketTrackingUrl(t.ticket_id)} target="_blank" rel="noopener noreferrer">#{t.ticket_id}</a>
+                                          ) : `#${t.ticket_id}`}
+                                        </span>
+                                        <span className="qa-eta-priority-pill" style={{ backgroundColor: (PRIORITY_COLORS[t.priority] || '#6b7280') }}>{t.priority}</span>
+                                      </div>
+                                      <div className="qa-eta-calendar-ticket-meta">
+                                        <span className="qa-eta-status" title="Status">{t.status}</span>
+                                        <span className="qa-eta-assigned" title="Assigned">{t.qc_tester ? 'Assigned' : 'Unassigned'}</span>
+                                      </div>
+                                      <div className="qa-eta-calendar-ticket-people">
+                                        <span title="QC Tester">{t.qc_tester || '—'}</span>
+                                        <span title="Developer(s)">{t.developers_str || '—'}</span>
+                                      </div>
+                                      <div className="qa-eta-calendar-ticket-counts">
+                                        <span title="Times moved to QC Review Fail">Fail: {t.times_moved_to_fail != null ? t.times_moved_to_fail : '0'}</span>
+                                        <span title="Open bugs count">Open Bugs: {t.open_bugs_count != null ? t.open_bugs_count : '0'}</span>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </>
+                            ) : null}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
       {view === 'qc-review-fail' && (
         <div className="qa-overview-container qa-qc-review-fail-view">
           <div className="qa-overview-header">
@@ -2906,12 +3206,12 @@ function QATaskPlanning({ showParentTitle = false }) {
                   <thead>
                     <tr>
                       <th>#</th>
-                      <th>Ticket</th>
-                      <th>Title</th>
-                      <th>Priority</th>
-                      <th>Status</th>
-                      <th>Days in fail</th>
-                      <th>Times in fail</th>
+                      <SortableHeader columnKey="ticket_id" onSort={handleSortQcReviewFail} sortConfig={sortQcReviewFail}>Ticket</SortableHeader>
+                      <SortableHeader columnKey="title" onSort={handleSortQcReviewFail} sortConfig={sortQcReviewFail}>Title</SortableHeader>
+                      <SortableHeader columnKey="priority" onSort={handleSortQcReviewFail} sortConfig={sortQcReviewFail}>Priority</SortableHeader>
+                      <SortableHeader columnKey="status" onSort={handleSortQcReviewFail} sortConfig={sortQcReviewFail}>Status</SortableHeader>
+                      <SortableHeader columnKey="days_in_fail" onSort={handleSortQcReviewFail} sortConfig={sortQcReviewFail}>Days in fail</SortableHeader>
+                      <SortableHeader columnKey="times_moved_to_fail" onSort={handleSortQcReviewFail} sortConfig={sortQcReviewFail}>Times in fail</SortableHeader>
                       <th>Module</th>
                       <th>Platform</th>
                       <th>QC Tester</th>
@@ -2926,12 +3226,12 @@ function QATaskPlanning({ showParentTitle = false }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {(!qcReviewFailData.tickets || qcReviewFailData.tickets.length === 0) ? (
+                    {sortedQcReviewFailTickets.length === 0 ? (
                       <tr>
                         <td colSpan={18} className="qa-table-empty">No tickets in QC Review Fail status.</td>
                       </tr>
                     ) : (
-                      qcReviewFailData.tickets.map((t, idx) => (
+                      sortedQcReviewFailTickets.map((t, idx) => (
                         <tr key={t.ticket_id} className="qa-ticket-row">
                           <td className="qa-rank">{idx + 1}</td>
                           <td className="qa-ticket-id-cell">
@@ -3325,10 +3625,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                     </div>
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">Status</span>
-                      <span className={`qa-field-value ${(lookedUpTicket.status || '').trim() !== 'QC Testing in Progress' ? 'qa-field-missing' : ''}`}>
-                        {lookedUpTicket.status || '—'}
-                        {(lookedUpTicket.status || '').trim() !== 'QC Testing in Progress' && ' (Must be QC Testing in Progress)'}
-                      </span>
+                      <span className="qa-field-value">{lookedUpTicket.status || '—'}</span>
                     </div>
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">QC Tester</span>
@@ -3360,11 +3657,6 @@ function QATaskPlanning({ showParentTitle = false }) {
                   {!(lookedUpTicket.qc_tester || '').trim() && (
                     <div className="qa-ticket-card-warning">
                       QC Tester is required in PM Tracker. Assign and click Refresh.
-                    </div>
-                  )}
-                  {(lookedUpTicket.status || '').trim() !== 'QC Testing in Progress' && (
-                    <div className="qa-ticket-card-warning">
-                      Ticket status must be &quot;QC Testing in Progress&quot; in PM Tracker to create a task. Update in PM and click Refresh.
                     </div>
                   )}
                   {(lookedUpTicket.eta || '').trim() && lookedUpTicket.eta.slice(0, 10) < formatAPIDate(new Date()) && (
@@ -3560,6 +3852,86 @@ function QATaskPlanning({ showParentTitle = false }) {
                 {editTaskSubmitting ? 'Saving…' : 'Save'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Hold Task Modal */}
+      {holdTaskOpen && holdingTask && (
+        <div className="qa-modal-overlay" onClick={closeHoldTaskModal}>
+          <div className="qa-modal" onClick={(e) => e.stopPropagation()} style={{ minWidth: '450px' }}>
+            <div className="qa-modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+              <h3 style={{ margin: 0 }}>Put Task on Hold</h3>
+              <button type="button" className="qa-modal-close" onClick={closeHoldTaskModal} title="Close">×</button>
+            </div>
+            <p className="qa-form-group" style={{ marginBottom: '1rem', color: 'var(--text-muted)' }}>
+              #{holdingTask.ticket_id} — {holdingTask.activity_description?.slice(0, 50)} — {holdingTask.employee_name}
+            </p>
+            
+            <div className="qa-form-group" style={{ marginBottom: '1rem', padding: '0.75rem', backgroundColor: 'var(--bg-warning)', borderRadius: '6px', borderLeft: '4px solid var(--warning)' }}>
+              <strong style={{ color: 'var(--warning)' }}>Important:</strong>
+              <p style={{ margin: '0.5rem 0 0', fontSize: '0.9rem' }}>
+                Before putting this task on hold, ensure the ticket status is updated to "QC Testing Hold" in PM Tracker.
+              </p>
+              <button
+                type="button"
+                className="qa-btn-secondary"
+                style={{ marginTop: '0.5rem', fontSize: '0.85rem' }}
+                onClick={() => refreshPmTrackerForTicket(holdingTask.ticket_id)}
+                disabled={pmTrackerRefreshing}
+              >
+                {pmTrackerRefreshing ? 'Refreshing…' : '↻ Refresh PM Tracker Status'}
+              </button>
+            </div>
+
+            <form onSubmit={submitHoldTask}>
+              <div className="qa-form-group">
+                <label>Hold Type *</label>
+                <select
+                  value={holdTaskForm.hold_type}
+                  onChange={(e) => setHoldTaskForm({ ...holdTaskForm, hold_type: e.target.value })}
+                >
+                  <option value="full">Entire Task (put full task on hold)</option>
+                  <option value="day">Specific Day (hold only one day)</option>
+                </select>
+              </div>
+
+              {holdTaskForm.hold_type === 'day' && (
+                <div className="qa-form-group">
+                  <label>Hold Date *</label>
+                  <input
+                    type="date"
+                    value={holdTaskForm.hold_date}
+                    min={holdingTask.start_date || formatAPIDate(new Date())}
+                    max={holdingTask.end_date}
+                    onChange={(e) => setHoldTaskForm({ ...holdTaskForm, hold_date: e.target.value })}
+                    required
+                  />
+                </div>
+              )}
+
+              <div className="qa-form-group">
+                <label>Reason for Hold *</label>
+                <textarea
+                  value={holdTaskForm.hold_reason}
+                  onChange={(e) => setHoldTaskForm({ ...holdTaskForm, hold_reason: e.target.value })}
+                  placeholder="e.g., New urgent ticket prioritized, Waiting for client clarification, etc."
+                  rows={3}
+                  style={{ width: '100%', resize: 'vertical' }}
+                  required
+                />
+                <small style={{ color: 'var(--text-muted)' }}>This reason will appear in the QA Weekly Report.</small>
+              </div>
+
+              {holdTaskError && <div className="qa-form-error qa-form-error-block">{holdTaskError}</div>}
+              
+              <div className="qa-modal-actions" style={{ marginTop: '1rem' }}>
+                <button type="button" onClick={closeHoldTaskModal}>Cancel</button>
+                <button type="submit" className="qa-btn-warning" disabled={holdTaskSubmitting}>
+                  {holdTaskSubmitting ? 'Saving…' : 'Put on Hold'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

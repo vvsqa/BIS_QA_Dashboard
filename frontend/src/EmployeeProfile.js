@@ -169,10 +169,15 @@ function EmployeeProfile() {
   }, [employeeId, period, kpiQuarter]);
 
   const isDevelopmentTeam = (emp) => emp?.team && (String(emp.team).toUpperCase().includes('DEV') || String(emp.team).toUpperCase() === 'DEVELOPMENT');
+  const isManagerRole = (emp) => {
+    const accessRole = (emp?.access_role || '').toUpperCase();
+    const designation = (emp?.role || '').toUpperCase();
+    return accessRole.includes('MANAGER') || designation.includes('MANAGER');
+  };
 
   useEffect(() => {
     if (!employeeId || !employee) return;
-    if (!isDevelopmentTeam(employee)) {
+    if (isManagerRole(employee) || !isDevelopmentTeam(employee)) {
       setTimesFailedData(null);
       return;
     }
@@ -1046,7 +1051,8 @@ function EmployeeProfile() {
     );
   }
 
-  const isDev = employee.team === 'DEVELOPMENT';
+  const isDev = isDevelopmentTeam(employee);
+  const isManager = isManagerRole(employee);
   const metrics = performance?.metrics || {};
   const ragStatus = performance?.rag_status || {};
   const bugs = metrics.bugs || {};
@@ -1366,9 +1372,39 @@ function EmployeeProfile() {
           </button>
         </div>
 
-        {/* Key Metrics Row - Different for DEV vs QA */}
+        {/* Key Metrics Row - Different for DEV vs QA vs Managers */}
         <div className="emp-key-metrics">
-          {isDev ? (
+          {isManager ? (
+            <>
+              <MetricCard
+                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg>}
+                value={`${metrics.timesheet?.utilization_percent || 0}%`}
+                label="Utilization"
+                trend={(metrics.timesheet?.utilization_percent || 0) >= 75 ? 'up' : 'down'}
+                color="emerald"
+              />
+              <MetricCard
+                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>}
+                value={planningTimesheetData?.summary?.estimation_accuracy != null ? `${planningTimesheetData.summary.estimation_accuracy}%` : '—'}
+                label="Plan vs Actual"
+                trend={(planningTimesheetData?.summary?.estimation_accuracy || 0) >= 85 ? 'up' : 'neutral'}
+                trendValue="5 weeks"
+                color="teal"
+              />
+              <MetricCard
+                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-6"/></svg>}
+                value={`${planningTimesheetData?.summary?.total_planned_hours ?? 0}h`}
+                label="Planned Hours"
+                color="indigo"
+              />
+              <MetricCard
+                icon={<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 12l4 4 12-12"/></svg>}
+                value={`${planningTimesheetData?.summary?.total_actual_hours ?? 0}h`}
+                label="Actual Hours"
+                color="cyan"
+              />
+            </>
+          ) : isDev ? (
             // DEV Team Key Metrics
             <>
               <MetricCard
@@ -1535,9 +1571,43 @@ function EmployeeProfile() {
           </div>
         </div>
 
-        {/* Performance Metrics Grid - Completely different for DEV vs QA */}
+        {/* Performance Metrics Grid - Different for DEV vs QA vs Managers */}
         <div className="emp-perf-grid">
-          {isDev ? (
+          {isManager ? (
+            <>
+              <div className="emp-perf-card">
+                <h4>Plan vs Actual Accuracy</h4>
+                <CircularProgress
+                  value={planningTimesheetData?.summary?.estimation_accuracy || 0}
+                  size={110}
+                  strokeWidth={8}
+                  color={(planningTimesheetData?.summary?.estimation_accuracy || 0) >= 85 ? '#22c55e' : (planningTimesheetData?.summary?.estimation_accuracy || 0) >= 70 ? '#f59e0b' : '#ef4444'}
+                  label="%"
+                />
+                <div className="perf-hint">Last 5 weeks</div>
+              </div>
+              <div className="emp-perf-card">
+                <h4>Utilization</h4>
+                <CircularProgress
+                  value={metrics.timesheet?.utilization_percent || 0}
+                  size={110}
+                  strokeWidth={8}
+                  color={(metrics.timesheet?.utilization_percent || 0) >= 75 ? '#22c55e' : (metrics.timesheet?.utilization_percent || 0) >= 60 ? '#f59e0b' : '#ef4444'}
+                  label="%"
+                />
+                <div className="perf-hint">Hours logged vs expected</div>
+              </div>
+              <div className="emp-perf-card">
+                <h4>Variance (5 weeks)</h4>
+                <div className="perf-stat-value">
+                  {(planningTimesheetData?.summary?.total_variance ?? 0) >= 0 ? '+' : ''}
+                  {planningTimesheetData?.summary?.total_variance ?? 0}
+                </div>
+                <div className="perf-stat-label">hours</div>
+                <div className="perf-hint subtle">Actual vs planned</div>
+              </div>
+            </>
+          ) : isDev ? (
             // DEV Team Metrics - Focus on bug resolution quality
             <>
               <div className="emp-perf-card">
@@ -1686,6 +1756,7 @@ function EmployeeProfile() {
         </div>
 
         {/* Charts Section - Different for DEV vs QA */}
+        {!isManager && (
         <div className="emp-charts-section">
           {isDev ? (
             // DEV Charts
@@ -1908,6 +1979,7 @@ function EmployeeProfile() {
             </>
           )}
         </div>
+        )}
 
         {/* Tabs Section */}
         <div className="emp-tabs">
@@ -2249,25 +2321,27 @@ function EmployeeProfile() {
                 </div>
               )}
 
-              <div className="emp-detail-card">
-                <h4>{isDev ? 'Bug Resolution Metrics' : 'Bug Detection Metrics'}</h4>
-                <div className="detail-row">
-                  <span className="detail-label">{isDev ? 'Bugs Assigned' : 'Bugs Found'}</span>
-                  <span className="detail-value">{bugs.total || 0}</span>
+              {!isManager && (
+                <div className="emp-detail-card">
+                  <h4>{isDev ? 'Bug Resolution Metrics' : 'Bug Detection Metrics'}</h4>
+                  <div className="detail-row">
+                    <span className="detail-label">{isDev ? 'Bugs Assigned' : 'Bugs Found'}</span>
+                    <span className="detail-value">{bugs.total || 0}</span>
+                  </div>
+                  <div className="detail-row">
+                    <span className="detail-label">{isDev ? 'Open Bugs' : 'Still Open'}</span>
+                    <span className="detail-value">{bugs.open || 0}</span>
+                  </div>
+                  <div className="detail-row">
+                    <span className="detail-label">Closed Bugs</span>
+                    <span className="detail-value">{bugs.closed || 0}</span>
+                  </div>
+                  <div className="detail-row">
+                    <span className="detail-label">Avg Age (Open)</span>
+                    <span className="detail-value">{bugs.avg_ageing_days || 0} days</span>
+                  </div>
                 </div>
-                <div className="detail-row">
-                  <span className="detail-label">{isDev ? 'Open Bugs' : 'Still Open'}</span>
-                  <span className="detail-value">{bugs.open || 0}</span>
-                </div>
-                <div className="detail-row">
-                  <span className="detail-label">Closed Bugs</span>
-                  <span className="detail-value">{bugs.closed || 0}</span>
-                </div>
-                <div className="detail-row">
-                  <span className="detail-label">Avg Age (Open)</span>
-                  <span className="detail-value">{bugs.avg_ageing_days || 0} days</span>
-                </div>
-              </div>
+              )}
             </div>
           </div>
         )}

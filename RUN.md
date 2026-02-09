@@ -16,6 +16,22 @@ python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 
 Make sure `backend/.env` exists with at least: `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `JWT_SECRET_KEY`, `PM_API_KEY`.
 
+**Authentication (login):** Before anyone can sign in, create the auth tables and admin account once:
+
+```bash
+cd backend
+python add_user_auth_tables.py
+```
+
+This creates an **admin** login: **admin@techversantinfotech.com** / **admin123** (and syncs users from employees). If you later get **"Invalid email or password"** (e.g. after changing the admin password in Settings), reset it with:
+
+```bash
+cd backend
+python reset_admin_password.py
+```
+
+Then log in again with **admin@techversantinfotech.com** / **admin123**. Regular users (from Employees) use their **email** and initial password **employee ID** until they change it.
+
 ### 2. Start the frontend
 
 In a **second** terminal (from the project root):

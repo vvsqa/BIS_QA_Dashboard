@@ -1,5 +1,5 @@
 /**
- * Date formatting utilities for the QA Dashboard
+ * Date formatting utilities for AURA360
  * Standard format: DD-MMM-YYYY (e.g., 27-Jan-2026)
  */
 

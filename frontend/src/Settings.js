@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
 import AppSidebar from './AppSidebar';
+import { useTableSort, SortableHeader } from './useTableSort';
 import { apiFetch, API_BASE } from './api';
 import './dashboard.css';
 
@@ -15,6 +16,11 @@ function Settings() {
   const [adminSaving, setAdminSaving] = useState(false);
   const [adminMessage, setAdminMessage] = useState('');
   const [resettingUser, setResettingUser] = useState(null);
+
+  const { sortedData: sortedUsers, sortConfig, handleSort } = useTableSort(users, {
+    defaultSortKey: 'email',
+    defaultSortDirection: 'asc',
+  });
 
   const isAdminOrManager = user?.role === 'ADMIN' || user?.role?.includes('MANAGER');
 
@@ -167,15 +173,15 @@ function Settings() {
             <table className="data-table" style={{ width: '100%' }}>
               <thead>
                 <tr>
-                  <th>Email</th>
-                  <th>Role</th>
-                  <th>Employee</th>
-                  <th>Password Changed</th>
+                  <SortableHeader columnKey="email" onSort={handleSort} sortConfig={sortConfig}>Email</SortableHeader>
+                  <SortableHeader columnKey="role" onSort={handleSort} sortConfig={sortConfig}>Role</SortableHeader>
+                  <SortableHeader columnKey="employee_name" onSort={handleSort} sortConfig={sortConfig}>Employee</SortableHeader>
+                  <SortableHeader columnKey="password_changed_at" onSort={handleSort} sortConfig={sortConfig}>Password Changed</SortableHeader>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
+                {sortedUsers.map((u) => (
                   <tr key={u.id}>
                     <td>{u.email}</td>
                     <td>{u.role}</td>

@@ -26,8 +26,7 @@ export default function AppSidebar() {
   return (
     <aside className="sidebar">
       <div className="logo">
-        <div className="logo-icon">QA</div>
-        <span className="logo-text">Bug Tracker</span>
+        <span className="logo-text">DASHBOARD</span>
       </div>
       <div className="theme-toggle-container">
         <button
@@ -83,7 +82,7 @@ export default function AppSidebar() {
             Task Planning
           </Link>
         )}
-        {user?.employee_id && !user?.role?.includes('MANAGER') && (
+        {user?.employee_id && (
           <Link to="/my-tasks" className={`nav-item ${path === '/my-tasks' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M9 11l3 3L22 4" />
@@ -135,16 +134,18 @@ export default function AppSidebar() {
             My Profile
           </Link>
         )}
-        {/* Reports & admin */}
-        <Link to="/reports" className={`nav-item ${path === '/reports' ? 'active' : ''}`}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
-            <polyline points="14 2 14 8 20 8" />
-            <line x1="16" y1="13" x2="8" y2="13" />
-            <line x1="16" y1="17" x2="8" y2="17" />
-          </svg>
-          Reports
-        </Link>
+        {/* Reports & admin - accessible to managers, leads, and admins only */}
+        {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+          <Link to="/reports" className={`nav-item ${path === '/reports' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="16" y1="13" x2="8" y2="13" />
+              <line x1="16" y1="17" x2="8" y2="17" />
+            </svg>
+            Reports
+          </Link>
+        )}
         {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER')) && (
           <Link to="/settings" className={`nav-item ${path === '/settings' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

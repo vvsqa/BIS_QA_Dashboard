@@ -510,6 +510,7 @@ def get_qa_overview_data(db: Session, today: Optional[date] = None) -> Dict[str,
             'activity_type': activity_type,
             'activity_label': activity_label,
             'retest_cycle_count': retest_cycle_count,
+            'times_moved_to_fail': get_qc_fail_count(db, ticket.ticket_id),
         }
 
         queue.append(item)
@@ -525,6 +526,20 @@ def get_qa_overview_data(db: Session, today: Optional[date] = None) -> Dict[str,
             tested_by_dev_map[row.ticket_id] = bool(row.tested_by_dev)
     for t in queue:
         t["tested_by_dev"] = tested_by_dev_map.get(t["ticket_id"], False)
+
+    # Open bug counts for tickets in queue (used in ETA calendar cards)
+    open_bug_statuses = ["New", "Reopened", "Fixed", "Assigned to Dev"]
+    open_bugs_map = {}
+    if ticket_ids:
+        bug_rows = (
+            db.query(Bug.ticket_id, func.count(Bug.id))
+            .filter(Bug.ticket_id.in_(ticket_ids), Bug.status.in_(open_bug_statuses))
+            .group_by(Bug.ticket_id)
+            .all()
+        )
+        open_bugs_map = {ticket_id: count for ticket_id, count in bug_rows}
+    for t in queue:
+        t["open_bugs_count"] = open_bugs_map.get(t["ticket_id"], 0)
 
     # Sort queue: priority (asc), then days_in_qc desc (older first), then ticket_id
     queue.sort(key=lambda t: (t['priority_order'], -t['days_in_qc'], t['ticket_id']))

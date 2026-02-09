@@ -152,11 +152,16 @@ def require_role(allowed_roles: list):
 
 def require_reports_access(current_user: dict = Depends(get_current_user)):
     """
-    Require authenticated user. Reports are accessible to all logged-in users;
-    can_access_reports is True for everyone in auth/me. Kept as a dedicated
-    dependency so report endpoints consistently require auth (managers, leads, admins, employees).
+    Require authenticated user with reports access.
+    Reports are accessible to ADMIN, MANAGER (MANAGER_DEV, MANAGER_QA), and LEAD (LEAD_DEV, LEAD_QA) roles.
     """
-    return current_user
+    role = current_user.get("role", "")
+    if role == "ADMIN" or "MANAGER" in role or "LEAD" in role:
+        return current_user
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Access denied. Reports are available to managers, leads, and admins only."
+    )
 
 
 def get_visible_employee_ids(db: Session, current_user: dict) -> Optional[Set[str]]:

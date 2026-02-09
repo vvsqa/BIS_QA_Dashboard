@@ -73,18 +73,38 @@ export function AuthProvider({ children }) {
   }, [navigate]);
 
   const login = async (email, password) => {
-    const res = await fetch(`${API_BASE}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password }),
-    });
+    const trimmedEmail = (email || '').trim().toLowerCase();
+    const trimmedPassword = (password || '').trim();
+    let res;
+    try {
+      res = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: trimmedEmail, password: trimmedPassword }),
+      });
+    } catch (err) {
+      const msg = err?.message || '';
+      const isNetwork = msg === 'Failed to fetch' || msg.includes('NetworkError') || err?.name === 'TypeError';
+      throw new Error(isNetwork
+        ? 'Cannot reach the server. Start the backend (e.g. run start-backend.bat or: cd backend && python -m uvicorn main:app --reload --port 8000), then try again.'
+        : msg || 'Connection error');
+    }
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      throw new Error(data.detail || 'Login failed');
+      throw new Error(data.detail || 'Invalid email or password');
     }
     setToken(data.access_token);
-    // After login, load full user data with permissions
+    // Set user immediately from login response so we stay logged in
+    if (data.user) {
+      setUser({ ...data.user, token: data.access_token, permissions: data.user.permissions || {} });
+    }
+    // Load full user data with permissions from /auth/me (may overwrite with permissions)
     await loadUser();
+    // If loadUser cleared the token (e.g. /auth/me failed or returned 401), restore from login response
+    if (!getToken() && data.access_token && data.user) {
+      setToken(data.access_token);
+      setUser({ ...data.user, token: data.access_token, permissions: data.user.permissions || {} });
+    }
     return data;
   };
 

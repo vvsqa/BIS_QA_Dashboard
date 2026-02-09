@@ -28,7 +28,7 @@ from models import (
     EnhancedTimesheet, LeaveEntry, TimeSheetSubmission, TimeSheetEntry, TimeSheetEntryReview, TimeSheetApprovalLog, PlannedTask, WeeklyPlan,
     EmployeeNameMapping, Holiday, SyncLog,
     DevPlanningWeek, DevPlannedTask, DevPlannedAllocation, DevPlanningAuditLog,
-    QAPlanningWeek, QAPlannedTask, QAPlannedAllocation,
+    QAPlanningWeek, QAPlannedTask, QAPlannedAllocation, QATaskHoldHistory,
     User, AdminConfig,
 )
 from auth import (
@@ -329,7 +329,7 @@ def auth_me(current_user: dict = Depends(get_current_user)):
                 "can_edit_reportee_profiles": is_lead,  # Lead can edit reportee profiles
                 "can_manage_team_tasks": is_lead,  # Lead can manage team tasks
                 "can_access_calendar": True,  # Everyone can access calendar
-                "can_access_reports": True,  # Everyone can access reports
+                "can_access_reports": is_admin or is_manager or is_lead,  # Reports accessible to managers, leads, admins
                 "can_change_user_roles": is_admin or is_manager,  # Admin/Manager can change user roles
                 "can_view_all_teams_calendar": is_admin or is_manager,  # Admin/Manager can view all teams in calendar
             }
@@ -4591,7 +4591,21 @@ def get_employee_performance(
 
         start_date, end_date = get_date_range(period)
         employee_name = employee.name
-        is_dev = employee.team == "DEVELOPMENT"
+        team_upper = (employee.team or "").upper()
+        is_dev = "DEV" in team_upper or team_upper == "DEVELOPMENT"
+
+        # Access role and role context (manager roles have different evaluation)
+        user_account = db.query(User).filter(User.employee_id == employee.employee_id).first()
+        access_role = user_account.role if user_account else None
+        is_manager_role = (access_role and "MANAGER" in access_role.upper()) or ("MANAGER" in (employee.role or "").upper())
+
+        # Mode of work (if available in mapping_data)
+        mode_of_work = None
+        mapping = employee.mapping_data or {}
+        for key in ("mode_of_work", "work_mode", "Mode of Work", "Work Mode", "Mode", "ModeOfWork"):
+            if mapping.get(key):
+                mode_of_work = mapping.get(key)
+                break
         
         # Build base response
         result = {
@@ -4605,131 +4619,152 @@ def get_employee_performance(
                 "lead": employee.lead,
                 "experience_years": calculate_experience_years(employee.date_of_joining)
             },
+            "role_context": {
+                "access_role": access_role,
+                "designation": employee.role,
+                "team": employee.team,
+                "mode_of_work": mode_of_work,
+                "is_manager": bool(is_manager_role),
+                "role_type": "manager" if is_manager_role else ("dev" if is_dev else "qa"),
+            },
             "period": period,
             "metrics": {}
         }
         
         # ===== TICKET METRICS (from ticket_tracking) =====
-        ticket_query = db.query(TicketTracking)
-        
-        if is_dev:
-            ticket_query = ticket_query.filter(
-                or_(
-                    TicketTracking.backend_developer.ilike(f"%{employee_name}%"),
-                    TicketTracking.frontend_developer.ilike(f"%{employee_name}%")
+        ticket_ids = []
+        if not is_manager_role:
+            ticket_query = db.query(TicketTracking)
+            
+            if is_dev:
+                ticket_query = ticket_query.filter(
+                    or_(
+                        TicketTracking.backend_developer.ilike(f"%{employee_name}%"),
+                        TicketTracking.frontend_developer.ilike(f"%{employee_name}%")
+                    )
                 )
-            )
-        else:  # QA
-            ticket_query = ticket_query.filter(
-                TicketTracking.qc_tester.ilike(f"%{employee_name}%")
-            )
-        
-        if start_date:
-            ticket_query = ticket_query.filter(TicketTracking.updated_on >= start_date)
-        
-        tickets = ticket_query.all()
-        ticket_ids = [t.ticket_id for t in tickets]
-        
-        # Calculate estimate vs actual
-        total_estimate = sum(t.dev_estimate_hours or 0 for t in tickets) if is_dev else sum(t.qa_estimate_hours or 0 for t in tickets)
-        total_actual = sum(t.actual_dev_hours or 0 for t in tickets) if is_dev else sum(t.actual_qa_hours or 0 for t in tickets)
-        
-        result["metrics"]["tickets"] = {
-            "count": len(tickets),
-            "ticket_ids": ticket_ids[:50],  # Limit to 50
-            "estimate_hours": round(total_estimate, 1),
-            "actual_hours": round(total_actual, 1),
-            "estimate_accuracy": round((total_estimate / total_actual * 100), 1) if total_actual > 0 else 100
-        }
-        
-        # ===== BUG METRICS (from bugs) =====
-        bug_query = db.query(Bug)
-        
-        if is_dev:
-            bug_query = bug_query.filter(Bug.assignee.ilike(f"%{employee_name}%"))
-        else:  # QA - bugs reported by this person
-            bug_query = bug_query.filter(Bug.author.ilike(f"%{employee_name}%"))
-        
-        if start_date:
-            bug_query = bug_query.filter(Bug.created_on >= start_date)
-        
-        bugs = bug_query.all()
-        total_bugs = len(bugs)
-        
-        if total_bugs > 0:
-            # Status breakdown
-            closed_bugs = len([b for b in bugs if b.status == "Closed"])
-            reopened_bugs = len([b for b in bugs if b.status == "Reopened"])
-            rejected_bugs = len([b for b in bugs if b.status == "Rejected"])
+            else:  # QA
+                ticket_query = ticket_query.filter(
+                    TicketTracking.qc_tester.ilike(f"%{employee_name}%")
+                )
             
-            # Severity breakdown
-            critical_bugs = len([b for b in bugs if b.severity == "Critical"])
-            major_bugs = len([b for b in bugs if b.severity == "Major"])
-            minor_bugs = len([b for b in bugs if b.severity == "Minor"])
+            if start_date:
+                ticket_query = ticket_query.filter(TicketTracking.updated_on >= start_date)
             
-            # Environment breakdown
-            live_bugs = len([b for b in bugs if b.environment == "Live"])
-            pre_bugs = len([b for b in bugs if b.environment == "Pre"])
-            staging_bugs = len([b for b in bugs if b.environment == "Staging"])
+            tickets = ticket_query.all()
+            ticket_ids = [t.ticket_id for t in tickets]
             
-            # Bug ageing (for open bugs)
-            open_bugs = [b for b in bugs if b.status not in ["Closed", "Rejected"]]
-            ages = []
-            for bug in open_bugs:
-                if bug.created_on:
-                    age = (datetime.now() - bug.created_on).days
-                    ages.append(age)
-            avg_ageing = round(sum(ages) / len(ages), 1) if ages else 0
+            # Calculate estimate vs actual
+            total_estimate = sum(t.dev_estimate_hours or 0 for t in tickets) if is_dev else sum(t.qa_estimate_hours or 0 for t in tickets)
+            total_actual = sum(t.actual_dev_hours or 0 for t in tickets) if is_dev else sum(t.actual_qa_hours or 0 for t in tickets)
             
-            # Resolution time (for closed bugs)
-            resolution_times = []
-            for bug in bugs:
-                if bug.status == "Closed" and bug.created_on and bug.closed_on:
-                    days = (bug.closed_on - bug.created_on).days
-                    resolution_times.append(days)
-            avg_resolution = round(sum(resolution_times) / len(resolution_times), 1) if resolution_times else 0
-            
-            # Modules expertise
-            modules = list(set(b.module for b in bugs if b.module))
-            
-            # Bug types
-            bug_types = defaultdict(int)
-            for bug in bugs:
-                tracker = bug.tracker or "Unknown"
-                bug_types[tracker] += 1
-            
-            result["metrics"]["bugs"] = {
-                "total": total_bugs,
-                "closed": closed_bugs,
-                "reopened": reopened_bugs,
-                "rejected": rejected_bugs,
-                "closure_rate": round((closed_bugs / total_bugs * 100), 1),
-                "reopened_percent": round((reopened_bugs / total_bugs * 100), 1),
-                "rejected_percent": round((rejected_bugs / total_bugs * 100), 1),
-                "severity": {
-                    "critical": critical_bugs,
-                    "critical_percent": round((critical_bugs / total_bugs * 100), 1),
-                    "major": major_bugs,
-                    "minor": minor_bugs
-                },
-                "environment": {
-                    "live": live_bugs,
-                    "live_percent": round((live_bugs / total_bugs * 100), 1),
-                    "pre": pre_bugs,
-                    "pre_percent": round((pre_bugs / total_bugs * 100), 1),
-                    "staging": staging_bugs,
-                    "staging_percent": round((staging_bugs / total_bugs * 100), 1)
-                },
-                "avg_ageing_days": avg_ageing,
-                "avg_resolution_days": avg_resolution,
-                "modules_expertise": modules[:15],
-                "bug_types": dict(bug_types)
+            result["metrics"]["tickets"] = {
+                "count": len(tickets),
+                "ticket_ids": ticket_ids[:50],  # Limit to 50
+                "estimate_hours": round(total_estimate, 1),
+                "actual_hours": round(total_actual, 1),
+                "estimate_accuracy": round((total_estimate / total_actual * 100), 1) if total_actual > 0 else 100
             }
         else:
-            result["metrics"]["bugs"] = {"total": 0}
+            result["metrics"]["tickets"] = {
+                "count": 0,
+                "ticket_ids": [],
+                "estimate_hours": 0,
+                "actual_hours": 0,
+                "estimate_accuracy": None,
+            }
+        
+        # ===== BUG METRICS (from bugs) =====
+        if not is_manager_role:
+            bug_query = db.query(Bug)
+            
+            if is_dev:
+                bug_query = bug_query.filter(Bug.assignee.ilike(f"%{employee_name}%"))
+            else:  # QA - bugs reported by this person
+                bug_query = bug_query.filter(Bug.author.ilike(f"%{employee_name}%"))
+            
+            if start_date:
+                bug_query = bug_query.filter(Bug.created_on >= start_date)
+            
+            bugs = bug_query.all()
+            total_bugs = len(bugs)
+            
+            if total_bugs > 0:
+                # Status breakdown
+                closed_bugs = len([b for b in bugs if b.status == "Closed"])
+                reopened_bugs = len([b for b in bugs if b.status == "Reopened"])
+                rejected_bugs = len([b for b in bugs if b.status == "Rejected"])
+                
+                # Severity breakdown
+                critical_bugs = len([b for b in bugs if b.severity == "Critical"])
+                major_bugs = len([b for b in bugs if b.severity == "Major"])
+                minor_bugs = len([b for b in bugs if b.severity == "Minor"])
+                
+                # Environment breakdown
+                live_bugs = len([b for b in bugs if b.environment == "Live"])
+                pre_bugs = len([b for b in bugs if b.environment == "Pre"])
+                staging_bugs = len([b for b in bugs if b.environment == "Staging"])
+                
+                # Bug ageing (for open bugs)
+                open_bugs = [b for b in bugs if b.status not in ["Closed", "Rejected"]]
+                ages = []
+                for bug in open_bugs:
+                    if bug.created_on:
+                        age = (datetime.now() - bug.created_on).days
+                        ages.append(age)
+                avg_ageing = round(sum(ages) / len(ages), 1) if ages else 0
+                
+                # Resolution time (for closed bugs)
+                resolution_times = []
+                for bug in bugs:
+                    if bug.status == "Closed" and bug.created_on and bug.closed_on:
+                        days = (bug.closed_on - bug.created_on).days
+                        resolution_times.append(days)
+                avg_resolution = round(sum(resolution_times) / len(resolution_times), 1) if resolution_times else 0
+                
+                # Modules expertise
+                modules = list(set(b.module for b in bugs if b.module))
+                
+                # Bug types
+                bug_types = defaultdict(int)
+                for bug in bugs:
+                    tracker = bug.tracker or "Unknown"
+                    bug_types[tracker] += 1
+                
+                result["metrics"]["bugs"] = {
+                    "total": total_bugs,
+                    "closed": closed_bugs,
+                    "reopened": reopened_bugs,
+                    "rejected": rejected_bugs,
+                    "closure_rate": round((closed_bugs / total_bugs * 100), 1),
+                    "reopened_percent": round((reopened_bugs / total_bugs * 100), 1),
+                    "rejected_percent": round((rejected_bugs / total_bugs * 100), 1),
+                    "severity": {
+                        "critical": critical_bugs,
+                        "critical_percent": round((critical_bugs / total_bugs * 100), 1),
+                        "major": major_bugs,
+                        "minor": minor_bugs
+                    },
+                    "environment": {
+                        "live": live_bugs,
+                        "live_percent": round((live_bugs / total_bugs * 100), 1),
+                        "pre": pre_bugs,
+                        "pre_percent": round((pre_bugs / total_bugs * 100), 1),
+                        "staging": staging_bugs,
+                        "staging_percent": round((staging_bugs / total_bugs * 100), 1)
+                    },
+                    "avg_ageing_days": avg_ageing,
+                    "avg_resolution_days": avg_resolution,
+                    "modules_expertise": modules[:15],
+                    "bug_types": dict(bug_types)
+                }
+            else:
+                result["metrics"]["bugs"] = {"total": 0}
+        else:
+            result["metrics"]["bugs"] = {"total": 0, "disabled": True}
         
         # ===== TESTRAIL METRICS (QA only) =====
-        if not is_dev:
+        if not is_dev and not is_manager_role:
             test_query = db.query(TestResult).filter(
                 TestResult.assigned_to.ilike(f"%{employee_name}%")
             )
@@ -4764,19 +4799,31 @@ def get_employee_performance(
                     result["metrics"]["bugs_per_ticket"] = round(total_bugs / len(ticket_ids), 1)
             else:
                 result["metrics"]["tests"] = {"total_executed": 0}
+        elif is_manager_role:
+            result["metrics"]["tests"] = {"total_executed": 0, "disabled": True}
         
         # ===== TIMESHEET METRICS =====
-        timesheet_query = db.query(Timesheet).filter(
-            Timesheet.employee_name.ilike(f"%{employee_name}%")
+        timesheet_team = "DEV" if is_dev else "QA"
+        enhanced_query = db.query(EnhancedTimesheet).filter(
+            EnhancedTimesheet.employee_name.ilike(f"%{employee_name}%"),
+            EnhancedTimesheet.team == timesheet_team
         )
-        
         if start_date:
-            timesheet_query = timesheet_query.filter(Timesheet.date >= start_date.date())
-        
-        timesheets = timesheet_query.all()
-        
-        total_minutes = sum(t.time_logged_minutes or 0 for t in timesheets)
-        total_hours = round(total_minutes / 60, 1)
+            enhanced_query = enhanced_query.filter(EnhancedTimesheet.date >= start_date.date())
+        enhanced_entries = enhanced_query.all()
+        if enhanced_entries:
+            total_hours = round(sum(e.hours_logged or 0 for e in enhanced_entries), 1)
+            timesheet_entries_count = len(enhanced_entries)
+        else:
+            timesheet_query = db.query(Timesheet).filter(
+                Timesheet.employee_name.ilike(f"%{employee_name}%")
+            )
+            if start_date:
+                timesheet_query = timesheet_query.filter(Timesheet.date >= start_date.date())
+            timesheets = timesheet_query.all()
+            total_minutes = sum(t.time_logged_minutes or 0 for t in timesheets)
+            total_hours = round(total_minutes / 60, 1)
+            timesheet_entries_count = len(timesheets)
         
         # Calculate working days in period
         if start_date:
@@ -4785,14 +4832,20 @@ def get_employee_performance(
         else:
             working_days = 250  # Approximate yearly working days
         
-        expected_hours = working_days * 8
+        expected_hours_per_day = 8
+        mode_lower = (mode_of_work or "").lower()
+        if "part" in mode_lower or "half" in mode_lower:
+            expected_hours_per_day = 4
+        elif "intern" in mode_lower:
+            expected_hours_per_day = 6
+        expected_hours = working_days * expected_hours_per_day
         
         result["metrics"]["timesheet"] = {
             "total_hours": total_hours,
             "expected_hours": expected_hours,
             "utilization_percent": round((total_hours / expected_hours * 100), 1) if expected_hours > 0 else 0,
             "avg_daily_hours": round(total_hours / working_days, 1) if working_days > 0 else 0,
-            "entries_count": len(timesheets)
+            "entries_count": timesheet_entries_count
         }
         
         # ===== PLANNING TIMESHEET SUMMARY (for rating context) =====
@@ -4801,7 +4854,7 @@ def get_employee_performance(
             result["planning_timesheet"] = plan_ts_summary
 
         # ===== RAG SCORE CALCULATION =====
-        rag_score = calculate_rag_score(result["metrics"], is_dev, planning_timesheet=plan_ts_summary)
+        rag_score = calculate_rag_score(result["metrics"], is_dev, planning_timesheet=plan_ts_summary, role_context=result.get("role_context"))
         result["rag_status"] = {
             "score": rag_score,
             "status": "GREEN" if rag_score >= 70 else "AMBER" if rag_score >= 50 else "RED"
@@ -4887,8 +4940,34 @@ def _get_planning_timesheet_summary(db: Session, employee: Employee, weeks: int 
         return None
 
 
-def calculate_rag_score(metrics, is_dev, planning_timesheet: Optional[dict] = None):
+def calculate_rag_score(metrics, is_dev, planning_timesheet: Optional[dict] = None, role_context: Optional[dict] = None):
     """Calculate RAG score based on metrics"""
+    role_context = role_context or {}
+    if role_context.get("is_manager"):
+        score = 0
+        weights_used = 0
+        timesheet = metrics.get("timesheet", {})
+
+        # Utilization (40%)
+        if timesheet.get("expected_hours", 0) > 0:
+            utilization = min(100, timesheet.get("utilization_percent", 0))
+            score += (utilization / 100) * 40
+            weights_used += 40
+
+        # Plan vs Actual accuracy (40%)
+        if planning_timesheet and planning_timesheet.get("estimation_accuracy") is not None:
+            acc = planning_timesheet.get("estimation_accuracy", 0)
+            score += (acc / 100) * 40
+            weights_used += 40
+
+        # Avg daily hours (20%)
+        if timesheet.get("avg_daily_hours") is not None:
+            daily = min(100, (timesheet.get("avg_daily_hours", 0) / 8) * 100)
+            score += (daily / 100) * 20
+            weights_used += 20
+
+        base_score = (score / weights_used * 100) if weights_used > 0 else 0
+        return round(base_score, 1)
     score = 0
     weights_used = 0
     
@@ -4910,8 +4989,13 @@ def calculate_rag_score(metrics, is_dev, planning_timesheet: Optional[dict] = No
             score += (reopened_score / 100) * 20
             weights_used += 20
         
-        # Estimate accuracy (20%)
-        if tickets.get("actual_hours", 0) > 0:
+        # Estimate accuracy (20%) - prefer planning/timesheet accuracy if available
+        if planning_timesheet and planning_timesheet.get("estimation_accuracy") is not None:
+            accuracy = planning_timesheet.get("estimation_accuracy", 100)
+            accuracy_score = 100 - abs(100 - accuracy)
+            score += max(0, accuracy_score / 100) * 20
+            weights_used += 20
+        elif tickets.get("actual_hours", 0) > 0:
             accuracy = tickets.get("estimate_accuracy", 100)
             accuracy_score = 100 - abs(100 - accuracy)  # Closer to 100% is better
             score += max(0, accuracy_score / 100) * 20
@@ -5298,12 +5382,14 @@ def get_employee_times_failed(
 @app.get("/my-tasks")
 def get_my_tasks(
     view: str = Query("week", description="week | month | all"),
-    date_str: Optional[str] = Query(None, description="Reference date YYYY-MM-DD. Default: today. Ignored when view=all"),
+    date_str: Optional[str] = Query(None, description="Reference date YYYY-MM-DD. Default: today. Ignored when view=all or custom range"),
+    start_date_str: Optional[str] = Query(None, description="Start date YYYY-MM-DD for custom range"),
+    end_date_str: Optional[str] = Query(None, description="End date YYYY-MM-DD for custom range"),
     current_user: dict = Depends(get_current_user),
 ):
     """
     Get current user's tasks: ongoing, future assigned, and completed (past).
-    Supports weekly, monthly, and all-data views.
+    Supports weekly, monthly, all-data views, or custom date range via start_date_str/end_date_str.
     """
     db: Session = SessionLocal()
     try:
@@ -5319,7 +5405,13 @@ def get_my_tasks(
         is_dev = "DEV" in team_upper or team_upper == "DEVELOPMENT"
         timesheet_team = "DEV" if is_dev else "QA"
 
-        if view == "all":
+        # Custom date range takes precedence
+        if start_date_str and end_date_str:
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+            if start_date > end_date:
+                start_date, end_date = end_date, start_date
+        elif view == "all":
             start_date = None
             end_date = None
         elif view == "month":
@@ -5498,12 +5590,9 @@ def _get_reportee_names_for_user(db: Session, current_user: dict) -> Optional[Tu
 
 @app.get("/my-tasks/team/check")
 def get_my_tasks_team_check(current_user: dict = Depends(get_current_user)):
-    """Check if current user can see My Team tab. Only for LEADs with reportees (not managers)."""
+    """Check if current user can see My Team tab. True for LEADs and MANAGERs with reportees."""
     db: Session = SessionLocal()
     try:
-        role = current_user.get("role", "")
-        if role == "ADMIN" or "MANAGER" in role:
-            return {"has_reportees": False, "reportee_count": 0}
         _, count = _get_reportee_names_for_user(db, current_user)
         return {"has_reportees": count > 0, "reportee_count": count}
     finally:
@@ -5517,17 +5606,14 @@ def get_my_tasks_team(
     current_user: dict = Depends(get_current_user),
 ):
     """
-    Get team metrics for leads with reportees. Not available for managers.
+    Get team metrics for leads and managers with reportees (direct and indirect for managers).
     Returns ticket counts by status for the period, current status, and per-member activity.
     """
     db: Session = SessionLocal()
     try:
-        role = current_user.get("role", "")
-        if role == "ADMIN" or "MANAGER" in role:
-            raise HTTPException(status_code=403, detail="My Team is for leads only, not managers")
         reportee_names, reportee_count = _get_reportee_names_for_user(db, current_user)
         if not reportee_names or reportee_count == 0:
-            raise HTTPException(status_code=403, detail="My Team is available only for leads with reportees")
+            raise HTTPException(status_code=403, detail="My Team is available only for users with reportees")
 
         ref = datetime.strptime(date_str or date.today().isoformat(), "%Y-%m-%d").date()
         if view == "all":
@@ -7304,23 +7390,58 @@ def preview_weekly_report_v2(
         week_start, week_end = get_week_dates(date, use_last_7_days=last7days)
         data = get_comprehensive_data(week_start, week_end)
         
+        # Build BIS tickets with open/deferred bug lists for report
+        def _bis_ticket_for_preview(t):
+            out = {
+                "ticket_id": t['ticket_id'],
+                "title": t['title'],
+                "status": t['status'],
+                "priority": t.get('priority'),
+                "qa_tester": t.get('qa_tester'),
+                "developers_str": t.get('developers_str'),
+                "bugs_total": t['bugs_total'],
+                "bugs_open": t['bugs_open'],
+                "bugs_closed": t.get('bugs_closed', 0),
+                "bugs_deferred": t.get('bugs_deferred', 0),
+                "tests_total": t['tests_total'],
+                "tests_passed": t.get('tests_passed', 0),
+                "pass_rate": t['pass_rate'],
+            }
+            if t.get('bug_details'):
+                open_bugs = [b for b in t['bug_details'] if (b.get('status') or '').lower() not in ('closed', 'resolved', 'verified', 'fixed', 'reject', 'deferred', 'wont fix', 'duplicate')]
+                deferred_bugs = [b for b in t['bug_details'] if (b.get('status') or '').lower() in ('deferred', 'wont fix', 'duplicate')]
+                out["open_bugs"] = open_bugs
+                out["deferred_bugs"] = deferred_bugs
+            else:
+                out["open_bugs"] = []
+                out["deferred_bugs"] = []
+            return out
+
         return {
             "week_start": week_start.strftime("%Y-%m-%d"),
             "week_end": week_end.strftime("%Y-%m-%d"),
             "current_week": {
                 "qa_tickets_count": len(data['current_week']['qa_tickets']),
+                "qc_newly_added_count": len(data['current_week'].get('qc_testing_newly_added', [])),
                 "bis_testing_count": len(data['current_week']['bis_testing_moved']),
                 "closed_count": len(data['current_week']['closed_moved']),
                 "in_progress_count": len(data['current_week']['in_progress']),
             },
-            # QA Team Pending Breakdown
             "qa_pending_breakdown": data.get('qa_pending_breakdown', {}),
             "previous_week": data['previous_week'],
+            "variance": data.get('variance', {}),
             "metrics": data['metrics'],
             "breakdowns": {
                 "by_status": dict(data['breakdowns']['by_status']),
                 "by_module": dict(data['breakdowns']['by_module']),
             },
+            "tickets_worked_on_this_week": data.get('tickets_worked_on_this_week', []),
+            "qc_testing_newly_added": data['current_week'].get('qc_testing_newly_added', []),
+            "on_hold_this_week": data.get('on_hold_this_week', []),
+            "qa_failed_this_week": data.get('qa_failed_this_week', []),
+            "bis_testing_moved": [_bis_ticket_for_preview(t) for t in data['current_week']['bis_testing_moved']],
+            "next_week_plan": data.get('next_week_plan', []),
+            "next_week_eta_calendar": data.get('next_week_eta_calendar', []),
             "next_week_plan_count": len(data['next_week_plan']),
             "bis_testing_tickets": [
                 {
@@ -10283,6 +10404,18 @@ class QAReleaseResourceBody(BaseModel):
     release_date: Optional[str] = None  # YYYY-MM-DD; default today
 
 
+class QAHoldTaskBody(BaseModel):
+    """Request body for holding a task."""
+    hold_type: str  # 'full' for entire task, 'day' for specific day
+    hold_reason: str  # Required reason for holding
+    hold_date: Optional[str] = None  # Required if hold_type='day', format YYYY-MM-DD
+
+
+class QAResumeTaskBody(BaseModel):
+    """Request body for resuming a held task."""
+    resume_reason: Optional[str] = None  # Optional reason for resuming
+
+
 @app.post("/qa-planning/task/{task_id}/release-resource")
 def qa_planning_release_resource(
     task_id: int,
@@ -10313,6 +10446,276 @@ def qa_planning_release_resource(
             "task_id": task_id,
             "resource_released_at": task.resource_released_at.isoformat() if task.resource_released_at else None,
             "message": "QA resource is free from this date; another task can be assigned (not mandatory).",
+        }
+    finally:
+        db.close()
+
+
+@app.post("/qa-planning/task/{task_id}/hold")
+def qa_planning_hold_task(
+    task_id: int,
+    body: QAHoldTaskBody,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Put a QA planned task on hold. Requires PM Tracker verification.
+    - hold_type: 'full' for entire task, 'day' for specific day
+    - hold_reason: Required reason for holding (for reporting)
+    - hold_date: Required if hold_type='day', format YYYY-MM-DD
+    """
+    from models import QATaskHoldHistory, QAPlannedAllocation
+    
+    if not body.hold_reason or not body.hold_reason.strip():
+        raise HTTPException(status_code=400, detail="Hold reason is required")
+    
+    if body.hold_type not in ('full', 'day'):
+        raise HTTPException(status_code=400, detail="hold_type must be 'full' or 'day'")
+    
+    hold_date = None
+    if body.hold_type == 'day':
+        if not body.hold_date:
+            raise HTTPException(status_code=400, detail="hold_date is required for day-level hold")
+        try:
+            hold_date = datetime.strptime(body.hold_date.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=400, detail="hold_date must be YYYY-MM-DD")
+    
+    db = SessionLocal()
+    try:
+        task = db.query(QAPlannedTask).filter(
+            QAPlannedTask.id == task_id,
+            QAPlannedTask.status == "active",
+        ).first()
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found or not active")
+        
+        if not can_manage_tasks_for(db, current_user, task.employee_id):
+            raise HTTPException(status_code=403, detail="Not allowed to manage this task")
+        
+        # Check if task is already on hold
+        if task.is_on_hold and body.hold_type == 'full':
+            raise HTTPException(status_code=400, detail="Task is already on hold")
+        
+        # Verify PM Tracker status if it's a ticket task
+        pm_status = None
+        pm_verified = False
+        if task.ticket_id:
+            ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == task.ticket_id).first()
+            if ticket:
+                pm_status = ticket.status
+                # Verify the ticket is in "QC Testing Hold" status in PM Tracker
+                if pm_status == "QC Testing Hold":
+                    pm_verified = True
+                else:
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"Cannot put task on hold. Ticket status in PM Tracker is '{pm_status}'. "
+                               f"Please update the ticket to 'QC Testing Hold' in PM Tracker first, "
+                               f"then use the Refresh button to sync, and try again."
+                    )
+        
+        now = datetime.utcnow()
+        
+        if body.hold_type == 'full':
+            # Full task hold
+            task.is_on_hold = True
+            task.hold_reason = body.hold_reason.strip()
+            task.hold_started_at = now
+            task.hold_type = 'full'
+            task.hold_date = None
+            task.hold_ended_at = None
+            task.updated_by = current_user.get("email")
+        else:
+            # Day-level hold - mark specific allocation as on hold
+            alloc = db.query(QAPlannedAllocation).filter(
+                QAPlannedAllocation.task_id == task_id,
+                QAPlannedAllocation.allocation_date == hold_date,
+            ).first()
+            if not alloc:
+                raise HTTPException(status_code=404, detail=f"No allocation found for {body.hold_date}")
+            alloc.is_on_hold = True
+        
+        # Create hold history record
+        hold_history = QATaskHoldHistory(
+            task_id=task_id,
+            ticket_id=task.ticket_id,
+            employee_id=task.employee_id,
+            employee_name=task.employee_name,
+            hold_type=body.hold_type,
+            hold_date=hold_date,
+            hold_reason=body.hold_reason.strip(),
+            pm_tracker_status=pm_status,
+            pm_tracker_verified=pm_verified,
+            hold_started_at=now,
+            created_by=current_user.get("email"),
+        )
+        db.add(hold_history)
+        
+        db.commit()
+        db.refresh(task)
+        
+        return {
+            "task_id": task_id,
+            "is_on_hold": task.is_on_hold,
+            "hold_type": body.hold_type,
+            "hold_date": body.hold_date if body.hold_type == 'day' else None,
+            "hold_reason": body.hold_reason.strip(),
+            "pm_tracker_status": pm_status,
+            "pm_tracker_verified": pm_verified,
+            "message": f"Task {'put on hold' if body.hold_type == 'full' else f'day {body.hold_date} put on hold'} successfully.",
+        }
+    finally:
+        db.close()
+
+
+@app.post("/qa-planning/task/{task_id}/resume")
+def qa_planning_resume_task(
+    task_id: int,
+    body: Optional[QAResumeTaskBody] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Resume a held QA planned task.
+    """
+    from models import QATaskHoldHistory, QAPlannedAllocation
+    
+    db = SessionLocal()
+    try:
+        task = db.query(QAPlannedTask).filter(
+            QAPlannedTask.id == task_id,
+            QAPlannedTask.status == "active",
+        ).first()
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found or not active")
+        
+        if not can_manage_tasks_for(db, current_user, task.employee_id):
+            raise HTTPException(status_code=403, detail="Not allowed to manage this task")
+        
+        if not task.is_on_hold:
+            raise HTTPException(status_code=400, detail="Task is not on hold")
+        
+        now = datetime.utcnow()
+        resume_reason = (body and body.resume_reason and body.resume_reason.strip()) or None
+        
+        # Find the latest active hold history record and close it
+        latest_hold = db.query(QATaskHoldHistory).filter(
+            QATaskHoldHistory.task_id == task_id,
+            QATaskHoldHistory.hold_ended_at == None,
+        ).order_by(QATaskHoldHistory.hold_started_at.desc()).first()
+        
+        if latest_hold:
+            latest_hold.hold_ended_at = now
+            latest_hold.resumed_reason = resume_reason
+        
+        # Clear hold from task
+        task.is_on_hold = False
+        task.hold_ended_at = now
+        task.updated_by = current_user.get("email")
+        
+        # Also clear any day-level holds on allocations
+        db.query(QAPlannedAllocation).filter(
+            QAPlannedAllocation.task_id == task_id,
+            QAPlannedAllocation.is_on_hold == True,
+        ).update({"is_on_hold": False})
+        
+        db.commit()
+        db.refresh(task)
+        
+        return {
+            "task_id": task_id,
+            "is_on_hold": False,
+            "message": "Task resumed successfully.",
+        }
+    finally:
+        db.close()
+
+
+@app.post("/qa-planning/refresh-pm-tracker")
+def qa_planning_refresh_pm_tracker(
+    ticket_id: Optional[int] = Query(None, description="Specific ticket ID to refresh, or None for full sync"),
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Refresh PM Tracker data for QA planning. 
+    - If ticket_id provided: return latest status for that ticket after sync
+    - If no ticket_id: trigger full sync and return summary
+    """
+    db = SessionLocal()
+    start_time = time.time()
+    
+    try:
+        # Trigger PM Tracker sync
+        success, message, stats, sync_source = run_pm_api_sync(db, start_time)
+        duration_seconds = time.time() - start_time
+        
+        result = {
+            "success": success,
+            "message": message,
+            "sync_source": sync_source or "api",
+            "records_updated": stats.get('records_updated', 0) + stats.get('records_added', 0),
+            "duration_seconds": round(duration_seconds, 2),
+        }
+        
+        # If specific ticket requested, return its latest status
+        if ticket_id:
+            ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+            if ticket:
+                result["ticket"] = {
+                    "ticket_id": ticket.ticket_id,
+                    "title": ticket.title,
+                    "status": ticket.status,
+                    "priority": ticket.priority,
+                    "qc_tester": ticket.qc_tester,
+                    "is_hold_status": ticket.status == "QC Testing Hold",
+                }
+            else:
+                result["ticket"] = None
+                result["ticket_message"] = f"Ticket #{ticket_id} not found"
+        
+        return result
+    
+    except Exception as e:
+        logging.exception("Error refreshing PM Tracker for QA planning")
+        return {
+            "success": False,
+            "message": f"Error: {str(e)}",
+            "duration_seconds": round(time.time() - start_time, 2),
+        }
+    finally:
+        db.close()
+
+
+@app.get("/qa-planning/task/{task_id}/hold-history")
+def qa_planning_task_hold_history(
+    task_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get hold history for a task."""
+    from models import QATaskHoldHistory
+    
+    db = SessionLocal()
+    try:
+        history = db.query(QATaskHoldHistory).filter(
+            QATaskHoldHistory.task_id == task_id,
+        ).order_by(QATaskHoldHistory.hold_started_at.desc()).all()
+        
+        return {
+            "task_id": task_id,
+            "history": [
+                {
+                    "id": h.id,
+                    "hold_type": h.hold_type,
+                    "hold_date": h.hold_date.isoformat() if h.hold_date else None,
+                    "hold_reason": h.hold_reason,
+                    "pm_tracker_status": h.pm_tracker_status,
+                    "pm_tracker_verified": h.pm_tracker_verified,
+                    "hold_started_at": h.hold_started_at.isoformat() if h.hold_started_at else None,
+                    "hold_ended_at": h.hold_ended_at.isoformat() if h.hold_ended_at else None,
+                    "resumed_reason": h.resumed_reason,
+                    "created_by": h.created_by,
+                }
+                for h in history
+            ],
         }
     finally:
         db.close()
@@ -10506,9 +10909,14 @@ def qa_planning_get_week(
                 "end_date": t.end_date.isoformat() if t.end_date else None,
                 "total_planned_hours": round(display_hours, 1),
                 "created_by": t.created_by,
-                "allocations": [{"date": a.allocation_date.isoformat(), "hours": a.hours} for a in allocs_to_show],
+                "allocations": [{"date": a.allocation_date.isoformat(), "hours": a.hours, "is_on_hold": getattr(a, 'is_on_hold', False)} for a in allocs_to_show],
                 "spillover": (pw is None) or (t.planning_week_id != pw.id),
                 "resource_released_at": t.resource_released_at.isoformat() if getattr(t, "resource_released_at", None) else None,
+                # Hold-related fields
+                "is_on_hold": getattr(t, 'is_on_hold', False) or False,
+                "hold_reason": getattr(t, 'hold_reason', None),
+                "hold_type": getattr(t, 'hold_type', None),
+                "hold_started_at": t.hold_started_at.isoformat() if getattr(t, 'hold_started_at', None) else None,
             })
 
         if pw:

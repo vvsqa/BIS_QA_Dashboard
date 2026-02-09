@@ -2,12 +2,16 @@
 Professional QA Weekly Report Generator V2
 
 Generates a comprehensive, multi-page PDF report for stakeholders and clients.
+Includes: QA queue details (pending tickets with priority), new tickets to QC testing,
+moved to BIS testing (new), put on hold this week, tickets QA failed this week
+(with times tested/failed). Timesheet is not included in this report.
 
 Pages:
 1. Cover Page
-2. QA Overview Dashboard
-3. Weekly Comparison
-4. BIS Testing Summary
+2. QA Overview Dashboard (with queue, newly to QC, BIS moved, on hold, failed)
+3. Newly Released to QA
+4. Weekly Comparison
+5. BIS Testing Summary
 5+. Individual Ticket Details (BIS Testing)
 Final. Upcoming QA Plan
 
@@ -55,23 +59,28 @@ LOGO_PATH = os.path.join(os.path.dirname(__file__), "..", "frontend", "public", 
 
 # Color Palette - Professional & Modern (consistent, high contrast for text)
 COLORS = {
-    'primary': colors.HexColor('#1e40af'),      # Deep blue
-    'secondary': colors.HexColor('#475569'),    # Slate
-    'success': colors.HexColor('#15803d'),      # Green
-    'warning': colors.HexColor('#b45309'),      # Amber
-    'danger': colors.HexColor('#b91c1c'),       # Red
-    'info': colors.HexColor('#0e7490'),         # Cyan
-    'purple': colors.HexColor('#6d28d9'),       # Purple
+    'primary': colors.HexColor('#1e40af'),      # Deep blue - for headers with white text
+    'secondary': colors.HexColor('#475569'),    # Slate - for headers with white text
+    'success': colors.HexColor('#15803d'),      # Green - for headers with white text
+    'warning': colors.HexColor('#b45309'),      # Amber - for headers with white text
+    'danger': colors.HexColor('#b91c1c'),       # Red - for headers with white text
+    'info': colors.HexColor('#0e7490'),         # Cyan - for headers with white text
+    'purple': colors.HexColor('#6d28d9'),       # Purple - for headers with white text
     'dark': colors.HexColor('#0f172a'),         # Near black for text
     'light': colors.HexColor('#f8fafc'),        # Off-white
     'border': colors.HexColor('#cbd5e1'),       # Border
     'muted': colors.HexColor('#64748b'),        # Muted text
+    # Light background colors - USE WITH DARK TEXT, NOT for headers with white text
     'bg_green': colors.HexColor('#dcfce7'),
     'bg_red': colors.HexColor('#fee2e2'),
     'bg_yellow': colors.HexColor('#fef3c7'),
     'bg_blue': colors.HexColor('#dbeafe'),
     'bg_purple': colors.HexColor('#f3e8ff'),
     'bg_cyan': colors.HexColor('#cffafe'),
+    # Header-safe colors (darker versions for tables with white text)
+    'header_cyan': colors.HexColor('#0891b2'),   # Dark cyan for headers
+    'header_green': colors.HexColor('#059669'),  # Dark green for headers
+    'header_blue': colors.HexColor('#2563eb'),   # Dark blue for headers
 }
 # Usable width on A4 with 0.65" margins (8.27 - 1.3 = 6.97 inch)
 PAGE_WIDTH_INCH = 8.27
@@ -204,6 +213,10 @@ def get_comprehensive_data(week_start, week_end):
             },
             # Priority changes this period (for report section)
             'priority_changes': [],
+            # Tickets put on hold this week (moved to QC Testing Hold during period)
+            'on_hold_this_week': [],
+            # Tickets QA failed this week (moved to QC Review Fail / Tested - Awaiting Fixes / Code Review Failed) with times in fail
+            'qa_failed_this_week': [],
             
             # Next week plan
             'next_week_plan': [],
@@ -341,6 +354,60 @@ def get_comprehensive_data(week_start, week_end):
                 'changed_on': ph.changed_on,
             })
         
+        # ===== CURRENT PERIOD: Tickets put on hold (moved to QC Testing Hold) =====
+        from models import QATaskHoldHistory
+        
+        on_hold_history = db.query(TicketStatusHistory).filter(
+            TicketStatusHistory.new_status == 'QC Testing Hold',
+            TicketStatusHistory.changed_on >= week_start,
+            TicketStatusHistory.changed_on <= week_end
+        ).all()
+        if on_hold_history:
+            on_hold_ids = list(set(h.ticket_id for h in on_hold_history))
+            for tid in on_hold_ids:
+                ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == tid).first()
+                if ticket:
+                    ticket_data = get_enriched_ticket_data(db, ticket, include_full_details=False)
+                    for h in on_hold_history:
+                        if h.ticket_id == tid:
+                            ticket_data['put_on_hold_on'] = h.changed_on
+                            ticket_data['put_on_hold_from'] = h.previous_status
+                            break
+                    
+                    # Try to get hold reason from QATaskHoldHistory (if hold was made via Task Planning)
+                    hold_reason_record = db.query(QATaskHoldHistory).filter(
+                        QATaskHoldHistory.ticket_id == tid,
+                        QATaskHoldHistory.hold_started_at >= week_start,
+                        QATaskHoldHistory.hold_started_at <= week_end,
+                    ).order_by(QATaskHoldHistory.hold_started_at.desc()).first()
+                    
+                    if hold_reason_record:
+                        ticket_data['hold_reason'] = hold_reason_record.hold_reason
+                        ticket_data['hold_type'] = hold_reason_record.hold_type
+                        ticket_data['hold_created_by'] = hold_reason_record.created_by
+                    else:
+                        ticket_data['hold_reason'] = None
+                        ticket_data['hold_type'] = None
+                        ticket_data['hold_created_by'] = None
+                    
+                    data['on_hold_this_week'].append(ticket_data)
+        
+        # ===== CURRENT PERIOD: Tickets QA failed (moved to QC Review Fail / Tested - Awaiting Fixes / Code Review Failed) =====
+        from qa_planning import get_qc_fail_count, QC_FAIL_STATUSES
+        qa_fail_history = db.query(TicketStatusHistory).filter(
+            TicketStatusHistory.new_status.in_(QC_FAIL_STATUSES),
+            TicketStatusHistory.changed_on >= week_start,
+            TicketStatusHistory.changed_on <= week_end
+        ).all()
+        if qa_fail_history:
+            qa_fail_ids = list(set(h.ticket_id for h in qa_fail_history))
+            for tid in qa_fail_ids:
+                ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == tid).first()
+                if ticket:
+                    ticket_data = get_enriched_ticket_data(db, ticket, include_full_details=False)
+                    ticket_data['times_tested_and_failed'] = get_qc_fail_count(db, tid)
+                    data['qa_failed_this_week'].append(ticket_data)
+        
         # ===== CURRENT PERIOD: Tickets moved to Closed (QA team responsible only) =====
         # Use status history for accuracy
         closed_history = db.query(TicketStatusHistory).filter(
@@ -418,6 +485,14 @@ def get_comprehensive_data(week_start, week_end):
         data['previous_week']['bis_testing_count'] = prev_bis_count
         data['previous_week']['closed_count'] = prev_closed_count
         
+        # Previous week: newly moved to QC (incoming)
+        prev_qc_newly = db.query(TicketStatusHistory).filter(
+            TicketStatusHistory.new_status.in_(QA_TEAM_STATUSES),
+            TicketStatusHistory.changed_on >= prev_week_start,
+            TicketStatusHistory.changed_on <= prev_week_end
+        ).all()
+        data['previous_week']['qc_newly_count'] = len(set(h.ticket_id for h in prev_qc_newly))
+        
         # ===== NEXT WEEK: Planned tickets =====
         planned_tickets = db.query(TicketTracking).filter(
             TicketTracking.eta >= next_week_start,
@@ -428,6 +503,53 @@ def get_comprehensive_data(week_start, week_end):
         for ticket in planned_tickets:
             ticket_data = get_enriched_ticket_data(db, ticket)
             data['next_week_plan'].append(ticket_data)
+        
+        # Next week ETA calendar: group by date for report widget
+        next_week_eta_calendar = []
+        if data['next_week_plan']:
+            from collections import defaultdict as _dd
+            by_date = _dd(list)
+            for t in data['next_week_plan']:
+                eta = t.get('eta')
+                if eta:
+                    d = eta.strftime('%Y-%m-%d') if hasattr(eta, 'strftime') else (eta[:10] if isinstance(eta, str) else None)
+                    if d:
+                        by_date[d].append(t)
+            for d in sorted(by_date.keys()):
+                next_week_eta_calendar.append({'date': d, 'tickets': by_date[d]})
+        data['next_week_eta_calendar'] = next_week_eta_calendar
+        
+        # Tickets QA was working on this (report) week: union of all touched tickets
+        seen_ids = set()
+        tickets_worked = []
+        for lst in [
+            data['current_week']['qa_tickets'],
+            data['current_week']['qc_testing_newly_added'],
+            data['current_week']['bis_testing_moved'],
+            data['current_week']['closed_moved'],
+            data['on_hold_this_week'],
+            data['qa_failed_this_week'],
+        ]:
+            for t in lst:
+                tid = t.get('ticket_id')
+                if tid and tid not in seen_ids:
+                    seen_ids.add(tid)
+                    tickets_worked.append(t)
+        data['tickets_worked_on_this_week'] = tickets_worked
+        
+        # Variance: incoming vs outgoing vs last week
+        this_incoming = len(data['current_week'].get('qc_testing_newly_added', []))
+        this_outgoing = len(data['current_week']['bis_testing_moved']) + len(data['current_week']['closed_moved'])
+        last_incoming = data['previous_week'].get('qc_newly_count', 0)
+        last_outgoing = data['previous_week']['bis_testing_count'] + data['previous_week']['closed_count']
+        data['variance'] = {
+            'this_week_incoming': this_incoming,
+            'this_week_outgoing': this_outgoing,
+            'last_week_incoming': last_incoming,
+            'last_week_outgoing': last_outgoing,
+            'incoming_change': this_incoming - last_incoming,
+            'outgoing_change': this_outgoing - last_outgoing,
+        }
         
         # ===== AGGREGATE METRICS =====
         data['metrics']['total_qa_tickets'] = len(data['current_week']['qa_tickets'])
@@ -1150,6 +1272,47 @@ def create_overview_page(data, styles):
     else:
         elements.append(pending_table)
     
+    # QA Queue Details - Pending tickets with priority
+    elements.append(Paragraph("<b>QA Queue – Pending tickets by priority</b>", styles['ReportBody']))
+    qa_tickets = current.get('qa_tickets', [])
+    if qa_tickets:
+        priority_order = ['URGENT', 'High (Bugs)', 'High (Billable)', 'High', 'Medium', 'Low', 'Quote', 'Suggestion', 'Unspecified']
+        def _pri_sort_key(t):
+            p = (t.get('priority') or 'Unspecified').strip()
+            try:
+                return priority_order.index(p)
+            except ValueError:
+                return 99
+        sorted_qa = sorted(qa_tickets, key=_pri_sort_key)
+        queue_data = [['Ticket', 'Title', 'Priority', 'Status', 'QC Tester']]
+        for t in sorted_qa[:40]:
+            queue_data.append([
+                f"#{t.get('ticket_id', '—')}",
+                (t.get('title') or '—')[:32],
+                (t.get('priority') or '—')[:14],
+                (t.get('status') or '—')[:18],
+                (t.get('qa_tester') or t.get('qc_tester') or '—')[:16]
+            ])
+        # repeatRows=1 to repeat header on new pages
+        queue_tbl = Table(queue_data, colWidths=[0.65*inch, 2.2*inch, 1*inch, 1.3*inch, 1.2*inch], repeatRows=1)
+        queue_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), COLORS['primary']),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
+            ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+            ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(Spacer(1, 0.1*inch))
+        elements.append(queue_tbl)
+        if len(qa_tickets) > 40:
+            elements.append(Paragraph(f"<i>(Showing first 40 of {len(qa_tickets)} pending tickets)</i>", styles['SmallText']))
+    else:
+        elements.append(Paragraph("<i>No tickets currently pending with QA.</i>", styles['SmallText']))
     elements.append(Spacer(1, 0.3*inch))
     
     # Newly Added to QC Testing (from Development) - Summary in report
@@ -1168,14 +1331,21 @@ def create_overview_page(data, styles):
         priority_rows = [['Priority', 'Count']]
         for pri, count in sorted(qc_newly_breakdowns['by_priority'].items(), key=lambda x: x[1], reverse=True)[:10]:
             priority_rows.append([(pri or '—')[:25], str(count)])
+        # Add total row
+        total_newly = sum(c for _, c in qc_newly_breakdowns['by_priority'].items())
+        priority_rows.append(['Total', str(total_newly)])
+        
         pri_table = Table(priority_rows, colWidths=[3.5*inch, 1.2*inch])
         pri_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), COLORS['bg_blue']),
+            ('BACKGROUND', (0, 0), (-1, 0), COLORS['header_blue']),  # Dark blue for readability
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, COLORS['light']]),
             ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+            # Total row styling
+            ('BACKGROUND', (0, -1), (-1, -1), COLORS['bg_blue']),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
             ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
             ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
             ('TOPPADDING', (0, 0), (-1, -1), 6),
@@ -1193,9 +1363,10 @@ def create_overview_page(data, styles):
                 (t.get('priority') or '—')[:14],
                 moved_from
             ])
-        newly_tbl = Table(newly_table_data, colWidths=[0.65*inch, 2*inch, 1.1*inch, 1.2*inch])
+        # repeatRows=1 for header repeat on page breaks
+        newly_tbl = Table(newly_table_data, colWidths=[0.65*inch, 2*inch, 1.1*inch, 1.2*inch], repeatRows=1)
         newly_tbl.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), COLORS['bg_cyan']),
+            ('BACKGROUND', (0, 0), (-1, 0), COLORS['header_cyan']),  # Dark cyan for readability
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 8),
@@ -1215,11 +1386,115 @@ def create_overview_page(data, styles):
     # QA Achievement Section
     elements.append(Paragraph("QA Team Achievement This Period", styles['SubSectionHeader']))
     achievement_text = f"""
-    <b>Tickets Moved to BIS Testing:</b> {len(current['bis_testing_moved'])} tickets<br/>
-    <i>These tickets have been successfully tested by QA team and handed over to BIS-QA/Client team.</i>
+    <b>New – Moved to BIS Testing:</b> {len(current['bis_testing_moved'])} tickets<br/>
+    <i>Tickets successfully tested by QA and handed over to BIS-QA/Client team this period.</i>
     """
     elements.append(Paragraph(achievement_text, styles['ReportBody']))
+    elements.append(Spacer(1, 0.2*inch))
     
+    # Put on hold this week (e.g. for assigning new priority tickets)
+    on_hold = data.get('on_hold_this_week', [])
+    elements.append(Paragraph("<b>Put on hold this week</b>", styles['ReportBody']))
+    elements.append(Paragraph(
+        f"<i>Tickets moved to QC Testing Hold during the period (e.g. to assign new priority tickets): {len(on_hold)}</i>",
+        styles['SmallText']
+    ))
+    if on_hold:
+        # Include reason column if any ticket has a reason
+        has_reasons = any(t.get('hold_reason') for t in on_hold)
+        
+        if has_reasons:
+            hold_data = [['Ticket', 'Title', 'Priority', 'Reason']]
+            for t in on_hold[:15]:
+                reason = t.get('hold_reason') or '—'
+                if len(reason) > 35:
+                    reason = reason[:32] + '...'
+                hold_data.append([
+                    f"#{t.get('ticket_id', '—')}",
+                    (t.get('title') or '—')[:22],
+                    (t.get('priority') or '—')[:10],
+                    reason
+                ])
+            # Add total row
+            hold_data.append(['TOTAL', f'{len(on_hold)} tickets', '', ''])
+            hold_tbl = Table(hold_data, colWidths=[0.6*inch, 1.6*inch, 0.8*inch, 2.2*inch], repeatRows=1)
+        else:
+            hold_data = [['Ticket', 'Title', 'Priority', 'Put on hold from']]
+            for t in on_hold[:15]:
+                put_on = (t.get('put_on_hold_on') or '—')
+                if hasattr(put_on, 'strftime'):
+                    put_on = put_on.strftime('%Y-%m-%d')
+                hold_data.append([
+                    f"#{t.get('ticket_id', '—')}",
+                    (t.get('title') or '—')[:28],
+                    (t.get('priority') or '—')[:12],
+                    (t.get('put_on_hold_from') or '—')[:18]
+                ])
+            # Add total row
+            hold_data.append(['TOTAL', f'{len(on_hold)} tickets', '', ''])
+            hold_tbl = Table(hold_data, colWidths=[0.65*inch, 2*inch, 1*inch, 1.5*inch], repeatRows=1)
+        
+        hold_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), COLORS['warning']),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, COLORS['bg_yellow']]),
+            ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+            # Total row styling
+            ('BACKGROUND', (0, -1), (-1, -1), COLORS['bg_yellow']),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(Spacer(1, 0.1*inch))
+        elements.append(hold_tbl)
+        if len(on_hold) > 15:
+            elements.append(Paragraph(f"<i>(Showing first 15 of {len(on_hold)})</i>", styles['SmallText']))
+    elements.append(Spacer(1, 0.25*inch))
+    
+    # Tickets QA failed this week (and how many times tested/failed)
+    qa_failed = data.get('qa_failed_this_week', [])
+    elements.append(Paragraph("<b>Tickets QA failed this week</b>", styles['ReportBody']))
+    elements.append(Paragraph(
+        f"<i>Tickets moved to QC Review Fail / Tested - Awaiting Fixes / Code Review Failed during the period. Count: {len(qa_failed)}. Column \"Times tested/failed\" = number of times the ticket was moved to fail status (retest cycle).</i>",
+        styles['SmallText']
+    ))
+    if qa_failed:
+        fail_data = [['Ticket', 'Title', 'Priority', 'Times tested/failed']]
+        for t in qa_failed[:20]:
+            fail_data.append([
+                f"#{t.get('ticket_id', '—')}",
+                (t.get('title') or '—')[:30],
+                (t.get('priority') or '—')[:14],
+                str(t.get('times_tested_and_failed', 0))
+            ])
+        # Add total row
+        fail_data.append(['TOTAL', f'{len(qa_failed)} tickets', '', ''])
+        
+        # repeatRows=1 for header repeat on page breaks
+        fail_tbl = Table(fail_data, colWidths=[0.65*inch, 2.5*inch, 1.2*inch, 1.2*inch], repeatRows=1)
+        fail_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), COLORS['danger']),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, COLORS['bg_red']]),
+            ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+            # Total row styling
+            ('BACKGROUND', (0, -1), (-1, -1), COLORS['bg_red']),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
+            ('TOPPADDING', (0, 0), (-1, -1), 5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ]))
+        elements.append(Spacer(1, 0.1*inch))
+        elements.append(fail_tbl)
+        if len(qa_failed) > 20:
+            elements.append(Paragraph(f"<i>(Showing first 20 of {len(qa_failed)})</i>", styles['SmallText']))
     elements.append(Spacer(1, 0.3*inch))
     
     # Priority Changes This Period (if any)
@@ -1235,14 +1510,21 @@ def create_overview_page(data, styles):
                 f"{pc.get('previous_priority', '—')} → {pc.get('new_priority', '—')}",
                 changed_str
             ])
-        pc_table = Table(pc_data, colWidths=[0.7*inch, 1.8*inch, 1.8*inch, 1.2*inch])
+        # Add total row
+        pc_data.append(['TOTAL', f'{min(len(priority_changes), 20)} shown', '', ''])
+        
+        # repeatRows=1 for header repeat on page breaks
+        pc_table = Table(pc_data, colWidths=[0.7*inch, 1.8*inch, 1.8*inch, 1.2*inch], repeatRows=1)
         pc_table.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), COLORS['primary']),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, COLORS['light']]),
             ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+            # Total row styling
+            ('BACKGROUND', (0, -1), (-1, -1), COLORS['bg_blue']),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
             ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
             ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
             ('TOPPADDING', (0, 0), (-1, -1), 6),
@@ -1259,8 +1541,12 @@ def create_overview_page(data, styles):
         module_header = Paragraph("Moved to BIS Testing - Module-wise Distribution", styles['SubSectionHeader'])
         
         module_data = [['Module', 'Tickets Moved']]
+        module_total = 0
         for module, count in sorted(bis_breakdowns['by_module'].items(), key=lambda x: x[1], reverse=True)[:8]:
             module_data.append([module[:40], str(count)])
+            module_total += count
+        # Add total row
+        module_data.append(['TOTAL', str(module_total)])
         
         module_table = Table(module_data, colWidths=[5*inch, 1.5*inch])
         module_table.setStyle(TableStyle([
@@ -1269,14 +1555,17 @@ def create_overview_page(data, styles):
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 9),
             ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
-        ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),  # Dark text for data rows
-        ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('LEFTPADDING', (0, 0), (-1, -1), 10),
-    ]))
+            ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, COLORS['light']]),
+            ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+            # Total row styling
+            ('BACKGROUND', (0, -1), (-1, -1), COLORS['bg_green']),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ]))
         # Keep header and table together on the same page
         elements.append(KeepTogether([module_header, Spacer(1, 0.1*inch), module_table]))
         elements.append(Spacer(1, 0.2*inch))
@@ -1286,8 +1575,12 @@ def create_overview_page(data, styles):
         feature_header = Paragraph("Moved to BIS Testing - Feature-wise Distribution", styles['SubSectionHeader'])
         
         feature_data = [['Feature', 'Tickets Moved']]
+        feature_total = 0
         for feature, count in sorted(bis_breakdowns['by_feature'].items(), key=lambda x: x[1], reverse=True)[:8]:
             feature_data.append([feature[:40], str(count)])
+            feature_total += count
+        # Add total row
+        feature_data.append(['TOTAL', str(feature_total)])
         
         feature_table = Table(feature_data, colWidths=[5*inch, 1.5*inch])
         feature_table.setStyle(TableStyle([
@@ -1296,14 +1589,17 @@ def create_overview_page(data, styles):
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
             ('FONTSIZE', (0, 0), (-1, -1), 9),
             ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
-        ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),  # Dark text for data rows
-        ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
-        ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('LEFTPADDING', (0, 0), (-1, -1), 10),
-    ]))
+            ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, COLORS['light']]),
+            ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+            # Total row styling
+            ('BACKGROUND', (0, -1), (-1, -1), COLORS['bg_green']),
+            ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+            ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
+            ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ]))
         # Keep header and table together on the same page
         elements.append(KeepTogether([feature_header, Spacer(1, 0.1*inch), feature_table]))
     
@@ -1407,10 +1703,10 @@ def create_newly_released_to_qa_page(data, styles):
     
     elements.append(Paragraph("Tickets Newly Released to QA (from Development)", styles['SectionHeader']))
     elements.append(Paragraph(
-        f"Total: {len(qc_newly)} tickets handed over to QA this period. Details below.",
+        f"<b>Total: {len(qc_newly)} tickets</b> handed over to QA this period.",
         styles['CardTitle']
     ))
-    elements.append(Spacer(1, 0.25*inch))
+    elements.append(Spacer(1, 0.2*inch))
     
     if not qc_newly:
         elements.append(Paragraph("No tickets were newly released to QC Testing this period.", styles['ReportBody']))
@@ -1425,65 +1721,66 @@ def create_newly_released_to_qa_page(data, styles):
             return f"Open: {t['ageing_days']}d"
         return '—'
 
-    # Table: Ticket, Title, Priority, Dev Est, QA Est, ETA, Developer(s), Current Status, Module, QC Tester, Ageing
+    # Simplified table with fewer columns to prevent overlap
+    # Split into main info + secondary info tables
     table_data = [[
-        'Ticket', 'Title', 'Priority', 'Dev Est', 'QA Est', 'ETA',
-        'Developer(s)', 'Current Status', 'Module', 'QC Tester', 'Ageing'
+        'Ticket', 'Title', 'Priority', 'QA Est', 'ETA',
+        'Developer(s)', 'Current Status', 'QC Tester', 'Ageing'
     ]]
     for t in qc_newly:
-        title_short = (t.get('title') or '—')[:28]
-        if len(t.get('title') or '') > 28:
+        title_short = (t.get('title') or '—')[:32]
+        if len(t.get('title') or '') > 32:
             title_short += '…'
-        dev_est = t.get('dev_estimate')
-        dev_est_str = f"{dev_est}h" if dev_est is not None else '—'
         qa_est = t.get('qa_estimate')
-        qa_est_str = f"{qa_est}h" if qa_est is not None else '—'
-        eta_str = t.get('eta_str') or '—'
-        developers = (t.get('developers_str') or '—')[:18]
-        if len(t.get('developers_str') or '') > 18:
+        qa_est_str = f"{qa_est}h" if qa_est is not None else '0h'
+        eta_str = t.get('eta_str') or 'Not Set'
+        developers = (t.get('developers_str') or 'Not Assigned')[:14]
+        if len(t.get('developers_str') or '') > 14:
             developers += '…'
-        status_short = (t.get('status') or '—')[:14]
-        module_short = (t.get('module') or '—')[:12]
-        qa_tester = (t.get('qa_tester') or 'Not Assigned')[:14]
+        status_short = (t.get('status') or '—')[:12]
+        qa_tester = (t.get('qa_tester') or 'Not Assigned')[:12]
         ageing_str = _ageing_cell(t)
         table_data.append([
             f"#{t['ticket_id']}",
             title_short,
-            (t.get('priority') or '—')[:10],
-            dev_est_str,
+            (t.get('priority') or '—')[:12],
             qa_est_str,
-            eta_str[:10] if eta_str != '—' else '—',
+            eta_str[:10] if eta_str != 'Not Set' else eta_str,
             developers,
             status_short,
-            module_short,
             qa_tester,
             ageing_str
         ])
 
-    # Column widths fit page (total ~6.95 inch); avoid overlap
-    col_widths = [0.4*inch, 1.15*inch, 0.5*inch, 0.45*inch, 0.45*inch, 0.6*inch, 0.9*inch, 0.85*inch, 0.65*inch, 0.75*inch, 0.5*inch]
-    ticket_table = Table(table_data, colWidths=col_widths)
+    # Optimized column widths (total ~6.9 inch for A4 with margins)
+    col_widths = [0.55*inch, 1.55*inch, 0.7*inch, 0.45*inch, 0.65*inch, 0.85*inch, 0.75*inch, 0.8*inch, 0.6*inch]
+    
+    # Create table with repeatRows to repeat header on each page
+    ticket_table = Table(table_data, colWidths=col_widths, repeatRows=1)
     ticket_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), COLORS['info']),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('FONTSIZE', (0, 0), (-1, 0), 7),  # Slightly smaller header
+        ('FONTSIZE', (0, 1), (-1, -1), 7),  # Smaller body text
         ('ALIGN', (0, 0), (0, -1), 'CENTER'),
-        ('ALIGN', (3, 0), (5, -1), 'CENTER'),
+        ('ALIGN', (3, 0), (4, -1), 'CENTER'),  # QA Est and ETA centered
         ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
         ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
         ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
         ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('LEFTPADDING', (0, 0), (-1, -1), 6),
-        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('LEFTPADDING', (0, 0), (-1, -1), 3),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
+        # Word wrap for title column
+        ('WORDWRAP', (1, 0), (1, -1), True),
     ]))
     elements.append(ticket_table)
-    elements.append(Spacer(1, 0.2*inch))
+    elements.append(Spacer(1, 0.15*inch))
     elements.append(Paragraph(
-        "<i>Dev Est = Development estimate (hours); QA Est = QA estimate (hours); QC Tester = current QC tester if assigned. Ageing: Closed = created→closed date; Open = created→today.</i>",
+        "<i>QA Est = QA estimate hours. Ageing: Open = days since created; Closed = days to close.</i>",
         styles['SmallText']
     ))
 
@@ -1545,35 +1842,55 @@ def create_bis_testing_summary_page(data, styles):
     # Ticket list table
     elements.append(Paragraph("Ticket Summary", styles['SubSectionHeader']))
     
-    table_data = [['Ticket ID', 'Title', 'Priority', 'Status', 'QA Tester', 'Bugs', 'Tests', 'Pass Rate']]
+    table_data = [['Ticket', 'Title', 'Priority', 'Status', 'QA Tester', 'Bugs', 'Tests', 'Pass %']]
     for t in bis_tickets:
-        title_short = (t.get('title') or '')[:25]
-        if len(t.get('title') or '') > 25:
+        title_short = (t.get('title') or '')[:28]
+        if len(t.get('title') or '') > 28:
             title_short += '…'
         table_data.append([
             f"#{t['ticket_id']}",
             title_short or '—',
-            (t.get('priority') or '—')[:12],
-            t['status'][:18],
-            t['qa_tester'][:15],
+            (t.get('priority') or '—')[:10],
+            (t['status'] or '—')[:14],
+            (t['qa_tester'] or '—')[:12],
             f"{t['bugs_open']}/{t['bugs_total']}",
             f"{t['tests_passed']}/{t['tests_total']}",
             f"{t['pass_rate']}%"
         ])
     
-    ticket_table = Table(table_data, colWidths=[0.8*inch, 1.8*inch, 0.8*inch, 1.2*inch, 1.2*inch, 0.7*inch, 0.7*inch, 0.75*inch])
+    # Add total row
+    table_data.append([
+        'TOTAL',
+        f'{len(bis_tickets)} tickets',
+        '',
+        '',
+        '',
+        f"—/{total_bugs}",
+        f"—/{total_tests}",
+        f"{avg_pass_rate:.1f}%"
+    ])
+    
+    # repeatRows=1 ensures header repeats on new pages
+    ticket_table = Table(table_data, colWidths=[0.55*inch, 1.7*inch, 0.7*inch, 0.95*inch, 0.85*inch, 0.6*inch, 0.65*inch, 0.55*inch], repeatRows=1)
     ticket_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), COLORS['success']),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('FONTSIZE', (0, 0), (-1, 0), 8),
+        ('FONTSIZE', (0, 1), (-1, -1), 8),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
-        ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),  # Dark text for data rows
+        ('ALIGN', (1, 1), (1, -1), 'LEFT'),  # Title left-aligned
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, COLORS['light']]),
+        ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+        # Total row styling
+        ('BACKGROUND', (0, -1), (-1, -1), COLORS['bg_green']),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
         ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
         ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('LEFTPADDING', (0, 0), (-1, -1), 4),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 4),
     ]))
     elements.append(ticket_table)
     
@@ -1855,26 +2172,44 @@ def create_upcoming_plan_page(data, styles):
             f"{t['qa_estimate']}h"
         ])
     
-    plan_table = Table(table_data, colWidths=[0.4*inch, 0.75*inch, 1.6*inch, 0.75*inch, 1*inch, 0.85*inch, 1*inch, 0.7*inch])
+    # Add total row
+    total_hours = sum(t['qa_estimate'] for t in planned)
+    table_data.append([
+        '',
+        'TOTAL',
+        f'{len(planned)} tickets',
+        '',
+        '',
+        '',
+        '',
+        f"{total_hours}h"
+    ])
+    
+    # repeatRows=1 to repeat header on page breaks
+    plan_table = Table(table_data, colWidths=[0.35*inch, 0.6*inch, 1.6*inch, 0.7*inch, 0.85*inch, 0.8*inch, 0.9*inch, 0.55*inch], repeatRows=1)
     plan_table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), COLORS['info']),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('FONTSIZE', (0, 0), (-1, 0), 8),
+        ('FONTSIZE', (0, 1), (-1, -1), 8),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, COLORS['light']]),
-        ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),  # Dark text for data rows
+        ('ALIGN', (2, 1), (2, -1), 'LEFT'),  # Title left-aligned
+        ('ROWBACKGROUNDS', (0, 1), (-1, -2), [colors.white, COLORS['light']]),
+        ('TEXTCOLOR', (0, 1), (-1, -1), COLORS['dark']),
+        # Total row styling
+        ('BACKGROUND', (0, -1), (-1, -1), COLORS['bg_cyan']),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
         ('BOX', (0, 0), (-1, -1), 1, COLORS['border']),
         ('INNERGRID', (0, 0), (-1, -1), 0.5, COLORS['border']),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('LEFTPADDING', (0, 0), (-1, -1), 3),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 3),
     ]))
     elements.append(plan_table)
-    
-    # Total estimated hours
-    total_hours = sum(t['qa_estimate'] for t in planned)
-    elements.append(Spacer(1, 0.2*inch))
-    elements.append(Paragraph(f"<b>Total Estimated QA Hours:</b> {total_hours} hours", styles['ReportBody']))
+    elements.append(Spacer(1, 0.15*inch))
+    elements.append(Paragraph(f"<b>Total Tickets:</b> {len(planned)} | <b>Total Estimated QA Hours:</b> {total_hours}h", styles['ReportBody']))
     
     return elements
 

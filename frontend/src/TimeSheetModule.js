@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { formatAPIDate, formatDateRange } from './dateUtils';
 import { TicketExternalLink } from './ticketUtils';
+import { useTableSort, SortableHeader } from './useTableSort';
 import AppSidebar from './AppSidebar';
 import './CalendarModule.css';
 import './TimeSheetModule.css';
@@ -120,6 +121,14 @@ function TimeSheetModule() {
   const [approvalActionLoading, setApprovalActionLoading] = useState(false);
   const [approvalNotes, setApprovalNotes] = useState('');
   const [approvalEntryReviews, setApprovalEntryReviews] = useState({}); // { "manual-123": "approved" | "rejected" | "revision_required" }
+
+  const approvalsList = activeApprovalsSubTab === 'pending' ? pendingApprovals : completedApprovals;
+  const { sortedData: sortedApprovalsList, sortConfig: approvalsSortConfig, handleSort: handleApprovalsSort } = useTableSort(approvalsList, { defaultSortKey: 'submitted_on', defaultSortDirection: 'desc' });
+  const { sortedData: sortedMySubmissions, sortConfig: mySubmissionsSortConfig, handleSort: handleMySubmissionsSort } = useTableSort(mySubmissions, { defaultSortKey: 'week_start', defaultSortDirection: 'desc' });
+  const approvalEntries = approvalDetail?.entries || [];
+  const { sortedData: sortedApprovalEntries, sortConfig: approvalEntriesSortConfig, handleSort: handleApprovalEntriesSort } = useTableSort(approvalEntries, { defaultSortKey: 'date', defaultSortDirection: 'asc' });
+  const submissionEntries = submissionDetail?.entries || [];
+  const { sortedData: sortedSubmissionEntries, sortConfig: submissionEntriesSortConfig, handleSort: handleSubmissionEntriesSort } = useTableSort(submissionEntries, { defaultSortKey: 'date', defaultSortDirection: 'asc' });
 
   // Calculate week boundaries
   const weekStart = useMemo(() => getWeekStart(currentDate), [currentDate]);
@@ -805,17 +814,17 @@ function TimeSheetModule() {
                     <table className="submission-entries-table approval-entries-table">
                       <thead>
                         <tr>
-                          <th>Date</th>
-                          <th>Type</th>
+                          <SortableHeader columnKey="date" onSort={handleApprovalEntriesSort} sortConfig={approvalEntriesSortConfig}>Date</SortableHeader>
+                          <SortableHeader columnKey="activity_type" onSort={handleApprovalEntriesSort} sortConfig={approvalEntriesSortConfig}>Type</SortableHeader>
                           <th>Ticket / Description</th>
-                          <th>Hours</th>
+                          <SortableHeader columnKey="hours" onSort={handleApprovalEntriesSort} sortConfig={approvalEntriesSortConfig}>Hours</SortableHeader>
                           {activeApprovalsSubTab === 'pending' && (
                             <th>Per-entry action</th>
                           )}
                         </tr>
                       </thead>
                       <tbody>
-                        {(approvalDetail.entries || []).map((entry, idx) => {
+                        {sortedApprovalEntries.map((entry, idx) => {
                           const key = `${entry.source}-${entry.id}`;
                           return (
                             <tr key={key}>
@@ -861,22 +870,22 @@ function TimeSheetModule() {
                 ) : (
                   <>
                     <h3>{activeApprovalsSubTab === 'pending' ? 'Pending approvals' : 'Completed approvals'}</h3>
-                    {(activeApprovalsSubTab === 'pending' ? pendingApprovals : completedApprovals).length === 0 ? (
+                    {sortedApprovalsList.length === 0 ? (
                       <p className="text-muted">No {activeApprovalsSubTab === 'pending' ? 'pending' : 'completed'} approvals.</p>
                     ) : (
                       <table className="my-submissions-table">
                         <thead>
                           <tr>
-                            <th>Employee</th>
-                            <th>Week (Mon–Fri)</th>
-                            <th>Submitted</th>
-                            <th>Status</th>
-                            <th>Total hours</th>
+                            <SortableHeader columnKey="employee_name" onSort={handleApprovalsSort} sortConfig={approvalsSortConfig}>Employee</SortableHeader>
+                            <SortableHeader columnKey="week_start" onSort={handleApprovalsSort} sortConfig={approvalsSortConfig}>Week (Mon–Fri)</SortableHeader>
+                            <SortableHeader columnKey="submitted_on" onSort={handleApprovalsSort} sortConfig={approvalsSortConfig}>Submitted</SortableHeader>
+                            <SortableHeader columnKey="status" onSort={handleApprovalsSort} sortConfig={approvalsSortConfig}>Status</SortableHeader>
+                            <SortableHeader columnKey="total_hours" onSort={handleApprovalsSort} sortConfig={approvalsSortConfig}>Total hours</SortableHeader>
                             <th></th>
                           </tr>
                         </thead>
                         <tbody>
-                          {(activeApprovalsSubTab === 'pending' ? pendingApprovals : completedApprovals).map((s) => {
+                          {sortedApprovalsList.map((s) => {
                             const mon = s.week_start ? new Date(s.week_start + 'T12:00:00') : null;
                             let fri = null;
                             if (mon) { fri = new Date(mon); fri.setDate(fri.getDate() + 4); }
@@ -946,21 +955,21 @@ function TimeSheetModule() {
                 ) : (
                   <>
                     <h3>My submissions</h3>
-                    {mySubmissions.length === 0 ? (
+                    {sortedMySubmissions.length === 0 ? (
                       <p className="text-muted">No submissions yet.</p>
                     ) : (
                       <table className="my-submissions-table">
                         <thead>
                           <tr>
-                            <th>Week (Mon–Fri)</th>
-                            <th>Submitted</th>
-                            <th>Status</th>
-                            <th>Total hours</th>
+                            <SortableHeader columnKey="week_start" onSort={handleMySubmissionsSort} sortConfig={mySubmissionsSortConfig}>Week (Mon–Fri)</SortableHeader>
+                            <SortableHeader columnKey="submitted_on" onSort={handleMySubmissionsSort} sortConfig={mySubmissionsSortConfig}>Submitted</SortableHeader>
+                            <SortableHeader columnKey="status" onSort={handleMySubmissionsSort} sortConfig={mySubmissionsSortConfig}>Status</SortableHeader>
+                            <SortableHeader columnKey="total_hours_logged" onSort={handleMySubmissionsSort} sortConfig={mySubmissionsSortConfig}>Total hours</SortableHeader>
                             <th></th>
                           </tr>
                         </thead>
                         <tbody>
-                          {mySubmissions.map((s) => {
+                          {sortedMySubmissions.map((s) => {
                             const mon = s.week_start ? new Date(s.week_start + 'T12:00:00') : null;
                             let fri = null;
                             if (mon) {

@@ -1,5 +1,6 @@
 import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { useEffect } from "react";
+import Homepage from "./Homepage";
 import Dashboard from "./Dashboard";
 import AllBugsDashboard from "./AllBugsDashboard";
 import TicketsDashboard from "./TicketsDashboard";
@@ -53,6 +54,17 @@ function TaskModuleGuard({ children }) {
   return children;
 }
 
+// Reports module: only accessible to managers, leads, and admins
+function ReportsRoute() {
+  const { user } = useAuth();
+  const hasAccess = user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD');
+  if (hasAccess) {
+    return <ReportsModule />;
+  }
+  // Redirect non-authorized users to dashboard
+  return <Navigate to="/" replace />;
+}
+
 function ProtectedRoute({ children, allowPasswordChange = false }) {
   const { isAuthenticated, loading, needsPasswordChange } = useAuth();
   const location = useLocation();
@@ -88,7 +100,7 @@ function AppRoutes() {
         <Route path="/employees" element={<ProtectedRoute><EmployeesRoute /></ProtectedRoute>} />
         <Route path="/employees/:employeeId" element={<ProtectedRoute><EmployeeProfile /></ProtectedRoute>} />
         <Route path="/employees/:employeeId/review/new" element={<ProtectedRoute><PerformanceReview /></ProtectedRoute>} />
-        <Route path="/reports" element={<ProtectedRoute><ReportsModule /></ProtectedRoute>} />
+        <Route path="/reports" element={<ProtectedRoute><ReportsRoute /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
         <Route path="/calendar" element={<ProtectedRoute><CalendarModule /></ProtectedRoute>} />
         <Route path="/timesheet" element={<ProtectedRoute><TimeSheetModule /></ProtectedRoute>} />

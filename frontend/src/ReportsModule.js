@@ -313,328 +313,329 @@ function ReportsModule() {
           )}
         </section>
 
-        {/* Preview Section */}
+        {/* Preview Section - Remodeled Report */}
         {previewData && (
-          <section className="report-preview-section">
-            <div className="section-header">
-              <h2>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <rect x="3" y="3" width="18" height="18" rx="2"/>
-                  <path d="M3 9h18"/>
-                </svg>
-                Report Preview: {previewData.week_start} to {previewData.week_end}
-              </h2>
-            </div>
+          <div className="report-preview-wrapper">
+            {/* Cover */}
+            <section className="report-cover">
+              <h1 className="report-cover-title">QA Weekly Report</h1>
+              <p className="report-cover-date">{previewData.week_start} — {previewData.week_end}</p>
+              {projectName && <p className="report-cover-project">{projectName}</p>}
+              <p className="report-cover-meta">Report preview · Comprehensive</p>
+            </section>
 
-            {/* Summary Cards - V2 Format */}
-            {reportType === 'v2' && previewData.current_week && (
+            {reportType === 'v2' && (
               <>
-                {/* Main KPIs */}
+                {/* Page 1: After cover – QA overview & variance */}
+                <section className="report-page-section">
+                  <h2 className="report-section-title">QA Overview</h2>
+                  <div className="report-kpi-grid">
+                    <div className="report-kpi-card">
+                      <span className="report-kpi-value">{previewData.current_week?.qa_tickets_count ?? 0}</span>
+                      <span className="report-kpi-label">Current tickets with QA</span>
+                    </div>
+                    <div className="report-kpi-card report-kpi-status">
+                      <span className="report-kpi-value">{previewData.qa_pending_breakdown?.['QC Testing'] ?? 0}</span>
+                      <span className="report-kpi-label">QC Testing</span>
+                    </div>
+                    <div className="report-kpi-card report-kpi-status">
+                      <span className="report-kpi-value">{previewData.qa_pending_breakdown?.['QC Testing in Progress'] ?? 0}</span>
+                      <span className="report-kpi-label">QC Testing in Progress</span>
+                    </div>
+                    <div className="report-kpi-card report-kpi-status">
+                      <span className="report-kpi-value">{previewData.qa_pending_breakdown?.['QC Testing Hold'] ?? 0}</span>
+                      <span className="report-kpi-label">QC Testing Hold</span>
+                    </div>
+                    <div className="report-kpi-card report-kpi-incoming">
+                      <span className="report-kpi-value">{previewData.current_week?.qc_newly_added_count ?? 0}</span>
+                      <span className="report-kpi-label">Newly moved to QC Testing</span>
+                    </div>
+                    <div className="report-kpi-card report-kpi-outgoing">
+                      <span className="report-kpi-value">{previewData.current_week?.bis_testing_count ?? 0}</span>
+                      <span className="report-kpi-label">Moved out to BIS Testing</span>
+                    </div>
+                  </div>
+                  {previewData.variance && (
+                    <div className="report-variance-box">
+                      <h3 className="report-variance-title">Incoming vs Outgoing vs Last Week</h3>
+                      <div className="report-variance-grid">
+                        <div className="report-variance-item">
+                          <span className="report-variance-label">This week incoming (to QA)</span>
+                          <span className="report-variance-value">{previewData.variance.this_week_incoming ?? 0}</span>
+                          <span className={`report-variance-delta ${(previewData.variance.incoming_change ?? 0) >= 0 ? 'up' : 'down'}`}>
+                            {(previewData.variance.incoming_change ?? 0) >= 0 ? '+' : ''}{previewData.variance.incoming_change ?? 0} vs last week
+                          </span>
+                        </div>
+                        <div className="report-variance-item">
+                          <span className="report-variance-label">This week outgoing (from QA)</span>
+                          <span className="report-variance-value">{previewData.variance.this_week_outgoing ?? 0}</span>
+                          <span className={`report-variance-delta ${(previewData.variance.outgoing_change ?? 0) >= 0 ? 'up' : 'down'}`}>
+                            {(previewData.variance.outgoing_change ?? 0) >= 0 ? '+' : ''}{previewData.variance.outgoing_change ?? 0} vs last week
+                          </span>
+                        </div>
+                        <div className="report-variance-item muted">
+                          <span className="report-variance-label">Last week incoming</span>
+                          <span className="report-variance-value">{previewData.variance.last_week_incoming ?? 0}</span>
+                        </div>
+                        <div className="report-variance-item muted">
+                          <span className="report-variance-label">Last week outgoing</span>
+                          <span className="report-variance-value">{previewData.variance.last_week_outgoing ?? 0}</span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </section>
+
+                {/* Page 2: Tickets QA worked on last week */}
+                <section className="report-page-section">
+                  <h2 className="report-section-title">Tickets QA worked on (report week)</h2>
+                  <div className="report-table-wrap">
+                    <table className="report-table report-table-full">
+                      <thead>
+                        <tr>
+                          <th>Ticket</th>
+                          <th>Title</th>
+                          <th>Priority</th>
+                          <th>Status</th>
+                          <th>QC Tester</th>
+                          <th>Module</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(previewData.tickets_worked_on_this_week || []).map((t, idx) => (
+                          <tr key={t.ticket_id || idx}>
+                            <td>
+                              <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                              <TicketExternalLink ticketId={t.ticket_id} />
+                            </td>
+                            <td className="report-cell-truncate" title={t.title}>{(t.title || '—').slice(0, 50)}{(t.title || '').length > 50 ? '…' : ''}</td>
+                            <td>{t.priority || '—'}</td>
+                            <td>{t.status || '—'}</td>
+                            <td>{t.qc_tester || t.qa_tester || '—'}</td>
+                            <td>{t.module || '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {(!previewData.tickets_worked_on_this_week || previewData.tickets_worked_on_this_week.length === 0) && (
+                      <p className="report-empty-msg">No tickets in scope for this week.</p>
+                    )}
+                  </div>
+                </section>
+
+                {/* Tickets failed by QA */}
+                <section className="report-page-section">
+                  <h2 className="report-section-title">Tickets failed by QA (report week)</h2>
+                  <div className="report-table-wrap">
+                    <table className="report-table report-table-full">
+                      <thead>
+                        <tr>
+                          <th>Ticket</th>
+                          <th>Title</th>
+                          <th>Priority</th>
+                          <th>Times tested/failed</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(previewData.qa_failed_this_week || []).map((t, idx) => (
+                          <tr key={t.ticket_id || idx}>
+                            <td>
+                              <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                              <TicketExternalLink ticketId={t.ticket_id} />
+                            </td>
+                            <td className="report-cell-truncate" title={t.title}>{(t.title || '—').slice(0, 55)}{(t.title || '').length > 55 ? '…' : ''}</td>
+                            <td>{t.priority || '—'}</td>
+                            <td>{t.times_tested_and_failed != null ? t.times_tested_and_failed : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {(!previewData.qa_failed_this_week || previewData.qa_failed_this_week.length === 0) && (
+                      <p className="report-empty-msg">None.</p>
+                    )}
+                  </div>
+                </section>
+
+                {/* Tickets put on hold */}
+                <section className="report-page-section">
+                  <h2 className="report-section-title">Tickets put on hold by QA (report week)</h2>
+                  <div className="report-table-wrap">
+                    <table className="report-table report-table-full">
+                      <thead>
+                        <tr>
+                          <th>Ticket</th>
+                          <th>Title</th>
+                          <th>Priority</th>
+                          <th>Reason</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(previewData.on_hold_this_week || []).map((t, idx) => (
+                          <tr key={t.ticket_id || idx}>
+                            <td>
+                              <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                              <TicketExternalLink ticketId={t.ticket_id} />
+                            </td>
+                            <td className="report-cell-truncate" title={t.title}>{(t.title || '—').slice(0, 40)}{(t.title || '').length > 40 ? '…' : ''}</td>
+                            <td>{t.priority || '—'}</td>
+                            <td className="report-cell-truncate" title={t.hold_reason || t.put_on_hold_from || '—'}>
+                              {t.hold_reason ? (
+                                <span>{(t.hold_reason || '').slice(0, 45)}{(t.hold_reason || '').length > 45 ? '…' : ''}</span>
+                              ) : (
+                                <span style={{ color: 'var(--text-muted)' }}>{t.put_on_hold_from || '—'}</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {(!previewData.on_hold_this_week || previewData.on_hold_this_week.length === 0) && (
+                      <p className="report-empty-msg">None.</p>
+                    )}
+                  </div>
+                </section>
+
+                {/* BIS Testing – detailed status with open/deferred bugs */}
+                <section className="report-page-section">
+                  <h2 className="report-section-title">Tickets moved to BIS Testing (report week) – Status & bugs</h2>
+                  {(previewData.bis_testing_moved || []).length === 0 ? (
+                    <p className="report-empty-msg">No tickets moved to BIS Testing this week.</p>
+                  ) : (
+                    (previewData.bis_testing_moved || []).map((t, idx) => (
+                      <div key={t.ticket_id || idx} className="report-bis-ticket-block">
+                        <div className="report-bis-ticket-header">
+                          <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                          <TicketExternalLink ticketId={t.ticket_id} />
+                          <span className="report-bis-title">{(t.title || '—').slice(0, 60)}{(t.title || '').length > 60 ? '…' : ''}</span>
+                          <span className="report-bis-meta">Priority: {t.priority || '—'} · Status: {t.status || '—'} · QA: {t.qa_tester || '—'} · Bugs: {t.bugs_open ?? 0}/{t.bugs_total ?? 0} · Pass: {t.pass_rate ?? 0}%</span>
+                        </div>
+                        {((t.open_bugs && t.open_bugs.length > 0) || (t.deferred_bugs && t.deferred_bugs.length > 0)) && (
+                          <div className="report-bis-bugs-row">
+                            {t.open_bugs && t.open_bugs.length > 0 && (
+                              <div className="report-bis-bugs-list">
+                                <h4 className="report-bis-bugs-head">Open bugs</h4>
+                                <table className="report-table report-table-small">
+                                  <thead><tr><th>ID</th><th>Subject</th><th>Status</th><th>Severity</th></tr></thead>
+                                  <tbody>
+                                    {t.open_bugs.slice(0, 10).map((b, i) => (
+                                      <tr key={b.id || i}><td>{b.id}</td><td className="report-cell-truncate" title={b.subject}>{(b.subject || '').slice(0, 40)}{(b.subject || '').length > 40 ? '…' : ''}</td><td>{b.status}</td><td>{b.severity}</td></tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                            {t.deferred_bugs && t.deferred_bugs.length > 0 && (
+                              <div className="report-bis-bugs-list">
+                                <h4 className="report-bis-bugs-head">Deferred bugs</h4>
+                                <table className="report-table report-table-small">
+                                  <thead><tr><th>ID</th><th>Subject</th><th>Status</th><th>Severity</th></tr></thead>
+                                  <tbody>
+                                    {t.deferred_bugs.slice(0, 10).map((b, i) => (
+                                      <tr key={b.id || i}><td>{b.id}</td><td className="report-cell-truncate" title={b.subject}>{(b.subject || '').slice(0, 40)}{(b.subject || '').length > 40 ? '…' : ''}</td><td>{b.status}</td><td>{b.severity}</td></tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </section>
+
+                {/* Next week allocation plan */}
+                <section className="report-page-section">
+                  <h2 className="report-section-title">Next week – QA allocation plan</h2>
+                  <div className="report-table-wrap">
+                    <table className="report-table report-table-full">
+                      <thead>
+                        <tr>
+                          <th>Ticket</th>
+                          <th>Title</th>
+                          <th>Priority</th>
+                          <th>ETA</th>
+                          <th>QC Tester</th>
+                          <th>Est. hours</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(previewData.next_week_plan || []).map((t, idx) => (
+                          <tr key={t.ticket_id || idx}>
+                            <td>
+                              <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                              <TicketExternalLink ticketId={t.ticket_id} />
+                            </td>
+                            <td className="report-cell-truncate" title={t.title}>{(t.title || '—').slice(0, 45)}{(t.title || '').length > 45 ? '…' : ''}</td>
+                            <td>{t.priority || '—'}</td>
+                            <td>{t.eta_str || '—'}</td>
+                            <td>{t.qa_tester || t.qc_tester || '—'}</td>
+                            <td>{t.qa_estimate != null ? `${t.qa_estimate}h` : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {(!previewData.next_week_plan || previewData.next_week_plan.length === 0) && (
+                      <p className="report-empty-msg">No planned tickets for next week.</p>
+                    )}
+                  </div>
+                </section>
+
+                {/* ETA calendar for next week */}
+                <section className="report-page-section">
+                  <h2 className="report-section-title">Next week – ETA calendar</h2>
+                  <div className="report-eta-calendar">
+                    {(previewData.next_week_eta_calendar || []).length === 0 ? (
+                      <p className="report-empty-msg">No ETA dates for next week.</p>
+                    ) : (
+                      <div className="report-eta-calendar-grid">
+                        {(previewData.next_week_eta_calendar || []).map((day, i) => (
+                          <div key={day.date || i} className="report-eta-day">
+                            <div className="report-eta-day-label">{day.date}</div>
+                            <div className="report-eta-day-tickets">
+                              {(day.tickets || []).map((t, j) => (
+                                <div key={t.ticket_id || j} className="report-eta-ticket-card">
+                                  <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                                  <span className="report-eta-ticket-priority">{t.priority || '—'}</span>
+                                  <span className="report-eta-ticket-title">{(t.title || '—').slice(0, 25)}{(t.title || '').length > 25 ? '…' : ''}</span>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              </>
+            )}
+
+            {/* V1: simple summary when report type is v1 */}
+            {reportType === 'v1' && previewData.current_week && (
+              <section className="report-preview-section">
                 <div className="report-summary-grid three-cols">
                   <div className="report-summary-card qa-tickets">
-                    <div className="summary-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2"/>
-                        <rect x="9" y="3" width="6" height="4" rx="1"/>
-                      </svg>
-                    </div>
                     <div className="summary-content">
                       <div className="summary-value">{previewData.current_week.qa_tickets_count || 0}</div>
-                      <div className="summary-label">Total Pending with QA</div>
+                      <div className="summary-label">Pending with QA</div>
                     </div>
                   </div>
-
-                  <div className="report-summary-card bis-testing achievement">
-                    <div className="summary-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M9 11l3 3L22 4"/>
-                        <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
-                      </svg>
-                    </div>
+                  <div className="report-summary-card bis-testing">
                     <div className="summary-content">
                       <div className="summary-value">{previewData.current_week.bis_testing_count || 0}</div>
-                      <div className="summary-label">Moved to BIS Testing</div>
-                      <div className="summary-subtext">QA Achievement</div>
+                      <div className="summary-label">Moved to BIS</div>
                     </div>
                   </div>
-
                   <div className="report-summary-card closed">
-                    <div className="summary-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <path d="M9 12l2 2 4-4"/>
-                      </svg>
-                    </div>
                     <div className="summary-content">
                       <div className="summary-value">{previewData.current_week.closed_count || 0}</div>
-                      <div className="summary-label">Closed (QA)</div>
+                      <div className="summary-label">Closed</div>
                     </div>
                   </div>
                 </div>
-
-                {/* QA Pending Breakdown */}
-                {previewData.qa_pending_breakdown && (
-                  <div className="qa-breakdown-section">
-                    <h3>QA Team Pending - Status Breakdown</h3>
-                    <div className="breakdown-grid">
-                      <div className="breakdown-item">
-                        <span className="breakdown-status">QC Testing</span>
-                        <span className="breakdown-count">{previewData.qa_pending_breakdown['QC Testing'] || 0}</span>
-                      </div>
-                      <div className="breakdown-item">
-                        <span className="breakdown-status">QC Testing in Progress</span>
-                        <span className="breakdown-count">{previewData.qa_pending_breakdown['QC Testing in Progress'] || 0}</span>
-                      </div>
-                      <div className="breakdown-item">
-                        <span className="breakdown-status">QC Testing Hold</span>
-                        <span className="breakdown-count">{previewData.qa_pending_breakdown['QC Testing Hold'] || 0}</span>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-
-                {/* Quality Metrics */}
-                {previewData.metrics && (
-                  <div className="report-metrics-row">
-                    <div className="report-metrics-card">
-                      <h3>Bug Tracking</h3>
-                      <div className="metrics-grid">
-                        <div className="metric-item">
-                          <span className="metric-value red">{previewData.metrics.total_bugs || 0}</span>
-                          <span className="metric-label">Total Bugs</span>
-                        </div>
-                        <div className="metric-item">
-                          <span className="metric-value orange">{previewData.metrics.bugs_open || 0}</span>
-                          <span className="metric-label">Open</span>
-                        </div>
-                        <div className="metric-item">
-                          <span className="metric-value green">{previewData.metrics.bugs_fixed || 0}</span>
-                          <span className="metric-label">Fixed</span>
-                        </div>
-                        <div className="metric-item">
-                          <span className="metric-value purple">{previewData.metrics.bugs_deferred || 0}</span>
-                          <span className="metric-label">Deferred</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="report-metrics-card">
-                      <h3>Test Execution</h3>
-                      <div className="metrics-grid">
-                        <div className="metric-item">
-                          <span className="metric-value blue">{previewData.metrics.total_test_cases || 0}</span>
-                          <span className="metric-label">Total Tests</span>
-                        </div>
-                        <div className="metric-item">
-                          <span className="metric-value green">{previewData.metrics.tests_passed || 0}</span>
-                          <span className="metric-label">Passed</span>
-                        </div>
-                        <div className="metric-item">
-                          <span className="metric-value red">{previewData.metrics.tests_failed || 0}</span>
-                          <span className="metric-label">Failed</span>
-                        </div>
-                        <div className="metric-item">
-                          <span className="metric-value purple">
-                            {previewData.metrics.total_test_cases > 0 
-                              ? Math.round((previewData.metrics.tests_passed / previewData.metrics.total_test_cases) * 100)
-                              : 0}%
-                          </span>
-                          <span className="metric-label">Pass Rate</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* BIS Testing Tickets */}
-                {previewData.bis_testing_tickets && previewData.bis_testing_tickets.length > 0 && (
-                  <div className="report-table-section">
-                    <h3>
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M9 11l3 3L22 4"/>
-                        <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
-                      </svg>
-                      Tickets Moved to BIS Testing ({previewData.bis_testing_tickets.length})
-                    </h3>
-                    <table className="report-table">
-                      <thead>
-                        <tr>
-                          <SortableHeader columnKey="ticket_id" onSort={handleBisSort} sortConfig={bisSortConfig}>Ticket ID</SortableHeader>
-                          <SortableHeader columnKey="title" onSort={handleBisSort} sortConfig={bisSortConfig}>Title</SortableHeader>
-                          <SortableHeader columnKey="bugs_open" onSort={handleBisSort} sortConfig={bisSortConfig}>Bugs (Open/Total)</SortableHeader>
-                          <SortableHeader columnKey="tests_total" onSort={handleBisSort} sortConfig={bisSortConfig}>Tests</SortableHeader>
-                          <SortableHeader columnKey="pass_rate" onSort={handleBisSort} sortConfig={bisSortConfig}>Pass Rate</SortableHeader>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortedBisTickets.slice(0, 10).map((ticket, idx) => (
-                          <tr key={idx}>
-                            <td>
-                              <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
-                                #{ticket.ticket_id}
-                              </Link>
-                              <TicketExternalLink ticketId={ticket.ticket_id} />
-                            </td>
-                            <td className="truncate">{ticket.title}</td>
-                            <td>
-                              <span className="bugs-count">
-                                <span className={ticket.bugs_open > 0 ? 'open' : 'fixed'}>{ticket.bugs_open}</span>
-                                /{ticket.bugs_total}
-                              </span>
-                            </td>
-                            <td>{ticket.tests_total}</td>
-                            <td>
-                              <span className={`pass-rate ${ticket.pass_rate >= 90 ? 'high' : ticket.pass_rate >= 70 ? 'medium' : 'low'}`}>
-                                {ticket.pass_rate}%
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-
-                {/* Closed Tickets */}
-                {previewData.closed_tickets && previewData.closed_tickets.length > 0 && (
-                  <div className="report-table-section">
-                    <h3>
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <path d="M9 12l2 2 4-4"/>
-                      </svg>
-                      Tickets Closed This Week ({previewData.closed_tickets.length})
-                    </h3>
-                    <table className="report-table">
-                      <thead>
-                        <tr>
-                          <SortableHeader columnKey="ticket_id" onSort={handleClosedSort} sortConfig={closedSortConfig}>Ticket ID</SortableHeader>
-                          <SortableHeader columnKey="title" onSort={handleClosedSort} sortConfig={closedSortConfig}>Title</SortableHeader>
-                          <SortableHeader columnKey="bugs_closed" onSort={handleClosedSort} sortConfig={closedSortConfig}>Bugs Closed</SortableHeader>
-                          <SortableHeader columnKey="tests_passed" onSort={handleClosedSort} sortConfig={closedSortConfig}>Tests Passed</SortableHeader>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {sortedClosedTickets.slice(0, 10).map((ticket, idx) => (
-                          <tr key={idx}>
-                            <td>
-                              <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
-                                #{ticket.ticket_id}
-                              </Link>
-                              <TicketExternalLink ticketId={ticket.ticket_id} />
-                            </td>
-                            <td className="truncate">{ticket.title}</td>
-                            <td>{ticket.bugs_closed}</td>
-                            <td>{ticket.tests_passed}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </>
+              </section>
             )}
-
-            {/* V1 Format - Legacy */}
-            {reportType === 'v1' && previewData.summary && (
-              <>
-                <div className="report-summary-grid">
-                  <div className="report-summary-card bis-testing">
-                    <div className="summary-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M9 11l3 3L22 4"/>
-                        <path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/>
-                      </svg>
-                    </div>
-                    <div className="summary-content">
-                      <div className="summary-value">{previewData.summary?.moved_to_bis_this_week || 0}</div>
-                      <div className="summary-label">Moved to BIS Testing</div>
-                    </div>
-                  </div>
-
-                  <div className="report-summary-card closed">
-                    <div className="summary-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <path d="M9 12l2 2 4-4"/>
-                      </svg>
-                    </div>
-                    <div className="summary-content">
-                      <div className="summary-value">{previewData.summary?.total_closed || 0}</div>
-                      <div className="summary-label">Closed This Week</div>
-                    </div>
-                  </div>
-
-                  <div className="report-summary-card in-progress">
-                    <div className="summary-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <circle cx="12" cy="12" r="10"/>
-                        <polyline points="12,6 12,12 16,14"/>
-                      </svg>
-                    </div>
-                    <div className="summary-content">
-                      <div className="summary-value">{previewData.summary?.total_in_progress || 0}</div>
-                      <div className="summary-label">In Progress</div>
-                    </div>
-                  </div>
-
-                  <div className="report-summary-card planned">
-                    <div className="summary-icon">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <rect x="3" y="4" width="18" height="18" rx="2"/>
-                        <line x1="16" y1="2" x2="16" y2="6"/>
-                        <line x1="8" y1="2" x2="8" y2="6"/>
-                        <line x1="3" y1="10" x2="21" y2="10"/>
-                      </svg>
-                    </div>
-                    <div className="summary-content">
-                      <div className="summary-value">{previewData.summary?.planned_next_week || 0}</div>
-                      <div className="summary-label">Planned Next Week</div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="report-metrics-row">
-                  <div className="report-metrics-card">
-                    <h3>Bug Tracking</h3>
-                    <div className="metrics-grid">
-                      <div className="metric-item">
-                        <span className="metric-value red">{previewData.summary?.total_bugs_found || 0}</span>
-                        <span className="metric-label">Bugs Found</span>
-                      </div>
-                      <div className="metric-item">
-                        <span className="metric-value green">{previewData.summary?.total_bugs_fixed || 0}</span>
-                        <span className="metric-label">Bugs Fixed</span>
-                      </div>
-                      <div className="metric-item">
-                        <span className="metric-value orange">{(previewData.summary?.total_bugs_found || 0) - (previewData.summary?.total_bugs_fixed || 0)}</span>
-                        <span className="metric-label">Bugs Open</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="report-metrics-card">
-                    <h3>Test Execution</h3>
-                    <div className="metrics-grid">
-                      <div className="metric-item">
-                        <span className="metric-value blue">{previewData.summary?.total_test_cases || 0}</span>
-                        <span className="metric-label">Total Tests</span>
-                      </div>
-                      <div className="metric-item">
-                        <span className="metric-value green">{previewData.summary?.test_cases_passed || 0}</span>
-                        <span className="metric-label">Passed</span>
-                      </div>
-                      <div className="metric-item">
-                        <span className="metric-value red">{previewData.summary?.test_cases_failed || 0}</span>
-                        <span className="metric-label">Failed</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </>
-            )}
-          </section>
+          </div>
         )}
 
         {/* Report Features Section */}

@@ -12,7 +12,7 @@ import {
 } from 'chart.js';
 import { Bar, Doughnut } from 'react-chartjs-2';
 import ChartDataLabels from 'chartjs-plugin-datalabels';
-import { apiFetch } from './api';
+import { apiFetch, API_BASE } from './api';
 import { useAuth } from './AuthContext';
 import AppSidebar from './AppSidebar';
 import { formatDisplayDate, formatDisplayDateWithDay, formatAPIDate } from './dateUtils';
@@ -30,8 +30,6 @@ ChartJS.register(
   ChartDataLabels
 );
 
-const API_BASE = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
-
 const CHART_COLORS = {
   ongoing: 'rgba(59, 130, 246, 0.85)',
   future: 'rgba(245, 158, 11, 0.85)',
@@ -46,6 +44,20 @@ const CHART_COLORS = {
     Unspecified: 'rgba(148, 163, 184, 0.9)',
   },
 };
+
+const MY_TASKS_PRIMARY_TABS = [
+  { id: 'assigned', label: 'My Tasks' },
+  { id: 'my-team', label: 'My Team', requiresReportees: true },
+  { id: 'more', label: 'More' },
+];
+
+const MY_TASKS_FILTERS = [
+  { id: 'all', label: 'All Tasks' },
+  { id: 'today', label: 'Today' },
+  { id: 'upcoming', label: 'Upcoming' },
+  { id: 'completed', label: 'Completed' },
+  { id: 'previous-week', label: 'Previous Week' },
+];
 
 function formatPlanningWeek(weekStart) {
   if (!weekStart) return '';
@@ -103,6 +115,44 @@ function TaskCard({ task, type }) {
   );
 }
 
+function TaskListItem({ task, status }) {
+  const label = task.ticket_id ? `#${task.ticket_id}` : (task.generic_category || 'Task');
+  const url = getTicketTrackingUrl(task.ticket_id);
+  const title = task.ticket_title || task.activity_description || task.generic_category || 'Task';
+  const desc = task.activity_description || task.ticket_title || '';
+  const badge = (task.task_type || 'WORK').toUpperCase().slice(0, 10);
+  const startLabel = task.start_date ? formatDisplayDateWithDay(task.start_date) : '—';
+  const priority = task.ticket_priority || '—';
+  const isCompleted = status === 'completed';
+  return (
+    <div className={`my-tasks-list-item status-${status} priority-${(priority || 'unspecified').toLowerCase().replace(/\s+/g, '-')}`}>
+      <div className={`my-tasks-list-check ${isCompleted ? 'checked' : ''}`} aria-hidden="true">
+        {isCompleted ? '✓' : ''}
+      </div>
+      <div className="my-tasks-list-main">
+        <div className="my-tasks-list-title-row">
+          <div className="my-tasks-list-title">
+            {url ? (
+              <a href={url} target="_blank" rel="noopener noreferrer">{label} {title}</a>
+            ) : (
+              <span>{label} {title}</span>
+            )}
+            {task.ticket_id && <TicketExternalLink ticketId={task.ticket_id} className="my-tasks-ext-link" />}
+          </div>
+          <span className="my-tasks-list-badge">{badge}</span>
+        </div>
+        {desc && <div className="my-tasks-list-desc">{desc}</div>}
+        <div className="my-tasks-list-meta">
+          <span>{startLabel}</span>
+          <span className="my-tasks-list-meta-dot">•</span>
+          <span>{priority}</span>
+        </div>
+      </div>
+      <span className="my-tasks-list-action" aria-hidden="true">🗑</span>
+    </div>
+  );
+}
+
 function WorkEntryCard({ entry }) {
   return (
     <div className="my-tasks-card my-tasks-card-work">
@@ -130,11 +180,50 @@ function WorkEntryCard({ entry }) {
   );
 }
 
+/** Task health: on_track | at_risk | behind (past end date) */
+function getTaskHealth(task) {
+  const today = formatAPIDate(new Date());
+  const end = task.end_date ? task.end_date.slice(0, 10) : task.start_date?.slice(0, 10);
+  if (!end) return 'on_track';
+  if (end < today) return 'behind';
+  const endDate = new Date(end + 'T12:00:00');
+  const todayDate = new Date(today + 'T12:00:00');
+  const daysLeft = Math.ceil((endDate - todayDate) / 86400000);
+  if (daysLeft <= 1) return 'at_risk';
+  return 'on_track';
+}
+
+function TodayTaskCard({ task }) {
+  const health = getTaskHealth(task);
+  const label = task.ticket_id ? `#${task.ticket_id}` : (task.generic_category || 'Task');
+  const url = getTicketTrackingUrl(task.ticket_id);
+  const hours = task.total_hours ?? task.total_planned_hours ?? 0;
+  const healthLabel = health === 'behind' ? 'Behind' : health === 'at_risk' ? 'At risk' : 'On track';
+  return (
+    <div className={`my-tasks-today-card health-${health}`}>
+      <div className="my-tasks-today-card-header">
+        <span className="my-tasks-today-card-id">
+          {url ? <a href={url} target="_blank" rel="noopener noreferrer">{label}</a> : label}
+          {task.ticket_id && <TicketExternalLink ticketId={task.ticket_id} className="my-tasks-ext-link" />}
+        </span>
+        <span className={`my-tasks-health-badge health-${health}`}>{healthLabel}</span>
+      </div>
+      <p className="my-tasks-today-card-desc">{task.activity_description || (task.ticket_title || '') || '—'}</p>
+      <div className="my-tasks-today-card-meta">
+        <span className="my-tasks-today-hours">{hours}h planned</span>
+        {task.end_date && <span className="my-tasks-today-dates">Due {formatDisplayDateWithDay(task.end_date)}</span>}
+        {task.ticket_priority && <span className="my-tasks-priority">{task.ticket_priority}</span>}
+      </div>
+    </div>
+  );
+}
+
 function MyTasks() {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState('my-tasks');
+  const [activeTab, setActiveTab] = useState('assigned');
   const [view, setView] = useState('week');
   const [refDate, setRefDate] = useState(() => formatAPIDate(new Date()));
+  const [taskFilter, setTaskFilter] = useState('all');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -142,6 +231,21 @@ function MyTasks() {
   const [teamData, setTeamData] = useState(null);
   const [teamLoading, setTeamLoading] = useState(false);
   const [teamError, setTeamError] = useState(null);
+  const [periodStart, setPeriodStart] = useState(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    return formatAPIDate(d);
+  });
+  const [periodEnd, setPeriodEnd] = useState(() => formatAPIDate(new Date()));
+  const [periodData, setPeriodData] = useState(null);
+  const [periodLoading, setPeriodLoading] = useState(false);
+  const [periodError, setPeriodError] = useState(null);
+  const [planVsActualData, setPlanVsActualData] = useState(null);
+  const [planVsActualLoading, setPlanVsActualLoading] = useState(false);
+  const [planVsActualError, setPlanVsActualError] = useState(null);
+  const [todayData, setTodayData] = useState(null);
+  const [todayLoading, setTodayLoading] = useState(false);
+  const [todayError, setTodayError] = useState(null);
 
   useEffect(() => {
     if (!user?.employee_id) return;
@@ -176,6 +280,68 @@ function MyTasks() {
     if (activeTab === 'my-team' && hasReportees) loadTeamData();
   }, [activeTab, hasReportees, loadTeamData]);
 
+  const loadTodayData = useCallback(async () => {
+    if (!user?.employee_id) return;
+    setTodayLoading(true);
+    setTodayError(null);
+    try {
+      const today = formatAPIDate(new Date());
+      const res = await apiFetch(`${API_BASE}/my-tasks?view=week&date_str=${today}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed to load');
+      const json = await res.json();
+      setTodayData(json);
+    } catch (e) {
+      setTodayError(e.message || 'Failed to load today');
+      setTodayData(null);
+    } finally {
+      setTodayLoading(false);
+    }
+  }, [user?.employee_id]);
+
+  const loadByPeriodData = useCallback(async () => {
+    if (!user?.employee_id || !periodStart || !periodEnd) return;
+    setPeriodLoading(true);
+    setPeriodError(null);
+    try {
+      const res = await apiFetch(`${API_BASE}/my-tasks?start_date_str=${periodStart}&end_date_str=${periodEnd}`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed to load');
+      setPeriodData(await res.json());
+    } catch (e) {
+      setPeriodError(e.message || 'Failed to load period');
+      setPeriodData(null);
+    } finally {
+      setPeriodLoading(false);
+    }
+  }, [user?.employee_id, periodStart, periodEnd]);
+
+  const loadPlanVsActualData = useCallback(async () => {
+    if (!user?.employee_id) return;
+    setPlanVsActualLoading(true);
+    setPlanVsActualError(null);
+    try {
+      const res = await apiFetch(`${API_BASE}/employees/${user.employee_id}/planning-timesheet?weeks=5`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || 'Failed to load');
+      setPlanVsActualData(await res.json());
+    } catch (e) {
+      setPlanVsActualError(e.message || 'Failed to load');
+      setPlanVsActualData(null);
+    } finally {
+      setPlanVsActualLoading(false);
+    }
+  }, [user?.employee_id]);
+
+  useEffect(() => {
+    if (activeTab === 'today') loadTodayData();
+  }, [activeTab, loadTodayData]);
+
+  useEffect(() => {
+    if (activeTab === 'more') loadByPeriodData();
+  }, [activeTab, loadByPeriodData]);
+
+  useEffect(() => {
+    if (activeTab === 'more') loadPlanVsActualData();
+  }, [activeTab, loadPlanVsActualData]);
+
   const loadData = useCallback(async () => {
     if (!user?.employee_id) {
       setError('Employee account required');
@@ -202,7 +368,9 @@ function MyTasks() {
     }
   }, [user?.employee_id, view, refDate]);
 
-  useEffect(() => { loadData(); }, [loadData]);
+  useEffect(() => {
+    if (activeTab === 'assigned') loadData();
+  }, [activeTab, loadData]);
 
   const navPrev = () => {
     const d = new Date(refDate + 'T12:00:00');
@@ -231,6 +399,11 @@ function MyTasks() {
     const future = data.future_tasks || [];
     const completed = data.completed_planned || [];
     const work = data.completed_work || [];
+    const todayStr = formatAPIDate(new Date());
+    const overdue = [...ongoing, ...future].filter((t) => {
+      const end = (t.end_date || t.start_date || '').slice(0, 10);
+      return end && end < todayStr;
+    });
 
     const ongoingHours = ongoing.reduce((s, t) => s + (t.total_hours ?? t.total_planned_hours ?? 0), 0);
     const futureHours = future.reduce((s, t) => s + (t.total_hours ?? t.total_planned_hours ?? 0), 0);
@@ -243,6 +416,7 @@ function MyTasks() {
       futureCount: future.length,
       completedCount: completed.length,
       workCount: work.length,
+      overdueCount: overdue.length,
       ongoingHours,
       futureHours,
       completedHours,
@@ -251,6 +425,48 @@ function MyTasks() {
       totalWork: workHours,
     };
   }, [data]);
+
+  const plannedTasks = useMemo(() => {
+    if (!data) return [];
+    const todayStr = formatAPIDate(new Date());
+    const normalize = (task, status) => {
+      const end = (task.end_date || task.start_date || '').slice(0, 10);
+      const isOverdue = status !== 'completed' && end && end < todayStr;
+      return { ...task, _status: isOverdue ? 'overdue' : status };
+    };
+    const ongoing = (data.ongoing_tasks || []).map((t) => normalize(t, 'in_progress'));
+    const future = (data.future_tasks || []).map((t) => normalize(t, 'upcoming'));
+    const completed = (data.completed_planned || []).map((t) => normalize(t, 'completed'));
+    return [...ongoing, ...future, ...completed];
+  }, [data]);
+
+  const filteredTasks = useMemo(() => {
+    const todayStr = formatAPIDate(new Date());
+    if (!plannedTasks.length) return [];
+    if (taskFilter === 'today') {
+      return plannedTasks.filter((t) => {
+        const start = (t.start_date || '').slice(0, 10);
+        const end = (t.end_date || t.start_date || '').slice(0, 10);
+        return start <= todayStr && end >= todayStr;
+      });
+    }
+    if (taskFilter === 'upcoming') return plannedTasks.filter((t) => t._status === 'upcoming');
+    if (taskFilter === 'completed') return plannedTasks.filter((t) => t._status === 'completed');
+    return plannedTasks;
+  }, [plannedTasks, taskFilter]);
+
+  const handleTaskFilter = (filterId) => {
+    const prev = taskFilter;
+    setTaskFilter(filterId);
+    if (filterId === 'previous-week') {
+      setView('week');
+      const d = new Date();
+      d.setDate(d.getDate() - 7);
+      setRefDate(formatAPIDate(d));
+    } else if (prev === 'previous-week') {
+      setRefDate(formatAPIDate(new Date()));
+    }
+  };
 
   const taskDistributionChartData = useMemo(() => {
     if (!stats || (stats.ongoingHours + stats.futureHours + stats.completedHours + stats.workHours) === 0) return null;
@@ -431,172 +647,186 @@ function MyTasks() {
         <div className="my-tasks-page">
           <header className="my-tasks-header">
             <div className="my-tasks-header-left">
-              <Link to="/" className="my-tasks-back">← Dashboard</Link>
               <div>
                 <h1 className="my-tasks-title">My Tasks</h1>
-                <p className="my-tasks-subtitle">
-                  {activeTab === 'my-tasks' ? 'Your planned tasks and completed work' : 'Team tickets and task status'}
-                </p>
-              </div>
-            </div>
-            <div className="my-tasks-header-right">
-              <div className="my-tasks-main-tabs">
-                <button type="button" className={activeTab === 'my-tasks' ? 'active' : ''} onClick={() => setActiveTab('my-tasks')}>
-                  My Tasks
-                </button>
-                {hasReportees && (
-                  <button type="button" className={activeTab === 'my-team' ? 'active' : ''} onClick={() => setActiveTab('my-team')}>
-                    My Team
-                  </button>
-                )}
-              </div>
-              <div className="my-tasks-controls">
-              <div className="my-tasks-view-toggle">
-                <button type="button" className={view === 'week' ? 'active' : ''} onClick={() => setView('week')}>Week</button>
-                <button type="button" className={view === 'month' ? 'active' : ''} onClick={() => setView('month')}>Month</button>
-                <button type="button" className={view === 'all' ? 'active' : ''} onClick={() => setView('all')}>All</button>
-              </div>
-              {view !== 'all' && (
-                <div className="my-tasks-date-nav">
-                  <button type="button" className="my-tasks-nav-btn" onClick={navPrev} aria-label="Previous">‹</button>
-                  <label className="my-tasks-date-display">
-                    <input
-                      type={view === 'month' ? 'month' : 'date'}
-                      value={view === 'month' ? refDate.slice(0, 7) : refDate}
-                      onChange={(e) => setRefDate(view === 'month' ? e.target.value + '-01' : e.target.value)}
-                      className="my-tasks-date-picker"
-                    />
-                    <span className="my-tasks-date-label">
-                      {view === 'week' ? formatPlanningWeek(refDate) : formatMonthLabel(refDate)}
-                    </span>
-                  </label>
-                  <button type="button" className="my-tasks-nav-btn" onClick={navNext} aria-label="Next">›</button>
-                  <button type="button" className="my-tasks-today-btn" onClick={goToday}>Today</button>
-                </div>
-              )}
+                <p className="my-tasks-subtitle">Here's what you need to focus on</p>
               </div>
             </div>
           </header>
 
-      {error && activeTab === 'my-tasks' && <div className="my-tasks-error">{error}</div>}
-      {teamError && activeTab === 'my-team' && <div className="my-tasks-error">{teamError}</div>}
-      {activeTab === 'my-tasks' && loading ? (
-        <div className="my-tasks-loading">Loading your tasks…</div>
-      ) : activeTab === 'my-team' && teamLoading ? (
-        <div className="my-tasks-loading">Loading team data…</div>
-      ) : activeTab === 'my-team' && teamData ? (
-        <MyTeamContent teamData={teamData} view={view} refDate={refDate} formatPlanningWeek={formatPlanningWeek} formatMonthLabel={formatMonthLabel} doughnutOptions={doughnutOptions} barOptions={barOptions} />
-      ) : activeTab === 'my-tasks' && data ? (
-        <>
-          {/* Summary Stats */}
-          {stats && (
-            <div className="my-tasks-stats-row">
-              <StatCard icon="●" label="Ongoing" value={stats.ongoingCount} subtext={`${stats.ongoingHours}h`} accent="blue" />
-              <StatCard icon="◐" label="Future" value={stats.futureCount} subtext={`${stats.futureHours}h`} accent="amber" />
-              <StatCard icon="✓" label="Completed" value={stats.completedCount} subtext={`${stats.completedHours}h`} accent="green" />
-              <StatCard icon="📋" label="Work Logged" value={stats.workCount} subtext={`${stats.totalWork}h`} accent="purple" />
-              <StatCard icon="Σ" label="Total Planned" value={`${stats.totalPlanned}h`} />
-            </div>
-          )}
+          {error && activeTab === 'assigned' && <div className="my-tasks-error">{error}</div>}
+          {teamError && activeTab === 'my-team' && <div className="my-tasks-error">{teamError}</div>}
 
-          {/* Charts */}
-          {(taskDistributionChartData || hoursByDayChartData || priorityChartData) && (
-            <div className="my-tasks-charts-row">
-              {taskDistributionChartData && (
-                <div className="my-tasks-chart-panel">
-                  <h3 className="my-tasks-chart-title">Hours by Category</h3>
-                  <div className="my-tasks-chart-wrap">
-                    <Doughnut data={taskDistributionChartData} options={doughnutOptions} />
-                  </div>
-                </div>
-              )}
-              {hoursByDayChartData && (
-                <div className="my-tasks-chart-panel my-tasks-chart-panel-wide">
-                  <h3 className="my-tasks-chart-title">
-                    {view === 'all' ? 'Hours Logged by Week' : view === 'month' ? 'Hours Logged by Day (last 14)' : 'Hours Logged by Day'}
-                  </h3>
-                  <div className="my-tasks-chart-wrap">
-                    <Bar data={hoursByDayChartData} options={barOptions} />
-                  </div>
-                </div>
-              )}
-              {priorityChartData && (
-                <div className="my-tasks-chart-panel">
-                  <h3 className="my-tasks-chart-title">Tasks by Priority</h3>
-                  <div className="my-tasks-chart-wrap">
-                    <Doughnut data={priorityChartData} options={doughnutOptions} />
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Task Sections */}
-          <div className="my-tasks-content">
-            <section className="my-tasks-section my-tasks-ongoing">
-              <h2 className="my-tasks-section-title">
-                <span className="my-tasks-section-icon">●</span>
-                Ongoing Tasks
-                <span className="my-tasks-section-count">{data.ongoing_tasks?.length || 0}</span>
-              </h2>
-              {(!data.ongoing_tasks || data.ongoing_tasks.length === 0) ? (
-                <p className="my-tasks-empty-msg">No ongoing tasks for this period.</p>
-              ) : (
-                <div className="my-tasks-grid">
-                  {data.ongoing_tasks.map((t) => <TaskCard key={`o-${t.id}`} task={t} type="ongoing" />)}
-                </div>
-              )}
-            </section>
-
-            <section className="my-tasks-section my-tasks-future">
-              <h2 className="my-tasks-section-title">
-                <span className="my-tasks-section-icon">◐</span>
-                Future Assigned
-                <span className="my-tasks-section-count">{data.future_tasks?.length || 0}</span>
-              </h2>
-              {(!data.future_tasks || data.future_tasks.length === 0) ? (
-                <p className="my-tasks-empty-msg">No tasks assigned for future.</p>
-              ) : (
-                <div className="my-tasks-grid">
-                  {data.future_tasks.map((t) => <TaskCard key={`f-${t.id}`} task={t} type="future" />)}
-                </div>
-              )}
-            </section>
-
-            <section className="my-tasks-section my-tasks-completed">
-              <h2 className="my-tasks-section-title">
-                <span className="my-tasks-section-icon">✓</span>
-                Completed (Planned)
-                <span className="my-tasks-section-count">{data.completed_planned?.length || 0}</span>
-              </h2>
-              {(!data.completed_planned || data.completed_planned.length === 0) ? (
-                <p className="my-tasks-empty-msg">No completed planned tasks in this period.</p>
-              ) : (
-                <div className="my-tasks-grid">
-                  {data.completed_planned.map((t) => <TaskCard key={`c-${t.id}`} task={t} type="completed" />)}
-                </div>
-              )}
-            </section>
-
-            <section className="my-tasks-section my-tasks-work">
-              <h2 className="my-tasks-section-title">
-                <span className="my-tasks-section-icon">📋</span>
-                Completed Work (Timesheet)
-                <span className="my-tasks-section-count">{data.completed_work?.length || 0}</span>
-              </h2>
-              {(!data.completed_work || data.completed_work.length === 0) ? (
-                <p className="my-tasks-empty-msg">No timesheet entries for this period.</p>
-              ) : (
-                <div className="my-tasks-grid">
-                  {data.completed_work.map((e, i) => <WorkEntryCard key={`w-${e.date}-${i}`} entry={e} />)}
-                </div>
-              )}
-            </section>
+          <div className="my-tasks-stats-row compact">
+            <StatCard icon={<span>✓</span>} label="Completed" value={stats?.completedCount || 0} accent="green" />
+            <StatCard icon={<span>⏳</span>} label="In Progress" value={stats?.ongoingCount || 0} accent="amber" />
+            <StatCard icon={<span>⚠</span>} label="Overdue" value={stats?.overdueCount || 0} accent="red" />
+            <StatCard icon={<span>📅</span>} label="Upcoming" value={stats?.futureCount || 0} accent="purple" />
           </div>
-        </>
-      ) : activeTab === 'my-tasks' ? null : (
-        <div className="my-tasks-empty">No team data available.</div>
-      )}
+
+          <div className="my-tasks-primary-tabs">
+            {MY_TASKS_PRIMARY_TABS.filter((t) => !t.requiresReportees || hasReportees).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className={activeTab === t.id ? 'active' : ''}
+                onClick={() => setActiveTab(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
+          {activeTab === 'assigned' && (
+            <>
+              <div className="my-tasks-filter-tabs">
+                {MY_TASKS_FILTERS.map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    className={taskFilter === f.id ? 'active' : ''}
+                    onClick={() => handleTaskFilter(f.id)}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+
+              {loading ? (
+                <div className="my-tasks-loading">Loading your tasks…</div>
+              ) : filteredTasks.length > 0 ? (
+                <div className="my-tasks-list">
+                  {filteredTasks.map((t) => (
+                    <TaskListItem key={`${t.id}-${t._status}`} task={t} status={t._status} />
+                  ))}
+                </div>
+              ) : (
+                <div className="my-tasks-empty-state">
+                  <div className="my-tasks-empty-icon">📄</div>
+                  <p className="my-tasks-empty-title">No tasks found</p>
+                  <p className="my-tasks-empty-subtitle">All caught up!</p>
+                </div>
+              )}
+            </>
+          )}
+
+          {activeTab === 'more' && (
+            <div className="my-tasks-more-panel">
+              {periodError && <div className="my-tasks-error">{periodError}</div>}
+              {planVsActualError && <div className="my-tasks-error">{planVsActualError}</div>}
+
+              <div className="my-tasks-period-panel">
+                <div className="my-tasks-period-picker">
+                  <label>
+                    <span>From</span>
+                    <input type="date" value={periodStart} onChange={(e) => setPeriodStart(e.target.value)} />
+                  </label>
+                  <label>
+                    <span>To</span>
+                    <input type="date" value={periodEnd} onChange={(e) => setPeriodEnd(e.target.value)} />
+                  </label>
+                  <button type="button" className="btn-primary" onClick={loadByPeriodData} disabled={periodLoading}>
+                    {periodLoading ? 'Loading…' : 'Apply'}
+                  </button>
+                </div>
+                {periodData && (
+                  <div className="my-tasks-period-content">
+                    <section className="my-tasks-period-section">
+                      <h3 className="my-tasks-period-section-title">Planned tasks (in this period)</h3>
+                      <div className="my-tasks-grid">
+                        {(() => {
+                          const completed = periodData.completed_planned || [];
+                          const future = periodData.future_tasks || [];
+                          const ongoing = periodData.ongoing_tasks || [];
+                          const plannedList = [
+                            ...ongoing.map((t) => ({ ...t, _type: 'ongoing' })),
+                            ...future.map((t) => ({ ...t, _type: 'future' })),
+                            ...completed.map((t) => ({ ...t, _type: 'completed' })),
+                          ];
+                          if (plannedList.length === 0) return <p className="my-tasks-empty-msg">No planned tasks in this period.</p>;
+                          return plannedList.map((t) => <TaskCard key={`p-${t.id}`} task={t} type={t._type} />);
+                        })()}
+                      </div>
+                    </section>
+                    <section className="my-tasks-period-section">
+                      <h3 className="my-tasks-period-section-title">Actual work (from timesheet)</h3>
+                      <p className="my-tasks-period-hint">Log time in the <Link to="/timesheet">Timesheet</Link> to see actual work here.</p>
+                      <div className="my-tasks-grid">
+                        {!periodData.completed_work?.length ? (
+                          <p className="my-tasks-empty-msg">No timesheet entries in this period.</p>
+                        ) : (
+                          periodData.completed_work.map((e, i) => <WorkEntryCard key={`w-${e.date}-${i}`} entry={e} />)
+                        )}
+                      </div>
+                    </section>
+                  </div>
+                )}
+              </div>
+
+              {planVsActualLoading ? (
+                <div className="my-tasks-loading">Loading planned vs actual…</div>
+              ) : planVsActualData ? (
+                <div className="my-tasks-plan-actual-panel">
+                  <div className="my-tasks-plan-actual-summary">
+                    <div className="my-tasks-plan-actual-card">
+                      <span className="my-tasks-plan-actual-value">{planVsActualData.summary?.total_planned_hours ?? 0}h</span>
+                      <span className="my-tasks-plan-actual-label">Total planned</span>
+                    </div>
+                    <div className="my-tasks-plan-actual-card">
+                      <span className="my-tasks-plan-actual-value">{planVsActualData.summary?.total_actual_hours ?? 0}h</span>
+                      <span className="my-tasks-plan-actual-label">Total actual (timesheet)</span>
+                    </div>
+                    <div className="my-tasks-plan-actual-card">
+                      <span className="my-tasks-plan-actual-value">{planVsActualData.summary?.total_variance != null ? `${planVsActualData.summary.total_variance >= 0 ? '+' : ''}${planVsActualData.summary.total_variance}h` : '—'}</span>
+                      <span className="my-tasks-plan-actual-label">Variance</span>
+                    </div>
+                    <div className="my-tasks-plan-actual-card">
+                      <span className="my-tasks-plan-actual-value">{planVsActualData.summary?.estimation_accuracy != null ? `${planVsActualData.summary.estimation_accuracy}%` : '—'}</span>
+                      <span className="my-tasks-plan-actual-label">Estimation accuracy</span>
+                    </div>
+                  </div>
+                  <div className="my-tasks-plan-actual-columns">
+                    <section className="my-tasks-plan-actual-col">
+                      <h3>Planned tasks (last 5 weeks)</h3>
+                      <div className="my-tasks-plan-actual-list">
+                        {(planVsActualData.recent_planned_tasks || []).slice(0, 30).map((p, i) => (
+                          <div key={`plan-${i}`} className="my-tasks-plan-actual-item">
+                            <span className="my-tasks-plan-actual-item-id">{p.ticket_id ? `#${p.ticket_id}` : (p.generic_category || 'Task')}</span>
+                            <span className="my-tasks-plan-actual-item-hours">{p.hours}h</span>
+                            <span className="my-tasks-plan-actual-item-date">{formatDisplayDate(p.date)}</span>
+                            <span className="my-tasks-plan-actual-item-desc">{p.activity_description || p.ticket_title || '—'}</span>
+                          </div>
+                        ))}
+                        {!(planVsActualData.recent_planned_tasks?.length) && <p className="my-tasks-empty-msg">No planned tasks.</p>}
+                      </div>
+                    </section>
+                    <section className="my-tasks-plan-actual-col">
+                      <h3>Actual work (timesheet)</h3>
+                      <div className="my-tasks-plan-actual-list">
+                        {(planVsActualData.recent_timesheet_entries || []).slice(0, 30).map((e, i) => (
+                          <div key={`act-${i}`} className="my-tasks-plan-actual-item">
+                            <span className="my-tasks-plan-actual-item-id">{e.ticket_id ? `#${e.ticket_id}` : (e.project_name || 'Work')}</span>
+                            <span className="my-tasks-plan-actual-item-hours">{e.hours}h</span>
+                            <span className="my-tasks-plan-actual-item-date">{formatDisplayDate(e.date)}</span>
+                            <span className="my-tasks-plan-actual-item-desc">{e.task_description || e.project_name || '—'}</span>
+                          </div>
+                        ))}
+                        {!(planVsActualData.recent_timesheet_entries?.length) && <p className="my-tasks-empty-msg">No timesheet entries. Log time in <Link to="/timesheet">Timesheet</Link>.</p>}
+                      </div>
+                    </section>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          )}
+
+          {activeTab === 'my-team' && (teamLoading ? (
+            <div className="my-tasks-loading">Loading your team…</div>
+          ) : teamData ? (
+            <MyTeamContent teamData={teamData} view={view} refDate={refDate} formatPlanningWeek={formatPlanningWeek} formatMonthLabel={formatMonthLabel} doughnutOptions={doughnutOptions} barOptions={barOptions} />
+          ) : (
+            <div className="my-tasks-empty">No team data available.</div>
+          ))}
         </div>
       </main>
     </div>

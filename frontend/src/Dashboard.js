@@ -15,6 +15,7 @@ import { Bar, Doughnut } from "react-chartjs-2";
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { formatDisplayDate, formatDisplayDateTime } from "./dateUtils";
 import { TicketExternalLink } from "./ticketUtils";
+import { useTableSort, SortableHeader } from "./useTableSort";
 import { useAuth } from "./AuthContext";
 import { useTheme } from "./ThemeContext";
 import AppSidebar from "./AppSidebar";
@@ -277,6 +278,9 @@ function Dashboard() {
       [listId]: !prev[listId]
     }));
   };
+
+  const { sortedData: sortedBugs, sortConfig: bugsSortConfig, handleSort: handleBugsSort } = useTableSort(bugs, { defaultSortKey: 'bug_id', defaultSortDirection: 'asc' });
+  const { sortedData: sortedDeferredBugs, sortConfig: deferredSortConfig, handleSort: handleDeferredSort } = useTableSort(deferredBugs, { defaultSortKey: 'age_days', defaultSortDirection: 'desc' });
 
   // Fetch ticket suggestions for autocomplete
   const fetchTicketSuggestions = useCallback(async (query) => {
@@ -1782,7 +1786,7 @@ function Dashboard() {
               className="company-logo"
             />
             <div className="header-divider"></div>
-            <h1 className="page-title">QA Dashboard</h1>
+            <h1 className="page-title">AURA360</h1>
             {summary.total_bugs > 0 && (
               <div className="bugs-count-header">
                 <span className="bugs-count-value">{summary.total_bugs}</span>
@@ -2750,16 +2754,16 @@ function Dashboard() {
               <table>
                 <thead>
                   <tr>
-                    <th>Bug ID</th>
-                    <th>Severity</th>
-                    <th>Priority</th>
-                    <th>Assignee</th>
-                    <th>Subject</th>
-                    <th>Ageing (Days)</th>
+                    <SortableHeader columnKey="bug_id" onSort={handleDeferredSort} sortConfig={deferredSortConfig}>Bug ID</SortableHeader>
+                    <SortableHeader columnKey="severity" onSort={handleDeferredSort} sortConfig={deferredSortConfig}>Severity</SortableHeader>
+                    <SortableHeader columnKey="priority" onSort={handleDeferredSort} sortConfig={deferredSortConfig}>Priority</SortableHeader>
+                    <SortableHeader columnKey="assignee" onSort={handleDeferredSort} sortConfig={deferredSortConfig}>Assignee</SortableHeader>
+                    <SortableHeader columnKey="subject" onSort={handleDeferredSort} sortConfig={deferredSortConfig}>Subject</SortableHeader>
+                    <SortableHeader columnKey="age_days" onSort={handleDeferredSort} sortConfig={deferredSortConfig}>Ageing (Days)</SortableHeader>
                   </tr>
                 </thead>
                 <tbody>
-                  {deferredBugs.map((bug) => (
+                  {sortedDeferredBugs.map((bug) => (
                     <tr key={bug.bug_id}>
                       <td className="bug-id">#{bug.bug_id}</td>
                       <td>

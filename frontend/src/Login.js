@@ -24,7 +24,7 @@ function Login() {
         <div className="login-left">
           <div className="login-card">
             <img src="/techversant-logo.png" alt="Techversant" className="login-logo" />
-            <h1 className="login-title">BIS Project Dashboard</h1>
+            <h1 className="login-title">AURA360</h1>
             <span style={{ color: 'var(--text-muted)' }}>{loading ? 'Loading...' : 'Redirecting...'}</span>
           </div>
         </div>
@@ -40,7 +40,7 @@ function Login() {
     setError('');
     setSubmitting(true);
     try {
-      const data = await login(email.trim(), password);
+      const data = await login(email.trim(), password.trim());
       if (data.user?.password_changed_at === null && data.user?.role !== 'ADMIN') {
         navigate('/change-password');
       } else {
@@ -59,7 +59,7 @@ function Login() {
         <div className="login-card">
         <div className="login-brand">
           <img src="/techversant-logo.png" alt="Techversant" className="login-logo" />
-          <h1 className="login-title">BIS Project Dashboard</h1>
+          <h1 className="login-title">AURA360</h1>
           <p className="login-subtitle">Sign in to continue</p>
         </div>
         <form onSubmit={handleSubmit} className="login-form">

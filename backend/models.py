@@ -881,6 +881,14 @@ class QAPlannedTask(Base):
     # When set, from this date onward the task no longer blocks the resource (QA resource is free for other tasks)
     resource_released_at = Column(DateTime, nullable=True, index=True)
 
+    # Hold functionality - allows putting task on hold (entire task or specific day)
+    is_on_hold = Column(Boolean, default=False, index=True)  # True if task is currently on hold
+    hold_reason = Column(Text, nullable=True)  # Reason for putting on hold
+    hold_started_at = Column(DateTime, nullable=True)  # When hold started
+    hold_ended_at = Column(DateTime, nullable=True)  # When hold was lifted (null if still on hold)
+    hold_type = Column(String(20), nullable=True)  # 'full' for entire task, 'day' for specific day hold
+    hold_date = Column(Date, nullable=True)  # If hold_type='day', which specific date is on hold
+
     created_by = Column(String(100))
     updated_by = Column(String(100), nullable=True)
     created_on = Column(DateTime, default=datetime.utcnow)
@@ -895,9 +903,36 @@ class QAPlannedAllocation(Base):
     task_id = Column(Integer, index=True, nullable=False)
     allocation_date = Column(Date, index=True)
     hours = Column(Float)
+    is_on_hold = Column(Boolean, default=False)  # If True, this specific day's allocation is on hold
 
     created_on = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (
         UniqueConstraint("task_id", "allocation_date", name="uq_qa_planned_allocation_task_date"),
     )
+
+
+class QATaskHoldHistory(Base):
+    """History of hold actions on QA planned tasks - for tracking and reporting."""
+    __tablename__ = "qa_task_hold_history"
+
+    id = Column(Integer, primary_key=True)
+    task_id = Column(Integer, index=True, nullable=False)  # References QAPlannedTask.id
+    ticket_id = Column(Integer, index=True, nullable=True)  # PM Tracker ticket ID for quick lookup
+    employee_id = Column(String(20), index=True)
+    employee_name = Column(String(100))
+
+    hold_type = Column(String(20), nullable=False)  # 'full' or 'day'
+    hold_date = Column(Date, nullable=True)  # Specific date if hold_type='day'
+    hold_reason = Column(Text, nullable=False)  # Required reason for putting on hold
+
+    # PM Tracker verification - status at time of hold
+    pm_tracker_status = Column(String(100), nullable=True)  # Status in PM Tracker when hold was made
+    pm_tracker_verified = Column(Boolean, default=False)  # True if PM Tracker status was verified
+
+    hold_started_at = Column(DateTime, nullable=False)
+    hold_ended_at = Column(DateTime, nullable=True)  # Null if still on hold
+    resumed_reason = Column(Text, nullable=True)  # Reason for resuming (optional)
+
+    created_by = Column(String(100))
+    created_on = Column(DateTime, default=datetime.utcnow)
