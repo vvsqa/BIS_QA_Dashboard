@@ -49,6 +49,8 @@ from dev_planning import (
     get_planning_week,
     simulate_allocation_distribution,
     get_available_hours_on_date,
+    get_next_available_date,
+    get_availability_summary,
     check_duplicate_task,
     create_allocations_for_task,
     log_audit,
@@ -73,7 +75,11 @@ from qa_planning import (
     get_qa_qc_review_fail_data, get_qc_fail_count, QC_FAIL_STATUSES, PRIORITY_ORDER as QA_PRIORITY_ORDER,
     get_qa_allocated_hours_for_week, get_or_create_qa_planning_week, get_qa_planning_week,
     _allocation_not_released,
-    get_qa_available_hours_on_date, simulate_qa_allocation_distribution, create_qa_allocations_for_task,
+    get_qa_available_hours_on_date,
+    get_qa_next_available_date,
+    get_qa_availability_summary,
+    simulate_qa_allocation_distribution,
+    create_qa_allocations_for_task,
     QA_QC_STATUSES,
     get_qa_ticket_suggestions,
 )
@@ -11452,6 +11458,51 @@ def qa_planning_available_hours(
         db.close()
 
 
+@app.get("/qa-planning/next-available-date")
+def qa_planning_next_available_date(
+    employee_name: str = Query(...),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD; default today"),
+    current_user: dict = Depends(get_current_user),
+):
+    """First date on or after from_date (or today) where the QA employee has available hours."""
+    db = SessionLocal()
+    try:
+        emp = db.query(Employee).filter(Employee.name.ilike(f"%{employee_name}%")).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        if not can_access_employee(db, current_user, emp.employee_id):
+            raise HTTPException(status_code=403, detail="Access denied")
+        start = datetime.strptime(from_date or datetime.now().strftime("%Y-%m-%d"), "%Y-%m-%d").date()
+        next_d = get_qa_next_available_date(employee_name, start, db)
+        return {"date": next_d.isoformat()}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date. Use YYYY-MM-DD")
+    finally:
+        db.close()
+
+
+@app.get("/qa-planning/availability-summary")
+def qa_planning_availability_summary(
+    employee_name: str = Query(...),
+    week_start: str = Query(..., description="Monday of week (YYYY-MM-DD)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Fully available from date and partially available days this week for the QA employee."""
+    db = SessionLocal()
+    try:
+        emp = db.query(Employee).filter(Employee.name.ilike(f"%{employee_name}%")).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        if not can_access_employee(db, current_user, emp.employee_id):
+            raise HTTPException(status_code=403, detail="Access denied")
+        wstart = datetime.strptime(week_start, "%Y-%m-%d").date()
+        return get_qa_availability_summary(employee_name, wstart, db)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date. Use YYYY-MM-DD")
+    finally:
+        db.close()
+
+
 @app.get("/qa-planning/allocation-preview")
 def qa_planning_allocation_preview(
     employee_name: str = Query(...),
@@ -11504,8 +11555,29 @@ def qa_planning_add_task(
         pw = get_or_create_qa_planning_week(week_start, db, user_name)
         db.commit()
 
-        TASK_CATEGORIES = ["Ticket", "Team Meetings", "Customer Support", "Training", "KT", "Leave", "Miscellaneous"]
-        GENERIC_CATEGORIES = ["Team Meetings", "Customer Support", "Training", "KT", "Leave", "Miscellaneous"]
+        TASK_CATEGORIES = [
+            "Ticket",
+            "Team Meetings",
+            "Customer Support",
+            "Training",
+            "KT",
+            "Leave",
+            "Miscellaneous",
+            "Generic Task",
+            "Regression",
+            "Live Testing",
+        ]
+        GENERIC_CATEGORIES = [
+            "Team Meetings",
+            "Customer Support",
+            "Training",
+            "KT",
+            "Leave",
+            "Miscellaneous",
+            "Generic Task",
+            "Regression",
+            "Live Testing",
+        ]
 
         if body.task_category not in TASK_CATEGORIES:
             raise HTTPException(status_code=400, detail="Invalid task category")
@@ -11998,6 +12070,51 @@ def dev_planning_available_hours(
             "available_hours": round(available, 1),
             "max_per_day": HOURS_PER_DAY,
         }
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date. Use YYYY-MM-DD")
+    finally:
+        db.close()
+
+
+@app.get("/dev-planning/next-available-date")
+def dev_planning_next_available_date(
+    employee_name: str = Query(...),
+    from_date: Optional[str] = Query(None, description="YYYY-MM-DD; default today"),
+    current_user: dict = Depends(get_current_user),
+):
+    """First date on or after from_date (or today) where the employee has available hours."""
+    db = SessionLocal()
+    try:
+        emp = db.query(Employee).filter(Employee.name.ilike(f"%{employee_name}%")).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        if not can_access_employee(db, current_user, emp.employee_id):
+            raise HTTPException(status_code=403, detail="Access denied")
+        start = datetime.strptime(from_date or datetime.now().strftime("%Y-%m-%d"), "%Y-%m-%d").date()
+        next_d = get_next_available_date(employee_name, start, db)
+        return {"date": next_d.isoformat()}
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid date. Use YYYY-MM-DD")
+    finally:
+        db.close()
+
+
+@app.get("/dev-planning/availability-summary")
+def dev_planning_availability_summary(
+    employee_name: str = Query(...),
+    week_start: str = Query(..., description="Monday of week (YYYY-MM-DD)"),
+    current_user: dict = Depends(get_current_user),
+):
+    """Fully available from date and partially available days this week for the employee."""
+    db = SessionLocal()
+    try:
+        emp = db.query(Employee).filter(Employee.name.ilike(f"%{employee_name}%")).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        if not can_access_employee(db, current_user, emp.employee_id):
+            raise HTTPException(status_code=403, detail="Access denied")
+        wstart = datetime.strptime(week_start, "%Y-%m-%d").date()
+        return get_availability_summary(employee_name, wstart, db)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid date. Use YYYY-MM-DD")
     finally:

@@ -34,8 +34,8 @@ ChartJS.register(
 
 const API_BASE = (process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`).replace(/\/$/, '');
 const HOURS_PER_WEEK = 40;
-const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous'];
-const GENERIC_CATEGORIES = ['Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous'];
+const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
+const GENERIC_CATEGORIES = ['Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
 const QA_TASK_TYPES = ['Manual Testing', 'Automation Testing', 'API Testing', 'Non-Functional Testing'];
 const MAX_HOURS_PER_DAY_OPTIONS = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8];
 
@@ -72,6 +72,9 @@ const TASK_CATEGORY_COLORS = {
   KT: '#f97316',
   Leave: '#94a3b8',
   Miscellaneous: '#64748b',
+  'Generic Task': '#0ea5e9',
+  Regression: '#f43f5e',
+  'Live Testing': '#22c55e',
   Other: '#64748b',
 };
 
@@ -167,6 +170,7 @@ function QATaskPlanning({ showParentTitle = false }) {
   const ticketSuggestionsRef = useRef(null);
   const [allocationPreview, setAllocationPreview] = useState(null);
   const [startDateAvailable, setStartDateAvailable] = useState(8);
+  const [addTaskAvailabilitySummary, setAddTaskAvailabilitySummary] = useState(null); // { next_fully_available_date, partial_this_week }
   // Per-tester availability when multi-select: { [employee_id]: { availableOnStartDate, allocationError, employee_name } }
   const [selectedTestersAvailability, setSelectedTestersAvailability] = useState({});
 
@@ -455,6 +459,40 @@ function QATaskPlanning({ showParentTitle = false }) {
     document.addEventListener('mousedown', handleClick);
     return () => document.removeEventListener('mousedown', handleClick);
   }, [addTaskOpen]);
+
+  // When Add Task opens, set default start_date to next available date for the employee
+  useEffect(() => {
+    if (!addTaskOpen || !addTaskEmployee || !weekStart) return;
+    const emp = addTaskEmployee;
+    const from = weekStart;
+    let cancelled = false;
+    apiFetch(`/qa-planning/next-available-date?employee_name=${encodeURIComponent(emp.employee_name)}&from_date=${from}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (cancelled || !data?.date) return;
+        setForm((f) => ({ ...f, start_date: data.date }));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [addTaskOpen, addTaskEmployee, weekStart]);
+
+  // Fetch availability summary (fully + partial this week) when Add Task opens
+  useEffect(() => {
+    if (!addTaskOpen || !addTaskEmployee || !weekStart) {
+      setAddTaskAvailabilitySummary(null);
+      return;
+    }
+    const emp = addTaskEmployee;
+    let cancelled = false;
+    apiFetch(`/qa-planning/availability-summary?employee_name=${encodeURIComponent(emp.employee_name)}&week_start=${weekStart}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (cancelled || !data) return;
+        setAddTaskAvailabilitySummary(data);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [addTaskOpen, addTaskEmployee, weekStart]);
 
   // Resolve preview employee: first selected tester for Ticket, else addTaskEmployee
   const previewEmployee = form.task_category === 'Ticket' && addTaskSelectedTesters.length > 0
@@ -970,8 +1008,6 @@ function QATaskPlanning({ showParentTitle = false }) {
     if (isNaN(totalHours) || totalHours < 0.5) err.total_hours = 'Duration must be at least 0.5 hours';
     const maxH = Number(multiPlanForm.max_hours_per_day);
     if (isNaN(maxH) || maxH < 0.5 || maxH > 8) err.max_hours_per_day = 'Max hours must be 0.5–8';
-    const today = formatAPIDate(new Date());
-    if (multiPlanForm.start_date && multiPlanForm.start_date < today) err.start_date = 'Start date cannot be in the past';
     setMultiPlanErrors(err);
     return Object.keys(err).length === 0;
   };
@@ -1112,6 +1148,7 @@ function QATaskPlanning({ showParentTitle = false }) {
     setFormErrors({});
     setAllocationPreview(null);
     setStartDateAvailable(8);
+    setAddTaskAvailabilitySummary(null);
   };
 
   const fetchTicketDetails = useCallback(async (ticketId) => {
@@ -1222,11 +1259,6 @@ function QATaskPlanning({ showParentTitle = false }) {
     const maxH = form.max_hours_per_day != null ? Number(form.max_hours_per_day) : 8;
     if (isNaN(maxH) || maxH < 0.5 || maxH > 8 || !MAX_HOURS_PER_DAY_OPTIONS.includes(maxH)) {
       err.max_hours_per_day = 'Select max hours per day (0.5–8h)';
-    }
-    
-    const today = formatAPIDate(new Date());
-    if (form.start_date && form.start_date < today) {
-      err.start_date = 'Start date cannot be in the past';
     }
     
     if (allocationPreview?.error) {
@@ -3544,6 +3576,24 @@ function QATaskPlanning({ showParentTitle = false }) {
                 {formErrors.activity_description && <span className="qa-form-error">{formErrors.activity_description}</span>}
               </div>
 
+              {addTaskAvailabilitySummary && (
+                <div className="availability-summary qa-availability-summary">
+                  <div className="availability-summary-row">
+                    <span className="availability-summary-label">Fully available from:</span>
+                    <span className="availability-summary-value">{formatDisplayDateWithDay(addTaskAvailabilitySummary.next_fully_available_date)}</span>
+                  </div>
+                  {addTaskAvailabilitySummary.partial_this_week?.length > 0 && (
+                    <div className="availability-summary-row">
+                      <span className="availability-summary-label">Partially available this week (hours available):</span>
+                      <span className="availability-summary-value">
+                        {addTaskAvailabilitySummary.partial_this_week.map(({ date, available_hours }, i) => (
+                          <React.Fragment key={date}>{i > 0 && ', '}{formatDisplayDateWithDay(date)} — {Number(available_hours)}h available</React.Fragment>
+                        ))}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
               <div className="qa-form-row-grid">
                 <div className="qa-form-group">
                   <label>Start Date *</label>

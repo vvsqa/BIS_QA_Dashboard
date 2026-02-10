@@ -1608,6 +1608,31 @@
   margin-top: 0.25rem;
 }
 
+.dev-planning-modal .availability-summary {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+.dev-planning-modal .availability-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+.dev-planning-modal .availability-summary-row:last-child {
+  margin-bottom: 0;
+}
+.dev-planning-modal .availability-summary-label {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.dev-planning-modal .availability-summary-value {
+  color: var(--text-primary);
+}
+
 .dev-planning-modal .duration-remaining-hint {
   display: block;
   font-size: 0.8rem;

@@ -2106,6 +2106,31 @@
   font-size: 0.9rem;
 }
 
+.qa-modal .availability-summary {
+  background: var(--bg-primary, #0f172a);
+  border: 1px solid var(--border, #334155);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1rem;
+  font-size: 0.875rem;
+}
+.qa-modal .availability-summary-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.35rem;
+}
+.qa-modal .availability-summary-row:last-child {
+  margin-bottom: 0;
+}
+.qa-modal .availability-summary-label {
+  color: var(--text-muted, #94a3b8);
+  flex-shrink: 0;
+}
+.qa-modal .availability-summary-value {
+  color: var(--text-primary, #f1f5f9);
+}
+
 .qa-availability-summary {
   margin-top: 0.5rem;
   font-size: 0.85rem;

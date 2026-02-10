@@ -840,6 +840,56 @@ def get_qa_available_hours_on_date(
     return max(0, available)
 
 
+def get_qa_next_available_date(
+    employee_name: str,
+    from_date: date,
+    db: Session,
+    max_days: int = 60,
+) -> date:
+    """First working date on or after from_date where the QA employee has available hours > 0."""
+    end = from_date + timedelta(days=max_days)
+    working_days = get_working_days_list(from_date, end, db)
+    for d in working_days:
+        if get_qa_available_hours_on_date(employee_name, d, db) > 0:
+            return d
+    return from_date
+
+
+def get_qa_availability_summary(
+    employee_name: str,
+    week_start: date,
+    db: Session,
+) -> dict:
+    """
+    Returns next_fully_available_date (first date with 8h free) and partial_this_week
+    (list of {date, available_hours} for days in the week with 0 < hours < 8).
+    """
+    week_end = week_start + timedelta(days=4)
+    working_days = get_working_days_list(week_start, week_end, db)
+    today = date.today()
+    from_date = week_start if week_start >= today else today
+
+    search_end = from_date + timedelta(days=60)
+    next_fully = None
+    for d in get_working_days_list(from_date, search_end, db):
+        if get_qa_available_hours_on_date(employee_name, d, db) >= 8:
+            next_fully = d
+            break
+    if next_fully is None:
+        next_fully = from_date
+
+    partial_this_week = []
+    for d in working_days:
+        avail = get_qa_available_hours_on_date(employee_name, d, db)
+        if 0 < avail < 8:
+            partial_this_week.append({"date": d.isoformat(), "available_hours": round(avail, 1)})
+
+    return {
+        "next_fully_available_date": next_fully.isoformat(),
+        "partial_this_week": partial_this_week,
+    }
+
+
 def simulate_qa_allocation_distribution(
     employee_name: str,
     start_date: date,
