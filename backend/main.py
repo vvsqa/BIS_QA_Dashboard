@@ -61,6 +61,7 @@ from dev_planning import (
 from google_sheets_sync import GoogleSheetsSync, get_sheets_sync_status
 from sheets_scheduler import get_scheduler, start_auto_sync, stop_auto_sync
 from pm_tracker_scheduler import start_pm_auto_sync, stop_pm_auto_sync, get_pm_scheduler_status
+from redmine_scheduler import start_redmine_auto_sync, stop_redmine_auto_sync, get_redmine_scheduler_status
 from pm_sync_runner import run_pm_api_sync
 from pm_api_sync import PMApiClient
 from sync_utils import upsert_tickets, log_sync_operation, get_last_sync_info, cleanup_sync_history
@@ -215,6 +216,13 @@ async def startup_event():
             print("[INFO] PM Tracker auto-sync is disabled (set PM_AUTO_SYNC=true to enable)")
     except Exception as e:
         print(f"[WARNING] Failed to start PM Tracker auto-sync: {e}")
+    try:
+        if start_redmine_auto_sync():
+            print("[OK] Redmine auto-sync started (bug data kept up to date)")
+        else:
+            print("[INFO] Redmine auto-sync is disabled (set REDMINE_AUTO_SYNC=true to enable)")
+    except Exception as e:
+        print(f"[WARNING] Failed to start Redmine auto-sync: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -229,6 +237,11 @@ async def shutdown_event():
         print("[OK] PM Tracker auto-sync stopped")
     except Exception as e:
         print(f"[WARNING] Error stopping PM Tracker auto-sync: {e}")
+    try:
+        stop_redmine_auto_sync()
+        print("[OK] Redmine auto-sync stopped")
+    except Exception as e:
+        print(f"[WARNING] Error stopping Redmine auto-sync: {e}")
 
 
 # ===== AUTH ENDPOINTS =====
@@ -2178,12 +2191,18 @@ def get_ticket_sync_status():
         db.close()
 
 
+@app.get("/redmine/sync/status")
+def get_redmine_sync_status():
+    """Get status of Redmine auto-sync scheduler and last sync result."""
+    return get_redmine_scheduler_status()
+
+
 @app.post("/redmine/sync")
-def trigger_redmine_sync(all_bugs: bool = Query(False, description="Include Closed/Deferred/Rejected bugs (default uses query filter which may exclude some)")):
+def trigger_redmine_sync(all_bugs: bool = Query(True, description="Include all bugs (default True for accurate counts)")):
     """
     Trigger Redmine bug sync to database.
-    By default uses query_id=20 which may exclude closed bugs.
-    Set all_bugs=true to fetch ALL bugs including closed ones (fixes undercount for tickets).
+    By default fetches ALL bugs including closed ones to ensure accurate bug counts.
+    Set all_bugs=false to use query_id=20 which may exclude some bugs.
     """
     try:
         processed, created, updated = sync_redmine_bugs(all_bugs=all_bugs)
@@ -2193,6 +2212,7 @@ def trigger_redmine_sync(all_bugs: bool = Query(False, description="Include Clos
             "processed": processed,
             "created": created,
             "updated": updated,
+            "auto_sync": get_redmine_scheduler_status(),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Redmine sync failed: {str(e)}")

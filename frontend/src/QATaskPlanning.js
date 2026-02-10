@@ -170,12 +170,6 @@ function QATaskPlanning({ showParentTitle = false }) {
   // Per-tester availability when multi-select: { [employee_id]: { availableOnStartDate, allocationError, employee_name } }
   const [selectedTestersAvailability, setSelectedTestersAvailability] = useState({});
 
-  // ETA calendar: displayed month (first day YYYY-MM-01)
-  const [etaCalendarMonth, setEtaCalendarMonth] = useState(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
-  });
-
   // Calendar day detail modal state
   const [dayDetailOpen, setDayDetailOpen] = useState(false);
   const [dayDetailEmployee, setDayDetailEmployee] = useState(null);
@@ -344,7 +338,7 @@ function QATaskPlanning({ showParentTitle = false }) {
   }, [calendarView, weekStart]);
 
   useEffect(() => {
-    if (view === 'overview' || view === 'eta-calendar') loadOverviewData();
+    if (view === 'overview') loadOverviewData();
   }, [view, loadOverviewData]);
   useEffect(() => {
     if (view === 'planner' || view === 'resource-blocked' || view === 'overview' || view === 'my-tasks') loadWeekData();
@@ -1524,9 +1518,6 @@ function QATaskPlanning({ showParentTitle = false }) {
           </button>
           <button type="button" className={view === 'resource-blocked' ? 'active' : ''} onClick={() => setView('resource-blocked')}>
             Resource Blocked Until
-          </button>
-          <button type="button" className={view === 'eta-calendar' ? 'active' : ''} onClick={() => setView('eta-calendar')} title="Tickets by ETA date with priority, status, assignment, fail/open bug counts">
-            ETA Calendar
           </button>
           <button type="button" className={view === 'qc-review-fail' ? 'active' : ''} onClick={() => setView('qc-review-fail')}>
             QC Review Fail
@@ -3051,130 +3042,6 @@ function QATaskPlanning({ showParentTitle = false }) {
               </table>
             </div>
           )}
-        </div>
-      )}
-
-      {view === 'eta-calendar' && (
-        <div className="qa-overview-container qa-eta-calendar-view">
-          <div className="qa-eta-calendar-header">
-            <h2 className="qa-overview-title">ETA Calendar</h2>
-            <p className="qa-eta-calendar-subtitle">Tickets by ETA date: priority, status, assignment, tester, developer, times failed and open bug count</p>
-            <div className="qa-eta-calendar-controls">
-              <button type="button" className="btn-secondary" onClick={() => {
-                const [y, m] = etaCalendarMonth.split('-').map(Number);
-                const d = new Date(y, m - 2, 1);
-                setEtaCalendarMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`);
-              }}>← Previous month</button>
-              <span className="qa-eta-calendar-month-label">
-                {(() => {
-                  const [y, m] = etaCalendarMonth.split('-').map(Number);
-                  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-                  return `${monthNames[m - 1]} ${y}`;
-                })()}
-              </span>
-              <button type="button" className="btn-secondary" onClick={() => {
-                const [y, m] = etaCalendarMonth.split('-').map(Number);
-                const d = new Date(y, m, 1);
-                setEtaCalendarMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`);
-              }}>Next month →</button>
-              <button type="button" className="btn-secondary" onClick={() => {
-                const d = new Date();
-                setEtaCalendarMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`);
-              }}>Today</button>
-            </div>
-          </div>
-          {overviewLoading ? (
-            <div className="qa-planning-skeleton">Loading ETA calendar...</div>
-          ) : !overviewData ? (
-            <div className="qa-planning-empty">
-              <p>Failed to load tickets.</p>
-              <button type="button" className="btn-secondary" onClick={loadOverviewData}>Retry</button>
-            </div>
-          ) : (() => {
-            const queue = Array.isArray(overviewData.queue) ? overviewData.queue : [];
-            const monthStr = typeof etaCalendarMonth === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(etaCalendarMonth.slice(0, 10))
-              ? etaCalendarMonth.slice(0, 7)
-              : `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
-            const [year, month] = monthStr.split('-').map(Number);
-            const firstDay = new Date(year, month - 1, 1);
-            const lastDay = new Date(year, month, 0);
-            const startPad = firstDay.getDay();
-            const daysInMonth = lastDay.getDate();
-            const ticketsByDate = {};
-            queue.forEach((t) => {
-              if (!t.eta) return;
-              const etaStr = t.eta.slice(0, 10);
-              if (etaStr.slice(0, 7) !== `${year}-${String(month).padStart(2, '0')}`) return;
-              ticketsByDate[etaStr] = ticketsByDate[etaStr] || [];
-              ticketsByDate[etaStr].push(t);
-            });
-            const totalCells = Math.ceil((startPad + daysInMonth) / 7) * 7;
-            const dayCells = [];
-            for (let i = 0; i < startPad; i++) dayCells.push({ day: null, dateStr: null });
-            for (let d = 1; d <= daysInMonth; d++) {
-              const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-              dayCells.push({ day: d, dateStr, tickets: ticketsByDate[dateStr] || [] });
-            }
-            while (dayCells.length < totalCells) dayCells.push({ day: null, dateStr: null });
-            const weekDays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-            return (
-              <div className="qa-eta-calendar-grid-wrap">
-                <table className="qa-eta-calendar-table">
-                  <thead>
-                    <tr>{weekDays.map((wd) => <th key={wd} className="qa-eta-calendar-th">{wd}</th>)}</tr>
-                  </thead>
-                  <tbody>
-                    {Array.from({ length: totalCells / 7 }, (_, row) => (
-                      <tr key={row}>
-                        {dayCells.slice(row * 7, row * 7 + 7).map((cell, col) => (
-                          <td key={col} className={`qa-eta-calendar-td ${cell.dateStr ? '' : 'qa-eta-calendar-td-other'}`}>
-                            {cell.dateStr ? (
-                              <>
-                                <div className="qa-eta-calendar-day-header">
-                                  <div className="qa-eta-calendar-day-num">{cell.day}</div>
-                                  {(cell.tickets || []).length > 0 && (
-                                    <div className="qa-eta-calendar-day-count">
-                                      {(cell.tickets || []).length} tickets
-                                    </div>
-                                  )}
-                                </div>
-                                <div className="qa-eta-calendar-day-tickets">
-                                  {(cell.tickets || []).map((t) => (
-                                    <div key={t.ticket_id} className="qa-eta-calendar-ticket-card">
-                                      <div className="qa-eta-calendar-ticket-header">
-                                        <span className="qa-eta-calendar-ticket-id">
-                                          {getTicketTrackingUrl(t.ticket_id) ? (
-                                            <a href={getTicketTrackingUrl(t.ticket_id)} target="_blank" rel="noopener noreferrer">#{t.ticket_id}</a>
-                                          ) : `#${t.ticket_id}`}
-                                        </span>
-                                        <span className="qa-eta-priority-pill" style={{ backgroundColor: (PRIORITY_COLORS[t.priority] || '#6b7280') }}>{t.priority}</span>
-                                      </div>
-                                      <div className="qa-eta-calendar-ticket-meta">
-                                        <span className="qa-eta-status" title="Status">{t.status}</span>
-                                        <span className="qa-eta-assigned" title="Assigned">{t.qc_tester ? 'Assigned' : 'Unassigned'}</span>
-                                      </div>
-                                      <div className="qa-eta-calendar-ticket-people">
-                                        <span title="QC Tester">{t.qc_tester || '—'}</span>
-                                        <span title="Developer(s)">{t.developers_str || '—'}</span>
-                                      </div>
-                                      <div className="qa-eta-calendar-ticket-counts">
-                                        <span title="Times moved to QC Review Fail">Fail: {t.times_moved_to_fail != null ? t.times_moved_to_fail : '0'}</span>
-                                        <span title="Open bugs count">Open Bugs: {t.open_bugs_count != null ? t.open_bugs_count : '0'}</span>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </>
-                            ) : null}
-                          </td>
-                        ))}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            );
-          })()}
         </div>
       )}
 

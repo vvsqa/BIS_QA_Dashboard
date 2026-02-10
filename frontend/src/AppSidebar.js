@@ -48,8 +48,16 @@ export default function AppSidebar() {
         </button>
       </div>
       <nav className="nav-menu">
+        {/* Home Page - default for all users */}
+        <Link to="/" className={`nav-item ${path === '/' || path === '/eta-calendar' ? 'active' : ''}`} title="Home">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
+            <polyline points="9 22 9 12 15 12 15 22" />
+          </svg>
+          Home Page
+        </Link>
         {/* Overview & tracking */}
-        <Link to="/" className={`nav-item ${path === '/' || path === '/ticket' ? 'active' : ''}`}>
+        <Link to="/dashboard" className={`nav-item ${path === '/dashboard' || path === '/ticket' ? 'active' : ''}`}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <rect x="3" y="3" width="7" height="7" rx="1" />
             <rect x="14" y="3" width="7" height="7" rx="1" />

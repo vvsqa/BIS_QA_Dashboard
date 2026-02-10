@@ -12,6 +12,7 @@ import CalendarModule from "./CalendarModule";
 import TimeSheetModule from "./TimeSheetModule";
 import TaskPlanning from "./TaskPlanning";
 import MyTasks from "./MyTasks";
+import ETACalendar from "./ETACalendar";
 import Login from "./Login";
 import ChangePassword from "./ChangePassword";
 import Settings from "./Settings";
@@ -93,8 +94,10 @@ function AppRoutes() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/change-password" element={<ProtectedRoute allowPasswordChange={true}><ChangePassword /></ProtectedRoute>} />
-        <Route path="/" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/" element={<ProtectedRoute><ETACalendar /></ProtectedRoute>} />
+        <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
         <Route path="/ticket" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
+        <Route path="/eta-calendar" element={<ProtectedRoute><ETACalendar /></ProtectedRoute>} />
         <Route path="/all-bugs" element={<ProtectedRoute><AllBugsDashboard /></ProtectedRoute>} />
         <Route path="/tickets" element={<ProtectedRoute><TicketsDashboard /></ProtectedRoute>} />
         <Route path="/employees" element={<ProtectedRoute><EmployeesRoute /></ProtectedRoute>} />
