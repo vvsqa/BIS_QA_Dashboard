@@ -11579,8 +11579,12 @@ def qa_planning_add_task(
             "Live Testing",
         ]
 
-        if body.task_category not in TASK_CATEGORIES:
-            raise HTTPException(status_code=400, detail="Invalid task category")
+        raw_task_category = (body.task_category or "").strip()
+        task_category_map = {c.lower(): c for c in TASK_CATEGORIES}
+        normalized_task_category = task_category_map.get(raw_task_category.lower())
+        if not normalized_task_category:
+            raise HTTPException(status_code=400, detail="Invalid task category. Use: " + ", ".join(TASK_CATEGORIES))
+        body.task_category = normalized_task_category
         max_hours_per_day = body.max_hours_per_day if body.max_hours_per_day is not None else 8.0
 
         ticket_id = body.ticket_id
@@ -11598,6 +11602,14 @@ def qa_planning_add_task(
                 raise HTTPException(status_code=400, detail="QC Tester is required in PM Tracker. Please assign and refresh.")
             ticket_title = tkt.title
             ticket_priority = tkt.priority
+
+        if body.task_category != "Ticket":
+            raw_generic_category = (body.generic_category or body.task_category or "").strip()
+            generic_category_map = {c.lower(): c for c in GENERIC_CATEGORIES}
+            normalized_generic_category = generic_category_map.get(raw_generic_category.lower())
+            if not normalized_generic_category:
+                raise HTTPException(status_code=400, detail="Task category must be one of: " + ", ".join(GENERIC_CATEGORIES))
+            body.generic_category = normalized_generic_category
 
         emp = db.query(Employee).filter(Employee.name.ilike(f"%{body.employee_name}%")).first()
         if not emp:
@@ -11678,13 +11690,21 @@ def qa_planning_delete_task(
         role = current_user.get("role", "")
         if not _planning_can_edit(role):
             raise HTTPException(status_code=403, detail="Only Manager or Lead can delete tasks")
+        user_name = _get_user_display_name(db, current_user)
+        user_email = (current_user.get("email") or "").strip().lower()
         task = db.query(QAPlannedTask).filter(QAPlannedTask.id == task_id).first()
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
         _emp = db.query(Employee).filter(Employee.name == task.employee_name).first()
         task_employee_id = (task.employee_id or (_emp.employee_id if _emp else None)) or ""
-        if not can_manage_tasks_for(db, current_user, task_employee_id):
-            raise HTTPException(status_code=403, detail="You can only remove tasks for employees you manage")
+        task_created_by = (getattr(task, "created_by", None) or "").strip().lower()
+        can_manage_employee = can_manage_tasks_for(db, current_user, task_employee_id)
+        is_task_creator = bool(task_created_by) and task_created_by in {
+            (user_name or "").strip().lower(),
+            user_email,
+        }
+        if not can_manage_employee and not is_task_creator:
+            raise HTTPException(status_code=403, detail="You can only remove tasks for employees you manage or tasks you created")
         pw = db.query(QAPlanningWeek).filter(QAPlanningWeek.id == task.planning_week_id).first()
         if pw and getattr(pw, "state", None) in ("approved", "locked"):
             raise HTTPException(status_code=403, detail="Cannot delete task; plan is approved or locked")
@@ -12541,8 +12561,12 @@ def dev_planning_add_task(
         db.commit()
 
         # Validations
-        if body.task_category not in TASK_CATEGORIES:
+        raw_task_category = (body.task_category or "").strip()
+        task_category_map = {c.lower(): c for c in TASK_CATEGORIES}
+        normalized_task_category = task_category_map.get(raw_task_category.lower())
+        if not normalized_task_category:
             raise HTTPException(status_code=400, detail="Invalid task category. Use: " + ", ".join(TASK_CATEGORIES))
+        body.task_category = normalized_task_category
         if body.start_date < week_start or body.start_date > week_end:
             raise HTTPException(status_code=400, detail="Start date must be within the planning week")
         if body.start_date < date.today():
@@ -12575,8 +12599,12 @@ def dev_planning_add_task(
                     )
             ticket_title = tkt.title
         else:
-            if not body.generic_category or body.generic_category not in GENERIC_CATEGORIES:
+            raw_generic_category = (body.generic_category or body.task_category or "").strip()
+            generic_category_map = {c.lower(): c for c in GENERIC_CATEGORIES}
+            normalized_generic_category = generic_category_map.get(raw_generic_category.lower())
+            if not normalized_generic_category:
                 raise HTTPException(status_code=400, detail="Task category must be one of: " + ", ".join(GENERIC_CATEGORIES))
+            body.generic_category = normalized_generic_category
             # Justification is optional for non-ticket tasks
 
         # Resolve employee
@@ -12741,13 +12769,20 @@ def dev_planning_delete_task(
         if not _planning_can_edit(role):
             raise HTTPException(status_code=403, detail="Only Manager or Lead can delete tasks")
         user_name = _get_user_display_name(db, current_user)
+        user_email = (current_user.get("email") or "").strip().lower()
         task = db.query(DevPlannedTask).filter(DevPlannedTask.id == task_id).first()
         if not task:
             raise HTTPException(status_code=404, detail="Task not found")
         _emp = db.query(Employee).filter(Employee.name == task.employee_name).first()
         task_employee_id = (task.employee_id or (_emp.employee_id if _emp else None)) or ""
-        if not can_manage_tasks_for(db, current_user, task_employee_id):
-            raise HTTPException(status_code=403, detail="You can only delete tasks for employees you manage")
+        task_created_by = (getattr(task, "created_by", None) or "").strip().lower()
+        can_manage_employee = can_manage_tasks_for(db, current_user, task_employee_id)
+        is_task_creator = bool(task_created_by) and task_created_by in {
+            (user_name or "").strip().lower(),
+            user_email,
+        }
+        if not can_manage_employee and not is_task_creator:
+            raise HTTPException(status_code=403, detail="You can only delete tasks for employees you manage or tasks you created")
         today = date.today()
         # Block delete only if task is entirely in the past (no allocation on or after today); allow spillover tasks with future work
         if task.start_date and task.start_date < today:
