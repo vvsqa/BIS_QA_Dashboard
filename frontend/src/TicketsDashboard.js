@@ -1964,7 +1964,7 @@ function TicketsDashboard() {
                     sortedFilteredTickets.map(ticket => (
                       <tr key={ticket.ticket_id}>
                         <td>
-                          <Link to={`/tickets?ticket=${ticket.ticket_id}`} className="ticket-link">
+                          <Link to={`/dashboard?ticket=${ticket.ticket_id}`} className="ticket-link" title="Open Ticket Dashboard for this ticket">
                             #{ticket.ticket_id}
                           </Link>
                           <TicketExternalLink ticketId={ticket.ticket_id} />
@@ -2411,7 +2411,7 @@ function TicketsDashboard() {
             <div className="timesheet-header">
               <div className="timesheet-title-group">
                 <h2 className="timesheet-title">
-                  <span className="ticket-badge">#{selectedTicketId}</span>
+                  <Link to={`/dashboard?ticket=${selectedTicketId}`} className="ticket-badge ticket-badge-link" title="Open Ticket Dashboard for this ticket">#{selectedTicketId}</Link>
                   <TicketExternalLink ticketId={selectedTicketId} />
                   Timesheet Entries
                 </h2>

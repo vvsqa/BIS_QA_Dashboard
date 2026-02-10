@@ -12252,6 +12252,17 @@ tbody tr:last-child td {
   font-weight: 700;
 }
 
+.ticket-badge.ticket-badge-link {
+  text-decoration: none;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.15s;
+}
+
+.ticket-badge.ticket-badge-link:hover {
+  opacity: 0.9;
+  transform: scale(1.02);
+}
+
 .timesheet-count {
   font-size: 14px;
   color: var(--text-muted);
