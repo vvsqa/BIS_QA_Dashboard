@@ -1,6 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, useLocation, Navigate } from "react-router-dom";
 import { useEffect } from "react";
-import Homepage from "./Homepage";
 import Dashboard from "./Dashboard";
 import AllBugsDashboard from "./AllBugsDashboard";
 import TicketsDashboard from "./TicketsDashboard";
@@ -13,6 +12,7 @@ import TimeSheetModule from "./TimeSheetModule";
 import TaskPlanning from "./TaskPlanning";
 import MyTasks from "./MyTasks";
 import ETACalendar from "./ETACalendar";
+import ClientProfiles from "./ClientProfiles";
 import Login from "./Login";
 import ChangePassword from "./ChangePassword";
 import Settings from "./Settings";
@@ -66,8 +66,25 @@ function ReportsRoute() {
   return <Navigate to="/" replace />;
 }
 
+function AdminOnlyRoute({ children }) {
+  const { user } = useAuth();
+  if (user?.role !== 'ADMIN') {
+    return <Navigate to="/" replace />;
+  }
+  return children;
+}
+
+const CLIENT_ALLOWED_PATHS = new Set([
+  '/',
+  '/eta-calendar',
+  '/dashboard',
+  '/ticket',
+  '/tickets',
+  '/all-bugs',
+]);
+
 function ProtectedRoute({ children, allowPasswordChange = false }) {
-  const { isAuthenticated, loading, needsPasswordChange } = useAuth();
+  const { user, isAuthenticated, loading, needsPasswordChange } = useAuth();
   const location = useLocation();
   
   if (loading) {
@@ -83,6 +100,9 @@ function ProtectedRoute({ children, allowPasswordChange = false }) {
   // If user needs password change and not already on change-password page, redirect
   if (needsPasswordChange() && !allowPasswordChange && location.pathname !== '/change-password') {
     return <Navigate to="/change-password" replace />;
+  }
+  if (user?.role === 'CLIENT' && location.pathname !== '/change-password' && !CLIENT_ALLOWED_PATHS.has(location.pathname)) {
+    return <Navigate to="/" replace />;
   }
   return children;
 }
@@ -105,6 +125,7 @@ function AppRoutes() {
         <Route path="/employees/:employeeId/review/new" element={<ProtectedRoute><PerformanceReview /></ProtectedRoute>} />
         <Route path="/reports" element={<ProtectedRoute><ReportsRoute /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+        <Route path="/admin/clients" element={<ProtectedRoute><AdminOnlyRoute><ClientProfiles /></AdminOnlyRoute></ProtectedRoute>} />
         <Route path="/calendar" element={<ProtectedRoute><CalendarModule /></ProtectedRoute>} />
         <Route path="/timesheet" element={<ProtectedRoute><TimeSheetModule /></ProtectedRoute>} />
         <Route path="/planning" element={<ProtectedRoute><TaskModuleGuard><TaskPlanning /></TaskModuleGuard></ProtectedRoute>} />

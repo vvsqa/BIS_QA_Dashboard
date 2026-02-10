@@ -196,11 +196,23 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     email = Column(String(150), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
-    role = Column(String(50), index=True, nullable=False)  # ADMIN, MANAGER_DEV, MANAGER_QA, LEAD_DEV, LEAD_QA, EMPLOYEE
+    role = Column(String(50), index=True, nullable=False)  # ADMIN, MANAGER_DEV, MANAGER_QA, LEAD_DEV, LEAD_QA, EMPLOYEE, CLIENT
     employee_id = Column(String(20), index=True, nullable=True)  # FK to Employee.employee_id (null for admin)
     password_changed_at = Column(DateTime, nullable=True)  # Null = first login, must change
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, onupdate=datetime.utcnow)
+
+
+class ClientProfile(Base):
+    """Client accounts managed by admin only (separate from employees)."""
+    __tablename__ = "client_profiles"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(150), nullable=False, index=True)
+    email = Column(String(150), unique=True, nullable=False, index=True)
+    is_active = Column(Boolean, default=True, index=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, onupdate=datetime.utcnow)
 
 
 class AdminConfig(Base):

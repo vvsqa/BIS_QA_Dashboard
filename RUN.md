@@ -21,6 +21,7 @@ Make sure `backend/.env` exists with at least: `DB_HOST`, `DB_PORT`, `DB_NAME`, 
 ```bash
 cd backend
 python add_user_auth_tables.py
+python add_client_profiles_table.py
 ```
 
 This creates an **admin** login: **admin@techversantinfotech.com** / **admin123** (and syncs users from employees). If you later get **"Invalid email or password"** (e.g. after changing the admin password in Settings), reset it with:

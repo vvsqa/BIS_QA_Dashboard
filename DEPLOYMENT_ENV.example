@@ -17,6 +17,7 @@ DB_PASSWORD=
 # DATABASE_URL=postgresql+psycopg2://user:password@host:5432/qa_dashboard
 
 JWT_SECRET_KEY=
+CLIENT_DEFAULT_PASSWORD=BIS@123
 
 # Optional admin bootstrap values (used by setup/reset scripts)
 ADMIN_EMAIL=admin@techversantinfotech.com

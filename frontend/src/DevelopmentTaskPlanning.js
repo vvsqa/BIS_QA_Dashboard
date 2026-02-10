@@ -18,7 +18,7 @@ import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { formatAPIDate, formatDisplayDate, formatDisplayDateWithDay, formatPlanningWeek } from './dateUtils';
 import { getTicketTrackingUrl, TicketExternalLink } from './ticketUtils';
 import { useTableSort } from './useTableSort';
-import { apiFetch, API_BASE } from './api';
+import { apiFetch } from './api';
 import { useAuth } from './AuthContext';
 import './DevelopmentTaskPlanning.css';
 
@@ -175,7 +175,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
     setLoading(true);
     setError(null);
     try {
-      const url = `${API_BASE}/dev-planning/week/${encodeURIComponent(weekStart)}`;
+      const url = `/dev-planning/week/${encodeURIComponent(weekStart)}`;
       const res = await apiFetch(url);
       const text = await res.text();
       if (!res.ok) {
@@ -185,7 +185,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
           msg = j.detail || (j.message || text);
         } catch (_) {}
         if (res.status === 404) {
-          msg = 'Dev Task Planning API not found. Restart the backend so the module loads: stop any process on port 8000, then run "python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000" from the backend folder (or run backend/restart_backend.ps1). If you use localhost, ensure only one backend is running on 8000.';
+          msg = 'Dev Task Planning API not found. Restart the backend and ensure frontend API settings point to the correct backend environment.';
         }
         throw new Error(msg);
       }
@@ -201,7 +201,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
 
   const loadTicketFilterOptions = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/dev-planning/tickets/filter-options`);
+      const res = await apiFetch('/dev-planning/tickets/filter-options');
       if (res.ok) {
         const data = await res.json();
         setTicketFilterOptions({
@@ -222,7 +222,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
     if (ticketUnassignedFilter) params.append('unassigned', 'true');
     if (hasEstimateFilter !== null) params.append('has_estimate', hasEstimateFilter);
     try {
-      const res = await apiFetch(`${API_BASE}/dev-planning/tickets?${params}`);
+      const res = await apiFetch(`/dev-planning/tickets?${params}`);
       const data = res.ok ? await res.json() : { tickets: [] };
       setTickets(data.tickets || []);
     } catch (_) {
@@ -236,7 +236,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
       const params = new URLSearchParams({ view: calendarView });
       if (calendarView === 'weekly') params.append('date_str', weekStart);
       else params.append('month_str', weekStart.slice(0, 7));
-      const res = await apiFetch(`${API_BASE}/dev-planning/calendar?${params}`);
+      const res = await apiFetch(`/dev-planning/calendar?${params}`);
       if (!res.ok) return;
       const data = await res.json();
       setCalendarData(data);
@@ -249,7 +249,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
   const loadOverviewData = useCallback(async () => {
     setOverviewLoading(true);
     try {
-      const res = await apiFetch(`${API_BASE}/dev-planning/overview`);
+      const res = await apiFetch('/dev-planning/overview');
       if (!res.ok) {
         const text = await res.text();
         let msg = text;
@@ -324,7 +324,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
   const ensureWeek = async () => {
     setActionLoading(true);
     try {
-      await apiFetch(`${API_BASE}/dev-planning/week?week_start=${weekStart}`, { method: 'POST' });
+      await apiFetch(`/dev-planning/week?week_start=${weekStart}`, { method: 'POST' });
       await loadWeekData();
     } finally {
       setActionLoading(false);
@@ -334,7 +334,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
   const updateWeekState = async (state) => {
     setActionLoading(true);
     try {
-      const res = await apiFetch(`${API_BASE}/dev-planning/week/${weekStart}`, {
+      const res = await apiFetch(`/dev-planning/week/${weekStart}`, {
         method: 'PATCH',
         body: JSON.stringify({ state }),
       });
@@ -379,7 +379,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
     setTicketLookupLoading(true);
     setFormErrors((e) => ({ ...e, ticket_id: null }));
     try {
-      const res = await apiFetch(`${API_BASE}/dev-planning/ticket/${ticketId}`);
+      const res = await apiFetch(`/dev-planning/ticket/${ticketId}`);
       const data = res.ok ? await res.json() : null;
       setLookedUpTicket(data);
       setForm((f) => ({ ...f, ticket_id: data ? ticketId : null }));
@@ -414,7 +414,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
     }
     const t = setTimeout(async () => {
       try {
-        const res = await fetch(`${API_BASE}/dev-planning/tickets?search=${encodeURIComponent(q)}`);
+        const res = await apiFetch(`/dev-planning/tickets?search=${encodeURIComponent(q)}`);
         const data = res.ok ? await res.json() : { tickets: [] };
         const list = (data.tickets || []).slice(0, 8);
         setTicketSuggestions(list);
@@ -447,7 +447,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
       date: form.start_date,
     });
     let cancelled = false;
-    apiFetch(`${API_BASE}/dev-planning/available-hours?${params}`)
+    apiFetch(`/dev-planning/available-hours?${params}`)
       .then((res) => res.ok ? res.json() : null)
       .then((data) => {
         if (cancelled || !data) return;
@@ -485,7 +485,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
       params.append('generic_category', form.task_category);
     }
     let cancelled = false;
-    apiFetch(`${API_BASE}/dev-planning/allocation-preview?${params}`)
+    apiFetch(`/dev-planning/allocation-preview?${params}`)
       .then((res) => res.json().then((data) => ({ ok: res.ok, data })))
       .then(({ ok, data }) => {
         if (cancelled) return;
@@ -577,7 +577,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
         generic_category: form.task_category !== 'Ticket' ? form.task_category : undefined,
         justification: form.justification?.trim() || undefined,
       };
-      const res = await fetch(`${API_BASE}/dev-planning/tasks?week_start=${weekStart}`, {
+      const res = await apiFetch(`/dev-planning/tasks?week_start=${weekStart}`, {
         method: 'POST',
         headers: headers(),
         body: JSON.stringify(body),
@@ -614,7 +614,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
     if (!window.confirm('Remove this planned task? Remaining hours will recalculate.')) return;
     setActionLoading(true);
     try {
-      const res = await apiFetch(`${API_BASE}/dev-planning/tasks/${taskId}`, { method: 'DELETE' });
+      const res = await apiFetch(`/dev-planning/tasks/${taskId}`, { method: 'DELETE' });
       if (!res.ok) throw new Error((await res.json()).detail || 'Failed');
       loadWeekData();
       if (view === 'calendar') loadCalendarData();
@@ -631,7 +631,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
     const prevStr = formatAPIDate(prevMon);
     setActionLoading(true);
     try {
-      const res = await apiFetch(`${API_BASE}/dev-planning/week/${weekStart}/copy-from/${prevStr}`, { method: 'POST' });
+      const res = await apiFetch(`/dev-planning/week/${weekStart}/copy-from/${prevStr}`, { method: 'POST' });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Copy failed');
       await loadWeekData();
@@ -706,7 +706,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
           total_hours: Number(multiPlanForm.total_hours),
           max_hours_per_day: Number(multiPlanForm.max_hours_per_day),
         };
-        const res = await apiFetch(`${API_BASE}/dev-planning/tasks?week_start=${weekStart}`, {
+        const res = await apiFetch(`/dev-planning/tasks?week_start=${weekStart}`, {
           method: 'POST',
           body: JSON.stringify(body),
         });
@@ -768,7 +768,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
 
     try {
       // Send updated allocations to backend
-      const res = await apiFetch(`${API_BASE}/dev-planning/tasks/${editingTask.id}/allocations`, {
+      const res = await apiFetch(`/dev-planning/tasks/${editingTask.id}/allocations`, {
         method: 'PUT',
         body: JSON.stringify({
           allocations: editAllocations.map((a) => ({ date: a.date, hours: a.hours })),
@@ -796,7 +796,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
     setDayDetailTasks([]);
     setDayDetailLoading(true);
     try {
-      const res = await apiFetch(`${API_BASE}/dev-planning/day-details?employee_name=${encodeURIComponent(employeeName)}&date_str=${encodeURIComponent(dateStr)}`);
+      const res = await apiFetch(`/dev-planning/day-details?employee_name=${encodeURIComponent(employeeName)}&date_str=${encodeURIComponent(dateStr)}`);
       const data = res.ok ? await res.json() : { tasks: [] };
       setDayDetailTasks(data.tasks || []);
     } catch (_) {

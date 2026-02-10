@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # Load .env from backend directory so PM_API_KEY etc. are available
 from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+CLIENT_DEFAULT_PASSWORD = os.getenv("CLIENT_DEFAULT_PASSWORD", "BIS@123")
 
 from database import SessionLocal
 from models import (
@@ -29,7 +30,7 @@ from models import (
     EmployeeNameMapping, Holiday, SyncLog,
     DevPlanningWeek, DevPlannedTask, DevPlannedAllocation, DevPlanningAuditLog,
     QAPlanningWeek, QAPlannedTask, QAPlannedAllocation, QATaskHoldHistory,
-    User, AdminConfig,
+    User, AdminConfig, ClientProfile,
 )
 from auth import (
     authenticate_user, hash_password, create_access_token,
@@ -109,7 +110,7 @@ class EmployeeUpdate(BaseModel):
     photo_url: Optional[str] = None
     is_active: Optional[bool] = None
     mapping_data: Optional[dict] = None
-    access_role: Optional[str] = None  # Access role (ADMIN, MANAGER_DEV, MANAGER_QA, LEAD_DEV, LEAD_QA, EMPLOYEE)
+    access_role: Optional[str] = None  # Access role (ADMIN, MANAGER_DEV, MANAGER_QA, LEAD_DEV, LEAD_QA, EMPLOYEE, CLIENT)
 
 class GoalCreate(BaseModel):
     goal_type: str  # 'goal', 'strength', 'improvement'
@@ -267,6 +268,11 @@ def login(req: LoginRequest):
             if emp:
                 name = emp.name
                 designation = emp.role
+        elif user.get("role") == "CLIENT":
+            client = db.query(ClientProfile).filter(ClientProfile.email == user["email"]).first()
+            if client:
+                name = client.name
+                designation = "CLIENT"
         return {
             "access_token": token,
             "token_type": "bearer",
@@ -316,6 +322,14 @@ def auth_me(current_user: dict = Depends(get_current_user)):
                     planning_team = "DEVELOPMENT"
             # Get password_changed_at from User table
             user_record = db.query(User).filter(User.employee_id == employee_id).first()
+            if user_record:
+                password_changed_at = user_record.password_changed_at.isoformat() if user_record.password_changed_at else None
+        elif user_role == "CLIENT":
+            client = db.query(ClientProfile).filter(ClientProfile.email == current_user["email"]).first()
+            if client:
+                name = client.name
+                designation = "CLIENT"
+            user_record = db.query(User).filter(User.email == current_user["email"]).first()
             if user_record:
                 password_changed_at = user_record.password_changed_at.isoformat() if user_record.password_changed_at else None
         
@@ -410,6 +424,18 @@ class AdminConfigUpdate(BaseModel):
     new_password: Optional[str] = None
 
 
+class ClientProfileCreate(BaseModel):
+    name: str
+    email: str
+    is_active: Optional[bool] = True
+
+
+class ClientProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 @app.get("/admin/users")
 def admin_list_users(current_user: dict = Depends(require_role(["ADMIN", "MANAGER_DEV", "MANAGER_QA"]))):
     """List all users (admin and managers)."""
@@ -440,17 +466,188 @@ def admin_reset_user_password(
     user_id: int,
     current_user: dict = Depends(require_role(["ADMIN", "MANAGER_DEV", "MANAGER_QA"])),
 ):
-    """Reset user password to employee_id (or email prefix). Admin and managers."""
+    """Reset user password. CLIENT users reset to CLIENT_DEFAULT_PASSWORD; others to employee_id/email-prefix."""
     db = SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
-        default_password = user.employee_id or user.email.split("@")[0] or "changeme"
+        if user.role == "CLIENT":
+            default_password = CLIENT_DEFAULT_PASSWORD
+        else:
+            default_password = user.employee_id or user.email.split("@")[0] or "changeme"
         user.password_hash = hash_password(default_password)
         user.password_changed_at = None
         db.commit()
         return {"message": "Password reset successfully", "default_password": default_password}
+    finally:
+        db.close()
+
+
+@app.get("/admin/clients")
+def admin_list_clients(current_user: dict = Depends(require_role(["ADMIN"]))):
+    """List all client profiles (admin only)."""
+    db = SessionLocal()
+    try:
+        clients = db.query(ClientProfile).order_by(ClientProfile.name.asc()).all()
+        result = []
+        for client in clients:
+            linked_user = db.query(User).filter(User.email == client.email).first()
+            result.append({
+                "id": client.id,
+                "name": client.name,
+                "email": client.email,
+                "is_active": bool(client.is_active),
+                "created_on": client.created_on.isoformat() if client.created_on else None,
+                "updated_on": client.updated_on.isoformat() if client.updated_on else None,
+                "password_changed_at": linked_user.password_changed_at.isoformat() if linked_user and linked_user.password_changed_at else None,
+            })
+        return {"clients": result}
+    finally:
+        db.close()
+
+
+@app.post("/admin/clients")
+def admin_create_client(
+    body: ClientProfileCreate,
+    current_user: dict = Depends(require_role(["ADMIN"])),
+):
+    """Create a client profile and corresponding CLIENT login."""
+    db = SessionLocal()
+    try:
+        email = (body.email or "").strip().lower()
+        name = (body.name or "").strip()
+        if not email or not name:
+            raise HTTPException(status_code=400, detail="Name and email are required")
+
+        existing_client = db.query(ClientProfile).filter(ClientProfile.email == email).first()
+        if existing_client:
+            raise HTTPException(status_code=400, detail="Client email already exists")
+
+        existing_user = db.query(User).filter(User.email == email).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="A user with this email already exists")
+
+        client = ClientProfile(
+            name=name,
+            email=email,
+            is_active=bool(body.is_active if body.is_active is not None else True),
+        )
+        db.add(client)
+
+        db.add(User(
+            email=email,
+            password_hash=hash_password(CLIENT_DEFAULT_PASSWORD),
+            role="CLIENT",
+            employee_id=None,
+            password_changed_at=None,
+        ))
+
+        db.commit()
+        db.refresh(client)
+        return {
+            "message": "Client profile created successfully",
+            "client": {
+                "id": client.id,
+                "name": client.name,
+                "email": client.email,
+                "is_active": client.is_active,
+            },
+            "default_password": CLIENT_DEFAULT_PASSWORD,
+        }
+    finally:
+        db.close()
+
+
+@app.put("/admin/clients/{client_id}")
+def admin_update_client(
+    client_id: int,
+    body: ClientProfileUpdate,
+    current_user: dict = Depends(require_role(["ADMIN"])),
+):
+    """Update client profile details (admin only)."""
+    db = SessionLocal()
+    try:
+        client = db.query(ClientProfile).filter(ClientProfile.id == client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Client profile not found")
+
+        update_data = body.dict(exclude_unset=True)
+        new_email = None
+        if "email" in update_data and update_data["email"] is not None:
+            new_email = update_data["email"].strip().lower()
+            if not new_email:
+                raise HTTPException(status_code=400, detail="Email cannot be empty")
+            exists = db.query(ClientProfile).filter(ClientProfile.email == new_email, ClientProfile.id != client_id).first()
+            if exists:
+                raise HTTPException(status_code=400, detail="Another client already uses this email")
+            existing_user = db.query(User).filter(User.email == new_email).first()
+            if existing_user and existing_user.email != client.email:
+                raise HTTPException(status_code=400, detail="A user with this email already exists")
+
+        old_email = client.email
+        if "name" in update_data and update_data["name"] is not None:
+            name = update_data["name"].strip()
+            if not name:
+                raise HTTPException(status_code=400, detail="Name cannot be empty")
+            client.name = name
+        if new_email is not None:
+            client.email = new_email
+        if "is_active" in update_data and update_data["is_active"] is not None:
+            client.is_active = bool(update_data["is_active"])
+
+        linked_user = db.query(User).filter(User.email == old_email).first()
+        if linked_user:
+            linked_user.email = client.email
+            linked_user.role = "CLIENT"
+            linked_user.employee_id = None
+
+        db.commit()
+        db.refresh(client)
+        return {
+            "message": "Client profile updated successfully",
+            "client": {
+                "id": client.id,
+                "name": client.name,
+                "email": client.email,
+                "is_active": client.is_active,
+                "password_changed_at": linked_user.password_changed_at.isoformat() if linked_user and linked_user.password_changed_at else None,
+            },
+        }
+    finally:
+        db.close()
+
+
+@app.post("/admin/clients/{client_id}/reset-password")
+def admin_reset_client_password(
+    client_id: int,
+    current_user: dict = Depends(require_role(["ADMIN"])),
+):
+    """Reset client password to default and require change on next login."""
+    db = SessionLocal()
+    try:
+        client = db.query(ClientProfile).filter(ClientProfile.id == client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Client profile not found")
+
+        user = db.query(User).filter(User.email == client.email).first()
+        if not user:
+            user = User(
+                email=client.email,
+                password_hash=hash_password(CLIENT_DEFAULT_PASSWORD),
+                role="CLIENT",
+                employee_id=None,
+                password_changed_at=None,
+            )
+            db.add(user)
+        else:
+            user.password_hash = hash_password(CLIENT_DEFAULT_PASSWORD)
+            user.role = "CLIENT"
+            user.employee_id = None
+            user.password_changed_at = None
+
+        db.commit()
+        return {"message": "Client password reset successfully", "default_password": CLIENT_DEFAULT_PASSWORD}
     finally:
         db.close()
 
@@ -3824,7 +4021,7 @@ def import_employee_mapping_data(
                 if val is not None:
                     role_value = str(val).strip().upper()
                     # Validate role value
-                    valid_roles = ["ADMIN", "MANAGER_DEV", "MANAGER_QA", "LEAD_DEV", "LEAD_QA", "EMPLOYEE"]
+                    valid_roles = ["ADMIN", "MANAGER_DEV", "MANAGER_QA", "LEAD_DEV", "LEAD_QA", "EMPLOYEE", "CLIENT"]
                     if role_value in valid_roles:
                         # Find or create User record for this employee
                         user_record = db.query(User).filter(User.employee_id == employee_id).first()
@@ -4377,7 +4574,7 @@ def update_employee(
                 raise HTTPException(status_code=403, detail="Only Admin or Manager can change access roles")
             
             # Valid access roles
-            valid_roles = ["ADMIN", "MANAGER_DEV", "MANAGER_QA", "LEAD_DEV", "LEAD_QA", "EMPLOYEE"]
+            valid_roles = ["ADMIN", "MANAGER_DEV", "MANAGER_QA", "LEAD_DEV", "LEAD_QA", "EMPLOYEE", "CLIENT"]
             new_access_role = update_data['access_role'].upper()
             if new_access_role not in valid_roles:
                 raise HTTPException(status_code=400, detail=f"Invalid access role. Must be one of: {', '.join(valid_roles)}")

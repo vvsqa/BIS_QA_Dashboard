@@ -22,6 +22,7 @@ export default function AppSidebar() {
   const [theme, setTheme] = useTheme();
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   const path = location.pathname;
+  const isClient = user?.role === 'CLIENT';
 
   return (
     <aside className="sidebar">
@@ -82,7 +83,7 @@ export default function AppSidebar() {
           All Bugs Dashboard
         </Link>
         {/* Planning & execution */}
-        {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+        {!isClient && (user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
           <Link to="/planning" className={`nav-item ${path === '/planning' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
@@ -90,7 +91,7 @@ export default function AppSidebar() {
             Task Planning
           </Link>
         )}
-        {user?.employee_id && (
+        {!isClient && user?.employee_id && (
           <Link to="/my-tasks" className={`nav-item ${path === '/my-tasks' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M9 11l3 3L22 4" />
@@ -99,6 +100,7 @@ export default function AppSidebar() {
             My Tasks
           </Link>
         )}
+        {!isClient && (
         <Link to="/calendar" className={`nav-item ${path === '/calendar' ? 'active' : ''}`}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
@@ -108,6 +110,8 @@ export default function AppSidebar() {
           </svg>
           Calendar
         </Link>
+        )}
+        {!isClient && (
         <Link to="/timesheet" className={`nav-item ${path === '/timesheet' ? 'active' : ''}`}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <rect x="3" y="4" width="18" height="18" rx="2" />
@@ -119,8 +123,9 @@ export default function AppSidebar() {
           </svg>
           Timesheet
         </Link>
+        )}
         {/* People */}
-        {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+        {!isClient && (user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
           <Link to="/employees" className={`nav-item ${path.startsWith('/employees') && !path.includes(user?.employee_id) ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" />
@@ -130,7 +135,7 @@ export default function AppSidebar() {
             Employees
           </Link>
         )}
-        {user?.employee_id && (
+        {!isClient && user?.employee_id && (
           <Link
             to={`/employees/${user.employee_id}`}
             className={`nav-item ${path.includes(`/employees/${user.employee_id}`) ? 'active' : ''}`}
@@ -143,7 +148,7 @@ export default function AppSidebar() {
           </Link>
         )}
         {/* Reports & admin - accessible to managers, leads, and admins only */}
-        {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
+        {!isClient && (user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
           <Link to="/reports" className={`nav-item ${path === '/reports' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" />
@@ -154,7 +159,18 @@ export default function AppSidebar() {
             Reports
           </Link>
         )}
-        {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER')) && (
+        {!isClient && user?.role === 'ADMIN' && (
+          <Link to="/admin/clients" className={`nav-item ${path === '/admin/clients' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <circle cx="8" cy="8" r="3" />
+              <circle cx="16" cy="8" r="3" />
+              <path d="M2 20c0-3 2.5-5 6-5s6 2 6 5" />
+              <path d="M10 20c0-2.6 2-4.5 5-4.5s5 1.9 5 4.5" />
+            </svg>
+            Client Profiles
+          </Link>
+        )}
+        {!isClient && (user?.role === 'ADMIN' || user?.role?.includes('MANAGER')) && (
           <Link to="/settings" className={`nav-item ${path === '/settings' ? 'active' : ''}`}>
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
               <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" />

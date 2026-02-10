@@ -108,6 +108,7 @@ Legend:
 | `ADMIN_EMAIL` | Optional | Optional | Optional | Used in bootstrap/reset scripts. |
 | `ADMIN_DEFAULT_PASSWORD` | Optional | Optional | Optional | Used in bootstrap/reset scripts. |
 | `QA_MANAGER_PASSWORD` | Optional | Optional | Optional | Used in setup script. |
+| `CLIENT_DEFAULT_PASSWORD` | Optional | Optional | Optional | Default is `BIS@123`; used for admin client create/reset flows. |
 
 ---
 
