@@ -6,6 +6,29 @@ Primary template: `DEPLOYMENT_ENV.example`
 
 ---
 
+## What to do now (hosting after login fix)
+
+Follow these steps so users can log in on the hosted app.
+
+| Step | Action | Notes |
+|------|--------|--------|
+| **1. Backend env** | In backend `.env` (or env where the app runs), set at least: `DB_*` or `DATABASE_URL`, `JWT_SECRET_KEY`. | See §2 and `DEPLOYMENT_ENV.example`. |
+| **2. Deploy latest backend** | Deploy/run the current backend code (with `POST /auth/login` and `POST /login`). Restart the process (e.g. `sudo supervisorctl restart qa_dashboard_8004` or your service name). | Ensures both login routes are available. |
+| **3. Proxy → backend** | In nginx (or your reverse proxy), forward **API paths** to the FastAPI backend. Example: `/auth/login`, `/auth/me`, `/login`, and any other `/api/*` or backend paths must go to the backend, not to the static frontend. | If login request hits the static server, you get **404**. |
+| **4. Frontend build** | Build the frontend with **`REACT_APP_API_BASE`** set to the **backend** base URL. Example: `REACT_APP_API_BASE=https://api.yourdomain.com` (no trailing slash). Then `npm run build`. | This is baked into the build; empty in prod causes login to hit the wrong host and **404**. |
+| **5. Serve frontend** | Serve the built `build/` (or `dist/`) as the app’s static site. Reload proxy after any config change: e.g. `sudo systemctl reload nginx`. | — |
+| **6. Verify login** | In the browser: open the app → DevTools → Network → try to log in. Check the login request: **200** = success, **401** = wrong credentials (both mean backend is reached). **404** = request not reaching backend (fix proxy or `REACT_APP_API_BASE`). | See §4 for details. |
+
+**Optional backend check from the server:**
+
+```bash
+# Expect 401 (not 404) for invalid credentials
+curl -s -o /dev/null -w "%{http_code}" -X POST https://<your-backend-url>/auth/login \
+  -H "Content-Type: application/json" -d '{"email":"x@x.com","password":"y"}'
+```
+
+---
+
 ## 1) Variable Priority
 
 - Backend reads `DATABASE_URL` first (if set), otherwise uses `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`.
@@ -112,7 +135,19 @@ Legend:
 
 ---
 
-## 4) Recommended Dev/Staging/Prod Values
+## 4) Login / Auth (hosting – "unable to login" fix)
+
+- **Backend login endpoints** (both work; use the same handler):
+  - **Primary:** `POST /auth/login`
+  - **Alias:** `POST /login` (for proxies that expect `/login`)
+- **Frontend:** Build must have `REACT_APP_API_BASE` set to the **backend** base URL (e.g. `https://api.yourdomain.com`), no trailing slash. The app calls `${API_BASE}/auth/login`; if `REACT_APP_API_BASE` is empty in production, requests go to the frontend origin and return **404**.
+- **Reverse proxy:** Ensure API paths (e.g. `/auth/login`, `/auth/me`, `/login`) are forwarded to the FastAPI backend so the backend returns **200** or **401**, not the static server’s **404**.
+- **How to confirm:** Browser → DevTools → Network → trigger Login. Correct: **200 OK** (success) or **401 Unauthorized** (wrong credentials). Wrong: **404 Not Found** (request not reaching backend or wrong base URL).
+- After changing env or proxy: rebuild frontend (`npm run build`), reload/restart proxy (e.g. `sudo systemctl reload nginx`), restart backend (e.g. `sudo supervisorctl restart qa_dashboard_8004`).
+
+---
+
+## 5) Recommended Dev/Staging/Prod Values
 
 - `Dev`
   - Backend: local DB or dev DB; weak isolation acceptable.
@@ -131,7 +166,7 @@ Legend:
 
 ---
 
-## 5) Minimal Go-Live Checklist
+## 6) Minimal Go-Live Checklist
 
 - Backend starts with no missing env errors.
 - DB connectivity works (`/auth/login` responds).

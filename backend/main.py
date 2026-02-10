@@ -247,8 +247,7 @@ async def shutdown_event():
 
 # ===== AUTH ENDPOINTS =====
 
-@app.post("/auth/login")
-def login(req: LoginRequest):
+def _login_impl(req: LoginRequest):
     """Authenticate with email and password. Returns JWT and user info."""
     db = SessionLocal()
     try:
@@ -287,6 +286,18 @@ def login(req: LoginRequest):
         }
     finally:
         db.close()
+
+
+@app.post("/auth/login")
+def login(req: LoginRequest):
+    """Authenticate with email and password. Returns JWT and user info."""
+    return _login_impl(req)
+
+
+@app.post("/login")
+def login_alias(req: LoginRequest):
+    """Alias for /auth/login for hosting/proxy setups that expect POST /login."""
+    return _login_impl(req)
 
 
 @app.get("/auth/me")
