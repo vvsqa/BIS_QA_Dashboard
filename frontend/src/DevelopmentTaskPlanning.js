@@ -528,7 +528,14 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
       .then(({ ok, data }) => {
         if (cancelled) return;
         if (ok) {
-          setAllocationPreview({ distribution: data.distribution || [], total: data.total });
+          const distribution = data.distribution || [];
+          setAllocationPreview({ distribution, total: data.total });
+          if (data.max_available_on_start_date != null && data.max_available_on_start_date <= 0 && distribution.length > 0) {
+            const nextDate = distribution[0]?.date;
+            if (nextDate && nextDate !== form.start_date) {
+              setForm((prev) => ({ ...prev, start_date: nextDate }));
+            }
+          }
           if (data.max_available_on_start_date != null) {
             setStartDateAvailable(data.max_available_on_start_date);
           }

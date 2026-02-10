@@ -11130,6 +11130,14 @@ def qa_planning_get_week(
         def append_task(t, allocs_to_show):
             alloc_sum = sum(a.hours or 0 for a in allocs_to_show)
             display_hours = (t.total_planned_hours or 0) if (t.total_planned_hours and t.total_planned_hours > 0) else alloc_sum
+            # Use allocation date bounds as source of truth for display range.
+            # This prevents stale task.start_date/end_date from showing incorrect same-day ranges.
+            min_alloc_date, max_alloc_date = db.query(
+                func.min(QAPlannedAllocation.allocation_date),
+                func.max(QAPlannedAllocation.allocation_date),
+            ).filter(QAPlannedAllocation.task_id == t.id).first()
+            display_start = min_alloc_date or t.start_date
+            display_end = max_alloc_date or t.end_date or display_start
             tasks_list.append({
                 "id": t.id,
                 "employee_name": t.employee_name,
@@ -11139,8 +11147,8 @@ def qa_planning_get_week(
                 "ticket_priority": t.ticket_priority,
                 "generic_category": t.generic_category,
                 "activity_description": t.activity_description,
-                "start_date": t.start_date.isoformat(),
-                "end_date": t.end_date.isoformat() if t.end_date else None,
+                "start_date": display_start.isoformat() if display_start else None,
+                "end_date": display_end.isoformat() if display_end else None,
                 "total_planned_hours": round(display_hours, 1),
                 "created_by": t.created_by,
                 "allocations": [{"date": a.allocation_date.isoformat(), "hours": a.hours, "is_on_hold": getattr(a, 'is_on_hold', False)} for a in allocs_to_show],
@@ -11579,7 +11587,7 @@ def qa_planning_add_task(
             "Live Testing",
         ]
 
-        raw_task_category = (body.task_category or "").strip()
+        raw_task_category = (body.task_category or body.generic_category or "").strip()
         task_category_map = {c.lower(): c for c in TASK_CATEGORIES}
         normalized_task_category = task_category_map.get(raw_task_category.lower())
         if not normalized_task_category:
@@ -12561,7 +12569,7 @@ def dev_planning_add_task(
         db.commit()
 
         # Validations
-        raw_task_category = (body.task_category or "").strip()
+        raw_task_category = (body.task_category or body.generic_category or "").strip()
         task_category_map = {c.lower(): c for c in TASK_CATEGORIES}
         normalized_task_category = task_category_map.get(raw_task_category.lower())
         if not normalized_task_category:

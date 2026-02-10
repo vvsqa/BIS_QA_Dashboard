@@ -567,6 +567,12 @@ function QATaskPlanning({ showParentTitle = false }) {
         setSelectedTestersAvailability(byId);
         const minAvail = Math.min(...results.map((r) => r.availableOnStartDate));
         setStartDateAvailable(minAvail);
+        if (minAvail <= 0 && firstDistribution && firstDistribution.length > 0) {
+          const nextDate = firstDistribution[0]?.date;
+          if (nextDate && nextDate !== form.start_date) {
+            setForm((prev) => ({ ...prev, start_date: nextDate }));
+          }
+        }
         if (failed.length > 0) {
           setAllocationPreview({ error: failed.join('; '), distribution: firstDistribution });
         } else {
@@ -586,9 +592,17 @@ function QATaskPlanning({ showParentTitle = false }) {
         apiFetch(`${API_BASE}/qa-planning/allocation-preview?employee_name=${encodeURIComponent(emp.employee_name)}&start_date=${form.start_date}&total_hours=${hours}&max_hours_per_day=${maxPerDay}&week_start=${weekStart}`).then((r) => r.json().then((d) => ({ ok: r.ok, data: d }))),
       ]).then(([availData, allocResult]) => {
         if (cancelled) return;
-        setStartDateAvailable(availData?.available_hours ?? 8);
+        const availableOnStart = availData?.available_hours ?? 8;
+        setStartDateAvailable(availableOnStart);
         if (allocResult.ok && !allocResult.data.error) {
-          setAllocationPreview({ distribution: allocResult.data.distribution || [], total: allocResult.data.total });
+          const distribution = allocResult.data.distribution || [];
+          setAllocationPreview({ distribution, total: allocResult.data.total });
+          if (availableOnStart <= 0 && distribution.length > 0) {
+            const nextDate = distribution[0]?.date;
+            if (nextDate && nextDate !== form.start_date) {
+              setForm((prev) => ({ ...prev, start_date: nextDate }));
+            }
+          }
           if (allocResult.data.max_available_on_start_date != null) setStartDateAvailable(allocResult.data.max_available_on_start_date);
         } else {
           setAllocationPreview({ error: allocResult.data.error || allocResult.data.detail || 'Cannot fit hours' });
