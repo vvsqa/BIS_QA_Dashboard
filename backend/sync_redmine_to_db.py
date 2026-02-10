@@ -12,13 +12,14 @@ Usage:
 import requests
 import json
 import argparse
+import os
 from sqlalchemy.orm import Session
 from database import SessionLocal
 from models import Bug, BugStatusHistory
 from datetime import datetime
 
-REDMINE_URL = "https://redmine.bissafety.app"
-API_KEY = "9d32eee5d4a31e7051efbe930a8b395ae5f77fb6"
+REDMINE_URL = os.getenv("REDMINE_URL", "https://redmine.bissafety.app")
+API_KEY = os.getenv("REDMINE_API_KEY", "")
 
 headers = {
     "X-Redmine-API-Key": API_KEY
@@ -88,6 +89,9 @@ def sync_redmine_bugs(full_refresh=False, all_bugs=False):
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"All bugs (incl. closed): {all_bugs}")
     print("="*60)
+
+    if not API_KEY:
+        raise RuntimeError("REDMINE_API_KEY is not set. Configure it in environment variables.")
 
     db: Session = SessionLocal()
     total_processed = 0

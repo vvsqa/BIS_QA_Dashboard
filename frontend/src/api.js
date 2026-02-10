@@ -1,11 +1,12 @@
 /**
  * Authenticated API client. Adds Bearer token to requests.
  * On 401, clears token and triggers logout.
- * In development with npm start, use empty base so the proxy (package.json "proxy": "http://localhost:8000") is used.
+ * API base is environment-driven:
+ * - REACT_APP_API_BASE for direct API calls (prod/staging or custom local setup).
+ * - Empty value uses relative paths (works with dev proxy or same-origin backend).
  */
-const API_BASE = process.env.REACT_APP_API_BASE !== undefined && process.env.REACT_APP_API_BASE !== ''
-  ? process.env.REACT_APP_API_BASE
-  : (process.env.NODE_ENV === 'development' ? '' : `http://${window.location.hostname}:8000`);
+const rawApiBase = (process.env.REACT_APP_API_BASE || '').trim();
+const API_BASE = rawApiBase.replace(/\/$/, '');
 const TOKEN_KEY = 'qa_dashboard_token';
 
 export function getToken() {

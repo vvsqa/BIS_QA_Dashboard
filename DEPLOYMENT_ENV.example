@@ -1,0 +1,105 @@
+# BIS QA Dashboard - Unified deployment environment template
+# Share this file with DevOps and split variables per deployment target:
+# - Backend service/container
+# - Frontend build pipeline
+#
+# Do not commit real secrets. Keep this as template only.
+
+# -------------------------------------------------------------------
+# Backend - Core (required)
+# -------------------------------------------------------------------
+DB_HOST=
+DB_PORT=5432
+DB_NAME=qa_dashboard
+DB_USER=
+DB_PASSWORD=
+# Preferred in production if available (overrides DB_* values):
+# DATABASE_URL=postgresql+psycopg2://user:password@host:5432/qa_dashboard
+
+JWT_SECRET_KEY=
+
+# Optional admin bootstrap values (used by setup/reset scripts)
+ADMIN_EMAIL=admin@techversantinfotech.com
+ADMIN_DEFAULT_PASSWORD=
+QA_MANAGER_PASSWORD=
+
+# -------------------------------------------------------------------
+# Backend - PM Tracker API
+# -------------------------------------------------------------------
+PM_API_URL=https://www.bissafety.app/rest/v.01/pm/ticket-export
+PM_API_KEY=
+PM_API_TIMEOUT=30
+PM_API_MAX_RETRIES=3
+PM_API_RETRY_DELAY=5
+
+PM_AUTO_SYNC=true
+PM_SYNC_INTERVAL_MINUTES=10
+PM_SYNC_LOGGING=true
+PM_STORE_SYNC_HISTORY=true
+PM_SYNC_HISTORY_RETENTION_DAYS=30
+
+# -------------------------------------------------------------------
+# Backend - Redmine sync
+# -------------------------------------------------------------------
+REDMINE_URL=https://redmine.bissafety.app
+REDMINE_API_KEY=
+REDMINE_AUTO_SYNC=true
+REDMINE_SYNC_INTERVAL_MINUTES=15
+
+# -------------------------------------------------------------------
+# Backend - Google Sheets sync (optional)
+# -------------------------------------------------------------------
+SHEETS_AUTO_SYNC=true
+SHEETS_REALTIME_SYNC=true
+SHEETS_SYNC_INTERVAL=5
+
+GOOGLE_CREDENTIALS_FILE=config/google_credentials.json
+GOOGLE_AUTH_METHOD=oauth2
+OAUTH2_CREDENTIALS_FILE=config/oauth2_credentials.json
+OAUTH2_TOKEN_FILE=config/token.json
+
+QA_TIMESHEET_SHEET_ID=
+DEV_TIMESHEET_SHEET_ID=
+QA_SHEET_NAME=BIS - QA
+DEV_SHEET_NAME=Web
+
+# Optional column mappings
+COL_EMPLOYEE_NAME=Tester
+COL_DATE=Date
+COL_TICKET_ID=Ticket
+COL_HOURS=Time Spent
+COL_LEAVE_TYPE=Leave
+COL_TASK_DESC=Task
+COL_PROJECT=Status
+
+# -------------------------------------------------------------------
+# Backend - TestRail sync (optional)
+# -------------------------------------------------------------------
+TESTRAIL_URL=https://bistrainer.testrail.io
+TESTRAIL_EMAIL=
+TESTRAIL_API_KEY=
+TESTRAIL_PROJECT_ID=14
+
+# Optional email notifications for TestRail sync
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
+NOTIFICATION_EMAIL=
+
+# -------------------------------------------------------------------
+# Backend - File import paths (optional scripts)
+# -------------------------------------------------------------------
+# IMPORTS_FOLDER=
+# DOWNLOADS_FOLDER=
+
+# -------------------------------------------------------------------
+# Frontend - Runtime/build API configuration
+# -------------------------------------------------------------------
+# Required for hosted frontend builds:
+# Example: REACT_APP_API_BASE=https://qa-api.yourdomain.com
+REACT_APP_API_BASE=
+
+# Local development proxy target (used by CRA setupProxy.js)
+# Keep empty in production builds.
+REACT_APP_DEV_PROXY_TARGET=http://localhost:8000

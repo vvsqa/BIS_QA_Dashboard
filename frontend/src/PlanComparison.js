@@ -14,6 +14,7 @@ import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { formatAPIDate, formatDisplayDate, formatPlanningWeek } from './dateUtils';
 import { useTableSort, SortableHeader } from './useTableSort';
 import { TicketExternalLink } from './ticketUtils';
+import { API_BASE } from './api';
 import './PlanComparison.css';
 
 ChartJS.register(
@@ -25,8 +26,6 @@ ChartJS.register(
   Legend,
   ChartDataLabels
 );
-
-const API_BASE = (process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`).replace(/\/$/, '');
 
 function getWeekMonday(d) {
   const date = new Date(d);

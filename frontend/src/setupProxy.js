@@ -1,12 +1,12 @@
 /**
  * Explicit proxy to backend in development.
- * Proxies API paths to http://localhost:8000, but NOT browser document requests
+ * Proxies API paths to REACT_APP_DEV_PROXY_TARGET, but NOT browser document requests
  * (e.g. refresh on /timesheet) so the dev server serves index.html and the SPA loads.
  * Restart "npm start" after changing this file.
  */
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
-const backend = 'http://localhost:8000';
+const backend = (process.env.REACT_APP_DEV_PROXY_TARGET || '').trim();
 const apiPaths = [
   '/timesheet',
   '/auth',
@@ -37,6 +37,13 @@ function isBrowserDocumentRequest(req) {
 }
 
 module.exports = function (app) {
+  if (!backend) {
+    // Keep startup working even when no proxy target is configured.
+    // In that case set REACT_APP_API_BASE for direct API calls.
+    console.warn('[setupProxy] REACT_APP_DEV_PROXY_TARGET is not set. API proxy is disabled.');
+    return;
+  }
+
   app.use(
     createProxyMiddleware((pathname, req) => {
       if (!isApiPath(pathname)) return false;

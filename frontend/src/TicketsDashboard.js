@@ -4,7 +4,7 @@ import { Bar, Doughnut } from "react-chartjs-2";
 import { useTableSort, SortableHeader } from "./useTableSort";
 import { formatDisplayDate, formatDisplayDateTime, formatDisplayDateWithDay } from "./dateUtils";
 import { TicketExternalLink } from "./ticketUtils";
-import { apiFetch } from "./api";
+import { apiFetch, API_BASE } from "./api";
 import { useAuth } from "./AuthContext";
 import { useTheme } from "./ThemeContext";
 import AppSidebar from "./AppSidebar";
@@ -12,7 +12,7 @@ import html2canvas from 'html2canvas';
 import jsPDF from 'jspdf';
 import "./dashboard.css";
 
-const BACKEND_URL = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
+const BACKEND_URL = API_BASE;
 
 // Status to Team Mapping
 const STATUS_TEAM_MAPPING = {

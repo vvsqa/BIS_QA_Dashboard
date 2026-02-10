@@ -14,7 +14,7 @@ import {
 import { Bar, Doughnut } from "react-chartjs-2";
 import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { useTableSort, SortableHeader } from "./useTableSort";
-import { apiFetch } from "./api";
+import { apiFetch, API_BASE } from "./api";
 import { useAuth } from "./AuthContext";
 import { useTheme } from "./ThemeContext";
 import AppSidebar from "./AppSidebar";
@@ -31,7 +31,7 @@ ChartJS.register(
   ChartDataLabels
 );
 
-const BACKEND_URL = process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`;
+const BACKEND_URL = API_BASE;
 
 // Speedometer Gauge Component (same as Dashboard)
 function SpeedometerGauge({ value, label, maxValue = 100, theme = 'dark' }) {

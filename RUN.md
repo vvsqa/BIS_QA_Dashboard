@@ -42,7 +42,25 @@ npm install
 npm start
 ```
 
-Browser will open at **http://localhost:3000**. The frontend proxies API calls to port 8000, so you **do not need** to set `REACT_APP_API_BASE` for local dev.
+Browser will open at **http://localhost:3000**. Frontend uses env-based API config:
+- `REACT_APP_API_BASE` (leave empty in local dev for relative API paths)
+- `REACT_APP_DEV_PROXY_TARGET` (dev proxy destination)
+
+For local development, keep `REACT_APP_API_BASE` empty and set proxy target:
+
+```bash
+cd frontend
+REACT_APP_DEV_PROXY_TARGET=http://localhost:8000 npm start
+```
+
+**Windows (PowerShell):**
+
+```powershell
+cd frontend
+$env:REACT_APP_API_BASE=""
+$env:REACT_APP_DEV_PROXY_TARGET="http://localhost:8000"
+npm start
+```
 
 ---
 
@@ -89,7 +107,14 @@ They must be on the same network (same Wi‑Fi or LAN). Your firewall may need t
 1. **On this PC:** Try **http://localhost:3000**. If that works but **http://10.1.0.165:3000** (or your IP) does not, the frontend may be bound to localhost only. Restart it with `start-frontend-network.bat` or `set HOST=0.0.0.0 && npm start` in the `frontend` folder.
 2. **From another device:** Windows Firewall often blocks port 3000. **Double‑click `allow-network-access-firewall.bat`** (or right‑click → Run as administrator). When UAC asks, click Yes. If it still doesn’t work, add the rule manually: open **Command Prompt as Administrator** and run: `netsh advfirewall firewall add rule name="QA Dashboard 3000" dir=in action=allow protocol=TCP localport=3000`
 3. **Same network:** The other device must be on the same Wi‑Fi or LAN (same subnet). Use the host PC’s IPv4 address from `ipconfig` (e.g. `10.1.0.165`), not `localhost`.
-4. **Backend:** Keep the backend running (e.g. `start-backend.bat`). The frontend proxy will send API traffic to it.
+4. **Backend:** Keep the backend running (e.g. `start-backend.bat`).
+5. **Frontend proxy target:** keep `REACT_APP_API_BASE` empty and point proxy to backend:
+   - PowerShell:
+     - `$env:REACT_APP_API_BASE=""`
+     - `$env:REACT_APP_DEV_PROXY_TARGET="http://127.0.0.1:8000"; npm start`
+   - Command Prompt:
+     - `set REACT_APP_API_BASE=`
+     - `set REACT_APP_DEV_PROXY_TARGET=http://127.0.0.1:8000 && npm start`
 
 ---
 

@@ -338,6 +338,11 @@
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
+.home-eta-upcoming-item > div:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .home-eta-upcoming-item:hover {
   border-color: #3f5f8f;
 }
@@ -350,6 +355,9 @@
 .home-eta-upcoming-title {
   color: #e2e8f0;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .home-eta-upcoming-sub {
@@ -369,22 +377,29 @@
 
 .home-eta-upcoming-right {
   display: flex;
+  flex: 0 0 145px;
   align-items: flex-end;
   flex-direction: column;
   gap: 0.3rem;
 }
 
 .home-eta-upcoming-status {
-  max-width: 180px;
+  width: 100%;
   color: #cbd5e1;
   font-size: 0.78rem;
   line-height: 1.25;
   text-align: right;
+  word-break: break-word;
+}
+
+.home-eta-upcoming-right .home-eta-category-pill {
+  white-space: nowrap;
 }
 
 .home-eta-upcoming-date {
   color: #8ca0bf;
   font-size: 0.8rem;
+  white-space: nowrap;
 }
 
 .category-overdue {

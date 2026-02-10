@@ -15,7 +15,7 @@ import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { formatDisplayDate, formatAPIDate, formatDisplayDateWithDay, formatPlanningWeek } from './dateUtils';
 import { TicketExternalLink, getTicketTrackingUrl } from './ticketUtils';
 import { useTableSort, SortableHeader } from './useTableSort';
-import { apiFetch } from './api';
+import { apiFetch, API_BASE } from './api';
 import { useAuth } from './AuthContext';
 import './DevelopmentTaskPlanning.css';
 import './QATaskPlanning.css';
@@ -32,7 +32,7 @@ ChartJS.register(
   ChartDataLabels
 );
 
-const API_BASE = (process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`).replace(/\/$/, '');
+
 const HOURS_PER_WEEK = 40;
 const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous'];
 const GENERIC_CATEGORIES = ['Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous'];
@@ -715,7 +715,7 @@ function QATaskPlanning({ showParentTitle = false }) {
     };
   }, [chartData.priorityCounts]);
 
-  // Tester workload chart – use testerCounts (tickets by QC tester) for full QA team; fallback to plannerTaskCounts
+  // Tester workload chart â€“ use testerCounts (tickets by QC tester) for full QA team; fallback to plannerTaskCounts
   const testerChartData = useMemo(() => {
     const counts = Object.keys(chartData.testerCounts || {}).length > 0
       ? chartData.testerCounts
@@ -969,7 +969,7 @@ function QATaskPlanning({ showParentTitle = false }) {
     const totalHours = Number(multiPlanForm.total_hours);
     if (isNaN(totalHours) || totalHours < 0.5) err.total_hours = 'Duration must be at least 0.5 hours';
     const maxH = Number(multiPlanForm.max_hours_per_day);
-    if (isNaN(maxH) || maxH < 0.5 || maxH > 8) err.max_hours_per_day = 'Max hours must be 0.5–8';
+    if (isNaN(maxH) || maxH < 0.5 || maxH > 8) err.max_hours_per_day = 'Max hours must be 0.5â€“8';
     const today = formatAPIDate(new Date());
     if (multiPlanForm.start_date && multiPlanForm.start_date < today) err.start_date = 'Start date cannot be in the past';
     setMultiPlanErrors(err);
@@ -1221,7 +1221,7 @@ function QATaskPlanning({ showParentTitle = false }) {
     
     const maxH = form.max_hours_per_day != null ? Number(form.max_hours_per_day) : 8;
     if (isNaN(maxH) || maxH < 0.5 || maxH > 8 || !MAX_HOURS_PER_DAY_OPTIONS.includes(maxH)) {
-      err.max_hours_per_day = 'Select max hours per day (0.5–8h)';
+      err.max_hours_per_day = 'Select max hours per day (0.5â€“8h)';
     }
     
     const today = formatAPIDate(new Date());
@@ -1499,7 +1499,7 @@ function QATaskPlanning({ showParentTitle = false }) {
       {showParentTitle && (
         <header className="qa-planning-header">
           <div className="qa-planning-header-left">
-            <Link to="/" className="qa-planning-back">← Dashboard</Link>
+            <Link to="/" className="qa-planning-back">â† Dashboard</Link>
             <h1>QA Task Planning</h1>
           </div>
         </header>
@@ -1532,7 +1532,7 @@ function QATaskPlanning({ showParentTitle = false }) {
         <div className="dev-my-tasks-container qa-my-tasks">
           <div className="dev-my-tasks-header">
             <div className="dev-my-tasks-title-row">
-              <span className="dev-my-tasks-icon">✅</span>
+              <span className="dev-my-tasks-icon">âœ…</span>
               <div>
                 <h2 className="dev-my-tasks-title">My Planned Tasks</h2>
                 <p className="dev-my-tasks-subtitle">Your QA tasks for the week</p>
@@ -1553,7 +1553,7 @@ function QATaskPlanning({ showParentTitle = false }) {
             </div>
           </div>
           {loading ? (
-            <div className="qa-planning-skeleton">Loading your tasks…</div>
+            <div className="qa-planning-skeleton">Loading your tasksâ€¦</div>
           ) : !weekData ? (
             <div className="qa-planning-empty">
               <p>No planning data for this week.</p>
@@ -1592,9 +1592,9 @@ function QATaskPlanning({ showParentTitle = false }) {
                           </span>
                           <span className="dev-my-tasks-card-hours">{t.total_planned_hours || 0}h</span>
                         </div>
-                        <p className="dev-my-tasks-card-desc">{t.activity_description || (t.ticket_id ? `Ticket #${t.ticket_id}` : t.generic_category) || '—'}</p>
+                        <p className="dev-my-tasks-card-desc">{t.activity_description || (t.ticket_id ? `Ticket #${t.ticket_id}` : t.generic_category) || 'â€”'}</p>
                         <div className="dev-my-tasks-card-dates">
-                          {t.start_date && t.end_date ? `${formatDisplayDateWithDay(t.start_date)} → ${formatDisplayDateWithDay(t.end_date)}` : t.start_date ? formatDisplayDateWithDay(t.start_date) : '—'}
+                          {t.start_date && t.end_date ? `${formatDisplayDateWithDay(t.start_date)} â†’ ${formatDisplayDateWithDay(t.end_date)}` : t.start_date ? formatDisplayDateWithDay(t.start_date) : 'â€”'}
                         </div>
                       </div>
                     ))}
@@ -1621,11 +1621,11 @@ function QATaskPlanning({ showParentTitle = false }) {
               <div className="qa-overview-header">
                 <div className="qa-overview-title-section">
                   <h2 className="qa-overview-title">
-                    <span className="qa-title-icon">🧪</span>
+                    <span className="qa-title-icon">ðŸ§ª</span>
                     QA Active Tickets Dashboard
                   </h2>
                   <span className="qa-overview-subtitle">
-                    {overviewData.total || 0} tickets in QC pipeline • Excludes BIS Testing
+                    {overviewData.total || 0} tickets in QC pipeline â€¢ Excludes BIS Testing
                   </span>
                 </div>
                 <div className="qa-overview-actions">
@@ -1674,7 +1674,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                       ? "Export filtered tickets to Excel"
                       : "Export active tickets to Excel"}
                   >
-                    📥 Export Excel
+                    ðŸ“¥ Export Excel
                   </button>
                   <button 
                     type="button" 
@@ -1683,7 +1683,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                     disabled={refreshing}
                     title="Sync latest data from PM Tracker"
                   >
-                    {refreshing ? '⟳ Syncing...' : '⟳ Refresh'}
+                    {refreshing ? 'âŸ³ Syncing...' : 'âŸ³ Refresh'}
                   </button>
                 </div>
               </div>
@@ -1695,7 +1695,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                     className={`qa-summary-card qa-card-total ${selectedCard?.type === 'status' && selectedCard?.key === 'all' ? 'selected' : ''}`}
                     onClick={() => handleCardClick('status', 'all', 'All Tickets')}
                   >
-                    <div className="qa-card-icon">📊</div>
+                    <div className="qa-card-icon">ðŸ“Š</div>
                     <div className="qa-card-content">
                       <span className="qa-card-value">{overviewData.total || 0}</span>
                       <span className="qa-card-label">Total Tickets</span>
@@ -1706,7 +1706,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                     className={`qa-summary-card qa-card-pending ${selectedCard?.type === 'status' && selectedCard?.key === 'QC Testing' ? 'selected' : ''}`}
                     onClick={() => handleCardClick('status', 'QC Testing', 'QC Testing')}
                   >
-                    <div className="qa-card-icon">📋</div>
+                    <div className="qa-card-icon">ðŸ“‹</div>
                     <div className="qa-card-content">
                       <span className="qa-card-value">{statusCards['QC Testing'] || 0}</span>
                       <span className="qa-card-label">QC Testing</span>
@@ -1718,7 +1718,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                     className={`qa-summary-card qa-card-progress ${selectedCard?.type === 'status' && selectedCard?.key === 'QC Testing in Progress' ? 'selected' : ''}`}
                     onClick={() => handleCardClick('status', 'QC Testing in Progress', 'In Progress')}
                   >
-                    <div className="qa-card-icon">🔄</div>
+                    <div className="qa-card-icon">ðŸ”„</div>
                     <div className="qa-card-content">
                       <span className="qa-card-value">{statusCards['QC Testing in Progress'] || 0}</span>
                       <span className="qa-card-label">In Progress</span>
@@ -1730,7 +1730,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                     className={`qa-summary-card qa-card-hold ${selectedCard?.type === 'status' && selectedCard?.key === 'QC Testing Hold' ? 'selected' : ''}`}
                     onClick={() => handleCardClick('status', 'QC Testing Hold', 'On Hold')}
                   >
-                    <div className="qa-card-icon">⏸️</div>
+                    <div className="qa-card-icon">â¸ï¸</div>
                     <div className="qa-card-content">
                       <span className="qa-card-value">{statusCards['QC Testing Hold'] || 0}</span>
                       <span className="qa-card-label">On Hold</span>
@@ -1742,7 +1742,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                     className={`qa-summary-card qa-card-planned ${selectedCard?.type === 'planning' && selectedCard?.key === 'planned' ? 'selected' : ''}`}
                     onClick={() => handleCardClick('planning', 'planned', 'Planned')}
                   >
-                    <div className="qa-card-icon">✅</div>
+                    <div className="qa-card-icon">âœ…</div>
                     <div className="qa-card-content">
                       <span className="qa-card-value">{chartData.planned}</span>
                       <span className="qa-card-label">Planned</span>
@@ -1754,7 +1754,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                     className={`qa-summary-card qa-card-not-planned ${selectedCard?.type === 'planning' && selectedCard?.key === 'not_planned' ? 'selected' : ''}`}
                     onClick={() => handleCardClick('planning', 'not_planned', 'Not Planned')}
                   >
-                    <div className="qa-card-icon">⚠️</div>
+                    <div className="qa-card-icon">âš ï¸</div>
                     <div className="qa-card-content">
                       <span className="qa-card-value">{chartData.notPlanned}</span>
                       <span className="qa-card-label">Not Planned</span>
@@ -1810,7 +1810,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                         <p className="qa-chart-subtitle">
                       {Object.keys(chartData.testerCounts || {}).length > 0
                         ? 'Tickets by QC tester'
-                        : `Planner tasks · ${formatPlanningWeek(weekStart)}`}
+                        : `Planner tasks Â· ${formatPlanningWeek(weekStart)}`}
                     </p>
                       </div>
                       {testerChartHasMore && (
@@ -1820,7 +1820,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                           onClick={() => setTesterChartExpanded((v) => !v)}
                           title={testerChartExpanded ? 'Show fewer' : `Show all ${testerChartTotalCount}`}
                         >
-                          {testerChartExpanded ? '▼ Collapse' : `▲ Expand (${testerChartTotalCount})`}
+                          {testerChartExpanded ? 'â–¼ Collapse' : `â–² Expand (${testerChartTotalCount})`}
                         </button>
                       )}
                     </div>
@@ -1866,7 +1866,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                         />
                       ) : (
                         <div className="qa-chart-empty">
-                          {loading ? 'Loading…' : (weekData ? 'No tasks assigned this week' : 'Go to Weekly Planner to create a week')}
+                          {loading ? 'Loadingâ€¦' : (weekData ? 'No tasks assigned this week' : 'Go to Weekly Planner to create a week')}
                         </div>
                       )}
                     </div>
@@ -1910,7 +1910,7 @@ function QATaskPlanning({ showParentTitle = false }) {
               <section className="qa-filters-section">
                 <div className="qa-filters-row">
                   <div className="qa-search-wrap">
-                    <span className="qa-search-icon">🔍</span>
+                    <span className="qa-search-icon">ðŸ”</span>
                     <input
                       type="text"
                       placeholder="Search tickets..."
@@ -1995,7 +1995,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                 {selectedCard && (
                   <div className="qa-active-filter-badge">
                     <span>Showing: {selectedCard.label}</span>
-                    <button type="button" onClick={() => setSelectedCard(null)}>×</button>
+                    <button type="button" onClick={() => setSelectedCard(null)}>Ã—</button>
                   </div>
                 )}
               </section>
@@ -2023,7 +2023,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                               <Link to={`/tickets?ticket=${t.ticket_id}`} onClick={() => setShowInQc10List(false)}>
                                 #{t.ticket_id}
                               </Link>
-                              <span className="qa-in-qc-15-meta">{t.title?.slice(0, 50)}{(t.title?.length || 0) > 50 ? '…' : ''}</span>
+                              <span className="qa-in-qc-15-meta">{t.title?.slice(0, 50)}{(t.title?.length || 0) > 50 ? 'â€¦' : ''}</span>
                               <span className="qa-in-qc-15-pill" style={{ backgroundColor: PRIORITY_COLORS[t.priority] || '#6b7280' }}>{t.priority}</span>
                               <span className="qa-in-qc-15-days">{t.days_in_qc}d</span>
                             </li>
@@ -2053,7 +2053,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                         <TicketExternalLink ticketId={t.ticket_id} />
                       </td>
                       <td className="qa-title-cell" title={t.title}>
-                        {t.title?.slice(0, 45)}{(t.title?.length || 0) > 45 ? '…' : ''}
+                        {t.title?.slice(0, 45)}{(t.title?.length || 0) > 45 ? 'â€¦' : ''}
                       </td>
                       <td>
                         <span
@@ -2074,7 +2074,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                         </span>
                       </td>
                       <td className="qa-retest-cycle-cell" title={t.retest_cycle_count > 0 ? `Times returned to QA after failure: ${t.retest_cycle_count}` : ''}>
-                        {t.retest_cycle_count > 0 ? t.retest_cycle_count : '—'}
+                        {t.retest_cycle_count > 0 ? t.retest_cycle_count : 'â€”'}
                       </td>
                       <td className="qa-ageing-cell">
                         <span title={t.moved_to_qc_on ? `Moved to QC: ${t.moved_to_qc_on}` : ''}>
@@ -2084,14 +2084,14 @@ function QATaskPlanning({ showParentTitle = false }) {
                           <span className="qa-hold-badge">({t.days_on_hold}d hold)</span>
                         )}
                       </td>
-                      <td title={t.module || ''}>{t.module || '—'}</td>
+                      <td title={t.module || ''}>{t.module || 'â€”'}</td>
                       <td>
                         <span className={`qa-platform-badge ${(t.platform || 'Web').toLowerCase()}`}>
                           {t.platform || 'Web'}
                         </span>
                       </td>
-                      <td title={t.qc_tester || ''}>{t.qc_tester || '—'}</td>
-                      <td title={t.qa_lead || ''}>{t.qa_lead || '—'}</td>
+                      <td title={t.qc_tester || ''}>{t.qc_tester || 'â€”'}</td>
+                      <td title={t.qa_lead || ''}>{t.qa_lead || 'â€”'}</td>
                       <td title={t.developers_str || ''}>{t.developers_str || 'Not Assigned'}</td>
                       <td className={isNotPlanned ? 'qa-estimate-missing' : ''}>
                         {isNotPlanned ? (
@@ -2100,8 +2100,8 @@ function QATaskPlanning({ showParentTitle = false }) {
                           `${t.qa_estimate_hours}h`
                         )}
                       </td>
-                      <td>{t.qa_actual_hours != null ? `${t.qa_actual_hours}h` : '—'}</td>
-                      <td>{t.eta ? formatDisplayDate(t.eta) : '—'}</td>
+                      <td>{t.qa_actual_hours != null ? `${t.qa_actual_hours}h` : 'â€”'}</td>
+                      <td>{t.eta ? formatDisplayDate(t.eta) : 'â€”'}</td>
                       {showTestedByDev && (
                         <td className="qa-tested-by-dev-cell">
                           <label className="qa-tested-by-dev-checkbox">
@@ -2333,7 +2333,7 @@ function QATaskPlanning({ showParentTitle = false }) {
           <div className="dev-planner-header">
             <div className="dev-planner-header-left">
               <div className="dev-planner-title-row">
-                <span className="dev-planner-icon">📋</span>
+                <span className="dev-planner-icon">ðŸ“‹</span>
                 <div>
                   <h1 className="dev-planner-title">QA Task Planning</h1>
                   <p className="dev-planner-subtitle">Resource Allocation & Weekly Planning</p>
@@ -2369,7 +2369,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                 disabled={refreshing}
                 title="Refresh PM Tracker data"
               >
-                {refreshing ? '↻ Syncing…' : '↻ Refresh PM Tracker'}
+                {refreshing ? 'â†» Syncingâ€¦' : 'â†» Refresh PM Tracker'}
               </button>
               {canEdit && (
                 <>
@@ -2377,14 +2377,14 @@ function QATaskPlanning({ showParentTitle = false }) {
                     <span className="btn-dot" /> Draft
                   </button>
                   <button type="button" className="dev-planner-btn submit" onClick={() => updateWeekState('submitted')} disabled={actionLoading}>
-                    ✓ Submit Plan
+                    âœ“ Submit Plan
                   </button>
                 </>
               )}
               <span className="dev-planner-save-status">{lastRefresh ? `Synced: ${lastRefresh.toLocaleTimeString()}` : 'Last saved: 2 min ago'}</span>
               <div className="dev-planner-view-toggle">
-                <button type="button" className={plannerViewMode === 'grid' ? 'active' : ''} onClick={() => setPlannerViewMode('grid')} title="Grid view">⊞</button>
-                <button type="button" className={plannerViewMode === 'list' ? 'active' : ''} onClick={() => setPlannerViewMode('list')} title="List view">≡</button>
+                <button type="button" className={plannerViewMode === 'grid' ? 'active' : ''} onClick={() => setPlannerViewMode('grid')} title="Grid view">âŠž</button>
+                <button type="button" className={plannerViewMode === 'list' ? 'active' : ''} onClick={() => setPlannerViewMode('list')} title="List view">â‰¡</button>
               </div>
             </div>
           </div>
@@ -2404,7 +2404,7 @@ function QATaskPlanning({ showParentTitle = false }) {
               </div>
               <div className="dev-planner-filters">
                 <div className="dev-planner-search-wrap">
-                  <span className="search-icon">🔍</span>
+                  <span className="search-icon">ðŸ”</span>
                   <input
                     type="text"
                     placeholder="Search by ID, title, or tester..."
@@ -2463,7 +2463,7 @@ function QATaskPlanning({ showParentTitle = false }) {
               </div>
               <div className="dev-planner-ticket-list">
                 {loading ? (
-                  <div className="dev-planning-skeleton">Loading tickets…</div>
+                  <div className="dev-planning-skeleton">Loading ticketsâ€¦</div>
                 ) : filteredPlannerTickets.length === 0 ? (
                   <div className="dev-planning-empty">
                     <p>No tickets found.</p>
@@ -2479,10 +2479,10 @@ function QATaskPlanning({ showParentTitle = false }) {
                         </span>
                         <span className={`dev-planner-status-badge status-${(t.status || '').toLowerCase().replace(/\s+/g, '-').slice(0, 20)}`}>{t.status || 'Open'}</span>
                       </div>
-                      <p className="dev-planner-ticket-title" title={t.title}>{t.title?.slice(0, 60)}{(t.title?.length || 0) > 60 ? '…' : ''}</p>
+                      <p className="dev-planner-ticket-title" title={t.title}>{t.title?.slice(0, 60)}{(t.title?.length || 0) > 60 ? 'â€¦' : ''}</p>
                       <div className="dev-planner-ticket-hours">
-                        <span>Dev: {t.dev_estimate_hours != null && t.dev_estimate_hours > 0 ? `${t.dev_estimate_hours}h` : '—'}</span>
-                        <span>QA: {t.qa_estimate_hours != null && t.qa_estimate_hours > 0 ? `${t.qa_estimate_hours}h` : '—'}</span>
+                        <span>Dev: {t.dev_estimate_hours != null && t.dev_estimate_hours > 0 ? `${t.dev_estimate_hours}h` : 'â€”'}</span>
+                        <span>QA: {t.qa_estimate_hours != null && t.qa_estimate_hours > 0 ? `${t.qa_estimate_hours}h` : 'â€”'}</span>
                       </div>
                       <button type="button" className="dev-planner-ticket-plan-btn" onClick={() => openMultiPlanModal(t)} title="Plan for multiple testers">Plan</button>
                     </div>
@@ -2496,7 +2496,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                 <h2>QA Resources</h2>
                 <div className="dev-planner-resource-controls">
                   <div className="dev-planner-user-search-wrap">
-                    <span className="search-icon">🔍</span>
+                    <span className="search-icon">ðŸ”</span>
                     <input
                       type="text"
                       placeholder="Search by name..."
@@ -2523,7 +2523,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                       onClick={() => handleSort(sortConfig.key)}
                       title={sortConfig.direction === 'asc' ? 'Ascending (click for descending)' : 'Descending (click for ascending)'}
                     >
-                      {sortConfig.direction === 'asc' ? '↑' : '↓'}
+                      {sortConfig.direction === 'asc' ? 'â†‘' : 'â†“'}
                     </button>
                   </label>
                   <div className="dev-planner-resource-tabs">
@@ -2541,7 +2541,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                 </div>
               </div>
               {loading ? (
-                <div className="dev-planning-skeleton">Loading…</div>
+                <div className="dev-planning-skeleton">Loadingâ€¦</div>
               ) : filteredEmployees.length === 0 ? (
                 <div className="dev-planning-empty">
                   <p>No resources match the filter.</p>
@@ -2602,11 +2602,11 @@ function QATaskPlanning({ showParentTitle = false }) {
                                       t.generic_category
                                     )}
                                   </span>
-                                  <span className="dev-planner-task-desc">{t.activity_description?.slice(0, 35)}{(t.activity_description?.length || 0) > 35 ? '…' : ''}</span>
+                                  <span className="dev-planner-task-desc">{t.activity_description?.slice(0, 35)}{(t.activity_description?.length || 0) > 35 ? 'â€¦' : ''}</span>
                                   <span className="dev-planner-task-hours">{getTaskDisplayHours(t)}h</span>
-                                  <span className="dev-planner-task-dates">{t.start_date && t.end_date ? `${formatDisplayDateWithDay(t.start_date)} → ${formatDisplayDateWithDay(t.end_date)}` : formatDisplayDate(t.start_date)}</span>
+                                  <span className="dev-planner-task-dates">{t.start_date && t.end_date ? `${formatDisplayDateWithDay(t.start_date)} â†’ ${formatDisplayDateWithDay(t.end_date)}` : formatDisplayDate(t.start_date)}</span>
                                   {t.is_on_hold && (
-                                    <span className="dev-planner-task-hold-badge" title={t.hold_reason || 'On Hold'}>⏸</span>
+                                    <span className="dev-planner-task-hold-badge" title={t.hold_reason || 'On Hold'}>â¸</span>
                                   )}
                                   {canEdit && (emp.can_manage_tasks !== false) && (
                                     <div className="dev-planner-task-actions">
@@ -2616,7 +2616,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                                         title="Edit task"
                                         onClick={() => openEditTask(t)}
                                       >
-                                        ✎
+                                        âœŽ
                                       </button>
                                       {/* Hold/Resume button for ticket tasks */}
                                       {t.ticket_id && (
@@ -2627,7 +2627,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                                             title="Resume task"
                                             onClick={() => resumeTask(t.id)}
                                           >
-                                            ▶
+                                            â–¶
                                           </button>
                                         ) : (
                                           <button
@@ -2636,7 +2636,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                                             title="Put on hold"
                                             onClick={() => openHoldTaskModal(t)}
                                           >
-                                            ⏸
+                                            â¸
                                           </button>
                                         )
                                       )}
@@ -2647,7 +2647,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                                         title={!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()) ? 'Past tasks cannot be deleted' : 'Remove'}
                                         disabled={!!(!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()))}
                                       >
-                                        ×
+                                        Ã—
                                       </button>
                                     </div>
                                   )}
@@ -2692,7 +2692,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                       const d = new Date(weekStart + 'T12:00:00');
                       d.setDate(d.getDate() - 7);
                       setWeekStart(formatAPIDate(d));
-                    }}>←</button>
+                    }}>â†</button>
                     <input
                       type="date"
                       value={weekStart}
@@ -2703,7 +2703,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                       const d = new Date(weekStart + 'T12:00:00');
                       d.setDate(d.getDate() + 7);
                       setWeekStart(formatAPIDate(d));
-                    }}>→</button>
+                    }}>â†’</button>
                   </>
                 ) : (
                   <>
@@ -2738,7 +2738,7 @@ function QATaskPlanning({ showParentTitle = false }) {
               <div className="calendar-summary-section">
                 <div className="calendar-period-label">
                   {calendarView === 'weekly'
-                    ? `Week of ${formatDisplayDateWithDay(calendarData?.start || weekStart)} – ${formatDisplayDateWithDay(calendarData?.end || weekStart)}`
+                    ? `Week of ${formatDisplayDateWithDay(calendarData?.start || weekStart)} â€“ ${formatDisplayDateWithDay(calendarData?.end || weekStart)}`
                     : (() => {
                         const [y, m] = (calendarData?.start || weekStart).split('-');
                         const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -2925,8 +2925,8 @@ function QATaskPlanning({ showParentTitle = false }) {
       {view === 'resource-blocked' && (
         <div className="resource-blocked-view">
           <div className="resource-blocked-header">
-            <h2 className="resource-blocked-title">Resource Blocked Until – QA Planning</h2>
-            <p className="resource-blocked-subtitle">See when each QA resource is blocked based on current allocations. If a task fails early (e.g. after one hour or one day), use &quot;QA resource is free&quot; so another task can be assigned—optional.</p>
+            <h2 className="resource-blocked-title">Resource Blocked Until â€“ QA Planning</h2>
+            <p className="resource-blocked-subtitle">See when each QA resource is blocked based on current allocations. If a task fails early (e.g. after one hour or one day), use &quot;QA resource is free&quot; so another task can be assignedâ€”optional.</p>
             <div className="resource-blocked-week-nav">
               <button type="button" className="dev-planner-nav-btn" onClick={() => { const d = new Date(weekStart + 'T12:00:00'); d.setDate(d.getDate() - 7); setWeekStart(formatAPIDate(d)); }} aria-label="Previous week">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M15 18l-6-6 6-6"/></svg>
@@ -2942,7 +2942,7 @@ function QATaskPlanning({ showParentTitle = false }) {
             </div>
           </div>
           {loading ? (
-            <div className="qa-planning-skeleton">Loading…</div>
+            <div className="qa-planning-skeleton">Loadingâ€¦</div>
           ) : !weekData ? (
             <div className="qa-planning-empty">
               <p>No planning data. Create a week from the Weekly Planner first.</p>
@@ -2997,7 +2997,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                         <td>{emp.allocated_hours ?? 0}h</td>
                         <td className="resource-blocked-tasks-cell">
                           {empTasks.length === 0 ? (
-                            <span className="resource-blocked-available">—</span>
+                            <span className="resource-blocked-available">â€”</span>
                           ) : (
                             <span className="resource-blocked-task-list" title={empTasks.map((x) => x.full).join(', ')}>
                               {empTasks.map((task, idx) => (
@@ -3048,13 +3048,13 @@ function QATaskPlanning({ showParentTitle = false }) {
       {view === 'qc-review-fail' && (
         <div className="qa-overview-container qa-qc-review-fail-view">
           <div className="qa-overview-header">
-            <h2 className="qa-overview-title">QC Review Fail Status – Tickets List</h2>
+            <h2 className="qa-overview-title">QC Review Fail Status â€“ Tickets List</h2>
             <span className="qa-overview-subtitle">
               Tickets in QC Review Fail, Tested - Awaiting Fixes, or Code Review Failed. Sorted by priority and days in fail status.
             </span>
           </div>
           {qcReviewFailLoading ? (
-            <div className="qa-planning-skeleton">Loading QC Review Fail list…</div>
+            <div className="qa-planning-skeleton">Loading QC Review Fail listâ€¦</div>
           ) : !qcReviewFailData ? (
             <div className="qa-planning-empty">
               <p>Failed to load QC Review Fail tickets.</p>
@@ -3105,29 +3105,29 @@ function QATaskPlanning({ showParentTitle = false }) {
                             <Link to={`/tickets?ticket=${t.ticket_id}`} className="qa-ticket-link">#{t.ticket_id}</Link>
                             <TicketExternalLink ticketId={t.ticket_id} />
                           </td>
-                          <td className="qa-title-cell" title={t.title}>{t.title?.slice(0, 45)}{(t.title?.length || 0) > 45 ? '…' : ''}</td>
+                          <td className="qa-title-cell" title={t.title}>{t.title?.slice(0, 45)}{(t.title?.length || 0) > 45 ? 'â€¦' : ''}</td>
                           <td>
                             <span className="qa-priority-pill" style={{ backgroundColor: PRIORITY_COLORS[t.priority] || '#6b7280' }}>{t.priority}</span>
                           </td>
                           <td>
                             <span className="qa-status-pill" style={{ borderColor: STATUS_COLORS[t.status] || '#6b7280' }}>{t.status}</span>
                           </td>
-                          <td className="qa-ageing-cell">{t.days_in_fail != null ? `${t.days_in_fail}d` : '—'}</td>
+                          <td className="qa-ageing-cell">{t.days_in_fail != null ? `${t.days_in_fail}d` : 'â€”'}</td>
                           <td className="qa-times-in-fail-cell" title="Number of times this ticket has been moved to QC Review Fail (or Tested - Awaiting Fixes, Code Review Failed)">
-                            {t.times_moved_to_fail != null && t.times_moved_to_fail > 0 ? t.times_moved_to_fail : (t.times_moved_to_fail === 0 ? '0' : '—')}
+                            {t.times_moved_to_fail != null && t.times_moved_to_fail > 0 ? t.times_moved_to_fail : (t.times_moved_to_fail === 0 ? '0' : 'â€”')}
                           </td>
-                          <td title={t.module || ''}>{t.module || '—'}</td>
+                          <td title={t.module || ''}>{t.module || 'â€”'}</td>
                           <td>
                             <span className={`qa-platform-badge ${(t.platform || 'Web').toLowerCase()}`}>{t.platform || 'Web'}</span>
                           </td>
-                          <td title={t.qc_tester || ''}>{t.qc_tester || '—'}</td>
-                          <td title={t.qa_lead || ''}>{t.qa_lead || '—'}</td>
+                          <td title={t.qc_tester || ''}>{t.qc_tester || 'â€”'}</td>
+                          <td title={t.qa_lead || ''}>{t.qa_lead || 'â€”'}</td>
                           <td title={t.developers_str || ''}>{t.developers_str || 'Not Assigned'}</td>
-                          <td>{t.qa_estimate_hours != null ? `${t.qa_estimate_hours}h` : '—'}</td>
-                          <td>{t.qa_actual_hours != null ? `${t.qa_actual_hours}h` : '—'}</td>
-                          <td>{t.moved_to_qc_on ? formatDisplayDate(t.moved_to_qc_on) : '—'}</td>
-                          <td>{t.moved_to_fail_on ? formatDisplayDate(t.moved_to_fail_on) : '—'}</td>
-                          <td>{t.eta ? formatDisplayDate(t.eta) : '—'}</td>
+                          <td>{t.qa_estimate_hours != null ? `${t.qa_estimate_hours}h` : 'â€”'}</td>
+                          <td>{t.qa_actual_hours != null ? `${t.qa_actual_hours}h` : 'â€”'}</td>
+                          <td>{t.moved_to_qc_on ? formatDisplayDate(t.moved_to_qc_on) : 'â€”'}</td>
+                          <td>{t.moved_to_fail_on ? formatDisplayDate(t.moved_to_fail_on) : 'â€”'}</td>
+                          <td>{t.eta ? formatDisplayDate(t.eta) : 'â€”'}</td>
                           <td className="qa-actions-cell">
                             <button type="button" className="qa-action-btn qa-btn-view" onClick={() => goToTicket(t.ticket_id)} title="View in Tickets">View</button>
                           </td>
@@ -3148,7 +3148,7 @@ function QATaskPlanning({ showParentTitle = false }) {
           <div className="qa-modal qa-multi-plan-modal" onClick={(e) => e.stopPropagation()}>
             <div className="qa-modal-header">
               <h3>Assign Ticket to Multiple Testers</h3>
-              <button type="button" className="qa-modal-close" onClick={closeMultiPlanModal} title="Close">×</button>
+              <button type="button" className="qa-modal-close" onClick={closeMultiPlanModal} title="Close">Ã—</button>
             </div>
             
             <div className="qa-ticket-info">
@@ -3162,10 +3162,10 @@ function QATaskPlanning({ showParentTitle = false }) {
               {multiPlanTicket.qa_estimate_hours != null && multiPlanTicket.qa_estimate_hours > 0 ? (
                 <p className="qa-ticket-info-estimate">QA Estimate: {multiPlanTicket.qa_estimate_hours}h</p>
               ) : (
-                <p className="qa-ticket-info-estimate qa-estimate-warning">⚠ No QA Estimate set</p>
+                <p className="qa-ticket-info-estimate qa-estimate-warning">âš  No QA Estimate set</p>
               )}
               {!(multiPlanTicket.qc_tester || '').trim() && (
-                <p className="qa-ticket-info-estimate qa-estimate-warning">⚠ QC Tester required in PM Tracker</p>
+                <p className="qa-ticket-info-estimate qa-estimate-warning">âš  QC Tester required in PM Tracker</p>
               )}
               {multiPlanErrors.ticket && <div className="qa-form-error qa-form-error-block">{multiPlanErrors.ticket}</div>}
             </div>
@@ -3188,7 +3188,7 @@ function QATaskPlanning({ showParentTitle = false }) {
               <div className="qa-multi-plan-results">
                 {multiPlanResults.success.length > 0 && (
                   <div className="qa-multi-plan-success">
-                    <strong>✓ Created {multiPlanResults.success.length} task(s):</strong>
+                    <strong>âœ“ Created {multiPlanResults.success.length} task(s):</strong>
                     <ul>
                       {multiPlanResults.success.map((r, i) => (
                         <li key={i}>{r.employee}</li>
@@ -3198,7 +3198,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                 )}
                 {multiPlanResults.failed.length > 0 && (
                   <div className="qa-multi-plan-failed">
-                    <strong>✗ Failed {multiPlanResults.failed.length}:</strong>
+                    <strong>âœ— Failed {multiPlanResults.failed.length}:</strong>
                     <ul>
                       {multiPlanResults.failed.map((r, i) => (
                         <li key={i}>{r.employee}: {r.error}</li>
@@ -3300,7 +3300,7 @@ function QATaskPlanning({ showParentTitle = false }) {
           <div className="qa-modal qa-add-task-modal" onClick={(e) => e.stopPropagation()}>
             <div className="qa-modal-header">
               <h3>Add QA Task</h3>
-              <button type="button" className="qa-modal-close" onClick={closeAddTask} title="Close">×</button>
+              <button type="button" className="qa-modal-close" onClick={closeAddTask} title="Close">Ã—</button>
             </div>
             
             {addTaskEmployee && form.task_category !== 'Ticket' && (
@@ -3354,9 +3354,9 @@ function QATaskPlanning({ showParentTitle = false }) {
                           <span className="qa-emp-name">{emp.employee_name}</span>
                           <span className="qa-emp-hours">
                             ({weeklyHours}h week
-                            {startDateHours != null && ` · ${startDateHours}h on start date`})
+                            {startDateHours != null && ` Â· ${startDateHours}h on start date`})
                           </span>
-                          {hasAllocError && <span className="qa-emp-alloc-error" title={avail.allocationError}>⚠</span>}
+                          {hasAllocError && <span className="qa-emp-alloc-error" title={avail.allocationError}>âš </span>}
                         </label>
                       );
                     })}
@@ -3368,7 +3368,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                         const emp = (weekData?.employees || []).find((e) => e.employee_id === id);
                         const a = selectedTestersAvailability[id];
                         if (!emp || !a) return null;
-                        return `${emp.employee_name}: ${a.availableOnStartDate}h${a.allocationError ? ' ⚠' : ''}`;
+                        return `${emp.employee_name}: ${a.availableOnStartDate}h${a.allocationError ? ' âš ' : ''}`;
                       }).filter(Boolean).join(', ')}
                     </div>
                   )}
@@ -3380,9 +3380,9 @@ function QATaskPlanning({ showParentTitle = false }) {
                 <div className="qa-form-group qa-ticket-search-group" ref={ticketInputRef}>
                   {!form.ticket_id && !(form.ticket_id_input || '').trim() && (
                     <div className="qa-ticket-suggestions-categorized">
-                      <p className="qa-suggestions-help">Suggested tickets – select one to assign:</p>
+                      <p className="qa-suggestions-help">Suggested tickets â€“ select one to assign:</p>
                       {ticketSuggestionsLoading ? (
-                        <p className="qa-suggestions-loading">Loading suggestions…</p>
+                        <p className="qa-suggestions-loading">Loading suggestionsâ€¦</p>
                       ) : ticketSuggestionsCategorized ? (
                         <div className="qa-suggestions-categories">
                           {[
@@ -3404,8 +3404,8 @@ function QATaskPlanning({ showParentTitle = false }) {
                                   >
                                     <span className={`qa-sug-platform qa-platform-${(t.platform || 'web').toLowerCase()}`}>{t.platform || 'Web'}</span>
                                     <span className="qa-sug-id">#{t.ticket_id}</span>
-                                    <span className="qa-sug-title">{t.title?.slice(0, 35)}{(t.title?.length || 0) > 35 ? '…' : ''}</span>
-                                    <span className="qa-sug-meta">{t.qa_estimate_hours ? `${t.qa_estimate_hours}h` : ''} {t.days_in_qc > 0 ? `· ${t.days_in_qc}d` : ''}</span>
+                                    <span className="qa-sug-title">{t.title?.slice(0, 35)}{(t.title?.length || 0) > 35 ? 'â€¦' : ''}</span>
+                                    <span className="qa-sug-meta">{t.qa_estimate_hours ? `${t.qa_estimate_hours}h` : ''} {t.days_in_qc > 0 ? `Â· ${t.days_in_qc}d` : ''}</span>
                                   </button>
                                 ))}
                               </div>
@@ -3435,8 +3435,8 @@ function QATaskPlanning({ showParentTitle = false }) {
                           onClick={() => selectTicket(t)}
                         >
                           <span className="qa-sug-id">#{t.ticket_id}</span>
-                          <span className="qa-sug-title">{t.title?.slice(0, 40)}{(t.title?.length || 0) > 40 ? '…' : ''}</span>
-                          <span className="qa-sug-meta">{t.qa_estimate_hours ? `${t.qa_estimate_hours}h` : '—'}</span>
+                          <span className="qa-sug-title">{t.title?.slice(0, 40)}{(t.title?.length || 0) > 40 ? 'â€¦' : ''}</span>
+                          <span className="qa-sug-meta">{t.qa_estimate_hours ? `${t.qa_estimate_hours}h` : 'â€”'}</span>
                         </button>
                       ))}
                     </div>
@@ -3469,7 +3469,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                         {lookedUpTicket.priority}
                       </span>
                       <strong>#{lookedUpTicket.ticket_id}</strong>
-                      <span className="qa-ticket-card-title">{lookedUpTicket.title?.slice(0, 50)}{(lookedUpTicket.title?.length || 0) > 50 ? '…' : ''}</span>
+                      <span className="qa-ticket-card-title">{lookedUpTicket.title?.slice(0, 50)}{(lookedUpTicket.title?.length || 0) > 50 ? 'â€¦' : ''}</span>
                     </div>
                     <button
                       type="button"
@@ -3478,36 +3478,36 @@ function QATaskPlanning({ showParentTitle = false }) {
                       disabled={ticketLookupLoading}
                       title="Refresh this ticket from PM Tracker (QC Tester, QA Estimate, Status)"
                     >
-                      {ticketLookupLoading ? '…' : '↻ Refresh'}
+                      {ticketLookupLoading ? 'â€¦' : 'â†» Refresh'}
                     </button>
                   </div>
                   <div className="qa-ticket-card-body">
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">QA Estimate</span>
-                      <span className="qa-field-value">{lookedUpTicket.qa_estimate_hours ?? '—'}h</span>
+                      <span className="qa-field-value">{lookedUpTicket.qa_estimate_hours ?? 'â€”'}h</span>
                     </div>
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">Remaining</span>
-                      <span className="qa-field-value">{lookedUpTicket.remaining_qa_hours ?? lookedUpTicket.qa_estimate_hours ?? '—'}h</span>
+                      <span className="qa-field-value">{lookedUpTicket.remaining_qa_hours ?? lookedUpTicket.qa_estimate_hours ?? 'â€”'}h</span>
                     </div>
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">Status</span>
-                      <span className="qa-field-value">{lookedUpTicket.status || '—'}</span>
+                      <span className="qa-field-value">{lookedUpTicket.status || 'â€”'}</span>
                     </div>
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">QC Tester</span>
                       <span className={`qa-field-value ${!(lookedUpTicket.qc_tester || '').trim() ? 'qa-field-missing' : ''}`}>
-                        {lookedUpTicket.qc_tester || '— (Required in PM)'}
+                        {lookedUpTicket.qc_tester || 'â€” (Required in PM)'}
                       </span>
                     </div>
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">Actual QA</span>
-                      <span className="qa-field-value">{lookedUpTicket.actual_qa_hours != null ? `${lookedUpTicket.actual_qa_hours}h` : '—'}</span>
+                      <span className="qa-field-value">{lookedUpTicket.actual_qa_hours != null ? `${lookedUpTicket.actual_qa_hours}h` : 'â€”'}</span>
                     </div>
                     <div className="qa-ticket-card-field">
                       <span className="qa-field-label">ETA</span>
                       <span className="qa-field-value">
-                        {(lookedUpTicket.eta || '').trim() ? formatDisplayDate(lookedUpTicket.eta.slice(0, 10)) : '— (Optional)'}
+                        {(lookedUpTicket.eta || '').trim() ? formatDisplayDate(lookedUpTicket.eta.slice(0, 10)) : 'â€” (Optional)'}
                       </span>
                     </div>
                   </div>
@@ -3663,7 +3663,7 @@ function QATaskPlanning({ showParentTitle = false }) {
               <div className="qa-modal-actions">
                 <button type="button" onClick={closeAddTask}>Cancel</button>
                 <button type="submit" className="qa-btn-primary" disabled={submitting || !!allocationPreview?.error}>
-                  {submitting ? 'Adding…' : 'Add Task'}
+                  {submitting ? 'Addingâ€¦' : 'Add Task'}
                 </button>
               </div>
             </form>
@@ -3677,10 +3677,10 @@ function QATaskPlanning({ showParentTitle = false }) {
           <div className="qa-modal" onClick={(e) => e.stopPropagation()} style={{ minWidth: '400px' }}>
             <div className="qa-modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
               <h3 style={{ margin: 0 }}>Edit Task</h3>
-              <button type="button" className="qa-modal-close" onClick={closeEditTask} title="Close">×</button>
+              <button type="button" className="qa-modal-close" onClick={closeEditTask} title="Close">Ã—</button>
             </div>
             <p className="qa-form-group" style={{ marginBottom: '1rem', color: 'var(--text-muted)' }}>
-              {editingTask.ticket_id ? `#${editingTask.ticket_id}` : editingTask.activity_description?.slice(0, 50)} — {editingTask.employee_name}
+              {editingTask.ticket_id ? `#${editingTask.ticket_id}` : editingTask.activity_description?.slice(0, 50)} â€” {editingTask.employee_name}
             </p>
             <div className="qa-form-group">
               <label>Start Date *</label>
@@ -3716,7 +3716,7 @@ function QATaskPlanning({ showParentTitle = false }) {
             <div className="qa-modal-actions" style={{ marginTop: '1rem' }}>
               <button type="button" onClick={closeEditTask}>Cancel</button>
               <button type="button" className="qa-btn-primary" onClick={submitEditTask} disabled={editTaskSubmitting}>
-                {editTaskSubmitting ? 'Saving…' : 'Save'}
+                {editTaskSubmitting ? 'Savingâ€¦' : 'Save'}
               </button>
             </div>
           </div>
@@ -3729,10 +3729,10 @@ function QATaskPlanning({ showParentTitle = false }) {
           <div className="qa-modal" onClick={(e) => e.stopPropagation()} style={{ minWidth: '450px' }}>
             <div className="qa-modal-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
               <h3 style={{ margin: 0 }}>Put Task on Hold</h3>
-              <button type="button" className="qa-modal-close" onClick={closeHoldTaskModal} title="Close">×</button>
+              <button type="button" className="qa-modal-close" onClick={closeHoldTaskModal} title="Close">Ã—</button>
             </div>
             <p className="qa-form-group" style={{ marginBottom: '1rem', color: 'var(--text-muted)' }}>
-              #{holdingTask.ticket_id} — {holdingTask.activity_description?.slice(0, 50)} — {holdingTask.employee_name}
+              #{holdingTask.ticket_id} â€” {holdingTask.activity_description?.slice(0, 50)} â€” {holdingTask.employee_name}
             </p>
             
             <div className="qa-form-group" style={{ marginBottom: '1rem', padding: '0.75rem', backgroundColor: 'var(--bg-warning)', borderRadius: '6px', borderLeft: '4px solid var(--warning)' }}>
@@ -3747,7 +3747,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                 onClick={() => refreshPmTrackerForTicket(holdingTask.ticket_id)}
                 disabled={pmTrackerRefreshing}
               >
-                {pmTrackerRefreshing ? 'Refreshing…' : '↻ Refresh PM Tracker Status'}
+                {pmTrackerRefreshing ? 'Refreshingâ€¦' : 'â†» Refresh PM Tracker Status'}
               </button>
             </div>
 
@@ -3795,7 +3795,7 @@ function QATaskPlanning({ showParentTitle = false }) {
               <div className="qa-modal-actions" style={{ marginTop: '1rem' }}>
                 <button type="button" onClick={closeHoldTaskModal}>Cancel</button>
                 <button type="submit" className="qa-btn-warning" disabled={holdTaskSubmitting}>
-                  {holdTaskSubmitting ? 'Saving…' : 'Put on Hold'}
+                  {holdTaskSubmitting ? 'Savingâ€¦' : 'Put on Hold'}
                 </button>
               </div>
             </form>
@@ -3809,12 +3809,12 @@ function QATaskPlanning({ showParentTitle = false }) {
           <div className="dev-planning-modal dev-planning-day-detail-modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3>Tasks for {dayDetailDate ? formatDisplayDateWithDay(dayDetailDate) : ''}</h3>
-              <button type="button" className="modal-close-btn" onClick={closeDayDetail} title="Close">×</button>
+              <button type="button" className="modal-close-btn" onClick={closeDayDetail} title="Close">Ã—</button>
             </div>
             <p className="modal-subtitle">Employee: {dayDetailEmployee}</p>
 
             {dayDetailLoading ? (
-              <div className="dev-planning-skeleton">Loading…</div>
+              <div className="dev-planning-skeleton">Loadingâ€¦</div>
             ) : dayDetailTasks.length === 0 ? (
               <div className="day-detail-empty">No tasks for this day.</div>
             ) : (

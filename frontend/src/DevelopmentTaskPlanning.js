@@ -18,7 +18,7 @@ import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { formatAPIDate, formatDisplayDate, formatDisplayDateWithDay, formatPlanningWeek } from './dateUtils';
 import { getTicketTrackingUrl, TicketExternalLink } from './ticketUtils';
 import { useTableSort } from './useTableSort';
-import { apiFetch } from './api';
+import { apiFetch, API_BASE } from './api';
 import { useAuth } from './AuthContext';
 import './DevelopmentTaskPlanning.css';
 
@@ -36,7 +36,6 @@ ChartJS.register(
   ChartDataLabels
 );
 
-const API_BASE = (process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`).replace(/\/$/, '');
 const HOURS_PER_WEEK = 40;
 const DEFAULT_USER_NAME = '';
 const DEFAULT_USER_ROLE = '';
@@ -193,7 +192,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
       const data = JSON.parse(text);
       setWeekData(data);
     } catch (e) {
-      setError(e.message || 'Failed to load week data. Ensure the backend is running on port 8000 and no older backend is bound to 127.0.0.1:8000.');
+      setError(e.message || 'Failed to load week data. Please verify the backend is reachable for your configured environment.');
       setWeekData(null);
     } finally {
       setLoading(false);

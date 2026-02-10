@@ -14,8 +14,8 @@ import html
 
 # TestRail Configuration
 TESTRAIL_URL = os.getenv("TESTRAIL_URL", "https://bistrainer.testrail.io")
-TESTRAIL_EMAIL = os.getenv("TESTRAIL_EMAIL", "vishnu.vs@techversantinfotech.com")
-TESTRAIL_API_KEY = os.getenv("TESTRAIL_API_KEY", "heGAzVp/ZXwf0T7qKnK6-gmJ9gfZaEs3FdSht/yy9")
+TESTRAIL_EMAIL = os.getenv("TESTRAIL_EMAIL", "")
+TESTRAIL_API_KEY = os.getenv("TESTRAIL_API_KEY", "")
 TESTRAIL_PROJECT_ID = int(os.getenv("TESTRAIL_PROJECT_ID", "14"))
 
 # Email Configuration
@@ -26,9 +26,9 @@ TESTRAIL_PROJECT_ID = int(os.getenv("TESTRAIL_PROJECT_ID", "14"))
 # 4. Set SMTP_PASSWORD environment variable before running the script
 SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USERNAME = os.getenv("SMTP_USERNAME", "vishnu.vs@techversantinfotech.com")
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "vishnu.vs@techversantinfotech.com")
+NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "")
 
 # TestRail API Base URL
 API_BASE = f"{TESTRAIL_URL}/index.php?/api/v2"

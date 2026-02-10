@@ -1,7 +1,11 @@
 import requests
+import os
 
-REDMINE_URL = "https://redmine.bissafety.app"
-API_KEY = "9d32eee5d4a31e7051efbe930a8b395ae5f77fb6"
+REDMINE_URL = os.getenv("REDMINE_URL", "https://redmine.bissafety.app")
+API_KEY = os.getenv("REDMINE_API_KEY", "")
+
+if not API_KEY:
+    raise RuntimeError("REDMINE_API_KEY is not set. Configure it in environment variables.")
 
 headers = {
     "X-Redmine-API-Key": API_KEY
