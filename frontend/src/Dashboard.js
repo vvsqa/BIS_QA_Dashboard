@@ -293,7 +293,9 @@ function Dashboard() {
       const response = await apiFetch(`/tickets/search?query=${encodeURIComponent(query)}`);
       if (response.ok) {
         const data = await response.json();
-        setTicketSuggestions(data);
+        // API returns { value: [...], Count: n } format
+        const suggestions = Array.isArray(data) ? data : (data.value || []);
+        setTicketSuggestions(suggestions);
       }
     } catch (err) {
       console.error('Error fetching ticket suggestions:', err);

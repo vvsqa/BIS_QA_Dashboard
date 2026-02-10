@@ -550,7 +550,7 @@ function AllBugsDashboard() {
   // Navigate to ticket dashboard with ticket ID
   const handleTicketClick = useCallback((ticketId) => {
     if (ticketId) {
-      navigate(`/?ticket=${ticketId}`);
+      navigate(`/tickets?ticket=${ticketId}`);
     }
   }, [navigate]);
 
@@ -2335,7 +2335,7 @@ function AllBugsDashboard() {
                       {bug.ticket_id ? (
                         <span>
                           <Link 
-                            to={`/?ticket=${bug.ticket_id}`} 
+                            to={`/tickets?ticket=${bug.ticket_id}`} 
                             className="ticket-link"
                             onClick={(e) => e.stopPropagation()}
                           >

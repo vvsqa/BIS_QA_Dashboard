@@ -367,7 +367,7 @@ function ETACalendar() {
                               <article key={ticket.ticket_id} className={`home-eta-ticket-card category-${category} ${isFocused ? 'is-focused-ticket' : ''}`}>
                                 <div className="home-eta-ticket-top">
                                   <span className="home-eta-ticket-id">
-                                    <Link to={`/dashboard?ticket=${ticket.ticket_id}`}>
+                                    <Link to={`/tickets?ticket=${ticket.ticket_id}`}>
                                       #{ticket.ticket_id}
                                     </Link>
                                   </span>
@@ -420,7 +420,7 @@ function ETACalendar() {
                             <div>
                               <div className="home-eta-upcoming-title">{ticket.title || `Ticket #${ticket.ticket_id}`}</div>
                               <div className="home-eta-upcoming-sub">
-                                <Link to={`/dashboard?ticket=${ticket.ticket_id}`}>#{ticket.ticket_id}</Link>
+                                <Link to={`/tickets?ticket=${ticket.ticket_id}`}>#{ticket.ticket_id}</Link>
                               </div>
                             </div>
                             <div className="home-eta-upcoming-right">

@@ -17,6 +17,11 @@ const apiPaths = [
   '/redmine',
   '/testrail',
   '/ticket-tracking',
+  '/tickets-dashboard',
+  '/tickets',
+  '/dashboard',
+  '/bugs',
+  '/status-history',
   '/reports',
   '/dev-planning',
   '/qa-planning',
@@ -25,6 +30,7 @@ const apiPaths = [
   '/pm-tracker',
   '/goals',
   '/uploads',
+  '/login',
 ];
 
 function isApiPath(pathname) {

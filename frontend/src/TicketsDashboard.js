@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Bar, Doughnut } from "react-chartjs-2";
 import { useTableSort, SortableHeader } from "./useTableSort";
@@ -125,6 +126,13 @@ function TicketsDashboard() {
   
   // API sync status (data is always from API; no manual sync)
   const [syncStatus, setSyncStatus] = useState(null);
+  
+  // Ticket search autocomplete state
+  const [ticketSearchInput, setTicketSearchInput] = useState('');
+  const [ticketSuggestions, setTicketSuggestions] = useState([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [dropdownPosition, setDropdownPosition] = useState({ top: 0, left: 0, width: 0 });
+  const ticketSearchRef = useRef(null);
   
   // Ref for timesheet section scrolling
   const timesheetSectionRef = useRef(null);
@@ -359,9 +367,72 @@ function TicketsDashboard() {
   // Navigate to ticket dashboard with ticket ID
   const handleTicketClick = useCallback((ticketId) => {
     if (ticketId) {
-      navigate(`/?ticket=${ticketId}`);
+      navigate(`/tickets?ticket=${ticketId}`);
     }
   }, [navigate]);
+
+  // Fetch ticket suggestions for autocomplete
+  const fetchTicketSuggestions = useCallback(async (query) => {
+    if (!query || query.length < 1) {
+      setTicketSuggestions([]);
+      return;
+    }
+    
+    try {
+      const response = await apiFetch(`/tickets/search?query=${encodeURIComponent(query)}`);
+      if (response.ok) {
+        const data = await response.json();
+        // API returns { value: [...], Count: n } format
+        const suggestions = Array.isArray(data) ? data : (data.value || []);
+        setTicketSuggestions(suggestions);
+      }
+    } catch (err) {
+      console.error('Error fetching ticket suggestions:', err);
+      setTicketSuggestions([]);
+    }
+  }, []);
+
+  // Debounced ticket search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchTicketSuggestions(ticketSearchInput);
+    }, 200);
+    
+    return () => clearTimeout(timer);
+  }, [ticketSearchInput, fetchTicketSuggestions]);
+
+  // Handle ticket selection from dropdown
+  const handleTicketSuggestionSelect = (ticket) => {
+    setTicketSearchInput('');
+    setShowSuggestions(false);
+    navigate(`/tickets?ticket=${ticket.ticket_id}`);
+  };
+
+  // Handle search input change
+  const handleSearchInputChange = (value) => {
+    const numericValue = value.replace(/[^0-9]/g, '');
+    setTicketSearchInput(numericValue);
+    setShowSuggestions(numericValue.length > 0);
+    
+    // Update dropdown position
+    if (ticketSearchRef.current) {
+      const rect = ticketSearchRef.current.getBoundingClientRect();
+      setDropdownPosition({
+        top: rect.bottom + window.scrollY + 4,
+        left: rect.left + window.scrollX,
+        width: rect.width
+      });
+    }
+  };
+
+  // Handle search submit (Enter key or search button)
+  const handleSearchSubmit = () => {
+    if (ticketSearchInput) {
+      setShowSuggestions(false);
+      navigate(`/tickets?ticket=${ticketSearchInput}`);
+      setTicketSearchInput('');
+    }
+  };
 
   // Export to PDF function
   const exportToPDF = async () => {
@@ -858,6 +929,85 @@ function TicketsDashboard() {
               </button>
             </div>
             
+            {/* Ticket Search Input */}
+            <div className="ticket-search-wrapper" ref={ticketSearchRef}>
+              <div className="ticket-search-input-container">
+                <svg className="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="M21 21l-4.35-4.35"/>
+                </svg>
+                <input
+                  type="text"
+                  className="ticket-search-input"
+                  placeholder="Search ticket ID..."
+                  value={ticketSearchInput}
+                  onChange={(e) => handleSearchInputChange(e.target.value)}
+                  onFocus={() => {
+                    if (ticketSearchInput.length > 0) {
+                      fetchTicketSuggestions(ticketSearchInput);
+                      setShowSuggestions(true);
+                    }
+                    if (ticketSearchRef.current) {
+                      const rect = ticketSearchRef.current.getBoundingClientRect();
+                      setDropdownPosition({
+                        top: rect.bottom + window.scrollY + 4,
+                        left: rect.left + window.scrollX,
+                        width: rect.width
+                      });
+                    }
+                  }}
+                  onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handleSearchSubmit();
+                    } else if (e.key === 'Escape') {
+                      setShowSuggestions(false);
+                    }
+                  }}
+                />
+                {ticketSearchInput && (
+                  <button 
+                    className="search-clear-btn"
+                    onClick={() => {
+                      setTicketSearchInput('');
+                      setShowSuggestions(false);
+                    }}
+                    type="button"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              {showSuggestions && ticketSuggestions.length > 0 && createPortal(
+                <div 
+                  className="ticket-suggestions-dropdown"
+                  style={{
+                    position: 'absolute',
+                    top: dropdownPosition.top,
+                    left: dropdownPosition.left,
+                    width: Math.max(dropdownPosition.width, 350),
+                    zIndex: 9999
+                  }}
+                >
+                  {ticketSuggestions.map((ticket) => (
+                    <div
+                      key={ticket.ticket_id}
+                      className="ticket-suggestion-item"
+                      onClick={() => handleTicketSuggestionSelect(ticket)}
+                    >
+                      <span className="suggestion-id">#{ticket.ticket_id}</span>
+                      <span className="suggestion-title">{ticket.title}</span>
+                      <div className="suggestion-meta">
+                        <span className="suggestion-status">{ticket.status}</span>
+                        <span className="suggestion-priority">{ticket.priority}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>,
+                document.body
+              )}
+            </div>
+
             {/* API data status (auto-sync keeps data up to date) */}
             {(syncStatus?.last_db_update || syncStatus?.auto_sync?.running) && (
               <span className="sync-status-text" style={{ fontSize: '12px', opacity: 0.8 }} title={syncStatus.last_db_update ? formatDisplayDateTime(syncStatus.last_db_update) : ''}>
@@ -1411,7 +1561,7 @@ function TicketsDashboard() {
                           {sortedOverdue.slice(0, 10).map(ticket => (
                             <tr key={ticket.ticket_id}>
                               <td>
-                                <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
+                                <Link to={`/tickets?ticket=${ticket.ticket_id}`} className="ticket-link">
                                   #{ticket.ticket_id}
                                 </Link>
                                 <TicketExternalLink ticketId={ticket.ticket_id} />
@@ -1461,7 +1611,7 @@ function TicketsDashboard() {
                           {sortedDueThisWeek.slice(0, 10).map(ticket => (
                             <tr key={ticket.ticket_id}>
                               <td>
-                                <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
+                                <Link to={`/tickets?ticket=${ticket.ticket_id}`} className="ticket-link">
                                   #{ticket.ticket_id}
                                 </Link>
                                 <TicketExternalLink ticketId={ticket.ticket_id} />
@@ -1632,7 +1782,7 @@ function TicketsDashboard() {
                     {sortedTeamTickets.map(ticket => (
                       <tr key={ticket.ticket_id}>
                         <td>
-                          <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
+                          <Link to={`/tickets?ticket=${ticket.ticket_id}`} className="ticket-link">
                             #{ticket.ticket_id}
                           </Link>
                           <TicketExternalLink ticketId={ticket.ticket_id} />
@@ -1744,7 +1894,7 @@ function TicketsDashboard() {
                     {sortedAssigneeTickets.map(ticket => (
                       <tr key={ticket.ticket_id}>
                         <td>
-                          <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
+                          <Link to={`/tickets?ticket=${ticket.ticket_id}`} className="ticket-link">
                             #{ticket.ticket_id}
                           </Link>
                           <TicketExternalLink ticketId={ticket.ticket_id} />
@@ -1814,7 +1964,7 @@ function TicketsDashboard() {
                     sortedFilteredTickets.map(ticket => (
                       <tr key={ticket.ticket_id}>
                         <td>
-                          <Link to={`/?ticket=${ticket.ticket_id}`} className="ticket-link">
+                          <Link to={`/tickets?ticket=${ticket.ticket_id}`} className="ticket-link">
                             #{ticket.ticket_id}
                           </Link>
                           <TicketExternalLink ticketId={ticket.ticket_id} />

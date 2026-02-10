@@ -1839,7 +1839,7 @@ function EmployeeProfile() {
                     <div 
                       key={idx} 
                       className="ticket-item" 
-                      onClick={() => navigate(`/?ticket=${id}`)}
+                      onClick={() => navigate(`/tickets?ticket=${id}`)}
                     >
                       #{id}
                       <TicketExternalLink ticketId={id} />
@@ -1965,7 +1965,7 @@ function EmployeeProfile() {
                     <div 
                       key={idx} 
                       className="ticket-item" 
-                      onClick={() => navigate(`/?ticket=${id}`)}
+                      onClick={() => navigate(`/tickets?ticket=${id}`)}
                     >
                       #{id}
                       <TicketExternalLink ticketId={id} />

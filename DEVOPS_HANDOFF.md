@@ -2,6 +2,8 @@
 
 This is a quick deployment handoff for environment configuration.
 
+**See also:** [RUNNING.md](./RUNNING.md) for step-by-step **local development** vs **hosted** run instructions.
+
 Primary template: `DEPLOYMENT_ENV.example`
 
 ---

@@ -405,7 +405,7 @@ function ReportsModule() {
                         {(previewData.tickets_worked_on_this_week || []).map((t, idx) => (
                           <tr key={t.ticket_id || idx}>
                             <td>
-                              <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                              <Link to={`/tickets?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
                               <TicketExternalLink ticketId={t.ticket_id} />
                             </td>
                             <td className="report-cell-truncate" title={t.title}>{(t.title || '—').slice(0, 50)}{(t.title || '').length > 50 ? '…' : ''}</td>
@@ -440,7 +440,7 @@ function ReportsModule() {
                         {(previewData.qa_failed_this_week || []).map((t, idx) => (
                           <tr key={t.ticket_id || idx}>
                             <td>
-                              <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                              <Link to={`/tickets?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
                               <TicketExternalLink ticketId={t.ticket_id} />
                             </td>
                             <td className="report-cell-truncate" title={t.title}>{(t.title || '—').slice(0, 55)}{(t.title || '').length > 55 ? '…' : ''}</td>
@@ -473,7 +473,7 @@ function ReportsModule() {
                         {(previewData.on_hold_this_week || []).map((t, idx) => (
                           <tr key={t.ticket_id || idx}>
                             <td>
-                              <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                              <Link to={`/tickets?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
                               <TicketExternalLink ticketId={t.ticket_id} />
                             </td>
                             <td className="report-cell-truncate" title={t.title}>{(t.title || '—').slice(0, 40)}{(t.title || '').length > 40 ? '…' : ''}</td>
@@ -504,7 +504,7 @@ function ReportsModule() {
                     (previewData.bis_testing_moved || []).map((t, idx) => (
                       <div key={t.ticket_id || idx} className="report-bis-ticket-block">
                         <div className="report-bis-ticket-header">
-                          <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                          <Link to={`/tickets?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
                           <TicketExternalLink ticketId={t.ticket_id} />
                           <span className="report-bis-title">{(t.title || '—').slice(0, 60)}{(t.title || '').length > 60 ? '…' : ''}</span>
                           <span className="report-bis-meta">Priority: {t.priority || '—'} · Status: {t.status || '—'} · QA: {t.qa_tester || '—'} · Bugs: {t.bugs_open ?? 0}/{t.bugs_total ?? 0} · Pass: {t.pass_rate ?? 0}%</span>
@@ -563,7 +563,7 @@ function ReportsModule() {
                         {(previewData.next_week_plan || []).map((t, idx) => (
                           <tr key={t.ticket_id || idx}>
                             <td>
-                              <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                              <Link to={`/tickets?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
                               <TicketExternalLink ticketId={t.ticket_id} />
                             </td>
                             <td className="report-cell-truncate" title={t.title}>{(t.title || '—').slice(0, 45)}{(t.title || '').length > 45 ? '…' : ''}</td>
@@ -595,7 +595,7 @@ function ReportsModule() {
                             <div className="report-eta-day-tickets">
                               {(day.tickets || []).map((t, j) => (
                                 <div key={t.ticket_id || j} className="report-eta-ticket-card">
-                                  <Link to={`/?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
+                                  <Link to={`/tickets?ticket=${t.ticket_id}`} className="ticket-link">#{t.ticket_id}</Link>
                                   <span className="report-eta-ticket-priority">{t.priority || '—'}</span>
                                   <span className="report-eta-ticket-title">{(t.title || '—').slice(0, 25)}{(t.title || '').length > 25 ? '…' : ''}</span>
                                 </div>
