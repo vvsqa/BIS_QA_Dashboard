@@ -12252,6 +12252,14 @@ def dev_planning_get_week(
         seen_task_ids = set()
 
         def append_dev_task(t, allocs_to_show):
+            # Use allocation date bounds as source of truth for display range.
+            # This prevents stale task.start_date/end_date from showing incorrect same-day ranges.
+            min_alloc_date, max_alloc_date = db.query(
+                func.min(DevPlannedAllocation.allocation_date),
+                func.max(DevPlannedAllocation.allocation_date),
+            ).filter(DevPlannedAllocation.task_id == t.id).first()
+            display_start = min_alloc_date or t.start_date
+            display_end = max_alloc_date or t.end_date or display_start
             tasks_list.append({
                 "id": t.id,
                 "employee_name": t.employee_name,
@@ -12261,8 +12269,8 @@ def dev_planning_get_week(
                 "ticket_priority": ticket_priority_map.get(t.ticket_id) if t.ticket_id else None,
                 "generic_category": t.generic_category,
                 "activity_description": t.activity_description,
-                "start_date": t.start_date.isoformat(),
-                "end_date": t.end_date.isoformat() if t.end_date else None,
+                "start_date": display_start.isoformat() if display_start else None,
+                "end_date": display_end.isoformat() if display_end else None,
                 "allocation_pct": t.allocation_pct,
                 "total_planned_hours": t.total_planned_hours,
                 "created_by": t.created_by,
@@ -12577,8 +12585,7 @@ def dev_planning_add_task(
         body.task_category = normalized_task_category
         if body.start_date < week_start or body.start_date > week_end:
             raise HTTPException(status_code=400, detail="Start date must be within the planning week")
-        if body.start_date < date.today():
-            raise HTTPException(status_code=400, detail="Start date cannot be in the past")
+        # Note: Past date validation removed - users can create tasks for past dates in the current week
         if body.end_date and body.end_date < body.start_date:
             raise HTTPException(status_code=400, detail="End date cannot be before start date")
         max_hours_per_day = body.max_hours_per_day if body.max_hours_per_day is not None else 8.0
