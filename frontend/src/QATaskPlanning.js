@@ -15,7 +15,7 @@ import ChartDataLabels from 'chartjs-plugin-datalabels';
 import { formatDisplayDate, formatAPIDate, formatDisplayDateWithDay, formatPlanningWeek } from './dateUtils';
 import { TicketExternalLink, getTicketTrackingUrl } from './ticketUtils';
 import { useTableSort, SortableHeader } from './useTableSort';
-import { apiFetch, API_BASE } from './api';
+import { apiFetch } from './api';
 import { useAuth } from './AuthContext';
 import './DevelopmentTaskPlanning.css';
 import './QATaskPlanning.css';
@@ -32,7 +32,7 @@ ChartJS.register(
   ChartDataLabels
 );
 
-
+const API_BASE = (process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`).replace(/\/$/, '');
 const HOURS_PER_WEEK = 40;
 const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous'];
 const GENERIC_CATEGORIES = ['Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous'];
@@ -1820,7 +1820,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                           onClick={() => setTesterChartExpanded((v) => !v)}
                           title={testerChartExpanded ? 'Show fewer' : `Show all ${testerChartTotalCount}`}
                         >
-                          {testerChartExpanded ? 'â–¼ Collapse' : `â–² Expand (${testerChartTotalCount})`}
+                          {testerChartExpanded ? '▼ Collapse' : `▲ Expand (${testerChartTotalCount})`}
                         </button>
                       )}
                     </div>
@@ -2616,7 +2616,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                                         title="Edit task"
                                         onClick={() => openEditTask(t)}
                                       >
-                                        E
+                                        ✎
                                       </button>
                                       {/* Hold/Resume button for ticket tasks */}
                                       {t.ticket_id && (
@@ -2647,7 +2647,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                                         title={!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()) ? 'Past tasks cannot be deleted' : 'Remove'}
                                         disabled={!!(!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()))}
                                       >
-                                        X
+                                        ×
                                       </button>
                                     </div>
                                   )}
@@ -3162,10 +3162,10 @@ function QATaskPlanning({ showParentTitle = false }) {
               {multiPlanTicket.qa_estimate_hours != null && multiPlanTicket.qa_estimate_hours > 0 ? (
                 <p className="qa-ticket-info-estimate">QA Estimate: {multiPlanTicket.qa_estimate_hours}h</p>
               ) : (
-                <p className="qa-ticket-info-estimate qa-estimate-warning">âš  No QA Estimate set</p>
+                <p className="qa-ticket-info-estimate qa-estimate-warning">⚠ No QA Estimate set</p>
               )}
               {!(multiPlanTicket.qc_tester || '').trim() && (
-                <p className="qa-ticket-info-estimate qa-estimate-warning">âš  QC Tester required in PM Tracker</p>
+                <p className="qa-ticket-info-estimate qa-estimate-warning">⚠ QC Tester required in PM Tracker</p>
               )}
               {multiPlanErrors.ticket && <div className="qa-form-error qa-form-error-block">{multiPlanErrors.ticket}</div>}
             </div>
@@ -3247,7 +3247,6 @@ function QATaskPlanning({ showParentTitle = false }) {
                     <input
                       type="date"
                       value={multiPlanForm.start_date}
-                      min={formatAPIDate(new Date())}
                       onChange={(e) => setMultiPlanForm({ ...multiPlanForm, start_date: e.target.value })}
                     />
                     {multiPlanErrors.start_date && <span className="qa-form-error">{multiPlanErrors.start_date}</span>}
@@ -3356,7 +3355,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                             ({weeklyHours}h week
                             {startDateHours != null && ` · ${startDateHours}h on start date`})
                           </span>
-                          {hasAllocError && <span className="qa-emp-alloc-error" title={avail.allocationError}>âš </span>}
+                          {hasAllocError && <span className="qa-emp-alloc-error" title={avail.allocationError}>⚠</span>}
                         </label>
                       );
                     })}
@@ -3368,7 +3367,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                         const emp = (weekData?.employees || []).find((e) => e.employee_id === id);
                         const a = selectedTestersAvailability[id];
                         if (!emp || !a) return null;
-                        return `${emp.employee_name}: ${a.availableOnStartDate}h${a.allocationError ? ' âš ' : ''}`;
+                        return `${emp.employee_name}: ${a.availableOnStartDate}h${a.allocationError ? ' ⚠' : ''}`;
                       }).filter(Boolean).join(', ')}
                     </div>
                   )}
@@ -3551,7 +3550,6 @@ function QATaskPlanning({ showParentTitle = false }) {
                   <input 
                     type="date" 
                     value={form.start_date} 
-                    min={formatAPIDate(new Date())}
                     onChange={(e) => setForm({ ...form, start_date: e.target.value })} 
                   />
                   {formErrors.start_date && <span className="qa-form-error">{formErrors.start_date}</span>}
@@ -3687,7 +3685,6 @@ function QATaskPlanning({ showParentTitle = false }) {
               <input
                 type="date"
                 value={editTaskForm.start_date}
-                min={formatAPIDate(new Date())}
                 onChange={(e) => setEditTaskForm({ ...editTaskForm, start_date: e.target.value })}
               />
             </div>

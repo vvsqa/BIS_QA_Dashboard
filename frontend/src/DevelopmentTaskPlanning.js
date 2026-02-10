@@ -2360,7 +2360,6 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                   <input
                     type="date"
                     value={form.start_date}
-                    min={formatAPIDate(new Date())}
                     onChange={(e) => setForm({ ...form, start_date: e.target.value })}
                   />
                   {formErrors.start_date && <span className="form-error">{formErrors.start_date}</span>}
@@ -2529,7 +2528,6 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                     <input
                       type="date"
                       value={multiPlanForm.start_date}
-                      min={formatAPIDate(new Date())}
                       onChange={(e) => setMultiPlanForm({ ...multiPlanForm, start_date: e.target.value })}
                     />
                     {multiPlanErrors.start_date && <span className="form-error">{multiPlanErrors.start_date}</span>}
