@@ -1812,7 +1812,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                                         title={!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()) ? 'Past tasks cannot be edited' : 'Edit allocations'}
                                         disabled={!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date())}
                                       >
-                                        ✎
+                                        {'\u270E'}
                                       </button>
                                       <button
                                         type="button"
@@ -1821,7 +1821,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                                         title={!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()) ? 'Past tasks cannot be deleted' : 'Remove'}
                                         disabled={!!(!t.spillover && t.start_date && t.start_date < formatAPIDate(new Date()))}
                                       >
-                                        ×
+                                        {'\u00D7'}
                                       </button>
                                     </div>
                                   )}
