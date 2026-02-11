@@ -11655,6 +11655,38 @@ def qa_planning_add_task(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+        # Duplicate detection: check for existing identical task (prevents double-submit on network issues)
+        existing_task = db.query(QAPlannedTask).filter(
+            QAPlannedTask.planning_week_id == pw.id,
+            QAPlannedTask.employee_name == emp.name,
+            QAPlannedTask.status == "active",
+            QAPlannedTask.start_date == body.start_date,
+            QAPlannedTask.total_planned_hours == round(total_hours, 1),
+        )
+        if body.task_category == "Ticket" and ticket_id:
+            existing_task = existing_task.filter(QAPlannedTask.ticket_id == ticket_id)
+        else:
+            existing_task = existing_task.filter(
+                QAPlannedTask.generic_category == body.generic_category,
+                QAPlannedTask.activity_description == body.activity_description.strip(),
+            )
+        existing_task = existing_task.first()
+        if existing_task:
+            # Return existing task instead of creating duplicate
+            allocs = db.query(QAPlannedAllocation).filter(QAPlannedAllocation.task_id == existing_task.id).order_by(QAPlannedAllocation.allocation_date).all()
+            return {
+                "id": existing_task.id,
+                "employee_name": existing_task.employee_name,
+                "ticket_id": existing_task.ticket_id,
+                "ticket_title": existing_task.ticket_title,
+                "activity_description": existing_task.activity_description,
+                "start_date": existing_task.start_date.isoformat() if existing_task.start_date else None,
+                "end_date": existing_task.end_date.isoformat() if existing_task.end_date else None,
+                "total_planned_hours": float(existing_task.total_planned_hours or 0),
+                "allocations": [{"date": a.allocation_date.isoformat(), "hours": float(a.hours or 0)} for a in allocs],
+                "duplicate_prevented": True,
+            }
+
         task = QAPlannedTask(
             planning_week_id=pw.id,
             employee_id=emp.employee_id,
