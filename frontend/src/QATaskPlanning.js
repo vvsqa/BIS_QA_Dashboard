@@ -3479,9 +3479,10 @@ function QATaskPlanning({ showParentTitle = false }) {
                         if (!Number.isNaN(id) && id > 0) fetchTicketDetails(id);
                       }
                     }}
-                    placeholder="Or type ticket ID / title to search (any status)..."
+                    placeholder="Select from suggestions below or type a ticket ID and press Enter"
                     autoComplete="off"
                   />
+                  <p className="qa-ticket-id-hint">Suggested tickets are shown above. For tickets in other statuses (e.g. DEV, BIS), enter the ticket ID and press <kbd>Enter</kbd> to load and create a task.</p>
                   {ticketLookupLoading && <span className="qa-loading-hint">Looking up...</span>}
                   {showTicketSuggestions && ticketSuggestions.length > 0 && (
                     <div className="qa-ticket-suggestions" ref={ticketSuggestionsRef}>

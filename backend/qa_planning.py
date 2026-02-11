@@ -5,6 +5,7 @@ Excludes BIS Testing tickets - only QC Testing, QC Testing in Progress, QC Testi
 Includes QA planner: week data, tasks, allocations (mirrors dev_planning for QA team).
 """
 import math
+import re
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from sqlalchemy.orm import Session
@@ -28,6 +29,9 @@ HOURS_PER_WEEK = 40
 
 # QA statuses (exclude BIS Testing)
 QA_QC_STATUSES = ['QC Testing', 'QC Testing in Progress', 'QC Testing Hold']
+
+# Statuses considered closed (excluded from task planner ticket suggestions when showing "all statuses")
+CLOSED_STATUSES = ['Closed', 'Moved to Live', 'Completed']
 
 # Statuses that indicate ticket was returned from QA (failed review) - for "Retesting after failure"
 QC_FAIL_STATUSES = ['QC Review Fail', 'Tested - Awaiting Fixes', 'Code Review Failed']
@@ -267,7 +271,8 @@ def get_qa_ticket_suggestions(
 ) -> Dict[str, List[Dict]]:
     """
     Return categorized ticket suggestions for the create-task modal.
-    Helps the lead pick the next ticket to assign based on:
+    Shows tickets of ALL statuses (excluding only closed/completed) so any ticket
+    can be selected when adding a task.
     - next_in_queue: By priority, unassigned first, then ageing
     - on_hold: Tickets in QC Testing Hold (next when hold is released)
     - for_retesting: Tickets that failed QC and came back for retesting
@@ -275,9 +280,13 @@ def get_qa_ticket_suggestions(
     When assignee is provided, prioritizes tickets for that tester (retesting, on hold).
     """
     today = today or date.today()
+    # All non-closed tickets (all statuses) so user can select any ticket for planning
     tickets = (
         db.query(TicketTracking)
-        .filter(TicketTracking.status.in_(QA_QC_STATUSES))
+        .filter(
+            TicketTracking.status.isnot(None),
+            ~TicketTracking.status.in_(CLOSED_STATUSES),
+        )
         .all()
     )
     assignee_lower = (assignee or "").strip().lower()
@@ -669,7 +678,18 @@ def get_qa_employees_for_planner(db: Session, visible_employee_ids: Optional[set
     exclude = QA_PLANNER_EXCLUDE_NAMES | ({manager_name} if manager_name else set())
     employees = [e for e in all_qa if (e.name or "").strip() not in exclude]
 
-    # Group by lead (case-insensitive key so "Reshma Madhavan Nair" and "RESHMA MADHAVAN NAIR" merge into one team)
+    # Group by lead: normalize key so same person clubs together (case + any whitespace).
+    # Applies to all leads (Aravind, Reshma, etc.): "Reshma Madhavan Nair", "RESHMA  MADHAVAN  NAIR",
+    # "ARAVIND K V", "Aravind K V" -> single group per lead.
+    def _normalize_lead_key(name: str) -> str:
+        if not name or name == "_unassigned":
+            return "_unassigned"
+        s = (name or "").strip()
+        if not s:
+            return "_unassigned"
+        # Collapse any whitespace (spaces, tabs, Unicode) to single space, then lowercase
+        return re.sub(r"\s+", " ", s).lower()
+
     by_lead: Dict[str, Tuple[str, List[Any]]] = {}  # normalized_key -> (display_name, members)
     for e in employees:
         lead = (getattr(e, "lead", None) or "").strip()
@@ -679,7 +699,7 @@ def get_qa_employees_for_planner(db: Session, visible_employee_ids: Optional[set
             key = "_unassigned"
             display_name = None
         else:
-            key = lead.lower()
+            key = _normalize_lead_key(lead)
             display_name = lead
         if key not in by_lead:
             by_lead[key] = (display_name, [])

@@ -12263,6 +12263,20 @@ tbody tr:last-child td {
   transform: scale(1.02);
 }
 
+.redmine-testrail-link {
+  margin-left: 10px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--accent-primary, #3b82f6);
+  text-decoration: none;
+  opacity: 0.9;
+}
+
+.redmine-testrail-link:hover {
+  text-decoration: underline;
+  opacity: 1;
+}
+
 .timesheet-count {
   font-size: 14px;
   color: var(--text-muted);

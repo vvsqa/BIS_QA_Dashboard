@@ -28,11 +28,29 @@ headers = {
 LIMIT = 100
 
 
+# Possible Redmine custom field names for PM Tracker / hosted app ticket ID (try in order)
+TICKET_ID_FIELD_NAMES = ["Ticket ID", "PM Tracker ID", "Ticket Number", "Reference", "PM Tracker Ticket", "Ticket"]
+
+
 def get_custom_field(issue, field_name):
     """Extract a custom field value by name"""
     for field in issue.get("custom_fields", []):
         if field.get("name") == field_name:
             return field.get("value")
+    return None
+
+
+def get_ticket_id_from_issue(issue):
+    """Get PM Tracker ticket_id from Redmine issue. Tries multiple custom field names so hosted app and other setups populate correctly."""
+    for name in TICKET_ID_FIELD_NAMES:
+        value = get_custom_field(issue, name)
+        if value is not None and str(value).strip() != "":
+            s = str(value).strip()
+            if s.isdigit():
+                return int(s)
+            # Some Redmine custom fields return list for multi-value
+            if isinstance(value, list) and len(value) > 0 and str(value[0]).strip().isdigit():
+                return int(str(value[0]).strip())
     return None
 
 
@@ -136,9 +154,8 @@ def sync_redmine_bugs(full_refresh=False, all_bugs=False):
                 bug_id = issue.get("id")
                 existing_bug = db.query(Bug).filter(Bug.bug_id == bug_id).first()
 
-                # Extract Ticket ID from custom fields
-                ticket_id_value = get_custom_field(issue, "Ticket ID")
-                ticket_id = int(ticket_id_value) if ticket_id_value and str(ticket_id_value).isdigit() else None
+                # Extract Ticket ID from custom fields (try multiple names for hosted app / different Redmine setups)
+                ticket_id = get_ticket_id_from_issue(issue)
 
                 # Extract parent task ID
                 parent = issue.get("parent")

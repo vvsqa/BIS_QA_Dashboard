@@ -2231,6 +2231,7 @@ function TicketsDashboard() {
                 <h2 className="timesheet-title">
                   <Link to={`/dashboard?ticket=${selectedTicketId}`} className="ticket-badge ticket-badge-link" title="Open Ticket Dashboard for this ticket">#{selectedTicketId}</Link>
                   <TicketExternalLink ticketId={selectedTicketId} />
+                  <Link to={`/dashboard?ticket=${selectedTicketId}`} className="redmine-testrail-link" title="View Redmine bugs and TestRail results for this ticket">Redmine & TestRail</Link>
                   Timesheet Entries
                 </h2>
                 <span className="timesheet-count">

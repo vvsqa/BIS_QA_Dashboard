@@ -81,6 +81,7 @@ from qa_planning import (
     simulate_qa_allocation_distribution,
     create_qa_allocations_for_task,
     QA_QC_STATUSES,
+    CLOSED_STATUSES,
     get_qa_ticket_suggestions,
 )
 
@@ -11319,10 +11320,14 @@ def qa_planning_tickets(
     priority: Optional[str] = Query(None),
     assignee: Optional[str] = Query(None, description="Filter/sort for tester being assigned"),
 ):
-    """List QC tickets for planner. When search is a numeric ticket ID, that ticket is included even if not in QC status (so users can select any ticket for task planning)."""
+    """List tickets for task planner. Shows tickets of all statuses (excluding closed/completed) so any ticket can be selected when adding a task."""
     db = SessionLocal()
     try:
-        q = db.query(TicketTracking).filter(TicketTracking.status.in_(QA_QC_STATUSES))
+        # All non-closed tickets (all statuses) for task planner
+        q = db.query(TicketTracking).filter(
+            TicketTracking.status.isnot(None),
+            ~TicketTracking.status.in_(CLOSED_STATUSES),
+        )
         if search:
             s = f"%{search}%"
             q = q.filter(

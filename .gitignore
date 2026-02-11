@@ -28,6 +28,7 @@ backend/config/oauth2_credentials.json
 *.db
 *.sqlite
 *.sqlite3
+*qa_dashboard_dump*.sql
 
 # Python distribution / packaging
 backend/dist/
@@ -37,6 +38,7 @@ backend/.eggs/
 
 # ===== Node.js / Frontend =====
 # Dependencies
+node_modules/
 frontend/node_modules/
 frontend/.pnp
 frontend/.pnp.js
