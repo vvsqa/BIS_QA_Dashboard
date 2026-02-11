@@ -1,6 +1,13 @@
 import requests
 import os
 
+# Load .env when script is run directly (e.g. python redmine_test_connection.py)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+except ImportError:
+    pass
+
 REDMINE_URL = os.getenv("REDMINE_URL", "https://redmine.bissafety.app")
 API_KEY = os.getenv("REDMINE_API_KEY", "")
 

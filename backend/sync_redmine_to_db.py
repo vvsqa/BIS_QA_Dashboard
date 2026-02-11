@@ -18,6 +18,13 @@ from database import SessionLocal
 from models import Bug, BugStatusHistory
 from datetime import datetime
 
+# Load .env when script is run directly (e.g. python sync_redmine_to_db.py)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+except ImportError:
+    pass
+
 REDMINE_URL = os.getenv("REDMINE_URL", "https://redmine.bissafety.app")
 API_KEY = os.getenv("REDMINE_API_KEY", "")
 # Comma-separated project identifiers (e.g. "bis-web" or "bis-web,hosted-app"). Enables hosted app bug sync.
