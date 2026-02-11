@@ -12,7 +12,7 @@ import bcrypt
 from sqlalchemy.orm import Session
 
 from database import SessionLocal
-from models import User, AdminConfig, Employee
+from models import User, AdminConfig, Employee, ClientProfile
 
 # JWT config
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "qa-dashboard-secret-change-in-production")
@@ -73,9 +73,17 @@ def authenticate_user(db: Session, email: str, password: str) -> Optional[Any]:
             "is_admin": True,
         }
 
-    # Check regular user
+    # Check regular user (includes CLIENT)
     user = db.query(User).filter(User.email == email_lower).first()
     if user and verify_password(password, user.password_hash):
+        # CLIENT logins require an active ClientProfile
+        if user.role == "CLIENT":
+            profile = db.query(ClientProfile).filter(
+                ClientProfile.email == user.email,
+                ClientProfile.is_active == True,
+            ).first()
+            if not profile:
+                return None
         return {
             "id": user.id,
             "email": user.email,
@@ -111,6 +119,19 @@ def get_current_user(
     employee_id = payload.get("employee_id")
     if not email or not role:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+
+    # CLIENT tokens are valid only while the ClientProfile is active
+    if role == "CLIENT":
+        profile = db.query(ClientProfile).filter(
+            ClientProfile.email == email,
+            ClientProfile.is_active == True,
+        ).first()
+        if not profile:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Client account is inactive",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
 
     return {
         "email": email,
