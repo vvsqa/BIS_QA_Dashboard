@@ -20,6 +20,8 @@ from datetime import datetime
 
 REDMINE_URL = os.getenv("REDMINE_URL", "https://redmine.bissafety.app")
 API_KEY = os.getenv("REDMINE_API_KEY", "")
+# Comma-separated project identifiers (e.g. "bis-web" or "bis-web,hosted-app"). Enables hosted app bug sync.
+REDMINE_PROJECT_IDS = [p.strip() for p in (os.getenv("REDMINE_PROJECT_IDS", "bis-web") or "bis-web").split(",") if p.strip()]
 
 headers = {
     "X-Redmine-API-Key": API_KEY
@@ -106,6 +108,7 @@ def sync_redmine_bugs(full_refresh=False, all_bugs=False):
     print("Starting Redmine -> PostgreSQL sync...")
     print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"All bugs (incl. closed): {all_bugs}")
+    print(f"Projects: {REDMINE_PROJECT_IDS}")
     print("="*60)
 
     if not API_KEY:
@@ -115,155 +118,149 @@ def sync_redmine_bugs(full_refresh=False, all_bugs=False):
     total_processed = 0
     total_created = 0
     total_updated = 0
-    offset = 0
 
     try:
-        while True:
-            params = {
-                "project_id": "bis-web",
-                "limit": LIMIT,
-                "offset": offset
-            }
-            if all_bugs:
-                # Fetch ALL issues (open + closed) - no query filter
-                params["status_id"] = "*"
-            else:
-                # Use saved query (may exclude closed/deferred bugs)
-                params["query_id"] = 20
-
-            response = requests.get(
-                f"{REDMINE_URL}/issues.json",
-                headers=headers,
-                params=params,
-                timeout=30
-            )
-            response.raise_for_status()
-
-            data = response.json()
-            issues = data.get("issues", [])
-            
-            if not issues:
-                break
-
-            for issue in issues:
-                # When all_bugs=True (no query), filter to Bug tracker only
-                tracker_name = (issue.get("tracker") or {}).get("name") or ""
-                if all_bugs and tracker_name.lower() != "bug":
-                    continue
-
-                bug_id = issue.get("id")
-                existing_bug = db.query(Bug).filter(Bug.bug_id == bug_id).first()
-
-                # Extract Ticket ID from custom fields (try multiple names for hosted app / different Redmine setups)
-                ticket_id = get_ticket_id_from_issue(issue)
-
-                # Extract parent task ID
-                parent = issue.get("parent")
-                parent_task_id = parent.get("id") if parent else None
-
-                # Get all custom fields as dictionary
-                custom_fields = get_all_custom_fields(issue)
-
-                # Build comprehensive bug data
-                bug_data = {
-                    # Core identifiers
-                    "bug_id": bug_id,
-                    "ticket_id": ticket_id,
-                    "parent_task_id": parent_task_id,
-                    
-                    # Basic info
-                    "tracker": issue.get("tracker", {}).get("name"),
-                    "subject": issue.get("subject"),
-                    "description": issue.get("description"),
-                    "status": issue.get("status", {}).get("name"),
-                    "priority": issue.get("priority", {}).get("name"),
-                    
-                    # People
-                    "assignee": issue.get("assigned_to", {}).get("name"),
-                    "author": issue.get("author", {}).get("name"),
-                    
-                    # Custom fields - commonly used
-                    "severity": get_custom_field(issue, "Severity"),
-                    "environment": get_custom_field(issue, "Environment"),
-                    "module": get_custom_field(issue, "Module"),
-                    "feature": get_custom_field(issue, "Feature"),
-                    "platform": get_custom_field(issue, "Platform"),
-                    "browser": get_custom_field(issue, "Browser"),
-                    "os": get_custom_field(issue, "OS"),
-                    
-                    # Project
-                    "project": issue.get("project", {}).get("name"),
-                    
-                    # Time tracking
-                    "start_date": parse_date(issue.get("start_date")),
-                    "due_date": parse_date(issue.get("due_date")),
-                    "estimated_hours": parse_float(issue.get("estimated_hours")),
-                    "spent_hours": parse_float(issue.get("spent_hours")),
-                    "done_ratio": issue.get("done_ratio"),
-                    
-                    # Dates
-                    "created_on": parse_datetime(issue.get("created_on")),
-                    "updated_on": parse_datetime(issue.get("updated_on")),
-                    "closed_on": parse_datetime(issue.get("closed_on")),
-                    
-                    # Store ALL raw data as JSON for future use
-                    "raw_data": issue,
-                    "custom_fields": custom_fields
+        for project_id in REDMINE_PROJECT_IDS:
+            offset = 0
+            while True:
+                params = {
+                    "project_id": project_id,
+                    "limit": LIMIT,
+                    "offset": offset
                 }
-
-                if existing_bug:
-                    # Track status change before updating
-                    previous_status = existing_bug.status
-                    new_status = bug_data.get('status')
-                    
-                    # Update existing bug
-                    for key, value in bug_data.items():
-                        setattr(existing_bug, key, value)
-                    total_updated += 1
-                    
-                    # Record status change if status has changed
-                    if new_status and new_status != previous_status:
-                        # Calculate duration in previous status
-                        duration_hours = None
-                        if previous_status and existing_bug.updated_on:
-                            duration_seconds = (datetime.now() - existing_bug.updated_on.replace(tzinfo=None)).total_seconds()
-                            duration_hours = round(duration_seconds / 3600, 2)
-                        
-                        history = BugStatusHistory(
-                            bug_id=bug_id,
-                            ticket_id=ticket_id,
-                            previous_status=previous_status,
-                            new_status=new_status,
-                            changed_on=datetime.now(),
-                            assignee=bug_data.get('assignee'),
-                            duration_in_previous_status=duration_hours,
-                            source='sync'
-                        )
-                        db.add(history)
+                if all_bugs:
+                    # Fetch ALL issues (open + closed) - no query filter
+                    params["status_id"] = "*"
                 else:
-                    # Create new bug
-                    db.add(Bug(**bug_data))
-                    total_created += 1
-                    
-                    # Record initial status for new bug
-                    if bug_data.get('status'):
-                        history = BugStatusHistory(
-                            bug_id=bug_id,
-                            ticket_id=ticket_id,
-                            previous_status=None,
-                            new_status=bug_data.get('status'),
-                            changed_on=datetime.now(),
-                            assignee=bug_data.get('assignee'),
-                            duration_in_previous_status=None,
-                            source='sync'
-                        )
-                        db.add(history)
+                    # Use saved query (may exclude closed/deferred bugs)
+                    params["query_id"] = 20
 
-                total_processed += 1
+                response = requests.get(
+                    f"{REDMINE_URL}/issues.json",
+                    headers=headers,
+                    params=params,
+                    timeout=30
+                )
+                response.raise_for_status()
 
-            db.commit()
-            offset += LIMIT
-            print(f"  Processed {total_processed} bugs... (created: {total_created}, updated: {total_updated})")
+                data = response.json()
+                issues = data.get("issues", [])
+                
+                if not issues:
+                    break
+
+                for issue in issues:
+                    # When all_bugs=True (no query), filter to Bug tracker only
+                    tracker_name = (issue.get("tracker") or {}).get("name") or ""
+                    if all_bugs and tracker_name.lower() != "bug":
+                        continue
+
+                    bug_id = issue.get("id")
+                    existing_bug = db.query(Bug).filter(Bug.bug_id == bug_id).first()
+
+                    # Extract Ticket ID from custom fields (try multiple names for hosted app / different Redmine setups)
+                    ticket_id = get_ticket_id_from_issue(issue)
+
+                    # Extract parent task ID
+                    parent = issue.get("parent")
+                    parent_task_id = parent.get("id") if parent else None
+
+                    # Get all custom fields as dictionary
+                    custom_fields = get_all_custom_fields(issue)
+
+                    # Build comprehensive bug data
+                    bug_data = {
+                        # Core identifiers
+                        "bug_id": bug_id,
+                        "ticket_id": ticket_id,
+                        "parent_task_id": parent_task_id,
+                        # Basic info
+                        "tracker": issue.get("tracker", {}).get("name"),
+                        "subject": issue.get("subject"),
+                        "description": issue.get("description"),
+                        "status": issue.get("status", {}).get("name"),
+                        "priority": issue.get("priority", {}).get("name"),
+                        # People
+                        "assignee": issue.get("assigned_to", {}).get("name"),
+                        "author": issue.get("author", {}).get("name"),
+                        # Custom fields - commonly used
+                        "severity": get_custom_field(issue, "Severity"),
+                        "environment": get_custom_field(issue, "Environment"),
+                        "module": get_custom_field(issue, "Module"),
+                        "feature": get_custom_field(issue, "Feature"),
+                        "platform": get_custom_field(issue, "Platform"),
+                        "browser": get_custom_field(issue, "Browser"),
+                        "os": get_custom_field(issue, "OS"),
+                        # Project
+                        "project": issue.get("project", {}).get("name"),
+                        # Time tracking
+                        "start_date": parse_date(issue.get("start_date")),
+                        "due_date": parse_date(issue.get("due_date")),
+                        "estimated_hours": parse_float(issue.get("estimated_hours")),
+                        "spent_hours": parse_float(issue.get("spent_hours")),
+                        "done_ratio": issue.get("done_ratio"),
+                        # Dates
+                        "created_on": parse_datetime(issue.get("created_on")),
+                        "updated_on": parse_datetime(issue.get("updated_on")),
+                        "closed_on": parse_datetime(issue.get("closed_on")),
+                        # Store ALL raw data as JSON for future use
+                        "raw_data": issue,
+                        "custom_fields": custom_fields
+                    }
+
+                    if existing_bug:
+                        # Track status change before updating
+                        previous_status = existing_bug.status
+                        new_status = bug_data.get('status')
+                        
+                        # Update existing bug
+                        for key, value in bug_data.items():
+                            setattr(existing_bug, key, value)
+                        total_updated += 1
+                        
+                        # Record status change if status has changed
+                        if new_status and new_status != previous_status:
+                            # Calculate duration in previous status
+                            duration_hours = None
+                            if previous_status and existing_bug.updated_on:
+                                duration_seconds = (datetime.now() - existing_bug.updated_on.replace(tzinfo=None)).total_seconds()
+                                duration_hours = round(duration_seconds / 3600, 2)
+                            
+                            history = BugStatusHistory(
+                                bug_id=bug_id,
+                                ticket_id=ticket_id,
+                                previous_status=previous_status,
+                                new_status=new_status,
+                                changed_on=datetime.now(),
+                                assignee=bug_data.get('assignee'),
+                                duration_in_previous_status=duration_hours,
+                                source='sync'
+                            )
+                            db.add(history)
+                    else:
+                        # Create new bug
+                        db.add(Bug(**bug_data))
+                        total_created += 1
+                        
+                        # Record initial status for new bug
+                        if bug_data.get('status'):
+                            history = BugStatusHistory(
+                                bug_id=bug_id,
+                                ticket_id=ticket_id,
+                                previous_status=None,
+                                new_status=bug_data.get('status'),
+                                changed_on=datetime.now(),
+                                assignee=bug_data.get('assignee'),
+                                duration_in_previous_status=None,
+                                source='sync'
+                            )
+                            db.add(history)
+
+                    total_processed += 1
+
+                db.commit()
+                offset += LIMIT
+                print(f"  Processed {total_processed} bugs... (created: {total_created}, updated: {total_updated})")
 
         print("\n" + "="*60)
         print(f"SYNC COMPLETED")
