@@ -70,7 +70,7 @@ Legend:
 | `PM_API_URL` | Required (if enabled) | Required (if enabled) | Required (if enabled) | PM export endpoint. |
 | `PM_API_KEY` | Required (if enabled) | Required (if enabled) | Required (if enabled) | Secret key. |
 | `PM_AUTO_SYNC` | Optional | Optional | Optional | `true/false` scheduler toggle. |
-| `PM_SYNC_INTERVAL_MINUTES` | Optional | Optional | Optional | Default `10`. |
+| `PM_SYNC_INTERVAL_MINUTES` | Optional | Optional | Optional | Default `2` (real-time). Set `10`+ to reduce API load. |
 | `PM_API_TIMEOUT` | Optional | Optional | Optional | Default `30`. |
 | `PM_API_MAX_RETRIES` | Optional | Optional | Optional | Default `3`. |
 | `PM_API_RETRY_DELAY` | Optional | Optional | Optional | Default `5`. |
@@ -85,7 +85,7 @@ Legend:
 | `REDMINE_URL` | Required (if enabled) | Required (if enabled) | Required (if enabled) | Redmine host URL. |
 | `REDMINE_API_KEY` | Required (if enabled) | Required (if enabled) | Required (if enabled) | Secret key. |
 | `REDMINE_AUTO_SYNC` | Optional | Optional | Optional | Default `true`. |
-| `REDMINE_SYNC_INTERVAL_MINUTES` | Optional | Optional | Optional | Default `15`. |
+| `REDMINE_SYNC_INTERVAL_MINUTES` | Optional | Optional | Optional | Default `2` (real-time). Set `15`+ to reduce API load. |
 
 ### Google Sheets (timesheet sync, optional)
 

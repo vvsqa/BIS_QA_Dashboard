@@ -20,8 +20,8 @@ from sync_redmine_to_db import sync_redmine_bugs
 
 logger = logging.getLogger(__name__)
 
-# Default 15 minutes – Redmine data doesn't change as frequently as PM Tracker
-REDMINE_SYNC_INTERVAL_MINUTES = int(os.getenv("REDMINE_SYNC_INTERVAL_MINUTES", "15"))
+# Default 2 min for near real-time bug updates from Redmine
+REDMINE_SYNC_INTERVAL_MINUTES = int(os.getenv("REDMINE_SYNC_INTERVAL_MINUTES", "2"))
 REDMINE_AUTO_SYNC_ENABLED = os.getenv("REDMINE_AUTO_SYNC", "true").lower() == "true"
 
 _scheduler: Optional[BackgroundScheduler] = None

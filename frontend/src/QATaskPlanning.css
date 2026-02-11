@@ -2473,6 +2473,16 @@
   cursor: not-allowed;
 }
 
+.qa-ticket-card-info {
+  padding: 0.5rem 1rem;
+  margin: 0 1rem 0.75rem;
+  background: rgba(34, 211, 238, 0.12);
+  border: 1px solid rgba(34, 211, 238, 0.35);
+  border-radius: 6px;
+  color: #67e8f9;
+  font-size: 0.85rem;
+}
+
 .qa-ticket-card-warning {
   padding: 0.5rem 1rem;
   margin: 0 1rem 0.75rem;

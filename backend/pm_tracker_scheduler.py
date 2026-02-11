@@ -22,8 +22,8 @@ from pm_sync_runner import run_pm_api_sync
 
 logger = logging.getLogger(__name__)
 
-# Default 10 min – closed tickets are skipped in upsert, so this focuses on open/new tickets
-PM_SYNC_INTERVAL_MINUTES = int(os.getenv("PM_SYNC_INTERVAL_MINUTES", "10"))
+# Default 2 min for near real-time ticket updates from PM Tracker
+PM_SYNC_INTERVAL_MINUTES = int(os.getenv("PM_SYNC_INTERVAL_MINUTES", "2"))
 PM_AUTO_SYNC_ENABLED = os.getenv("PM_AUTO_SYNC", "true").lower() == "true"
 
 _scheduler: Optional[BackgroundScheduler] = None

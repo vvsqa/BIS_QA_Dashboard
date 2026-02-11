@@ -669,23 +669,33 @@ def get_qa_employees_for_planner(db: Session, visible_employee_ids: Optional[set
     exclude = QA_PLANNER_EXCLUDE_NAMES | ({manager_name} if manager_name else set())
     employees = [e for e in all_qa if (e.name or "").strip() not in exclude]
 
-    # Group by lead
-    by_lead: Dict[str, List[Any]] = {}
+    # Group by lead (case-insensitive key so "Reshma Madhavan Nair" and "RESHMA MADHAVAN NAIR" merge into one team)
+    by_lead: Dict[str, Tuple[str, List[Any]]] = {}  # normalized_key -> (display_name, members)
     for e in employees:
         lead = (getattr(e, "lead", None) or "").strip()
         if not lead or lead in exclude:
             lead = "_unassigned"
-        by_lead.setdefault(lead, []).append(e)
+        if lead == "_unassigned":
+            key = "_unassigned"
+            display_name = None
+        else:
+            key = lead.lower()
+            display_name = lead
+        if key not in by_lead:
+            by_lead[key] = (display_name, [])
+        by_lead[key][1].append(e)
 
-    # QA leads = lead names that have reportees (exclude _unassigned)
-    qa_lead_names = sorted(k for k in by_lead if k != "_unassigned")
-    # Order: lead1's team, lead2's team, ... then unassigned
+    # QA leads = lead names that have reportees (exclude _unassigned). Use title-case for consistent headings.
+    qa_lead_keys = sorted(k for k in by_lead if k != "_unassigned")
     ordered: List[Tuple[str, List[Any]]] = []
-    for lead_name in qa_lead_names:
-        members = sorted(by_lead[lead_name], key=lambda x: (x.name or ""))
-        ordered.append((lead_name, members))
+    for k in qa_lead_keys:
+        display_name, members = by_lead[k]
+        # Normalize display to title-case so "RESHMA MADHAVAN NAIR" and "Reshma Madhavan Nair" show the same
+        heading = (display_name or "").title() if display_name else k
+        ordered.append((heading, sorted(members, key=lambda x: (x.name or ""))))
     if "_unassigned" in by_lead:
-        ordered.append(("_unassigned", sorted(by_lead["_unassigned"], key=lambda x: (x.name or ""))))
+        _, members = by_lead["_unassigned"]
+        ordered.append(("_unassigned", sorted(members, key=lambda x: (x.name or ""))))
 
     return ordered
 

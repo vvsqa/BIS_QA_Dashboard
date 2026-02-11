@@ -1180,7 +1180,7 @@ function QATaskPlanning({ showParentTitle = false }) {
           total_hours: data.qa_estimate_hours || f.total_hours,
         }));
       } else {
-        setFormErrors((e) => ({ ...e, ticket_id: 'Ticket not found or not in applicable statuses' }));
+        setFormErrors((e) => ({ ...e, ticket_id: 'Ticket not found. Enter a valid ID or use Refresh from PM.' }));
       }
     } catch (_) {
       setLookedUpTicket(null);
@@ -1204,7 +1204,7 @@ function QATaskPlanning({ showParentTitle = false }) {
         const text = await res.text();
         const body = text ? JSON.parse(text) : {};
         if (res.ok) data = body;
-        else errorDetail = body?.detail || body?.message || (res.status === 400 ? 'Invalid ticket ID' : 'Ticket not found or not in applicable statuses');
+        else errorDetail = body?.detail || body?.message || (res.status === 400 ? 'Invalid ticket ID' : 'Ticket not found. Try Refresh from PM.');
       } catch (_) {
         if (res.ok) {
           data = null;
@@ -1249,12 +1249,17 @@ function QATaskPlanning({ showParentTitle = false }) {
       // Tester is pre-selected when opening from a resource; only require selection when neither is set
       const hasTester = addTaskSelectedTesters.length > 0 || addTaskEmployee;
       if (!hasTester) err.testers = 'Select at least one tester';
-      if (!form.ticket_id) err.ticket_id = 'Select a ticket from suggestions';
+      if (!form.ticket_id) err.ticket_id = 'Select a ticket or type a ticket ID and press Enter';
       if (lookedUpTicket) {
-        if (lookedUpTicket.qa_estimate_hours == null || lookedUpTicket.qa_estimate_hours <= 0) {
-          err.ticket_id = 'QA Estimate is required in PM Tracker. Add it and click Refresh.';
-        } else if (!(lookedUpTicket.qc_tester || '').trim()) {
-          err.ticket_id = 'QC Tester is required in PM Tracker. Assign and click Refresh.';
+        const inQcStatus = lookedUpTicket.in_qc_status !== false;
+        if (inQcStatus) {
+          if (lookedUpTicket.qa_estimate_hours == null || lookedUpTicket.qa_estimate_hours <= 0) {
+            err.ticket_id = 'QA Estimate is required in PM Tracker. Add it and click Refresh.';
+          } else if (!(lookedUpTicket.qc_tester || '').trim()) {
+            err.ticket_id = 'QC Tester is required in PM Tracker. Assign and click Refresh.';
+          } else {
+            if (!form.task_type) err.task_type = 'Task Type is required';
+          }
         } else {
           if (!form.task_type) err.task_type = 'Task Type is required';
         }
@@ -3466,7 +3471,15 @@ function QATaskPlanning({ showParentTitle = false }) {
                     value={form.ticket_id_input}
                     onChange={(e) => setForm({ ...form, ticket_id_input: e.target.value, ticket_id: null })}
                     onFocus={() => ticketSuggestions.length > 0 && setShowTicketSuggestions(true)}
-                    placeholder="Or type ticket ID / title to search..."
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        const raw = (form.ticket_id_input || '').trim();
+                        const id = raw ? parseInt(raw, 10) : NaN;
+                        if (!Number.isNaN(id) && id > 0) fetchTicketDetails(id);
+                      }
+                    }}
+                    placeholder="Or type ticket ID / title to search (any status)..."
                     autoComplete="off"
                   />
                   {ticketLookupLoading && <span className="qa-loading-hint">Looking up...</span>}
@@ -3556,17 +3569,22 @@ function QATaskPlanning({ showParentTitle = false }) {
                       </span>
                     </div>
                   </div>
+                  {lookedUpTicket.in_qc_status === false && (
+                    <div className="qa-ticket-card-info">
+                      This ticket is not in the QA queue; you can still create a task at your discretion.
+                    </div>
+                  )}
                   {['QC Review Fail', 'Code Review Failed'].includes(lookedUpTicket.status) && (
                     <div className="qa-ticket-card-warning">
                       This ticket was returned from review. Consider addressing feedback before allocating more time.
                     </div>
                   )}
-                  {(lookedUpTicket.qa_estimate_hours == null || lookedUpTicket.qa_estimate_hours <= 0) && (
+                  {lookedUpTicket.in_qc_status !== false && (lookedUpTicket.qa_estimate_hours == null || lookedUpTicket.qa_estimate_hours <= 0) && (
                     <div className="qa-ticket-card-warning">
                       QA Estimate is required in PM Tracker. Add it and click Refresh.
                     </div>
                   )}
-                  {!(lookedUpTicket.qc_tester || '').trim() && (
+                  {lookedUpTicket.in_qc_status !== false && !(lookedUpTicket.qc_tester || '').trim() && (
                     <div className="qa-ticket-card-warning">
                       QC Tester is required in PM Tracker. Assign and click Refresh.
                     </div>

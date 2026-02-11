@@ -11299,6 +11299,19 @@ def qa_planning_ticket_suggestions(
         db.close()
 
 
+def _ticket_to_list_item(t):
+    """Single ticket to list payload for /qa-planning/tickets response."""
+    return {
+        "ticket_id": t.ticket_id,
+        "title": t.title,
+        "status": t.status,
+        "priority": t.priority,
+        "qc_tester": t.qc_tester,
+        "qa_estimate_hours": t.qa_estimate_hours,
+        "dev_estimate_hours": t.dev_estimate_hours,
+    }
+
+
 @app.get("/qa-planning/tickets")
 def qa_planning_tickets(
     search: Optional[str] = Query(None),
@@ -11306,8 +11319,7 @@ def qa_planning_tickets(
     priority: Optional[str] = Query(None),
     assignee: Optional[str] = Query(None, description="Filter/sort for tester being assigned"),
 ):
-    """List QC tickets (QC Testing, QC Testing in Progress, QC Testing Hold) for planner.
-    When assignee is provided, prioritizes: unassigned, assigned to this tester (retesting), on hold, by priority/ageing."""
+    """List QC tickets for planner. When search is a numeric ticket ID, that ticket is included even if not in QC status (so users can select any ticket for task planning)."""
     db = SessionLocal()
     try:
         q = db.query(TicketTracking).filter(TicketTracking.status.in_(QA_QC_STATUSES))
@@ -11325,6 +11337,15 @@ def qa_planning_tickets(
         if priority:
             q = q.filter(TicketTracking.priority == priority)
         tickets = q.order_by(TicketTracking.ticket_id.desc()).limit(200).all()
+        # If search is a single ticket ID, include that ticket even when not in QC status (any status / any team)
+        ticket_ids_seen = {t.ticket_id for t in tickets}
+        if search and search.strip().isdigit():
+            tid = int(search.strip())
+            if tid not in ticket_ids_seen:
+                t_any = db.query(TicketTracking).filter(TicketTracking.ticket_id == tid).first()
+                if t_any:
+                    tickets = [t_any] + tickets
+                    ticket_ids_seen.add(tid)
         if assignee and assignee.strip():
             assignee_lower = assignee.strip().lower()
             def sort_key(t):
@@ -11340,20 +11361,7 @@ def qa_planning_tickets(
                     return (2, -t.ticket_id)
                 return (3, t.ticket_id)
             tickets = sorted(tickets, key=sort_key)
-        return {
-            "tickets": [
-                {
-                    "ticket_id": t.ticket_id,
-                    "title": t.title,
-                    "status": t.status,
-                    "priority": t.priority,
-                    "qc_tester": t.qc_tester,
-                    "qa_estimate_hours": t.qa_estimate_hours,
-                    "dev_estimate_hours": t.dev_estimate_hours,
-                }
-                for t in tickets
-            ]
-        }
+        return {"tickets": [_ticket_to_list_item(t) for t in tickets]}
     finally:
         db.close()
 
@@ -11384,14 +11392,16 @@ def _qa_planning_ticket_payload(t):
 
 @app.get("/qa-planning/ticket/{ticket_id}")
 def qa_planning_get_ticket(ticket_id: int):
-    """Get ticket details for QA add-task. Returns null if not in QC statuses."""
+    """Get ticket details for QA add-task. Returns any ticket by ID (any status) so users can create tasks at their discretion."""
     db = SessionLocal()
     try:
-        t = db.query(TicketTracking).filter(
-            TicketTracking.ticket_id == ticket_id,
-            TicketTracking.status.in_(QA_QC_STATUSES),
-        ).first()
-        return _qa_planning_ticket_payload(t)
+        t = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+        if not t:
+            return None
+        payload = _qa_planning_ticket_payload(t)
+        if payload:
+            payload["in_qc_status"] = (t.status or "") in QA_QC_STATUSES
+        return payload
     finally:
         db.close()
 
@@ -11604,10 +11614,12 @@ def qa_planning_add_task(
             tkt = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
             if not tkt:
                 raise HTTPException(status_code=404, detail="Ticket not found")
-            if not tkt.qa_estimate_hours or tkt.qa_estimate_hours <= 0:
-                raise HTTPException(status_code=400, detail="QA Estimate is required in PM Tracker. Please add it and refresh.")
-            if not (tkt.qc_tester or "").strip():
-                raise HTTPException(status_code=400, detail="QC Tester is required in PM Tracker. Please assign and refresh.")
+            in_qc = (tkt.status or "") in QA_QC_STATUSES
+            if in_qc:
+                if not tkt.qa_estimate_hours or tkt.qa_estimate_hours <= 0:
+                    raise HTTPException(status_code=400, detail="QA Estimate is required in PM Tracker. Please add it and refresh.")
+                if not (tkt.qc_tester or "").strip():
+                    raise HTTPException(status_code=400, detail="QC Tester is required in PM Tracker. Please assign and refresh.")
             ticket_title = tkt.title
             ticket_priority = tkt.priority
 

@@ -34,7 +34,8 @@ PM_API_MAX_RETRIES=3
 PM_API_RETRY_DELAY=5
 
 PM_AUTO_SYNC=true
-PM_SYNC_INTERVAL_MINUTES=10
+# 2 = near real-time ticket updates; increase (e.g. 10) to reduce PM API load
+PM_SYNC_INTERVAL_MINUTES=2
 PM_SYNC_LOGGING=true
 PM_STORE_SYNC_HISTORY=true
 PM_SYNC_HISTORY_RETENTION_DAYS=30
@@ -45,7 +46,8 @@ PM_SYNC_HISTORY_RETENTION_DAYS=30
 REDMINE_URL=https://redmine.bissafety.app
 REDMINE_API_KEY=
 REDMINE_AUTO_SYNC=true
-REDMINE_SYNC_INTERVAL_MINUTES=15
+# 2 = near real-time bug updates; increase (e.g. 15) to reduce Redmine API load
+REDMINE_SYNC_INTERVAL_MINUTES=2
 
 # -------------------------------------------------------------------
 # Backend - Google Sheets sync (optional)
