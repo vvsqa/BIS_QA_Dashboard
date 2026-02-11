@@ -12703,7 +12703,41 @@ def dev_planning_add_task(
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
-        # Check for duplicate task (same ticket/category on same days)
+        # Duplicate detection: check for existing identical task (prevents double-submit on network issues)
+        existing_task = db.query(DevPlannedTask).filter(
+            DevPlannedTask.planning_week_id == pw.id,
+            DevPlannedTask.employee_name == employee_name,
+            DevPlannedTask.status == "active",
+            DevPlannedTask.start_date == body.start_date,
+            DevPlannedTask.total_planned_hours == round(total_hours, 1),
+        )
+        if body.task_category == "Ticket" and ticket_id:
+            existing_task = existing_task.filter(DevPlannedTask.ticket_id == ticket_id)
+        else:
+            existing_task = existing_task.filter(
+                DevPlannedTask.generic_category == body.generic_category,
+                DevPlannedTask.activity_description == body.activity_description.strip(),
+            )
+        existing_task = existing_task.first()
+        if existing_task:
+            # Return existing task instead of creating duplicate
+            allocs = db.query(DevPlannedAllocation).filter(DevPlannedAllocation.task_id == existing_task.id).order_by(DevPlannedAllocation.allocation_date).all()
+            return {
+                "success": True,
+                "task": {
+                    "id": existing_task.id,
+                    "employee_name": existing_task.employee_name,
+                    "ticket_id": existing_task.ticket_id,
+                    "activity_description": existing_task.activity_description,
+                    "start_date": existing_task.start_date.isoformat() if existing_task.start_date else None,
+                    "end_date": existing_task.end_date.isoformat() if existing_task.end_date else None,
+                    "total_planned_hours": float(existing_task.total_planned_hours or 0),
+                    "allocations": [{"date": a.allocation_date.isoformat(), "hours": float(a.hours or 0)} for a in allocs],
+                },
+                "duplicate_prevented": True,
+            }
+
+        # Check for duplicate task (same ticket/category on same days) - still show warning for different hours/dates
         proposed_dates = [d for d, h in proposed_distribution]
         dup_error = check_duplicate_task(
             employee_name, ticket_id, body.generic_category, proposed_dates, db
