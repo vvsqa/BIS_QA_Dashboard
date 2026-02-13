@@ -12,6 +12,12 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import html
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
+except ImportError:
+    pass
+
 # TestRail Configuration
 TESTRAIL_URL = os.getenv("TESTRAIL_URL", "https://bistrainer.testrail.io")
 TESTRAIL_EMAIL = os.getenv("TESTRAIL_EMAIL", "")
