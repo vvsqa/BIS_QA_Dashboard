@@ -7,12 +7,27 @@ Do not commit PM_API_KEY to the repo; use .env or system env.
 
 import os
 
-# API endpoint and auth
+
+def _as_bool(value: str, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# PM API v1 endpoint and auth (legacy, kept as fallback)
 PM_API_URL = os.environ.get(
     "PM_API_URL",
-    "https://www.bissafety.app/rest/v.01/pm/ticket-export"
+    "https://www.bissafety.app/rest/v.01/pm/ticket-export",
 )
 PM_API_KEY = os.environ.get("PM_API_KEY", "")
+
+# PM API v2 endpoint and auth (Bearer token)
+PM_API_V2 = _as_bool(os.environ.get("PM_API_V2", "false"), default=False)
+PM_API_URL_V2 = os.environ.get(
+    "PM_API_URL_V2",
+    "https://www.bissafety.app/rest/mcp.v1/pm/ticketlist",
+)
+PM_API_KEY_V2 = os.environ.get("PM_API_KEY_V2", "")
 
 # Request tuning
 PM_API_TIMEOUT = int(os.environ.get("PM_API_TIMEOUT", "30"))

@@ -11,7 +11,14 @@ from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime, timedelta
 import time
 from config.pm_tracker_config import (
-    PM_API_URL, PM_API_KEY, PM_API_TIMEOUT, PM_API_MAX_RETRIES, PM_API_RETRY_DELAY
+    PM_API_URL,
+    PM_API_KEY,
+    PM_API_V2,
+    PM_API_URL_V2,
+    PM_API_KEY_V2,
+    PM_API_TIMEOUT,
+    PM_API_MAX_RETRIES,
+    PM_API_RETRY_DELAY,
 )
 
 logger = logging.getLogger("pm_api_sync")
@@ -20,16 +27,23 @@ logger = logging.getLogger("pm_api_sync")
 class PMApiClient:
     """Client for PM Tracker REST API"""
     
-    def __init__(self, api_url: str = PM_API_URL, api_key: str = PM_API_KEY):
+    def __init__(
+        self,
+        api_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        use_v2: bool = PM_API_V2,
+    ):
         """
         Initialize PM API client
         
         Args:
-            api_url: Base URL for PM API
-            api_key: API key for authentication
+            api_url: Override URL for PM API
+            api_key: Override key/token for PM API
+            use_v2: If true, use v2 endpoint + Bearer token auth
         """
-        self.api_url = api_url
-        self.api_key = api_key
+        self.use_v2 = use_v2
+        self.api_url = api_url if api_url is not None else (PM_API_URL_V2 if use_v2 else PM_API_URL)
+        self.api_key = api_key if api_key is not None else (PM_API_KEY_V2 if use_v2 else PM_API_KEY)
         self.timeout = PM_API_TIMEOUT
         self.max_retries = PM_API_MAX_RETRIES
         self.retry_delay = PM_API_RETRY_DELAY
@@ -48,15 +62,16 @@ class PMApiClient:
             Tuple of (success: bool, data: List[Dict] or None, message: str)
         """
         if not self.api_key:
-            error_msg = "PM_API_KEY not configured"
+            error_msg = "PM_API_KEY_V2 not configured" if self.use_v2 else "PM_API_KEY not configured"
             logger.error(error_msg)
             return False, None, error_msg
         
-        # API key must be sent as header (authID); not as query param
-        headers = {
-            "authID": self.api_key,
-            "Accept": "application/json",
-        }
+        headers = {"Accept": "application/json"}
+        # v1 expects authID header; v2 expects Bearer token
+        if self.use_v2:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        else:
+            headers["authID"] = self.api_key
         params = dict(kwargs)
         if ticket_id is not None:
             # Many PM APIs support filtering by ticket; try common param names
@@ -66,7 +81,10 @@ class PMApiClient:
         last_error = None
         for attempt in range(1, self.max_retries + 1):
             try:
-                logger.info(f"Fetching PM tickets from API (attempt {attempt}/{self.max_retries})" + (f" ticket_id={ticket_id}" if ticket_id else ""))
+                logger.info(
+                    f"Fetching PM tickets from API (v{'2' if self.use_v2 else '1'}, attempt {attempt}/{self.max_retries})"
+                    + (f" ticket_id={ticket_id}" if ticket_id else "")
+                )
                 response = requests.get(
                     self.api_url,
                     params=params,
@@ -98,7 +116,11 @@ class PMApiClient:
                         last_error = error_msg
                 
                 elif response.status_code == 401:
-                    error_msg = "API authentication failed (401: Unauthorized). Check API key."
+                    error_msg = (
+                        "API authentication failed (401: Unauthorized). Check PM_API_KEY_V2 Bearer token."
+                        if self.use_v2
+                        else "API authentication failed (401: Unauthorized). Check PM_API_KEY."
+                    )
                     logger.error(error_msg)
                     return False, None, error_msg
                 
