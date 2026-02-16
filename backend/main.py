@@ -7,7 +7,7 @@ from sqlalchemy import String, func, or_
 from datetime import datetime, timedelta, date
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import tempfile
 import os
 import shutil

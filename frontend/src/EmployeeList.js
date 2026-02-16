@@ -13,6 +13,32 @@ const getInitials = (name) => {
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 };
 
+const normalizeOptionValue = (value) =>
+  String(value || '')
+    .trim()
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+
+const pickBetterLabel = (currentLabel, nextLabel) => {
+  if (!currentLabel) return nextLabel;
+  const currentLowerCount = (currentLabel.match(/[a-z]/g) || []).length;
+  const nextLowerCount = (nextLabel.match(/[a-z]/g) || []).length;
+  return nextLowerCount > currentLowerCount ? nextLabel : currentLabel;
+};
+
+const dedupeOptions = (options = []) => {
+  const byNormalized = new Map();
+  options.forEach((rawValue) => {
+    const cleanValue = String(rawValue || '').trim().replace(/\s+/g, ' ');
+    if (!cleanValue) return;
+    const key = normalizeOptionValue(cleanValue);
+    const existing = byNormalized.get(key);
+    byNormalized.set(key, pickBetterLabel(existing, cleanValue));
+  });
+
+  return Array.from(byNormalized.values()).sort((a, b) => a.localeCompare(b));
+};
+
 function EmployeeList() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -209,9 +235,9 @@ function EmployeeList() {
   };
 
   // Filter dropdown options from API (so all teams/leads are listed regardless of current filter)
-  const uniqueTeams = filterOptions.teams || [];
-  const uniqueCategories = filterOptions.categories || [];
-  const uniqueLeads = filterOptions.leads || [];
+  const uniqueTeams = dedupeOptions(filterOptions.teams);
+  const uniqueCategories = dedupeOptions(filterOptions.categories);
+  const uniqueLeads = dedupeOptions(filterOptions.leads);
 
   // Table sorting
   const { sortedData: sortedEmployees, sortConfig, handleSort } = useTableSort(employees, {
