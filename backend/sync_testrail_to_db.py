@@ -44,7 +44,7 @@ SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "")
 
 # TestRail API Base URL
-API_BASE = f"{TESTRAIL_URL}/index.php?/api/v2"
+API_BASE = "{}/index.php?/api/v2".format(TESTRAIL_URL)
 
 # Basic Authentication
 credentials = f"{TESTRAIL_EMAIL}:{TESTRAIL_API_KEY}"
