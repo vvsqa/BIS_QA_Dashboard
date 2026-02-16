@@ -42,6 +42,10 @@
   font-size: 0.95rem;
 }
 
+.home-eta-legend-highlight {
+  font-weight: 600;
+}
+
 .home-eta-dot {
   width: 12px;
   height: 12px;
@@ -285,6 +289,12 @@
   border-radius: 10px;
   padding: 0.65rem 0.75rem;
   background: #09172f;
+  cursor: pointer;
+}
+
+.home-eta-ticket-card:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.55);
 }
 
 .home-eta-ticket-card.is-focused-ticket {
@@ -296,6 +306,77 @@
   justify-content: space-between;
   align-items: center;
   gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.home-eta-badge {
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+}
+
+.home-eta-badge-completed-within { color: #fff; }
+.home-eta-badge-rescheduled { color: #fff; }
+
+.home-eta-status-history-section {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid #2d4368;
+}
+
+.home-eta-status-history-title {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #94a3b8;
+}
+
+.home-eta-status-history-loading,
+.home-eta-status-history-empty {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.home-eta-status-history-list {
+  margin: 0;
+  padding-left: 1.25rem;
+  list-style: disc;
+  font-size: 0.85rem;
+  color: #94a3b8;
+}
+
+.home-eta-status-history-released {
+  list-style: none;
+  margin-left: -1.25rem;
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+  color: #60a5fa;
+}
+
+.home-eta-status-history-item {
+  margin-bottom: 0.35rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: baseline;
+}
+
+.home-eta-status-history-date {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.home-eta-status-history-change {
+  flex: 1 1 auto;
+}
+
+.home-eta-status-history-who {
+  font-size: 0.8rem;
+  color: #64748b;
 }
 
 .home-eta-ticket-id a {

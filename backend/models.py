@@ -120,6 +120,7 @@ class TicketTracking(Base):
     frontend_developer = Column(String(100), nullable=True)
     qc_tester = Column(String(100), nullable=True)
     eta = Column(DateTime, nullable=True)                 # Expected completion date
+    previous_eta = Column(DateTime, nullable=True)        # Previous ETA when it was rescheduled (set on sync when eta changes)
     current_assignee = Column(String(100), nullable=True)
     dev_estimate_hours = Column(Float, nullable=True)     # Estimated development time
     actual_dev_hours = Column(Float, nullable=True)       # Actual development time spent

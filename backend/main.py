@@ -7395,6 +7395,57 @@ def get_ticket_status_history(
         db.close()
 
 
+# QC statuses: first time ticket hits one of these we consider it "released to QC"
+QC_RELEASE_STATUSES = ['QC Testing', 'QC Testing in Progress', 'QC Testing Hold']
+
+
+@app.get("/tickets/{ticket_id}/status-history-after-qc")
+def get_ticket_status_history_after_qc(
+    ticket_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Status change history for a ticket from the moment it was first released to QC Testing onward.
+    Used in ETA calendar ticket details to show every status change after QC release.
+    """
+    db: Session = SessionLocal()
+    try:
+        all_history = (
+            db.query(TicketStatusHistory)
+            .filter(TicketStatusHistory.ticket_id == ticket_id)
+            .order_by(TicketStatusHistory.changed_on.asc())
+            .all()
+        )
+        qc_release_cutoff = None
+        for h in all_history:
+            if h.new_status and h.new_status in QC_RELEASE_STATUSES:
+                qc_release_cutoff = h.changed_on
+                break
+        if qc_release_cutoff is None:
+            return {"ticket_id": ticket_id, "released_to_qc_on": None, "history": []}
+        after_qc = [
+            h for h in all_history
+            if h.changed_on and h.changed_on >= qc_release_cutoff
+        ]
+        return {
+            "ticket_id": ticket_id,
+            "released_to_qc_on": qc_release_cutoff.isoformat() if qc_release_cutoff else None,
+            "history": [
+                {
+                    "id": h.id,
+                    "previous_status": h.previous_status,
+                    "new_status": h.new_status,
+                    "changed_on": h.changed_on.isoformat() if h.changed_on else None,
+                    "current_assignee": h.current_assignee,
+                    "qc_tester": h.qc_tester,
+                }
+                for h in reversed(after_qc)
+            ],
+        }
+    finally:
+        db.close()
+
+
 @app.get("/status-history/tickets/moved-to")
 def get_tickets_moved_to_status(
     status: str = Query(..., description="Target status (e.g., 'BIS Testing')"),
@@ -10661,6 +10712,81 @@ def dev_planning_overview(current_user: dict = Depends(get_current_user)):
                 "qa_in_progress": len(qa_in_progress),
             }
         }
+    finally:
+        db.close()
+
+
+# ETA calendar: completed-status keywords (match frontend ETACalendar)
+ETA_CALENDAR_COMPLETED_KEYWORDS = ['complete', 'completed', 'closed', 'done', 'resolved', 'moved to live']
+
+
+def _is_completed_status_for_eta(status: Optional[str]) -> bool:
+    if not status:
+        return False
+    n = str(status).strip().lower()
+    return any(k in n for k in ETA_CALENDAR_COMPLETED_KEYWORDS)
+
+
+@app.get("/eta-calendar/tickets")
+def eta_calendar_tickets(current_user: dict = Depends(get_current_user)):
+    """
+    All tickets that have an ETA (any status). For ETA calendar: show every ticket with ETA.
+    Returns completed_within_eta (true if closed on or before ETA) and eta_rescheduled (true if ETA was changed).
+    """
+    db: Session = SessionLocal()
+    try:
+        tickets = (
+            db.query(TicketTracking)
+            .filter(TicketTracking.eta.isnot(None))
+            .all()
+        )
+        ticket_ids = [t.ticket_id for t in tickets]
+        open_bugs_map = {}
+        if ticket_ids:
+            open_statuses = ["New", "Reopened", "Fixed", "Assigned to Dev"]
+            rows = (
+                db.query(Bug.ticket_id, func.count(Bug.id))
+                .filter(Bug.ticket_id.in_(ticket_ids), Bug.status.in_(open_statuses))
+                .group_by(Bug.ticket_id)
+                .all()
+            )
+            open_bugs_map = {tid: c for tid, c in rows}
+        result = []
+        for t in tickets:
+            eta_dt = t.eta
+            closed_dt = getattr(t, 'closed_on', None)
+            previous_eta = getattr(t, 'previous_eta', None)
+            status = (t.status or '').strip()
+            is_completed = _is_completed_status_for_eta(status)
+            completed_within_eta = False
+            if is_completed and closed_dt and eta_dt:
+                closed_d = closed_dt.date() if hasattr(closed_dt, 'date') else closed_dt
+                eta_d = eta_dt.date() if hasattr(eta_dt, 'date') else eta_dt
+                completed_within_eta = closed_d <= eta_d
+            eta_rescheduled = previous_eta is not None
+            developers = []
+            if t.backend_developer:
+                developers.append(t.backend_developer)
+            if t.frontend_developer:
+                developers.append(t.frontend_developer)
+            developers = list(set(developers))
+            result.append({
+                'ticket_id': t.ticket_id,
+                'title': (getattr(t, 'title', None) or '').strip() or f"Ticket #{t.ticket_id}",
+                'status': status,
+                'priority': (t.priority or '').strip() or 'Unspecified',
+                'eta': eta_dt.isoformat() if eta_dt else None,
+                'closed_on': closed_dt.isoformat() if closed_dt else None,
+                'previous_eta': previous_eta.isoformat() if previous_eta else None,
+                'qc_tester': (t.qc_tester or '').strip() or None,
+                'developers_str': ', '.join(developers) if developers else 'Not Assigned',
+                'developers': developers,
+                'completed_within_eta': completed_within_eta,
+                'eta_rescheduled': eta_rescheduled,
+                'times_moved_to_fail': get_qc_fail_count(db, t.ticket_id),
+                'open_bugs_count': open_bugs_map.get(t.ticket_id, 0),
+            })
+        return {'tickets': result}
     finally:
         db.close()
 

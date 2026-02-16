@@ -47,11 +47,11 @@ NOTIFICATION_EMAIL = os.getenv("NOTIFICATION_EMAIL", "")
 API_BASE = "{}/index.php?/api/v2".format(TESTRAIL_URL)
 
 # Basic Authentication
-credentials = f"{TESTRAIL_EMAIL}:{TESTRAIL_API_KEY}"
+credentials = "{}:{}".format(TESTRAIL_EMAIL, TESTRAIL_API_KEY)
 encoded_credentials = base64.b64encode(credentials.encode()).decode()
 
 headers = {
-    "Authorization": f"Basic {encoded_credentials}",
+    "Authorization": "Basic {}".format(encoded_credentials),
     "Content-Type": "application/json"
 }
 
@@ -93,15 +93,18 @@ def send_email_notification(subject, body, is_success=True):
         msg['Subject'] = subject
         
         # Create HTML body
-        html_body = f"""
+        header_color = '#22c55e' if is_success else '#ef4444'
+        header_text = 'TestRail Sync Completed Successfully' if is_success else 'TestRail Sync Failed'
+        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        html_body = """
         <html>
           <head>
             <style>
               body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
               .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
-              .header {{ background: {'#22c55e' if is_success else '#ef4444'}; color: white; padding: 20px; border-radius: 8px 8px 0 0; }}
+              .header {{ background: {header_color}; color: white; padding: 20px; border-radius: 8px 8px 0 0; }}
               .content {{ background: #f8fafc; padding: 20px; border: 1px solid #e2e8f0; }}
-              .stats {{ background: white; padding: 15px; margin: 10px 0; border-radius: 6px; border-left: 4px solid {'#22c55e' if is_success else '#ef4444'}; }}
+              .stats {{ background: white; padding: 15px; margin: 10px 0; border-radius: 6px; border-left: 4px solid {header_color}; }}
               .stat-item {{ margin: 8px 0; }}
               .stat-label {{ font-weight: 600; color: #475569; }}
               .stat-value {{ color: #1e293b; font-size: 18px; }}
@@ -111,19 +114,19 @@ def send_email_notification(subject, body, is_success=True):
           <body>
             <div class="container">
               <div class="header">
-                <h2>{'✅ TestRail Sync Completed Successfully' if is_success else '❌ TestRail Sync Failed'}</h2>
+                <h2>{header_text}</h2>
               </div>
               <div class="content">
                 {body}
                 <div class="footer">
                   <p>This is an automated notification from the QA Dashboard TestRail Sync Script.</p>
-                  <p>Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                  <p>Timestamp: {timestamp}</p>
                 </div>
               </div>
             </div>
           </body>
         </html>
-        """
+        """.format(header_color=header_color, header_text=header_text, body=body, timestamp=timestamp)
         
         msg.attach(MIMEText(html_body, 'html'))
         
@@ -135,11 +138,11 @@ def send_email_notification(subject, body, is_success=True):
         server.sendmail(SMTP_USERNAME, NOTIFICATION_EMAIL, text)
         server.quit()
         
-        print(f"\n✅ Email notification sent successfully to {NOTIFICATION_EMAIL}")
+        print("\nEmail notification sent successfully to {}".format(NOTIFICATION_EMAIL))
         return True
         
     except Exception as e:
-        print(f"\n⚠️  Failed to send email notification: {e}")
+        print("\nFailed to send email notification: {}".format(e))
         return False
 
 
@@ -246,7 +249,7 @@ def fetch_test_plans(project_id):
     try:
         while True:
             response = requests.get(
-                f"{API_BASE}/get_plans/{project_id}",
+                "{}/get_plans/{}".format(API_BASE, project_id),
                 headers=headers,
                 params={"offset": offset, "limit": limit},
                 timeout=30
@@ -270,11 +273,11 @@ def fetch_test_plans(project_id):
                 break
                 
             offset += limit
-            print(f"  Fetched {len(all_plans)} plans so far...")
+            print("  Fetched {} plans so far...".format(len(all_plans)))
             
         return all_plans
     except Exception as e:
-        print(f"Error fetching test plans: {e}")
+        print("Error fetching test plans: {}".format(e))
         return all_plans
 
 
@@ -282,14 +285,14 @@ def fetch_plan_details(plan_id):
     """Fetch detailed information about a test plan"""
     try:
         response = requests.get(
-            f"{API_BASE}/get_plan/{plan_id}",
+            "{}/get_plan/{}".format(API_BASE, plan_id),
             headers=headers,
             timeout=30
         )
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"Error fetching plan {plan_id} details: {e}")
+        print("Error fetching plan {} details: {}".format(plan_id, e))
         return None
 
 
@@ -299,7 +302,7 @@ def fetch_test_runs(plan_id):
     # It returns all runs for a plan
     try:
         response = requests.get(
-            f"{API_BASE}/get_runs/{plan_id}",
+            "{}/get_runs/{}".format(API_BASE, plan_id),
             headers=headers,
             timeout=30
         )
@@ -317,7 +320,7 @@ def fetch_test_runs(plan_id):
         # Some plans may not have runs yet, which is okay
         if "400" in str(e) or "404" in str(e):
             return []
-        print(f"Error fetching test runs for plan {plan_id}: {e}")
+        print("Error fetching test runs for plan {}: {}".format(plan_id, e))
         return []
 
 
@@ -330,7 +333,7 @@ def fetch_tests_in_run(run_id):
     try:
         while True:
             # TestRail API uses query parameters in URL
-            url = f"{API_BASE}/get_tests/{run_id}"
+            url = "{}/get_tests/{}".format(API_BASE, run_id)
             params = {"offset": offset, "limit": limit}
             response = requests.get(
                 url,
@@ -360,7 +363,7 @@ def fetch_tests_in_run(run_id):
             
         return all_tests
     except Exception as e:
-        print(f"Error fetching tests for run {run_id}: {e}")
+        print("Error fetching tests for run {}: {}".format(run_id, e))
         return all_tests
 
 
@@ -368,14 +371,14 @@ def fetch_case_details(case_id):
     """Fetch detailed information about a test case"""
     try:
         response = requests.get(
-            f"{API_BASE}/get_case/{case_id}",
+            "{}/get_case/{}".format(API_BASE, case_id),
             headers=headers,
             timeout=30
         )
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"Error fetching case {case_id} details: {e}")
+        print("Error fetching case {} details: {}".format(case_id, e))
         return None
 
 
@@ -395,8 +398,8 @@ def extract_custom_fields(item):
 
 
 print("Starting TestRail -> PostgreSQL sync...")
-print(f"TestRail URL: {TESTRAIL_URL}")
-print(f"Project ID: {TESTRAIL_PROJECT_ID} (BIS Web and Mobile)")
+print("TestRail URL: {}".format(TESTRAIL_URL))
+print("Project ID: {} (BIS Web and Mobile)".format(TESTRAIL_PROJECT_ID))
 print("Fetching test plans and cases ONLY from Project 14 (BIS Web and Mobile)...")
 print("-" * 60)
 
@@ -415,11 +418,11 @@ try:
     # Fetch all test plans from Project 14 only
     print("\nFetching test plans from Project 14 (BIS Web and Mobile)...")
     plans = fetch_test_plans(TESTRAIL_PROJECT_ID)
-    print(f"Found {len(plans)} test plans from Project 14")
+    print("Found {} test plans from Project 14".format(len(plans)))
 
     for plan_data in plans:
         if not isinstance(plan_data, dict):
-            print(f"Skipping invalid plan data: {plan_data}")
+            print("Skipping invalid plan data: {}".format(plan_data))
             continue
             
         plan_id = plan_data.get("id")
@@ -433,7 +436,7 @@ try:
             plans_without_ticket_id += 1
             # Only print every 10th skipped plan to reduce output
             if plans_without_ticket_id % 10 == 0:
-                print(f"Skipped {plans_without_ticket_id} plans without ticket ID so far...")
+                print("Skipped {} plans without ticket ID so far...".format(plans_without_ticket_id))
             continue
         
         plans_with_ticket_id += 1
@@ -456,7 +459,7 @@ try:
         db.flush()  # Get the plan ID
         
         total_plans += 1
-        print(f"[{total_plans}/{plans_with_ticket_id}] Processing plan {plan_id} (Ticket: {ticket_id}): {plan_name[:60]}...")
+        print("[{}/{}] Processing plan {} (Ticket: {}): {}...".format(total_plans, plans_with_ticket_id, plan_id, ticket_id, plan_name[:60]))
 
         # Fetch test runs for this plan
         # Note: In TestRail, plans can have entries (sub-plans) that contain runs
@@ -476,7 +479,7 @@ try:
             runs = fetch_test_runs(plan_id)
         
         if len(runs) > 0:
-            print(f"  Found {len(runs)} test runs")
+            print("  Found {} test runs".format(len(runs)))
 
         for run_data in runs:
             run_id = run_data.get("id")
@@ -506,7 +509,7 @@ try:
             # Fetch tests (test cases with results) in this run
             tests = fetch_tests_in_run(run_id)
             if len(tests) > 0:
-                print(f"    Found {len(tests)} tests in run {run_id}")
+                print("    Found {} tests in run {}".format(len(tests), run_id))
 
             for test_data in tests:
                 case_id = test_data.get("case_id")
@@ -572,20 +575,20 @@ try:
         # Commit after each plan to avoid large transactions
         db.commit()
         if len(runs) > 0 or total_cases > 0:
-            print(f"  Completed plan {plan_id} ({total_cases} cases, {total_results} results so far)")
+            print("  Completed plan {} ({} cases, {} results so far)".format(plan_id, total_cases, total_results))
 
-    print(f"\n" + "=" * 60)
-    print(f"SYNC COMPLETED FOR PROJECT 14 (BIS Web and Mobile):")
-    print(f"  Plans with Ticket ID (processed): {plans_with_ticket_id}")
-    print(f"  Plans without Ticket ID (skipped): {plans_without_ticket_id}")
-    print(f"  Test Plans stored: {total_plans}")
-    print(f"  Test Runs: {total_runs}")
-    print(f"  Test Cases: {total_cases}")
-    print(f"  Test Results: {total_results}")
+    print("\n" + "=" * 60)
+    print("SYNC COMPLETED FOR PROJECT 14 (BIS Web and Mobile):")
+    print("  Plans with Ticket ID (processed): {}".format(plans_with_ticket_id))
+    print("  Plans without Ticket ID (skipped): {}".format(plans_without_ticket_id))
+    print("  Test Plans stored: {}".format(total_plans))
+    print("  Test Runs: {}".format(total_runs))
+    print("  Test Cases: {}".format(total_cases))
+    print("  Test Results: {}".format(total_results))
     print("=" * 60)
     
     # Send success email notification
-    email_body = f"""
+    email_body = """
     <div class="stats">
       <h3>Sync Summary</h3>
       <div class="stat-item">
@@ -614,13 +617,21 @@ try:
       </div>
       <div class="stat-item">
         <span class="stat-label">Project ID:</span>
-        <div class="stat-value">{TESTRAIL_PROJECT_ID} (BIS Web and Mobile)</div>
+        <div class="stat-value">{project_id} (BIS Web and Mobile)</div>
       </div>
     </div>
     <p style="margin-top: 20px; color: #64748b;">
       The TestRail sync has completed successfully. All data has been synchronized to the database.
     </p>
-    """
+    """.format(
+        plans_with_ticket_id=plans_with_ticket_id,
+        plans_without_ticket_id=plans_without_ticket_id,
+        total_plans=total_plans,
+        total_runs=total_runs,
+        total_cases=total_cases,
+        total_results=total_results,
+        project_id=TESTRAIL_PROJECT_ID
+    )
     
     send_email_notification(
         subject="✅ TestRail Sync Completed Successfully",
@@ -631,7 +642,7 @@ try:
 except Exception as e:
     db.rollback()
     error_message = str(e)
-    print(f"\nERROR during sync: {error_message}")
+    print("\nERROR during sync: {}".format(error_message))
     import traceback
     error_traceback = traceback.format_exc()
     traceback.print_exc()
@@ -641,7 +652,7 @@ except Exception as e:
     safe_error_message = html.escape(error_message)
     safe_traceback = html.escape(error_traceback)
     
-    email_body = f"""
+    email_body = """
     <div class="stats">
       <h3>Error Details</h3>
       <div class="stat-item">
@@ -650,7 +661,7 @@ except Exception as e:
       </div>
       <div class="stat-item">
         <span class="stat-label">Project ID:</span>
-        <div class="stat-value">{TESTRAIL_PROJECT_ID} (BIS Web and Mobile)</div>
+        <div class="stat-value">{project_id} (BIS Web and Mobile)</div>
       </div>
     </div>
     <div style="background: #fee2e2; padding: 15px; border-radius: 6px; margin-top: 15px;">
@@ -660,7 +671,7 @@ except Exception as e:
     <p style="margin-top: 20px; color: #64748b;">
       The TestRail sync encountered an error. Please check the logs and try again.
     </p>
-    """
+    """.format(safe_error_message=safe_error_message, project_id=TESTRAIL_PROJECT_ID, safe_traceback=safe_traceback)
     
     send_email_notification(
         subject="❌ TestRail Sync Failed",

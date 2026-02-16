@@ -31,6 +31,7 @@ const apiPaths = [
   '/goals',
   '/uploads',
   '/login',
+  '/eta-calendar',
 ];
 
 function isApiPath(pathname) {

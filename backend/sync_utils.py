@@ -222,6 +222,18 @@ def upsert_tickets(
                     db.add(priority_history)
                     logger.debug(f"Priority change tracked for ticket {ticket_id}: {existing_priority_str} -> {new_priority_str}")
                 
+                # Track ETA change (for "ETA rescheduled" highlight in ETA calendar)
+                new_eta = parsed_data.get('eta')
+                existing_eta = getattr(existing, 'eta', None)
+                if new_eta is not None and existing_eta is not None:
+                    existing_eta_d = existing_eta.date() if hasattr(existing_eta, 'date') else existing_eta
+                    new_eta_d = new_eta.date() if hasattr(new_eta, 'date') else new_eta
+                    if existing_eta_d != new_eta_d:
+                        existing.previous_eta = existing_eta
+                        logger.debug(f"ETA change tracked for ticket {ticket_id}: {existing_eta_d} -> {new_eta_d}")
+                elif new_eta is not None and existing_eta is None:
+                    existing.previous_eta = None  # was unset, now set (optional: treat as no "reschedule")
+
                 # Update existing record (open ticket, or status changed e.g. reopened)
                 for key, value in parsed_data.items():
                     setattr(existing, key, value)

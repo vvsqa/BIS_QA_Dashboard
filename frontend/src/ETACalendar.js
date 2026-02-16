@@ -15,6 +15,11 @@ const CATEGORY_META = {
   completed: { label: 'Completed', color: '#3b82f6' },
 };
 
+const HIGHLIGHT_META = {
+  completedWithinEta: { label: 'Completed within ETA', color: '#16a34a' },
+  etaRescheduled: { label: 'ETA rescheduled', color: '#d97706' },
+};
+
 const COMPLETED_STATUS_KEYWORDS = ['complete', 'completed', 'closed', 'done', 'resolved', 'moved to live'];
 
 const PRIORITY_COLORS = {
@@ -73,12 +78,14 @@ function ETACalendar() {
   });
   const [selectedDate, setSelectedDate] = useState(null);
   const [selectedTicketId, setSelectedTicketId] = useState(null);
+  const [statusHistoryAfterQc, setStatusHistoryAfterQc] = useState(null);
+  const [statusHistoryLoading, setStatusHistoryLoading] = useState(false);
 
   const loadOverviewData = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await apiFetch('/qa-planning/overview');
+      const res = await apiFetch('/eta-calendar/tickets');
       if (!res.ok) {
         const text = await res.text();
         let msg = text;
@@ -102,6 +109,24 @@ function ETACalendar() {
     loadOverviewData();
   }, [loadOverviewData]);
 
+  useEffect(() => {
+    if (!selectedTicketId) {
+      setStatusHistoryAfterQc(null);
+      return;
+    }
+    let cancelled = false;
+    setStatusHistoryLoading(true);
+    setStatusHistoryAfterQc(null);
+    apiFetch(`/tickets/${selectedTicketId}/status-history-after-qc`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && data) setStatusHistoryAfterQc(data);
+      })
+      .catch(() => { if (!cancelled) setStatusHistoryAfterQc(null); })
+      .finally(() => { if (!cancelled) setStatusHistoryLoading(false); });
+    return () => { cancelled = true; };
+  }, [selectedTicketId]);
+
   const monthContext = useMemo(() => {
     const [year, month] = etaCalendarMonth.slice(0, 7).split('-').map(Number);
     const monthStart = new Date(year, month - 1, 1);
@@ -110,7 +135,7 @@ function ETACalendar() {
   }, [etaCalendarMonth]);
 
   const processed = useMemo(() => {
-    const queue = Array.isArray(overviewData?.queue) ? overviewData.queue : [];
+    const queue = Array.isArray(overviewData?.tickets) ? overviewData.tickets : [];
     const today = new Date();
     const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     const monthKey = `${monthContext.year}-${String(monthContext.month).padStart(2, '0')}`;
@@ -121,6 +146,8 @@ function ETACalendar() {
         ...t,
         _category: getTicketCategory(t, todayDate),
         _etaDate: parseDateOnly(t.eta),
+        _completedWithinEta: !!t.completed_within_eta,
+        _etaRescheduled: !!t.eta_rescheduled,
       }));
 
     const categoryTotals = CATEGORY_ORDER.reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
@@ -254,6 +281,12 @@ function ETACalendar() {
                   {CATEGORY_META[key].label}
                 </span>
               ))}
+              <span className="home-eta-legend-item home-eta-legend-highlight" style={{ color: HIGHLIGHT_META.completedWithinEta.color }}>
+                ✓ {HIGHLIGHT_META.completedWithinEta.label}
+              </span>
+              <span className="home-eta-legend-item home-eta-legend-highlight" style={{ color: HIGHLIGHT_META.etaRescheduled.color }}>
+                ↻ {HIGHLIGHT_META.etaRescheduled.label}
+              </span>
             </div>
           </header>
 
@@ -364,14 +397,36 @@ function ETACalendar() {
                             const category = ticket._category;
                             const isFocused = selectedTicketId && String(ticket.ticket_id) === String(selectedTicketId);
                             return (
-                              <article key={ticket.ticket_id} className={`home-eta-ticket-card category-${category} ${isFocused ? 'is-focused-ticket' : ''}`}>
+                              <article
+                                key={ticket.ticket_id}
+                                className={`home-eta-ticket-card category-${category} ${isFocused ? 'is-focused-ticket' : ''}`}
+                                onClick={() => setSelectedTicketId(isFocused ? null : ticket.ticket_id)}
+                                role="button"
+                                tabIndex={0}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault();
+                                    setSelectedTicketId(isFocused ? null : ticket.ticket_id);
+                                  }
+                                }}
+                              >
                                 <div className="home-eta-ticket-top">
                                   <span className="home-eta-ticket-id">
-                                    <Link to={`/tickets?ticket=${ticket.ticket_id}`}>
+                                    <Link to={`/tickets?ticket=${ticket.ticket_id}`} onClick={(e) => e.stopPropagation()}>
                                       #{ticket.ticket_id}
                                     </Link>
                                   </span>
                                   <span className={`home-eta-category-pill category-${category}`}>{CATEGORY_META[category].label}</span>
+                                  {ticket._completedWithinEta && (
+                                    <span className="home-eta-badge home-eta-badge-completed-within" style={{ backgroundColor: HIGHLIGHT_META.completedWithinEta.color }}>
+                                      ✓ {HIGHLIGHT_META.completedWithinEta.label}
+                                    </span>
+                                  )}
+                                  {ticket._etaRescheduled && (
+                                    <span className="home-eta-badge home-eta-badge-rescheduled" style={{ backgroundColor: HIGHLIGHT_META.etaRescheduled.color }}>
+                                      ↻ {HIGHLIGHT_META.etaRescheduled.label}
+                                    </span>
+                                  )}
                                 </div>
 
                                 <div className="home-eta-ticket-title" title={ticket.title || ''}>{ticket.title || 'Untitled ticket'}</div>
@@ -384,6 +439,44 @@ function ETACalendar() {
                                   <span><strong>Fail Count:</strong> {ticket.times_moved_to_fail ?? 0}</span>
                                   <span><strong>Open Bugs:</strong> {ticket.open_bugs_count ?? 0}</span>
                                 </div>
+
+                                {isFocused && (
+                                  <div className="home-eta-status-history-section">
+                                    <h4 className="home-eta-status-history-title">Status changes after released to QC Testing</h4>
+                                    {statusHistoryLoading ? (
+                                      <p className="home-eta-status-history-loading">Loading…</p>
+                                    ) : statusHistoryAfterQc && statusHistoryAfterQc.ticket_id === ticket.ticket_id ? (
+                                      statusHistoryAfterQc.history && statusHistoryAfterQc.history.length > 0 ? (
+                                        <ul className="home-eta-status-history-list">
+                                          {statusHistoryAfterQc.released_to_qc_on && (
+                                            <li className="home-eta-status-history-released">
+                                              Released to QC: {new Date(statusHistoryAfterQc.released_to_qc_on).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })}
+                                            </li>
+                                          )}
+                                          {statusHistoryAfterQc.history.map((h) => (
+                                            <li key={h.id} className="home-eta-status-history-item">
+                                              <span className="home-eta-status-history-date">
+                                                {h.changed_on ? new Date(h.changed_on).toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' }) : '—'}
+                                              </span>
+                                              <span className="home-eta-status-history-change">
+                                                {h.previous_status || '—'} → <strong>{h.new_status}</strong>
+                                              </span>
+                                              {(h.qc_tester || h.current_assignee) && (
+                                                <span className="home-eta-status-history-who">
+                                                  {[h.qc_tester, h.current_assignee].filter(Boolean).join(' · ')}
+                                                </span>
+                                              )}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      ) : (
+                                        <p className="home-eta-status-history-empty">No status changes recorded after QC release.</p>
+                                      )
+                                    ) : (
+                                      <p className="home-eta-status-history-empty">Not yet released to QC Testing, or no history.</p>
+                                    )}
+                                  </div>
+                                )}
                               </article>
                             );
                           })}
