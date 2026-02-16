@@ -1036,6 +1036,35 @@ function QATaskPlanning({ showParentTitle = false }) {
     const employees = weekData?.employees || [];
     const selectedEmps = employees.filter((emp) => multiPlanSelectedTesters.includes(emp.employee_id));
 
+    // Helper function to create task with retry on network errors
+    const createTaskWithRetry = async (body, maxRetries = 2) => {
+      let lastError = null;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+          
+          const res = await apiFetch(`${API_BASE}/qa-planning/tasks?week_start=${weekStart}`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          
+          const data = await res.json().catch(() => ({}));
+          return { res, data };
+        } catch (err) {
+          lastError = err;
+          const isNetworkError = err.name === 'TypeError' || err.name === 'AbortError';
+          if (!isNetworkError || attempt >= maxRetries) {
+            throw err;
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+        }
+      }
+      throw lastError;
+    };
+
     for (const emp of selectedEmps) {
       try {
         const body = {
@@ -1049,18 +1078,19 @@ function QATaskPlanning({ showParentTitle = false }) {
           total_hours: Number(multiPlanForm.total_hours),
           max_hours_per_day: Number(multiPlanForm.max_hours_per_day),
         };
-        const res = await apiFetch(`${API_BASE}/qa-planning/tasks?week_start=${weekStart}`, {
-          method: 'POST',
-          body: JSON.stringify(body),
-        });
-        const data = await res.json().catch(() => ({}));
+        
+        const { res, data } = await createTaskWithRetry(body);
+        
         if (res.ok) {
           results.success.push({ employee: emp.employee_name, task: data.task });
         } else {
           results.failed.push({ employee: emp.employee_name, error: data.detail || 'Failed' });
         }
       } catch (err) {
-        results.failed.push({ employee: emp.employee_name, error: err.message || 'Error' });
+        const errorMsg = err.name === 'AbortError' 
+          ? 'Request timed out. Please try again.' 
+          : (err.message || 'Network error');
+        results.failed.push({ employee: emp.employee_name, error: errorMsg });
       }
     }
 
@@ -1308,6 +1338,44 @@ function QATaskPlanning({ showParentTitle = false }) {
     }
 
     const results = { success: 0, failed: [] };
+    
+    // Helper function to create task with retry on network errors
+    const createTaskWithRetry = async (body, maxRetries = 2) => {
+      let lastError = null;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+          
+          const res = await apiFetch(`${API_BASE}/qa-planning/tasks?week_start=${weekStart}`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          
+          let data = {};
+          try {
+            data = await res.json();
+          } catch (_) {
+            if (!res.ok) throw new Error(`Request failed (${res.status})`);
+          }
+          
+          return { res, data };
+        } catch (err) {
+          lastError = err;
+          // Only retry on network errors (not server errors)
+          const isNetworkError = err.name === 'TypeError' || err.name === 'AbortError';
+          if (!isNetworkError || attempt >= maxRetries) {
+            throw err;
+          }
+          // Wait before retry (exponential backoff)
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+        }
+      }
+      throw lastError;
+    };
+    
     for (const emp of targetEmployees) {
       try {
         const body = {
@@ -1323,16 +1391,9 @@ function QATaskPlanning({ showParentTitle = false }) {
           generic_category: form.task_category !== 'Ticket' ? form.task_category : undefined,
           justification: form.justification?.trim() || undefined,
         };
-        const res = await apiFetch(`${API_BASE}/qa-planning/tasks?week_start=${weekStart}`, {
-          method: 'POST',
-          body: JSON.stringify(body),
-        });
-        let data = {};
-        try {
-          data = await res.json();
-        } catch (_) {
-          if (!res.ok) throw new Error(`Request failed (${res.status})`);
-        }
+        
+        const { res, data } = await createTaskWithRetry(body);
+        
         if (res.ok) {
           results.success += 1;
         } else {
@@ -1341,7 +1402,10 @@ function QATaskPlanning({ showParentTitle = false }) {
           results.failed.push({ employee: emp.employee_name, error: msg });
         }
       } catch (err) {
-        results.failed.push({ employee: emp.employee_name, error: err?.message || 'Error' });
+        const errorMsg = err.name === 'AbortError' 
+          ? 'Request timed out. Please try again.' 
+          : (err?.message || 'Network error');
+        results.failed.push({ employee: emp.employee_name, error: errorMsg });
       }
     }
 

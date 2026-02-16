@@ -607,6 +607,43 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
     if (!validateForm()) return;
     setSubmitting(true);
     setError(null);
+    
+    // Helper function to create task with retry on network errors
+    const createTaskWithRetry = async (body, maxRetries = 2) => {
+      let lastError = null;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+          
+          const res = await apiFetch(`/dev-planning/tasks?week_start=${weekStart}`, {
+            method: 'POST',
+            headers: headers(),
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          
+          let data = {};
+          try {
+            data = await res.json();
+          } catch (_) {
+            if (!res.ok) throw new Error(`Request failed (${res.status})`);
+          }
+          
+          return { res, data };
+        } catch (err) {
+          lastError = err;
+          const isNetworkError = err.name === 'TypeError' || err.name === 'AbortError';
+          if (!isNetworkError || attempt >= maxRetries) {
+            throw err;
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+        }
+      }
+      throw lastError;
+    };
+    
     try {
       const body = {
         employee_name: form.employee_name,
@@ -621,17 +658,9 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
         generic_category: form.task_category !== 'Ticket' ? form.task_category : undefined,
         justification: form.justification?.trim() || undefined,
       };
-      const res = await apiFetch(`/dev-planning/tasks?week_start=${weekStart}`, {
-        method: 'POST',
-        headers: headers(),
-        body: JSON.stringify(body),
-      });
-      let data = {};
-      try {
-        data = await res.json();
-      } catch (_) {
-        if (!res.ok) throw new Error(`Request failed (${res.status})`);
-      }
+      
+      const { res, data } = await createTaskWithRetry(body);
+      
       if (!res.ok) {
         const detail = data.detail;
         const msg = typeof detail === 'string' ? detail
@@ -647,8 +676,10 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
       loadWeekData();
       if (view === 'calendar') loadCalendarData();
     } catch (e) {
-      const msg = e?.message && typeof e.message === 'string' ? e.message : String(e);
-      setFormErrors({ submit: msg });
+      const errorMsg = e.name === 'AbortError' 
+        ? 'Request timed out. Please try again.' 
+        : (e?.message && typeof e.message === 'string' ? e.message : String(e));
+      setFormErrors({ submit: errorMsg });
     } finally {
       setSubmitting(false);
     }
@@ -736,6 +767,35 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
     const results = { success: [], failed: [] };
     const selectedEmps = employees.filter((emp) => multiPlanSelectedEmployees.includes(emp.employee_id));
 
+    // Helper function to create task with retry on network errors
+    const createTaskWithRetry = async (body, maxRetries = 2) => {
+      let lastError = null;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        try {
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 30000); // 30s timeout
+          
+          const res = await apiFetch(`/dev-planning/tasks?week_start=${weekStart}`, {
+            method: 'POST',
+            body: JSON.stringify(body),
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
+          
+          const data = await res.json().catch(() => ({}));
+          return { res, data };
+        } catch (err) {
+          lastError = err;
+          const isNetworkError = err.name === 'TypeError' || err.name === 'AbortError';
+          if (!isNetworkError || attempt >= maxRetries) {
+            throw err;
+          }
+          await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+        }
+      }
+      throw lastError;
+    };
+
     for (const emp of selectedEmps) {
       try {
         const body = {
@@ -748,18 +808,19 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
           total_hours: Number(multiPlanForm.total_hours),
           max_hours_per_day: Number(multiPlanForm.max_hours_per_day),
         };
-        const res = await apiFetch(`/dev-planning/tasks?week_start=${weekStart}`, {
-          method: 'POST',
-          body: JSON.stringify(body),
-        });
-        const data = await res.json().catch(() => ({}));
+        
+        const { res, data } = await createTaskWithRetry(body);
+        
         if (res.ok) {
           results.success.push({ employee: emp.employee_name, task: data.task });
         } else {
           results.failed.push({ employee: emp.employee_name, error: data.detail || 'Failed' });
         }
       } catch (err) {
-        results.failed.push({ employee: emp.employee_name, error: err.message || 'Error' });
+        const errorMsg = err.name === 'AbortError' 
+          ? 'Request timed out. Please try again.' 
+          : (err.message || 'Network error');
+        results.failed.push({ employee: emp.employee_name, error: errorMsg });
       }
     }
 
