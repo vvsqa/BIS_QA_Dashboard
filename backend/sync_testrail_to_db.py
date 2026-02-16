@@ -24,6 +24,13 @@ TESTRAIL_EMAIL = os.getenv("TESTRAIL_EMAIL", "")
 TESTRAIL_API_KEY = os.getenv("TESTRAIL_API_KEY", "")
 TESTRAIL_PROJECT_ID = int(os.getenv("TESTRAIL_PROJECT_ID", "14"))
 
+# Custom field names (in TestRail plan) that may contain PM Tracker ticket ID. Checked if plan name doesn't match.
+TICKET_ID_FIELD_NAMES = [
+    n.strip() for n in
+    (os.getenv("TESTRAIL_TICKET_FIELD_NAMES", "Ticket ID,PM Tracker ID,Ticket Number,Reference,Ticket").split(","))
+    if n.strip()
+]
+
 # Email Configuration
 # For Gmail/Google Workspace:
 # 1. Enable 2-Step Verification in your Google Account
@@ -151,9 +158,9 @@ def extract_ticket_id_from_text(text):
             # Skip very small numbers that are likely not ticket IDs
             if ticket_id > 100:
                 return ticket_id
-        except:
+        except Exception:
             pass
-    
+
     # Fallback patterns for other formats
     patterns = [
         r'Ticket\s*#?\s*(\d+)',
@@ -168,8 +175,56 @@ def extract_ticket_id_from_text(text):
                 ticket_id = int(match.group(1))
                 if ticket_id > 100:
                     return ticket_id
-            except:
+            except Exception:
                 continue
+    return None
+
+
+def get_ticket_id_from_plan(plan_data, plan_name):
+    """Get PM Tracker ticket ID for a plan: try plan name first, then custom fields."""
+    ticket_id = extract_ticket_id_from_text(plan_name)
+    if ticket_id is not None:
+        return ticket_id
+    if not plan_data or not isinstance(plan_data, dict):
+        return None
+    # Try custom fields: TestRail API uses keys like "custom_ticketid" or "custom_<system_name>"
+    for key, value in plan_data.items():
+        if not key.startswith("custom_") or value is None:
+            continue
+        try:
+            if isinstance(value, (int, float)) and 100 < int(value) < 1000000:
+                return int(value)
+            if isinstance(value, str) and value.strip().isdigit():
+                tid = int(value.strip())
+                if 100 < tid < 1000000:
+                    return tid
+            if isinstance(value, list) and len(value) > 0:
+                v = value[0]
+                if isinstance(v, (int, float)):
+                    tid = int(v)
+                    if 100 < tid < 1000000:
+                        return tid
+                if isinstance(v, str) and v.strip().isdigit():
+                    tid = int(v.strip())
+                    if 100 < tid < 1000000:
+                        return tid
+        except (TypeError, ValueError):
+            continue
+    # Try extracted custom_fields dict (key might be label-like)
+    custom = extract_custom_fields(plan_data)
+    for field_name, value in (custom or {}).items():
+        if value is None:
+            continue
+        if field_name.lower().replace(" ", "_") in [n.lower().replace(" ", "_") for n in TICKET_ID_FIELD_NAMES]:
+            try:
+                if isinstance(value, (int, float)) and 100 < int(value) < 1000000:
+                    return int(value)
+                if isinstance(value, str) and value.strip().isdigit():
+                    tid = int(value.strip())
+                    if 100 < tid < 1000000:
+                        return tid
+            except (TypeError, ValueError):
+                pass
     return None
 
 
@@ -369,9 +424,9 @@ try:
             
         plan_id = plan_data.get("id")
         plan_name = plan_data.get("name", "")
-        
-        # Extract ticket_id from plan name (format: ticket_id_plan_title)
-        ticket_id = extract_ticket_id_from_text(plan_name)
+
+        # Extract ticket_id from plan name (e.g. 18400_...) or from plan custom field
+        ticket_id = get_ticket_id_from_plan(plan_data, plan_name)
         
         # Skip plans without ticket ID (as per user requirement)
         if not ticket_id:

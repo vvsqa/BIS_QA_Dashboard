@@ -13,6 +13,8 @@ import TaskPlanning from "./TaskPlanning";
 import MyTasks from "./MyTasks";
 import ETACalendar from "./ETACalendar";
 import ClientProfiles from "./ClientProfiles";
+import ClientModuleAccess from "./ClientModuleAccess";
+import { isPathAllowedForClient } from "./clientModules";
 import Login from "./Login";
 import ChangePassword from "./ChangePassword";
 import Settings from "./Settings";
@@ -74,15 +76,6 @@ function AdminOnlyRoute({ children }) {
   return children;
 }
 
-const CLIENT_ALLOWED_PATHS = new Set([
-  '/',
-  '/eta-calendar',
-  '/dashboard',
-  '/ticket',
-  '/tickets',
-  '/all-bugs',
-]);
-
 function ProtectedRoute({ children, allowPasswordChange = false }) {
   const { user, isAuthenticated, loading, needsPasswordChange } = useAuth();
   const location = useLocation();
@@ -101,7 +94,7 @@ function ProtectedRoute({ children, allowPasswordChange = false }) {
   if (needsPasswordChange() && !allowPasswordChange && location.pathname !== '/change-password') {
     return <Navigate to="/change-password" replace />;
   }
-  if (user?.role === 'CLIENT' && location.pathname !== '/change-password' && !CLIENT_ALLOWED_PATHS.has(location.pathname)) {
+  if (user?.role === 'CLIENT' && location.pathname !== '/change-password' && !isPathAllowedForClient(location.pathname, user.allowed_modules)) {
     return <Navigate to="/" replace />;
   }
   return children;
@@ -126,6 +119,7 @@ function AppRoutes() {
         <Route path="/reports" element={<ProtectedRoute><ReportsRoute /></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
         <Route path="/admin/clients" element={<ProtectedRoute><AdminOnlyRoute><ClientProfiles /></AdminOnlyRoute></ProtectedRoute>} />
+        <Route path="/admin/client-modules" element={<ProtectedRoute><AdminOnlyRoute><ClientModuleAccess /></AdminOnlyRoute></ProtectedRoute>} />
         <Route path="/calendar" element={<ProtectedRoute><CalendarModule /></ProtectedRoute>} />
         <Route path="/timesheet" element={<ProtectedRoute><TimeSheetModule /></ProtectedRoute>} />
         <Route path="/planning" element={<ProtectedRoute><TaskModuleGuard><TaskPlanning /></TaskModuleGuard></ProtectedRoute>} />

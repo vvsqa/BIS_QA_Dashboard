@@ -21,6 +21,9 @@ from dotenv import load_dotenv
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 CLIENT_DEFAULT_PASSWORD = os.getenv("CLIENT_DEFAULT_PASSWORD", "BIS@123")
 
+# Module ids clients can be granted access to. Null/empty in DB = use this default.
+DEFAULT_CLIENT_ALLOWED_MODULES = ["home", "ticket_dashboard", "tickets", "all_bugs"]
+
 from database import SessionLocal
 from models import (
     Bug, TestPlan, TestRun, TestCase, TestResult, TicketTracking, QATicketFlag,
@@ -316,6 +319,7 @@ def auth_me(current_user: dict = Depends(get_current_user)):
         designation = None
         team = None
         password_changed_at = None
+        allowed_modules = None
         user_role = current_user.get("role", "EMPLOYEE")
         employee_id = current_user.get("employee_id")
         
@@ -347,6 +351,9 @@ def auth_me(current_user: dict = Depends(get_current_user)):
             if client:
                 name = client.name
                 designation = "CLIENT"
+                allowed_modules = client.allowed_modules if isinstance(client.allowed_modules, list) else DEFAULT_CLIENT_ALLOWED_MODULES
+            if allowed_modules is None:
+                allowed_modules = DEFAULT_CLIENT_ALLOWED_MODULES
             user_record = db.query(User).filter(User.email == current_user["email"]).first()
             if user_record:
                 password_changed_at = user_record.password_changed_at.isoformat() if user_record.password_changed_at else None
@@ -356,7 +363,7 @@ def auth_me(current_user: dict = Depends(get_current_user)):
         is_manager = "MANAGER" in user_role
         is_lead = "LEAD" in user_role
         
-        return {
+        out = {
             "email": current_user["email"],
             "role": current_user["role"],
             "employee_id": employee_id,
@@ -379,6 +386,9 @@ def auth_me(current_user: dict = Depends(get_current_user)):
                 "can_view_all_teams_calendar": is_admin or is_manager,  # Admin/Manager can view all teams in calendar
             }
         }
+        if allowed_modules is not None:
+            out["allowed_modules"] = allowed_modules
+        return out
     finally:
         db.close()
 
@@ -454,6 +464,15 @@ class ClientProfileUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 
+class ClientProfileImportItem(BaseModel):
+    name: str
+    email: str
+
+
+class ClientProfileImportBody(BaseModel):
+    profiles: List[ClientProfileImportItem]
+
+
 @app.get("/admin/users")
 def admin_list_users(current_user: dict = Depends(require_role(["ADMIN", "MANAGER_DEV", "MANAGER_QA"]))):
     """List all users (admin and managers)."""
@@ -511,11 +530,13 @@ def admin_list_clients(current_user: dict = Depends(require_role(["ADMIN"]))):
         result = []
         for client in clients:
             linked_user = db.query(User).filter(User.email == client.email).first()
+            allowed = client.allowed_modules if isinstance(client.allowed_modules, list) else None
             result.append({
                 "id": client.id,
                 "name": client.name,
                 "email": client.email,
                 "is_active": bool(client.is_active),
+                "allowed_modules": allowed if allowed is not None else DEFAULT_CLIENT_ALLOWED_MODULES,
                 "created_on": client.created_on.isoformat() if client.created_on else None,
                 "updated_on": client.updated_on.isoformat() if client.updated_on else None,
                 "password_changed_at": linked_user.password_changed_at.isoformat() if linked_user and linked_user.password_changed_at else None,
@@ -666,6 +687,86 @@ def admin_reset_client_password(
 
         db.commit()
         return {"message": "Client password reset successfully", "default_password": CLIENT_DEFAULT_PASSWORD}
+    finally:
+        db.close()
+
+
+class ClientModulesUpdate(BaseModel):
+    allowed_modules: List[str]
+
+
+@app.put("/admin/clients/{client_id}/modules")
+def admin_update_client_modules(
+    client_id: int,
+    body: ClientModulesUpdate,
+    current_user: dict = Depends(require_role(["ADMIN"])),
+):
+    """Set which modules a client can access (admin only)."""
+    db = SessionLocal()
+    try:
+        client = db.query(ClientProfile).filter(ClientProfile.id == client_id).first()
+        if not client:
+            raise HTTPException(status_code=404, detail="Client profile not found")
+        client.allowed_modules = body.allowed_modules if body.allowed_modules else None
+        db.commit()
+        db.refresh(client)
+        return {
+            "message": "Client module access updated",
+            "client_id": client.id,
+            "allowed_modules": client.allowed_modules if client.allowed_modules is not None else DEFAULT_CLIENT_ALLOWED_MODULES,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/admin/clients/import")
+def admin_import_clients(
+    body: ClientProfileImportBody,
+    current_user: dict = Depends(require_role(["ADMIN"])),
+):
+    """Bulk create client profiles and CLIENT logins. Skips emails that already exist."""
+    db = SessionLocal()
+    created = 0
+    skipped = []
+    errors = []
+    try:
+        for item in body.profiles:
+            email = (item.email or "").strip().lower()
+            name = (item.name or "").strip()
+            if not email or not name:
+                errors.append(f"Skipped empty name/email: {name!r} / {email!r}")
+                continue
+            if db.query(ClientProfile).filter(ClientProfile.email == email).first():
+                skipped.append(email)
+                continue
+            if db.query(User).filter(User.email == email).first():
+                skipped.append(email)
+                continue
+            client = ClientProfile(
+                name=name,
+                email=email,
+                is_active=True,
+            )
+            db.add(client)
+            db.add(User(
+                email=email,
+                password_hash=hash_password(CLIENT_DEFAULT_PASSWORD),
+                role="CLIENT",
+                employee_id=None,
+                password_changed_at=None,
+            ))
+            created += 1
+        db.commit()
+        return {
+            "message": f"Import complete: {created} created, {len(skipped)} skipped (already exist)",
+            "created": created,
+            "skipped": skipped,
+            "errors": errors[:20],
+            "default_password": CLIENT_DEFAULT_PASSWORD,
+        }
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 

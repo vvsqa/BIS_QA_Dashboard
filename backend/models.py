@@ -211,6 +211,8 @@ class ClientProfile(Base):
     name = Column(String(150), nullable=False, index=True)
     email = Column(String(150), unique=True, nullable=False, index=True)
     is_active = Column(Boolean, default=True, index=True)
+    # JSON array of module ids the client can access, e.g. ["home","ticket_dashboard","tickets","all_bugs","calendar","timesheet"]. Null = default set.
+    allowed_modules = Column(JSONB, nullable=True)
     created_on = Column(DateTime, default=datetime.utcnow)
     updated_on = Column(DateTime, onupdate=datetime.utcnow)
 

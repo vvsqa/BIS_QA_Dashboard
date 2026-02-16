@@ -18,6 +18,9 @@ export default function ClientProfiles() {
   const [form, setForm] = useState(emptyForm());
   const [editId, setEditId] = useState(null);
   const [editForm, setEditForm] = useState(emptyForm());
+  const [importCsv, setImportCsv] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
 
   const isAdmin = user?.role === 'ADMIN';
 
@@ -137,6 +140,63 @@ export default function ClientProfiles() {
     }
   };
 
+  const parseCsvToProfiles = (text) => {
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return [];
+    const rows = lines.map((line) => {
+      const parts = line.split(',').map((p) => p.trim().replace(/^["']|["']$/g, ''));
+      return parts;
+    });
+    const first = rows[0].map((c) => (c || '').toLowerCase());
+    const isHeader =
+      first.some((c) => c === 'first name' || c === 'last name' || c === 'name' || c === 'email');
+    const dataRows = isHeader ? rows.slice(1) : rows;
+    const profiles = [];
+    for (const row of dataRows) {
+      if (row.length >= 3) {
+        const firstName = row[0] || '';
+        const lastName = row[1] || '';
+        const email = (row[2] || '').trim().toLowerCase();
+        if (email && (firstName || lastName)) {
+          profiles.push({ name: `${firstName} ${lastName}`.trim(), email });
+        }
+      } else if (row.length === 2) {
+        const name = (row[0] || '').trim();
+        const email = (row[1] || '').trim().toLowerCase();
+        if (name && email) profiles.push({ name, email });
+      }
+    }
+    return profiles;
+  };
+
+  const handleImport = async () => {
+    const profiles = parseCsvToProfiles(importCsv);
+    if (profiles.length === 0) {
+      setError('Paste CSV with "First name,Last name,Email" or "Name,Email" (one row per client).');
+      return;
+    }
+    setImporting(true);
+    setError('');
+    setImportResult(null);
+    try {
+      const res = await apiFetch('/admin/clients/import', {
+        method: 'POST',
+        body: JSON.stringify({ profiles }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(data.detail || 'Import failed');
+      }
+      setImportResult(data);
+      setImportCsv('');
+      await loadClients();
+    } catch (e) {
+      setError(e.message || 'Import failed');
+    } finally {
+      setImporting(false);
+    }
+  };
+
   if (!isAdmin) {
     return (
       <div className="dashboard">
@@ -202,6 +262,29 @@ export default function ClientProfiles() {
                 {saving ? 'Creating...' : 'Create'}
               </button>
             </form>
+          </section>
+
+          <section style={{ marginBottom: '2rem' }}>
+            <h2 style={{ marginBottom: '0.75rem', fontSize: '1.2rem' }}>Import clients (CSV)</h2>
+            <p style={{ color: 'var(--text-muted)', marginBottom: '0.5rem', fontSize: '0.95rem' }}>
+              Paste CSV with header <strong>First name,Last name,Email</strong> or <strong>Name,Email</strong>. One row per client. Duplicates by email are skipped.
+            </p>
+            <textarea
+              value={importCsv}
+              onChange={(e) => setImportCsv(e.target.value)}
+              placeholder={'First name,Last name,Email\nAly,Saafan,aly.saafan@bistraining.ca\n...'}
+              rows={6}
+              style={{ width: '100%', padding: '0.5rem', fontFamily: 'monospace', marginBottom: '0.5rem' }}
+            />
+            <button type="button" className="btn-primary" onClick={handleImport} disabled={importing}>
+              {importing ? 'Importing...' : 'Import'}
+            </button>
+            {importResult && (
+              <p style={{ marginTop: '0.75rem', color: 'var(--text-muted)' }}>
+                {importResult.message}
+                {importResult.skipped?.length > 0 && ` Skipped: ${importResult.skipped.join(', ')}`}
+              </p>
+            )}
           </section>
 
           <section>

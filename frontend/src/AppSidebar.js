@@ -1,6 +1,7 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from './AuthContext';
 import { useTheme } from './ThemeContext';
+import { isPathAllowedForClient } from './clientModules';
 import './dashboard.css';
 
 function SidebarUser() {
@@ -23,6 +24,7 @@ export default function AppSidebar() {
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   const path = location.pathname;
   const isClient = user?.role === 'CLIENT';
+  const clientCanSee = (linkPath) => isPathAllowedForClient(linkPath, user?.allowed_modules);
 
   return (
     <aside className="sidebar">
@@ -49,7 +51,8 @@ export default function AppSidebar() {
         </button>
       </div>
       <nav className="nav-menu">
-        {/* Home Page - default for all users */}
+        {/* Home Page - all users; clients see only if allowed */}
+        {(!isClient || clientCanSee('/')) && (
         <Link to="/" className={`nav-item ${path === '/' || path === '/eta-calendar' ? 'active' : ''}`} title="Home">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z" />
@@ -57,7 +60,9 @@ export default function AppSidebar() {
           </svg>
           Home Page
         </Link>
-        {/* Overview & tracking */}
+        )}
+        {/* Overview & tracking - clients see only if allowed */}
+        {(!isClient || clientCanSee('/dashboard')) && (
         <Link to="/dashboard" className={`nav-item ${path === '/dashboard' || path === '/ticket' ? 'active' : ''}`}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <rect x="3" y="3" width="7" height="7" rx="1" />
@@ -67,6 +72,8 @@ export default function AppSidebar() {
           </svg>
           Ticket Dashboard
         </Link>
+        )}
+        {(!isClient || clientCanSee('/tickets')) && (
         <Link to="/tickets" className={`nav-item ${path === '/tickets' ? 'active' : ''}`}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <rect x="3" y="3" width="18" height="18" rx="2" />
@@ -75,6 +82,8 @@ export default function AppSidebar() {
           </svg>
           Tickets Overview
         </Link>
+        )}
+        {(!isClient || clientCanSee('/all-bugs')) && (
         <Link to="/all-bugs" className={`nav-item ${path === '/all-bugs' ? 'active' : ''}`}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="12" cy="12" r="10" />
@@ -82,6 +91,7 @@ export default function AppSidebar() {
           </svg>
           All Bugs Dashboard
         </Link>
+        )}
         {/* Planning & execution */}
         {!isClient && (user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD')) && (
           <Link to="/planning" className={`nav-item ${path === '/planning' ? 'active' : ''}`}>
@@ -100,7 +110,7 @@ export default function AppSidebar() {
             My Tasks
           </Link>
         )}
-        {!isClient && (
+        {(!isClient || clientCanSee('/calendar')) && (
         <Link to="/calendar" className={`nav-item ${path === '/calendar' ? 'active' : ''}`}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <rect x="3" y="4" width="18" height="18" rx="2" ry="2" />
@@ -111,7 +121,7 @@ export default function AppSidebar() {
           Calendar
         </Link>
         )}
-        {!isClient && (
+        {(!isClient || clientCanSee('/timesheet')) && (
         <Link to="/timesheet" className={`nav-item ${path === '/timesheet' ? 'active' : ''}`}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <rect x="3" y="4" width="18" height="18" rx="2" />
@@ -160,15 +170,24 @@ export default function AppSidebar() {
           </Link>
         )}
         {!isClient && user?.role === 'ADMIN' && (
-          <Link to="/admin/clients" className={`nav-item ${path === '/admin/clients' ? 'active' : ''}`}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <circle cx="8" cy="8" r="3" />
-              <circle cx="16" cy="8" r="3" />
-              <path d="M2 20c0-3 2.5-5 6-5s6 2 6 5" />
-              <path d="M10 20c0-2.6 2-4.5 5-4.5s5 1.9 5 4.5" />
-            </svg>
-            Client Profiles
-          </Link>
+          <>
+            <Link to="/admin/clients" className={`nav-item ${path === '/admin/clients' ? 'active' : ''}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="8" cy="8" r="3" />
+                <circle cx="16" cy="8" r="3" />
+                <path d="M2 20c0-3 2.5-5 6-5s6 2 6 5" />
+                <path d="M10 20c0-2.6 2-4.5 5-4.5s5 1.9 5 4.5" />
+              </svg>
+              Client Profiles
+            </Link>
+            <Link to="/admin/client-modules" className={`nav-item ${path === '/admin/client-modules' ? 'active' : ''}`} title="Set which modules each client can see">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                <path d="M7 11V7a5 5 0 0110 0v4" />
+              </svg>
+              Client module access
+            </Link>
+          </>
         )}
         {!isClient && (user?.role === 'ADMIN' || user?.role?.includes('MANAGER')) && (
           <Link to="/settings" className={`nav-item ${path === '/settings' ? 'active' : ''}`}>

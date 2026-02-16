@@ -40,6 +40,14 @@ For TestRail data to show under the correct **ticket** in the dashboard, test **
 
 Only plans whose name starts with a numeric ticket ID (e.g. `18400_`) are synced and linked to that ticket. Plans that don’t match are skipped.
 
+**Alternative: ticket ID from a custom field**  
+If your TestRail plans use a **custom field** for the PM Tracker ticket ID (instead of the plan name), the sync will try to read it. Set in `.env`:
+
+- `TESTRAIL_TICKET_FIELD_NAMES=Ticket ID,PM Tracker ID,Ticket Number,Reference,Ticket`  
+  (comma-separated list of custom field names to check; default is the list above.)
+
+The sync tries the plan name first; if no ticket ID is found there, it looks in the plan’s custom fields.
+
 ---
 
 ## 3. Running the sync (no built-in auto-sync)
@@ -96,3 +104,31 @@ If `SMTP_PASSWORD` is not set, the script skips sending email and continues norm
 5. Ensure TestRail **plan names** use the `ticket_id_plan_title` format so data appears under the right ticket.
 
 After this, TestRail data will be available in the live app (ticket dashboard, Redmine & TestRail view, etc.).
+
+---
+
+## 6. Troubleshooting: test case data not accurate on live
+
+If test case data is missing, wrong, or not updating on live:
+
+1. **Run the diagnostic script on the live server**  
+   From the backend directory:  
+   `python check_testrail_live.py`  
+   It checks env vars, TestRail API, whether plan names yield a ticket ID, and current DB counts. Use the output to see if sync has ever run and if plan names are in the expected format.
+
+2. **Confirm the sync is running**  
+   TestRail is **not** auto-synced by the backend. You must schedule `sync_testrail_to_db.py` (e.g. cron every 15 minutes). If the job isn’t scheduled or fails, the app will show stale or no data.
+
+3. **Check plan names (or custom field)**  
+   Only plans that supply a ticket ID are synced:
+   - **By name:** Plan name must start with the ticket ID and an underscore (e.g. `18400_Regression`).  
+   - **By custom field:** If your instance uses a custom field for ticket ID, set `TESTRAIL_TICKET_FIELD_NAMES` in `.env` (see §2.3).  
+   Plans that don’t match either are skipped, so their cases/results never appear.
+
+4. **Confirm project and env**  
+   Live must use the same **TestRail project** (and URL) you expect. Set `TESTRAIL_PROJECT_ID` and `TESTRAIL_URL` in live’s `.env`. Wrong project or URL will show data for the wrong project or none.
+
+5. **Run a manual sync and re-check**  
+   On the server:  
+   `cd backend && python sync_testrail_to_db.py`  
+   Then run `check_testrail_live.py` again and confirm DB counts and sample ticket IDs. Reload the app and check the ticket in question.
