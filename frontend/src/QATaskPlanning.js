@@ -1530,6 +1530,19 @@ function QATaskPlanning({ showParentTitle = false }) {
     const fromAllocs = t.allocations?.reduce((s, a) => s + (a.hours || 0), 0);
     return fromAllocs != null && fromAllocs > 0 ? fromAllocs : 0;
   };
+  const getLeadDisplayPriority = (emp) => {
+    if (!isLeadOnly) return 0;
+    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const myName = normalize(user?.name);
+    const empLeadName = normalize(emp?.lead_name);
+    const isSelf = emp?.employee_id === user?.employee_id;
+    const isMyTeamMember = !!myName && empLeadName === myName && !isSelf;
+    const canManageTasks = emp?.can_manage_tasks !== false;
+    if (isMyTeamMember) return 0; // own team first
+    if (canManageTasks && !isSelf) return 0; // fallback when lead_name is not populated
+    if (isSelf) return 1; // then lead's own row
+    return 2; // then other teams
+  };
   const filterEmp = (emp, forPlanner = false) => {
     // Leads see all department (view); can_manage_tasks controls assign/edit only (not visibility)
     const status = (emp.allocation_status || '').toLowerCase().replace(/\s+/g, '-');
@@ -1552,10 +1565,20 @@ function QATaskPlanning({ showParentTitle = false }) {
     defaultSortKey: 'employee_name',
     defaultSortDirection: 'asc',
   });
+  const orderedSortedEmployees = useMemo(() => {
+    if (!isLeadOnly) return sortedEmployees;
+    return [...sortedEmployees].sort((a, b) => {
+      const byPriority = getLeadDisplayPriority(a) - getLeadDisplayPriority(b);
+      if (byPriority !== 0) return byPriority;
+      return (a.employee_name || '').localeCompare(b.employee_name || '');
+    });
+  }, [sortedEmployees, isLeadOnly, user?.employee_id]);
 
   const sortedEmployeeGroups = useMemo(() => {
     if (!filteredEmployeeGroups) return null;
-    return filteredEmployeeGroups.map((g) => ({
+    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const myName = normalize(user?.name);
+    const groups = filteredEmployeeGroups.map((g) => ({
       ...g,
       members: [...(g.members || [])].sort((a, b) => {
         const key = sortConfig.key;
@@ -1573,7 +1596,21 @@ function QATaskPlanning({ showParentTitle = false }) {
         return sortConfig.direction === 'asc' ? aNum - bNum : bNum - aNum;
       }),
     }));
-  }, [filteredEmployeeGroups, sortConfig]);
+
+    if (!isLeadOnly) return groups;
+
+    // Lead view: own team section first, then other teams
+    return [...groups].sort((a, b) => {
+      const aIsMine = normalize(a.lead_name) === myName ? 0 : 1;
+      const bIsMine = normalize(b.lead_name) === myName ? 0 : 1;
+      if (aIsMine !== bIsMine) return aIsMine - bIsMine;
+      return normalize(a.lead_name).localeCompare(normalize(b.lead_name));
+    });
+  }, [filteredEmployeeGroups, sortConfig, isLeadOnly, user?.name]);
+
+  const plannerEmployeeSections = useMemo(() => {
+    return sortedEmployeeGroups || [{ lead_name: null, members: orderedSortedEmployees }];
+  }, [orderedSortedEmployees, sortedEmployeeGroups]);
 
   const totalCapacity = employees.length * HOURS_PER_WEEK;
   const totalAllocated = employees.reduce((sum, e) => sum + (e.allocated_hours || 0), 0);
@@ -1586,14 +1623,13 @@ function QATaskPlanning({ showParentTitle = false }) {
   const calendarRows = useMemo(() => {
     const rows = calendarData?.employees || [];
     if (!isLeadOnly) return rows; // Admin/Manager sees normal order
-    // Sort: can_manage_tasks = true first, then alphabetically within each group
+    // Sort order for leads: own reportees/team -> self -> other teams
     return [...rows].sort((a, b) => {
-      const aManage = a.can_manage_tasks === true ? 0 : 1;
-      const bManage = b.can_manage_tasks === true ? 0 : 1;
-      if (aManage !== bManage) return aManage - bManage;
+      const byPriority = getLeadDisplayPriority(a) - getLeadDisplayPriority(b);
+      if (byPriority !== 0) return byPriority;
       return (a.employee_name || '').localeCompare(b.employee_name || '');
     });
-  }, [calendarData?.employees, isLeadOnly]);
+  }, [calendarData?.employees, isLeadOnly, user?.employee_id]);
   const calendarDayKeys = useMemo(() => {
     if (!calendarRows.length) return [];
     return Object.keys(calendarRows[0].days || {}).sort();
@@ -2663,9 +2699,9 @@ function QATaskPlanning({ showParentTitle = false }) {
                 </div>
               ) : (
                 <div className="dev-planner-resource-sections">
-                  {(sortedEmployeeGroups || [{ lead_name: null, members: sortedEmployees }]).map((group, gIdx) => (
+                  {plannerEmployeeSections.map((group, gIdx) => (
                     <div key={group.lead_name || `group-${gIdx}`} className="dev-planner-lead-group">
-                      {(group.lead_name || (filteredEmployeeGroups && filteredEmployeeGroups.length > 1)) && (
+                      {(group.lead_name || plannerEmployeeSections.length > 1) && (
                         <h3 className="dev-planner-lead-header">
                           {group.lead_name ? `${group.lead_name}'s Team` : 'Unassigned'}
                         </h3>

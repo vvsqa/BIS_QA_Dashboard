@@ -138,6 +138,13 @@ function EmployeeProfile() {
   const [managerOptions, setManagerOptions] = useState([]);
   const [photoUploading, setPhotoUploading] = useState(false);
   const [accessError, setAccessError] = useState(null);
+  // Skills state
+  const [skills, setSkills] = useState([]);
+  const [skillSuggestions, setSkillSuggestions] = useState([]);
+  const [showAddSkillModal, setShowAddSkillModal] = useState(false);
+  const [newSkill, setNewSkill] = useState({ skill_name: '', proficiency_level: 3, years_of_experience: '' });
+  const [editingSkill, setEditingSkill] = useState(null);
+  const [skillsLoading, setSkillsLoading] = useState(false);
   const [editForm, setEditForm] = useState({
     name: '',
     email: '',
@@ -203,7 +210,7 @@ function EmployeeProfile() {
     try {
       console.log('Loading employee data for:', employeeId);
       
-      const [empRes, perfRes, goalsRes, reviewsRes, ragRes, kpiRes, reporteesRes, planningRes] = await Promise.all([
+      const [empRes, perfRes, goalsRes, reviewsRes, ragRes, kpiRes, reporteesRes, planningRes, skillsRes] = await Promise.all([
         apiFetch(`/employees/${employeeId}`).catch(err => {
           console.error('Failed to fetch employee:', err);
           return { ok: false };
@@ -234,6 +241,10 @@ function EmployeeProfile() {
         }),
         apiFetch(`/employees/${employeeId}/planning-timesheet?weeks=5`).catch(err => {
           console.error('Failed to fetch planning-timesheet:', err);
+          return { ok: false };
+        }),
+        apiFetch(`/employees/${employeeId}/skills`).catch(err => {
+          console.error('Failed to fetch skills:', err);
           return { ok: false };
         })
       ]);
@@ -294,6 +305,14 @@ function EmployeeProfile() {
         setPlanningTimesheetData(planningData);
       } else {
         setPlanningTimesheetData(null);
+      }
+      if (skillsRes.ok) {
+        const skillsData = await skillsRes.json();
+        setSkills(skillsData.skills || []);
+        setSkillSuggestions(skillsData.suggestions || []);
+      } else {
+        setSkills([]);
+        setSkillSuggestions([]);
       }
     } catch (error) {
       console.error('Error loading employee data:', error);
@@ -997,6 +1016,124 @@ function EmployeeProfile() {
       : name.substring(0, 2).toUpperCase();
   };
 
+  // Skill management functions
+  const loadSkills = async () => {
+    if (!employee?.employee_id) return;
+    setSkillsLoading(true);
+    try {
+      const res = await apiFetch(`/employees/${employee.employee_id}/skills`);
+      if (res.ok) {
+        const data = await res.json();
+        setSkills(data.skills || []);
+        setSkillSuggestions(data.suggestions || []);
+      }
+    } catch (err) {
+      console.error('Failed to load skills:', err);
+    } finally {
+      setSkillsLoading(false);
+    }
+  };
+
+  const handleAddSkill = async () => {
+    if (!newSkill.skill_name.trim()) return;
+    setSkillsLoading(true);
+    try {
+      const res = await apiFetch(`/employees/${employee.employee_id}/skills`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          skill_name: newSkill.skill_name.trim(),
+          proficiency_level: newSkill.proficiency_level,
+          years_of_experience: newSkill.years_of_experience ? parseFloat(newSkill.years_of_experience) : null
+        })
+      });
+      if (res.ok) {
+        setShowAddSkillModal(false);
+        setNewSkill({ skill_name: '', proficiency_level: 3, years_of_experience: '' });
+        loadSkills();
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Failed to add skill');
+      }
+    } catch (err) {
+      console.error('Failed to add skill:', err);
+      alert('Failed to add skill');
+    } finally {
+      setSkillsLoading(false);
+    }
+  };
+
+  const handleUpdateSkill = async () => {
+    if (!editingSkill) return;
+    setSkillsLoading(true);
+    try {
+      const res = await apiFetch(`/employees/${employee.employee_id}/skills/${editingSkill.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          skill_name: editingSkill.skill_name.trim(),
+          proficiency_level: editingSkill.proficiency_level,
+          years_of_experience: editingSkill.years_of_experience ? parseFloat(editingSkill.years_of_experience) : null
+        })
+      });
+      if (res.ok) {
+        setEditingSkill(null);
+        loadSkills();
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Failed to update skill');
+      }
+    } catch (err) {
+      console.error('Failed to update skill:', err);
+      alert('Failed to update skill');
+    } finally {
+      setSkillsLoading(false);
+    }
+  };
+
+  const handleDeleteSkill = async (skillId) => {
+    if (!window.confirm('Are you sure you want to delete this skill?')) return;
+    setSkillsLoading(true);
+    try {
+      const res = await apiFetch(`/employees/${employee.employee_id}/skills/${skillId}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        loadSkills();
+      } else {
+        const err = await res.json();
+        alert(err.detail || 'Failed to delete skill');
+      }
+    } catch (err) {
+      console.error('Failed to delete skill:', err);
+      alert('Failed to delete skill');
+    } finally {
+      setSkillsLoading(false);
+    }
+  };
+
+  const proficiencyLabels = {
+    1: 'Beginner',
+    2: 'Intermediate',
+    3: 'Advanced',
+    4: 'Expert',
+    5: 'Master'
+  };
+
+  const proficiencyColors = {
+    1: '#94a3b8',
+    2: '#3b82f6',
+    3: '#10b981',
+    4: '#f59e0b',
+    5: '#ef4444'
+  };
+
+  // Check if current user can edit skills (own profile or admin/manager)
+  const canEditSkills = user?.employee_id === employee?.employee_id || 
+                        user?.role === 'ADMIN' || 
+                        user?.role?.includes('MANAGER') ||
+                        employee?._permissions?.can_edit;
+
   if (loading) {
     return (
       <div className="dashboard">
@@ -1199,13 +1336,35 @@ function EmployeeProfile() {
             {/* Basic Info */}
             <div className="emp-basic-info">
               <h1 className="emp-name">{employee.name}</h1>
+              {employee.designation && (
+                <div className="emp-designation">{employee.designation}</div>
+              )}
               <div className="emp-meta-row">
                 <span className={`team-badge ${isDev ? 'dev' : 'qa'}`}>
                   {isDev ? 'DEV' : 'QA'} TEAM
                 </span>
-                <span className={`employment-status-badge ${employee.employment_status === 'Resigned' ? 'resigned' : 'ongoing'}`}>
+                <span className={`category-badge ${employee.category === 'BILLED' ? 'billed' : 'unbilled'}`}>
+                  {employee.category || 'UN-BILLED'}
+                </span>
+                <span className={`employment-status-badge ${
+                  employee.employment_status === 'Resigned' ? 'resigned' : 
+                  employee.employment_status === 'Serving Notice Period' ? 'notice' : 'ongoing'
+                }`}>
                   {employee.employment_status || 'Ongoing Employee'}
                 </span>
+                {employee.mode_of_work && (
+                  <span className="mode-of-work-badge" style={{
+                    backgroundColor: employee.mode_of_work === 'Remote' ? '#8b5cf6' : 
+                                    employee.mode_of_work === 'Hybrid' ? '#f59e0b' : '#10b981',
+                    color: 'white',
+                    padding: '4px 12px',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '500'
+                  }}>
+                    {employee.mode_of_work}
+                  </span>
+                )}
                 {employee.platform && (
                   <span className="platform-badge" style={{
                     backgroundColor: employee.platform === 'Web' ? '#3b82f6' : '#8b5cf6',
@@ -1216,6 +1375,18 @@ function EmployeeProfile() {
                     fontWeight: '500'
                   }}>
                     {employee.platform}
+                  </span>
+                )}
+                {employee.is_fresher && (
+                  <span className="fresher-badge" style={{
+                    backgroundColor: '#06b6d4',
+                    color: 'white',
+                    padding: '4px 12px',
+                    borderRadius: '12px',
+                    fontSize: '12px',
+                    fontWeight: '500'
+                  }}>
+                    Techversant Grown
                   </span>
                 )}
               </div>
@@ -1245,20 +1416,112 @@ function EmployeeProfile() {
                   </span>
                 </div>
               )}
+              
+              {/* Notice Period Info */}
+              {employee.employment_status === 'Serving Notice Period' && (
+                <div className="notice-period-info" style={{
+                  marginTop: '12px',
+                  padding: '12px 16px',
+                  backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                  border: '1px solid rgba(245, 158, 11, 0.3)',
+                  borderRadius: '8px'
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="#f59e0b" strokeWidth="2" style={{ width: '18px', height: '18px' }}>
+                      <circle cx="12" cy="12" r="10"/>
+                      <path d="M12 6v6l4 2"/>
+                    </svg>
+                    <span style={{ color: '#f59e0b', fontWeight: '600', fontSize: '14px' }}>Notice Period</span>
+                  </div>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', fontSize: '13px' }}>
+                    {employee.resignation_date && (
+                      <div>
+                        <span style={{ color: 'var(--text-secondary)', display: 'block' }}>Resignation Date</span>
+                        <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>
+                          {formatDisplayDate(employee.resignation_date)}
+                        </span>
+                      </div>
+                    )}
+                    {employee.notice_period_days && (
+                      <div>
+                        <span style={{ color: 'var(--text-secondary)', display: 'block' }}>Notice Period</span>
+                        <span style={{ color: 'var(--text-primary)', fontWeight: '500' }}>
+                          {employee.notice_period_days} days
+                        </span>
+                      </div>
+                    )}
+                    {employee.expected_lwd && (
+                      <div>
+                        <span style={{ color: 'var(--text-secondary)', display: 'block' }}>Expected LWD</span>
+                        <span style={{ color: '#f59e0b', fontWeight: '600' }}>
+                          {formatDisplayDate(employee.expected_lwd)}
+                        </span>
+                      </div>
+                    )}
+                    {employee.days_remaining !== null && employee.days_remaining !== undefined && (
+                      <div>
+                        <span style={{ color: 'var(--text-secondary)', display: 'block' }}>Days Remaining</span>
+                        <span style={{ 
+                          color: employee.days_remaining <= 7 ? '#ef4444' : employee.days_remaining <= 30 ? '#f59e0b' : '#10b981',
+                          fontWeight: '600',
+                          fontSize: '16px'
+                        }}>
+                          {employee.days_remaining} days
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Experience Details Card - Top Section */}
+        {/* Employee Details Card - Top Section */}
         <div className="emp-experience-card-top">
-          <h3 className="section-title">Experience Details</h3>
+          <h3 className="section-title">Employee Details</h3>
           <div className="experience-grid">
+            {/* Basic Info */}
+            <div className="experience-item">
+              <span className="experience-label">Employee ID</span>
+              <span className="experience-value" style={{ fontFamily: 'monospace', fontWeight: '600' }}>
+                {employee.employee_id}
+              </span>
+            </div>
+            <div className="experience-item">
+              <span className="experience-label">Email</span>
+              <span className="experience-value" style={{ fontSize: '13px' }}>
+                {employee.email}
+              </span>
+            </div>
+            <div className="experience-item">
+              <span className="experience-label">Date of Joining</span>
+              <span className="experience-value">
+                {employee.date_of_joining ? formatDisplayDate(employee.date_of_joining) : 'N/A'}
+              </span>
+            </div>
+            
+            {/* Reporting Info */}
+            <div className="experience-item">
+              <span className="experience-label">Lead</span>
+              <span className="experience-value" style={{ color: '#3b82f6' }}>
+                {employee.lead || 'N/A'}
+              </span>
+            </div>
+            <div className="experience-item">
+              <span className="experience-label">Manager</span>
+              <span className="experience-value" style={{ color: '#8b5cf6' }}>
+                {employee.manager || 'N/A'}
+              </span>
+            </div>
+            
+            {/* Experience Info */}
             <div className="experience-item">
               <span className="experience-label">Previous Experience</span>
               <span className="experience-value">
                 {(employee.previous_experience !== null && employee.previous_experience !== undefined)
                   ? (employee.previous_experience === 0 || employee.previous_experience === 0.0
-                      ? 'Techversant Grown'
+                      ? 'Fresher'
                       : `${parseFloat(employee.previous_experience || 0).toFixed(1)} years`)
                   : 'N/A'}
               </span>
@@ -1279,6 +1542,8 @@ function EmployeeProfile() {
                   : '0.0 years'}
               </span>
             </div>
+            
+            {/* BIS Info */}
             <div className="experience-item">
               <span className="experience-label">BIS Status</span>
               <span className="experience-value" style={{
@@ -2018,6 +2283,12 @@ function EmployeeProfile() {
             onClick={() => setActiveTab('calendar')}
           >
             Calendar & Timesheet
+          </button>
+          <button 
+            className={`emp-tab ${activeTab === 'skills' ? 'active' : ''}`}
+            onClick={() => setActiveTab('skills')}
+          >
+            Skills
           </button>
         </div>
 
@@ -3127,7 +3398,283 @@ function EmployeeProfile() {
             )}
           </div>
         )}
+
+        {/* Skills Tab */}
+        {activeTab === 'skills' && (
+          <div className="emp-tab-content skills-tab">
+            <div className="skills-header">
+              <h3>Skills & Expertise</h3>
+              {canEditSkills && (
+                <button 
+                  className="btn-add-skill"
+                  onClick={() => setShowAddSkillModal(true)}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M12 5v14M5 12h14"/>
+                  </svg>
+                  Add Skill
+                </button>
+              )}
+            </div>
+
+            {skillsLoading ? (
+              <div className="loading-state">
+                <div className="spinner"></div>
+                <p>Loading skills...</p>
+              </div>
+            ) : skills.length === 0 ? (
+              <div className="empty-skills">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" style={{ width: '64px', height: '64px', opacity: 0.3 }}>
+                  <path d="M12 6.042A8.967 8.967 0 006 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 016 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 016-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0018 18a8.967 8.967 0 00-6 2.292m0-14.25v14.25"/>
+                </svg>
+                <p>No skills added yet</p>
+                {canEditSkills && (
+                  <button 
+                    className="btn-add-first-skill"
+                    onClick={() => setShowAddSkillModal(true)}
+                  >
+                    Add your first skill
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="skills-grid">
+                {skills.map(skill => (
+                  <div key={skill.id} className="skill-card">
+                    <div className="skill-card-header">
+                      <h4 className="skill-name">{skill.skill_name}</h4>
+                      {canEditSkills && (
+                        <div className="skill-actions">
+                          <button 
+                            className="btn-icon"
+                            onClick={() => setEditingSkill({...skill})}
+                            title="Edit skill"
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+                              <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                            </svg>
+                          </button>
+                          <button 
+                            className="btn-icon delete"
+                            onClick={() => handleDeleteSkill(skill.id)}
+                            title="Delete skill"
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                            </svg>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                    <div className="skill-proficiency">
+                      <span className="proficiency-label">{skill.proficiency_label || 'Unknown'}</span>
+                      <div className="proficiency-stars">
+                        {[1, 2, 3, 4, 5].map(level => (
+                          <span 
+                            key={level} 
+                            className={`star ${level <= skill.proficiency_level ? 'filled' : ''}`}
+                            style={{ color: level <= skill.proficiency_level ? proficiencyColors[skill.proficiency_level] : '#4b5563' }}
+                          >
+                            ★
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    {skill.years_of_experience !== null && skill.years_of_experience !== undefined && (
+                      <div className="skill-experience">
+                        <span>{skill.years_of_experience.toFixed(1)} years experience</span>
+                      </div>
+                    )}
+                    <div 
+                      className="skill-progress-bar"
+                      style={{ 
+                        background: `linear-gradient(to right, ${proficiencyColors[skill.proficiency_level]}40 ${skill.proficiency_level * 20}%, transparent ${skill.proficiency_level * 20}%)`
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Skill Suggestions Section */}
+            {canEditSkills && skillSuggestions.length > 0 && (
+              <div className="skill-suggestions">
+                <h4>Suggested Skills for {employee?.team === 'DEVELOPMENT' ? 'Developers' : 'QA Engineers'}</h4>
+                <div className="suggestions-tags">
+                  {skillSuggestions
+                    .filter(s => !skills.some(existing => existing.skill_name.toLowerCase() === s.toLowerCase()))
+                    .slice(0, 20)
+                    .map((suggestion, idx) => (
+                      <button 
+                        key={idx}
+                        className="suggestion-tag"
+                        onClick={() => {
+                          setNewSkill({ skill_name: suggestion, proficiency_level: 3, years_of_experience: '' });
+                          setShowAddSkillModal(true);
+                        }}
+                      >
+                        + {suggestion}
+                      </button>
+                    ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </main>
+
+      {/* Add Skill Modal */}
+      {showAddSkillModal && (
+        <div className="modal-overlay" onClick={() => setShowAddSkillModal(false)}>
+          <div className="modal-content skill-modal" onClick={e => e.stopPropagation()}>
+            <h2>Add Skill</h2>
+            <div className="form-group">
+              <label>Skill Name *</label>
+              <input 
+                type="text"
+                placeholder="e.g., React, Python, Selenium..."
+                value={newSkill.skill_name}
+                onChange={e => setNewSkill({...newSkill, skill_name: e.target.value})}
+                list="skill-suggestions-list"
+              />
+              <datalist id="skill-suggestions-list">
+                {skillSuggestions.map((s, idx) => (
+                  <option key={idx} value={s} />
+                ))}
+              </datalist>
+            </div>
+            <div className="form-group">
+              <label>Proficiency Level *</label>
+              <div className="proficiency-selector">
+                {[
+                  { value: 1, label: 'Beginner', desc: 'Basic understanding' },
+                  { value: 2, label: 'Intermediate', desc: 'Can work with guidance' },
+                  { value: 3, label: 'Advanced', desc: 'Can work independently' },
+                  { value: 4, label: 'Expert', desc: 'Can mentor others' },
+                  { value: 5, label: 'Master', desc: 'Industry-level expertise' }
+                ].map(level => (
+                  <button
+                    key={level.value}
+                    type="button"
+                    className={`proficiency-option ${newSkill.proficiency_level === level.value ? 'selected' : ''}`}
+                    onClick={() => setNewSkill({...newSkill, proficiency_level: level.value})}
+                    style={{ 
+                      borderColor: newSkill.proficiency_level === level.value ? proficiencyColors[level.value] : 'transparent',
+                      backgroundColor: newSkill.proficiency_level === level.value ? `${proficiencyColors[level.value]}20` : 'var(--bg-secondary)'
+                    }}
+                  >
+                    <span className="level-label">{level.label}</span>
+                    <span className="level-desc">{level.desc}</span>
+                    <div className="level-stars">
+                      {[1, 2, 3, 4, 5].map(s => (
+                        <span key={s} style={{ color: s <= level.value ? proficiencyColors[level.value] : '#4b5563' }}>★</span>
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="form-group">
+              <label>Years of Experience (Optional)</label>
+              <input 
+                type="number"
+                step="0.5"
+                min="0"
+                max="50"
+                placeholder="e.g., 2.5"
+                value={newSkill.years_of_experience}
+                onChange={e => setNewSkill({...newSkill, years_of_experience: e.target.value})}
+              />
+            </div>
+            <div className="form-actions">
+              <button type="button" className="btn-cancel" onClick={() => setShowAddSkillModal(false)}>
+                Cancel
+              </button>
+              <button 
+                type="button" 
+                className="btn-submit"
+                onClick={handleAddSkill}
+                disabled={!newSkill.skill_name.trim() || skillsLoading}
+              >
+                {skillsLoading ? 'Adding...' : 'Add Skill'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Skill Modal */}
+      {editingSkill && (
+        <div className="modal-overlay" onClick={() => setEditingSkill(null)}>
+          <div className="modal-content skill-modal" onClick={e => e.stopPropagation()}>
+            <h2>Edit Skill</h2>
+            <div className="form-group">
+              <label>Skill Name *</label>
+              <input 
+                type="text"
+                value={editingSkill.skill_name}
+                onChange={e => setEditingSkill({...editingSkill, skill_name: e.target.value})}
+              />
+            </div>
+            <div className="form-group">
+              <label>Proficiency Level *</label>
+              <div className="proficiency-selector">
+                {[
+                  { value: 1, label: 'Beginner', desc: 'Basic understanding' },
+                  { value: 2, label: 'Intermediate', desc: 'Can work with guidance' },
+                  { value: 3, label: 'Advanced', desc: 'Can work independently' },
+                  { value: 4, label: 'Expert', desc: 'Can mentor others' },
+                  { value: 5, label: 'Master', desc: 'Industry-level expertise' }
+                ].map(level => (
+                  <button
+                    key={level.value}
+                    type="button"
+                    className={`proficiency-option ${editingSkill.proficiency_level === level.value ? 'selected' : ''}`}
+                    onClick={() => setEditingSkill({...editingSkill, proficiency_level: level.value})}
+                    style={{ 
+                      borderColor: editingSkill.proficiency_level === level.value ? proficiencyColors[level.value] : 'transparent',
+                      backgroundColor: editingSkill.proficiency_level === level.value ? `${proficiencyColors[level.value]}20` : 'var(--bg-secondary)'
+                    }}
+                  >
+                    <span className="level-label">{level.label}</span>
+                    <span className="level-desc">{level.desc}</span>
+                    <div className="level-stars">
+                      {[1, 2, 3, 4, 5].map(s => (
+                        <span key={s} style={{ color: s <= level.value ? proficiencyColors[level.value] : '#4b5563' }}>★</span>
+                      ))}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="form-group">
+              <label>Years of Experience (Optional)</label>
+              <input 
+                type="number"
+                step="0.5"
+                min="0"
+                max="50"
+                value={editingSkill.years_of_experience || ''}
+                onChange={e => setEditingSkill({...editingSkill, years_of_experience: e.target.value ? parseFloat(e.target.value) : null})}
+              />
+            </div>
+            <div className="form-actions">
+              <button type="button" className="btn-cancel" onClick={() => setEditingSkill(null)}>
+                Cancel
+              </button>
+              <button 
+                type="button" 
+                className="btn-submit"
+                onClick={handleUpdateSkill}
+                disabled={!editingSkill.skill_name.trim() || skillsLoading}
+              >
+                {skillsLoading ? 'Saving...' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Add Goal Modal */}
       {showGoalModal && (

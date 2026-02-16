@@ -173,11 +173,13 @@ class Employee(Base):
     name = Column(String(100), index=True)
     email = Column(String(150), unique=True)
     role = Column(String(100))  # SOFTWARE ENGINEER, ASSOCIATE SOFTWARE ENGINEER, etc.
+    designation = Column(String(150), nullable=True)  # Job title/designation (e.g., "Software Engineer", "QA Lead")
     location = Column(String(50))  # Trivandrum
+    mode_of_work = Column(String(50), default='Onsite')  # Onsite, Remote, Hybrid
     date_of_joining = Column(DateTime)
     team = Column(String(50), index=True)  # DEVELOPMENT, QA
     category = Column(String(50))  # BILLED, UN-BILLED
-    employment_status = Column(String(50), default='Ongoing Employee', index=True)  # Ongoing Employee, Resigned
+    employment_status = Column(String(50), default='Ongoing Employee', index=True)  # Ongoing Employee, Serving Notice Period, Resigned
     lead = Column(String(100), index=True)  # Reporting manager name
     manager = Column(String(100), index=True)  # Manager name (can be different from lead)
     previous_experience = Column(Float, nullable=True)  # Years of experience before joining Techversant
@@ -186,8 +188,30 @@ class Employee(Base):
     photo_url = Column(String(500), nullable=True)  # URL/path to employee photo
     is_active = Column(Boolean, default=True)
     mapping_data = Column(JSONB, nullable=True)  # Additional mapping columns from Excel (Column 1-5, Notes, etc.)
+    
+    # Notice period and resignation tracking
+    resignation_date = Column(DateTime, nullable=True)  # Date when resignation was submitted
+    expected_lwd = Column(DateTime, nullable=True)  # Expected Last Working Day (auto-calculated or manual)
+    
+    # Archive/soft delete for resigned employees
+    archived = Column(Boolean, default=False, index=True)  # True when employee is archived (resigned and removed from active list)
+    archived_on = Column(DateTime, nullable=True)  # When the employee was archived
+    
     created_on = Column(DateTime, default=datetime.utcnow)
     updated_on = Column(DateTime, onupdate=datetime.utcnow)
+
+
+class EmployeeSkill(Base):
+    """Employee skillsets with proficiency levels and years of experience"""
+    __tablename__ = "employee_skills"
+    
+    id = Column(Integer, primary_key=True)
+    employee_id = Column(String(20), index=True)  # FK to Employee.employee_id
+    skill_name = Column(String(150), nullable=False, index=True)  # e.g., "React", "Python", "Selenium"
+    proficiency_level = Column(Integer)  # 1-5 scale (1=Beginner, 2=Intermediate, 3=Advanced, 4=Expert, 5=Master)
+    years_of_experience = Column(Float, nullable=True)  # Years using this skill
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class User(Base):

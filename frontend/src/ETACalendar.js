@@ -272,7 +272,6 @@ function ETACalendar() {
           <header className="home-eta-topbar">
             <div>
               <h1 className="home-eta-title">Deliverables ETA Calendar</h1>
-              <p className="home-eta-subtitle">{user?.team ? `${user.team} Team` : 'Engineering Team'}</p>
             </div>
             <div className="home-eta-legend">
               {CATEGORY_ORDER.map((key) => (

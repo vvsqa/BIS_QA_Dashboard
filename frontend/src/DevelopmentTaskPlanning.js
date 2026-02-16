@@ -921,13 +921,23 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
   const employees = weekData?.employees || [];
   const tasks = weekData?.tasks || [];
 
+  const getLeadDisplayPriority = (emp) => {
+    if (!isLeadOnly) return 0;
+    const normalize = (v) => String(v || '').trim().toLowerCase();
+    const myName = normalize(user?.name);
+    const empLeadName = normalize(emp?.lead_name);
+    const isSelf = emp?.employee_id === user?.employee_id;
+    const isMyTeamMember = !!myName && empLeadName === myName && !isSelf;
+    const canManageTasks = emp?.can_manage_tasks !== false;
+    if (isMyTeamMember) return 0; // own team first
+    if (canManageTasks && !isSelf) return 0; // fallback when lead_name is not populated
+    if (isSelf) return 1; // then lead's own row
+    return 2; // then other teams
+  };
+
   // Filter employees by allocation status and search
   // Leads see all department (view); can_manage_tasks controls assign/edit only (not visibility)
   const filteredEmployees = employees.filter((emp) => {
-    // Exclude self from planner list (leads assign to team, not themselves)
-    if (emp.employee_id === user?.employee_id) {
-      return false;
-    }
     const status = (emp.allocation_status || '').toLowerCase().replace(/\s+/g, '-');
     if (resourceFilter !== 'all') {
       if (resourceFilter === 'available' && status !== 'available') return false;
@@ -943,6 +953,41 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
     defaultSortKey: 'employee_name',
     defaultSortDirection: 'asc',
   });
+
+  const orderedSortedEmployees = useMemo(() => {
+    if (!isLeadOnly) return sortedEmployees;
+    return [...sortedEmployees].sort((a, b) => {
+      const byPriority = getLeadDisplayPriority(a) - getLeadDisplayPriority(b);
+      if (byPriority !== 0) return byPriority;
+      return (a.employee_name || '').localeCompare(b.employee_name || '');
+    });
+  }, [sortedEmployees, isLeadOnly, user?.employee_id]);
+
+  const plannerEmployeeSections = useMemo(() => {
+    if (!isLeadOnly) return [{ lead_name: null, members: orderedSortedEmployees }];
+
+    const normalize = (v) => String(v || '').trim();
+    const keyFor = (leadName) => normalize(leadName) || '_unassigned';
+    const groupsMap = new Map();
+
+    orderedSortedEmployees.forEach((emp) => {
+      const leadName = normalize(emp?.lead_name) || null;
+      const key = keyFor(leadName);
+      if (!groupsMap.has(key)) {
+        groupsMap.set(key, { lead_name: leadName, members: [] });
+      }
+      groupsMap.get(key).members.push(emp);
+    });
+
+    const myNameLower = String(user?.name || '').trim().toLowerCase();
+    const sections = Array.from(groupsMap.values());
+    return sections.sort((a, b) => {
+      const aMine = String(a.lead_name || '').trim().toLowerCase() === myNameLower ? 0 : 1;
+      const bMine = String(b.lead_name || '').trim().toLowerCase() === myNameLower ? 0 : 1;
+      if (aMine !== bMine) return aMine - bMine;
+      return String(a.lead_name || '').localeCompare(String(b.lead_name || ''));
+    });
+  }, [orderedSortedEmployees, isLeadOnly, user?.name]);
 
   // Summary stats for planner
   const totalCapacity = employees.length * HOURS_PER_WEEK;
@@ -966,14 +1011,13 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
   const calendarRows = useMemo(() => {
     const rows = calendarData?.employees || [];
     if (!isLeadOnly) return rows; // Admin/Manager sees normal order
-    // Sort: can_manage_tasks = true first, then alphabetically within each group
+    // Sort order for leads: own reportees/team -> self -> other teams
     return [...rows].sort((a, b) => {
-      const aManage = a.can_manage_tasks === true ? 0 : 1;
-      const bManage = b.can_manage_tasks === true ? 0 : 1;
-      if (aManage !== bManage) return aManage - bManage;
+      const byPriority = getLeadDisplayPriority(a) - getLeadDisplayPriority(b);
+      if (byPriority !== 0) return byPriority;
       return (a.employee_name || '').localeCompare(b.employee_name || '');
     });
-  }, [calendarData?.employees, isLeadOnly]);
+  }, [calendarData?.employees, isLeadOnly, user?.employee_id]);
 
   // Navigate to tickets dashboard with ticket selected
   const goToTicket = (ticketId) => {
@@ -1849,13 +1893,21 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
               </div>
               {loading ? (
                 <div className="dev-planning-skeleton">Loading…</div>
-              ) : sortedEmployees.length === 0 ? (
+              ) : orderedSortedEmployees.length === 0 ? (
                 <div className="dev-planning-empty">
                   <p>No resources match the filter.</p>
                 </div>
               ) : (
-                <div className={`dev-planner-resource-grid ${plannerViewMode === 'list' ? 'list-mode' : ''}`}>
-                  {sortedEmployees.map((emp) => {
+                <div className="dev-planner-resource-sections">
+                  {plannerEmployeeSections.map((group, gIdx) => (
+                    <div key={group.lead_name || `group-${gIdx}`} className="dev-planner-lead-group">
+                      {(group.lead_name || plannerEmployeeSections.length > 1) && (
+                        <h3 className="dev-planner-lead-header">
+                          {group.lead_name ? `${group.lead_name}'s Team` : 'Unassigned'}
+                        </h3>
+                      )}
+                      <div className={`dev-planner-resource-grid ${plannerViewMode === 'list' ? 'list-mode' : ''}`}>
+                        {(group.members || []).map((emp) => {
                     const empTasks = tasksByEmployee[emp.employee_name] || (emp.employee_id != null ? tasksByEmployee[String(emp.employee_id)] : null) || [];
                     const statusKey = (emp.allocation_status || '').toLowerCase().replace(/\s+/g, '-');
                     const initials = (emp.employee_name || 'XX').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase();
@@ -1939,6 +1991,9 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                       </div>
                     );
                   })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </section>

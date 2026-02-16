@@ -27,7 +27,7 @@ DEFAULT_CLIENT_ALLOWED_MODULES = ["home", "ticket_dashboard", "tickets", "all_bu
 from database import SessionLocal
 from models import (
     Bug, TestPlan, TestRun, TestCase, TestResult, TicketTracking, QATicketFlag,
-    Employee, Timesheet, EmployeeGoal, EmployeeReview, KPI, KPIRating,
+    Employee, EmployeeSkill, Timesheet, EmployeeGoal, EmployeeReview, KPI, KPIRating,
     TicketStatusHistory, TicketPriorityHistory, BugStatusHistory,
     EnhancedTimesheet, LeaveEntry, TimeSheetSubmission, TimeSheetEntry, TimeSheetEntryReview, TimeSheetApprovalLog, PlannedTask, WeeklyPlan,
     EmployeeNameMapping, Holiday, SyncLog,
@@ -107,11 +107,13 @@ class EmployeeUpdate(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
     role: Optional[str] = None  # Job title (SOFTWARE ENGINEER, etc.)
+    designation: Optional[str] = None  # Designation (e.g., "Software Engineer", "QA Lead")
     location: Optional[str] = None
+    mode_of_work: Optional[str] = None  # Onsite, Remote, Hybrid
     date_of_joining: Optional[datetime] = None
     team: Optional[str] = None
     category: Optional[str] = None
-    employment_status: Optional[str] = None
+    employment_status: Optional[str] = None  # Ongoing Employee, Serving Notice Period, Resigned
     lead: Optional[str] = None
     manager: Optional[str] = None
     previous_experience: Optional[float] = None
@@ -121,6 +123,9 @@ class EmployeeUpdate(BaseModel):
     is_active: Optional[bool] = None
     mapping_data: Optional[dict] = None
     access_role: Optional[str] = None  # Access role (ADMIN, MANAGER_DEV, MANAGER_QA, LEAD_DEV, LEAD_QA, EMPLOYEE, CLIENT)
+    # Notice period tracking
+    resignation_date: Optional[datetime] = None  # Date resignation was submitted
+    expected_lwd: Optional[datetime] = None  # Expected Last Working Day (manual override)
 
 class GoalCreate(BaseModel):
     goal_type: str  # 'goal', 'strength', 'improvement'
@@ -3643,6 +3648,8 @@ def list_employees(
     is_active: Optional[bool] = Query(True),
     search: Optional[str] = Query(None),
     employment_status: Optional[str] = Query(None),
+    archived: Optional[bool] = Query(False, description="If true, return only archived (resigned) employees"),
+    serving_notice: Optional[bool] = Query(None, description="If true, return only employees serving notice period"),
     for_display: Optional[bool] = Query(False, description="If true, return all employees for name lookup in dashboards (Tickets, Bugs, etc.) - no role filtering"),
     for_lead_dropdown: Optional[bool] = Query(False, description="If true, return only employees eligible to be assigned as Lead (LEAD/MANAGER/ADMIN role or job title containing Lead)"),
     for_manager_dropdown: Optional[bool] = Query(False, description="If true, return only employees eligible to be assigned as Manager (MANAGER/ADMIN role or job title containing Manager)"),
@@ -3653,6 +3660,10 @@ def list_employees(
     try:
         query = db.query(Employee)
 
+        # Filter by archived status
+        if archived is not None:
+            query = query.filter(Employee.archived == archived)
+        
         if is_active is not None:
             query = query.filter(Employee.is_active == is_active)
         if team:
@@ -3663,6 +3674,8 @@ def list_employees(
             query = query.filter(Employee.lead.ilike(f"%{lead}%"))
         if employment_status:
             query = query.filter(Employee.employment_status == employment_status)
+        if serving_notice:
+            query = query.filter(Employee.employment_status == "Serving Notice Period")
         if search:
             query = query.filter(
                 or_(
@@ -3712,21 +3725,37 @@ def list_employees(
         
         result = []
         for emp in employees:
+            # Calculate notice period days based on category
+            notice_period_days = 90 if emp.category and emp.category.upper() == "BILLED" else 30
+            
+            # Calculate expected LWD if serving notice
+            expected_lwd = None
+            if emp.employment_status == "Serving Notice Period" and emp.resignation_date:
+                expected_lwd = emp.expected_lwd or (emp.resignation_date + timedelta(days=notice_period_days))
+            
             result.append({
                 "id": emp.id,
                 "employee_id": emp.employee_id,
                 "name": emp.name,
                 "email": emp.email,
                 "role": emp.role,
+                "designation": emp.designation,
                 "location": emp.location,
+                "mode_of_work": emp.mode_of_work or "Onsite",
                 "date_of_joining": emp.date_of_joining.isoformat() if emp.date_of_joining else None,
                 "team": emp.team,
                 "category": emp.category,
                 "employment_status": emp.employment_status or "Ongoing Employee",
                 "lead": emp.lead,
+                "manager": emp.manager,
                 "photo_url": emp.photo_url,
                 "experience_years": calculate_experience_years(emp.date_of_joining),
-                "is_active": emp.is_active
+                "is_active": emp.is_active,
+                "archived": emp.archived or False,
+                "archived_on": emp.archived_on.isoformat() if emp.archived_on else None,
+                "resignation_date": emp.resignation_date.isoformat() if emp.resignation_date else None,
+                "expected_lwd": expected_lwd.isoformat() if expected_lwd else (emp.expected_lwd.isoformat() if emp.expected_lwd else None),
+                "notice_period_days": notice_period_days if emp.employment_status == "Serving Notice Period" else None,
             })
         
         return result
@@ -3816,14 +3845,19 @@ def export_all_employees(
             "Name",
             "Email",
             "Role",
+            "Designation",
             "Location",
+            "Mode of Work",
             "Date of Joining",
             "Team",
             "Category",
             "Employment Status",
+            "Resignation Date",
+            "Expected LWD",
             "Reporting To (Lead)",
             "Reporting Manager",
             "Previous Experience",
+            "BIS Introduced Date",
             "Experience (Years)",
             "Active Status",
             "System Role"
@@ -3886,14 +3920,19 @@ def export_all_employees(
                 emp.name or "",
                 emp.email or "",
                 emp.role or "",
+                emp.designation or "",
                 emp.location or "",
+                emp.mode_of_work or "Onsite",
                 emp.date_of_joining.strftime("%d-%b-%Y") if emp.date_of_joining else "",
                 emp.team or "",
                 emp.category or "",
                 emp.employment_status or "Ongoing Employee",
+                emp.resignation_date.strftime("%d-%b-%Y") if emp.resignation_date else "",
+                emp.expected_lwd.strftime("%d-%b-%Y") if emp.expected_lwd else "",
                 emp.lead or "",
                 emp.manager or "",
                 round(emp.previous_experience, 1) if emp.previous_experience is not None else "",
+                emp.bis_introduced_date.strftime("%d-%b-%Y") if emp.bis_introduced_date else "",
                 calculate_experience_years(emp.date_of_joining),
                 "Active" if emp.is_active else "Inactive",
                 system_role
@@ -4046,7 +4085,9 @@ def import_employee_mapping_data(
             "reporting to (lead)", "reporting to", "lead", "reporting manager", "manager",
             "experience (years)", "experience", "active status", "active", "status",
             "user role", "user_role", "password", "login password",
-            "system role", "system_role", "access role", "access_role", "previous experience", "previous_experience"
+            "system role", "system_role", "access role", "access_role", "previous experience", "previous_experience",
+            "designation", "mode of work", "mode_of_work", "resignation date", "resignation_date",
+            "expected lwd", "expected_lwd", "bis introduced date", "bis_introduced_date", "bis date"
         }
         
         # Find column indices
@@ -4069,6 +4110,16 @@ def import_employee_mapping_data(
                 col_indices["system_role"] = idx
             elif header_lower in ["password", "login password"]:
                 col_indices["password"] = idx
+            elif header_lower in ["designation", "job title", "title"]:
+                col_indices["designation"] = idx
+            elif header_lower in ["mode of work", "mode_of_work", "work mode"]:
+                col_indices["mode_of_work"] = idx
+            elif header_lower in ["resignation date", "resignation_date", "resigned date"]:
+                col_indices["resignation_date"] = idx
+            elif header_lower in ["employment status", "employment_status", "emp status"]:
+                col_indices["employment_status"] = idx
+            elif header_lower in ["bis introduced date", "bis_introduced_date", "bis date", "billing date"]:
+                col_indices["bis_introduced_date"] = idx
             elif header_str and header_lower not in base_profile_columns:
                 # This is a dynamic/mapping column - store with original name
                 dynamic_columns[header_str] = idx
@@ -4133,6 +4184,84 @@ def import_employee_mapping_data(
                         employee.manager = manager_value
                     else:
                         employee.manager = None
+            
+            # Update designation if column exists
+            if "designation" in col_indices:
+                val = row[col_indices["designation"] - 1].value
+                if val is not None:
+                    designation_value = str(val).strip()
+                    if designation_value:
+                        employee.designation = designation_value
+            
+            # Update mode_of_work if column exists
+            if "mode_of_work" in col_indices:
+                val = row[col_indices["mode_of_work"] - 1].value
+                if val is not None:
+                    mode_value = str(val).strip()
+                    # Validate mode value
+                    valid_modes = ["Onsite", "Remote", "Hybrid"]
+                    # Try to match case-insensitively
+                    for valid_mode in valid_modes:
+                        if mode_value.lower() == valid_mode.lower():
+                            employee.mode_of_work = valid_mode
+                            break
+            
+            # Update employment_status if column exists
+            if "employment_status" in col_indices:
+                val = row[col_indices["employment_status"] - 1].value
+                if val is not None:
+                    status_value = str(val).strip()
+                    valid_statuses = ["Ongoing Employee", "Serving Notice Period", "Resigned"]
+                    # Try to match case-insensitively
+                    for valid_status in valid_statuses:
+                        if status_value.lower() == valid_status.lower():
+                            employee.employment_status = valid_status
+                            # Auto-archive if resigned
+                            if valid_status == "Resigned" and not employee.archived:
+                                employee.archived = True
+                                employee.archived_on = datetime.utcnow()
+                            break
+            
+            # Update resignation_date if column exists
+            if "resignation_date" in col_indices:
+                val = row[col_indices["resignation_date"] - 1].value
+                if val is not None:
+                    try:
+                        if isinstance(val, datetime):
+                            employee.resignation_date = val
+                        elif isinstance(val, str) and val.strip():
+                            # Try common date formats
+                            for fmt in ["%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y", "%d/%m/%Y"]:
+                                try:
+                                    employee.resignation_date = datetime.strptime(val.strip(), fmt)
+                                    break
+                                except ValueError:
+                                    continue
+                            # Auto-calculate expected LWD if not set
+                            if employee.resignation_date and not employee.expected_lwd:
+                                notice_days = 90 if employee.category and employee.category.upper() == "BILLED" else 30
+                                employee.expected_lwd = employee.resignation_date + timedelta(days=notice_days)
+                                employee.employment_status = "Serving Notice Period"
+                    except Exception:
+                        pass
+            
+            # Update bis_introduced_date if column exists
+            if "bis_introduced_date" in col_indices:
+                val = row[col_indices["bis_introduced_date"] - 1].value
+                if val is not None:
+                    try:
+                        if isinstance(val, datetime):
+                            employee.bis_introduced_date = val
+                        elif isinstance(val, str) and val.strip():
+                            # Try common date formats
+                            for fmt in ["%Y-%m-%d", "%d-%m-%Y", "%m/%d/%Y", "%d/%m/%Y"]:
+                                try:
+                                    employee.bis_introduced_date = datetime.strptime(val.strip(), fmt)
+                                    break
+                                except ValueError:
+                                    continue
+                    except Exception:
+                        pass
 
             # Update system role if column exists
             if "system_role" in col_indices:
@@ -4248,6 +4377,19 @@ def get_employee(employee_id: str, current_user: dict = Depends(get_current_user
         bis_exp = calculate_bis_experience(employee.bis_introduced_date) if employee.category == "BILLED" else None
         total_exp = calculate_total_experience(employee.date_of_joining, employee.previous_experience)
         
+        # Determine if employee is a fresher (no previous experience)
+        is_fresher = (employee.previous_experience or 0) == 0
+        
+        # Calculate notice period based on category
+        notice_period_days = 90 if employee.category and employee.category.upper() == "BILLED" else 30
+        
+        # Calculate expected LWD if serving notice
+        expected_lwd = None
+        days_remaining = None
+        if employee.employment_status == "Serving Notice Period" and employee.resignation_date:
+            expected_lwd = employee.expected_lwd or (employee.resignation_date + timedelta(days=notice_period_days))
+            days_remaining = (expected_lwd - datetime.utcnow()).days if expected_lwd > datetime.utcnow() else 0
+        
         # Get user's access_role if they have a User account
         user = db.query(User).filter(User.employee_id == employee.employee_id).first()
         access_role = user.role if user else None
@@ -4262,8 +4404,10 @@ def get_employee(employee_id: str, current_user: dict = Depends(get_current_user
             "name": employee.name,
             "email": employee.email,
             "role": employee.role,  # Job title
+            "designation": employee.designation,  # Designation (can be different from role)
             "access_role": access_role,  # Access role (MANAGER_QA, LEAD_DEV, EMPLOYEE, etc.)
             "location": employee.location,
+            "mode_of_work": employee.mode_of_work or "Onsite",
             "date_of_joining": employee.date_of_joining.isoformat() if employee.date_of_joining else None,
             "team": employee.team,
             "category": employee.category,
@@ -4271,6 +4415,7 @@ def get_employee(employee_id: str, current_user: dict = Depends(get_current_user
             "lead": employee.lead,
             "manager": employee.manager,
             "previous_experience": round(float(employee.previous_experience), 1) if employee.previous_experience is not None else None,
+            "is_fresher": is_fresher,
             "bis_introduced_date": employee.bis_introduced_date.isoformat() if employee.bis_introduced_date else None,
             "techversant_experience": techversant_exp,
             "bis_experience": bis_exp,
@@ -4281,6 +4426,15 @@ def get_employee(employee_id: str, current_user: dict = Depends(get_current_user
             "experience_years": techversant_exp,  # Keep for backward compatibility
             "is_active": employee.is_active,
             "mapping_data": employee.mapping_data or {},
+            # Notice period and resignation tracking
+            "resignation_date": employee.resignation_date.isoformat() if employee.resignation_date else None,
+            "expected_lwd": expected_lwd.isoformat() if expected_lwd else (employee.expected_lwd.isoformat() if employee.expected_lwd else None),
+            "notice_period_days": notice_period_days if employee.employment_status == "Serving Notice Period" else None,
+            "days_remaining": days_remaining,
+            # Archive status
+            "archived": employee.archived or False,
+            "archived_on": employee.archived_on.isoformat() if employee.archived_on else None,
+            # Timestamps
             "created_on": employee.created_on.isoformat() if employee.created_on else None,
             "updated_on": employee.updated_on.isoformat() if employee.updated_on else None,
             "_permissions": {
@@ -4729,7 +4883,21 @@ def update_employee(
                     value = _resolve_lead_or_manager_name(db, value) or value
                 if field == 'manager' and value:
                     value = _resolve_lead_or_manager_name(db, value) or value
+                if field == 'mode_of_work' and value:
+                    # Validate mode_of_work
+                    valid_modes = ["Onsite", "Remote", "Hybrid"]
+                    if value not in valid_modes:
+                        raise HTTPException(status_code=400, detail=f"Invalid mode_of_work. Must be one of: {', '.join(valid_modes)}")
                 setattr(employee, field, value)
+        
+        # Auto-calculate expected_lwd when resignation_date is set and employment_status is "Serving Notice Period"
+        if 'resignation_date' in update_data or 'employment_status' in update_data:
+            if employee.employment_status == "Serving Notice Period" and employee.resignation_date:
+                # Calculate notice period based on category (BILLED = 90 days, UN-BILLED = 30 days)
+                notice_period_days = 90 if employee.category and employee.category.upper() == "BILLED" else 30
+                # Only auto-calculate if expected_lwd is not explicitly provided
+                if 'expected_lwd' not in update_data or update_data.get('expected_lwd') is None:
+                    employee.expected_lwd = employee.resignation_date + timedelta(days=notice_period_days)
         
         new_name = employee.name
         new_lead = employee.lead
@@ -6526,6 +6694,321 @@ def delete_goal(goal_id: int):
         db.commit()
         
         return {"message": "Goal deleted successfully"}
+    finally:
+        db.close()
+
+
+# ===== EMPLOYEE SKILLS ENDPOINTS =====
+
+class SkillCreate(BaseModel):
+    skill_name: str
+    proficiency_level: int = Field(..., ge=1, le=5, description="Proficiency level 1-5")
+    years_of_experience: Optional[float] = None
+
+
+class SkillUpdate(BaseModel):
+    skill_name: Optional[str] = None
+    proficiency_level: Optional[int] = Field(None, ge=1, le=5)
+    years_of_experience: Optional[float] = None
+
+
+# Predefined skill suggestions
+SKILL_SUGGESTIONS = {
+    "QA": [
+        "Manual Testing", "Automation Testing", "Selenium", "Cypress", "Playwright",
+        "API Testing", "Postman", "REST Assured", "JMeter", "Performance Testing",
+        "Mobile Testing", "Appium", "TestRail", "JIRA", "Test Case Design",
+        "SQL", "Agile/Scrum", "Bug Reporting", "Regression Testing", "Smoke Testing",
+        "UAT", "Load Testing", "Security Testing", "BDD/Cucumber", "Jenkins"
+    ],
+    "DEVELOPMENT": [
+        "JavaScript", "TypeScript", "React", "Angular", "Vue.js", "Node.js",
+        "Python", "Django", "FastAPI", "Flask", "Java", "Spring Boot",
+        "C#", ".NET", "PHP", "Laravel", "Ruby", "Rails", "Go", "Rust",
+        "SQL", "PostgreSQL", "MySQL", "MongoDB", "Redis", "Docker",
+        "Kubernetes", "AWS", "Azure", "GCP", "Git", "CI/CD", "REST API",
+        "GraphQL", "HTML/CSS", "SASS", "Tailwind", "Agile/Scrum"
+    ]
+}
+
+
+@app.get("/employees/{employee_id}/skills")
+def get_employee_skills(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Get skills for an employee"""
+    db: Session = SessionLocal()
+    try:
+        employee = db.query(Employee).filter(
+            or_(
+                Employee.employee_id == employee_id,
+                Employee.id == int(employee_id) if employee_id.isdigit() else False
+            )
+        ).first()
+        
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        skills = db.query(EmployeeSkill).filter(
+            EmployeeSkill.employee_id == employee.employee_id
+        ).order_by(EmployeeSkill.proficiency_level.desc(), EmployeeSkill.skill_name).all()
+        
+        proficiency_labels = {1: "Beginner", 2: "Intermediate", 3: "Advanced", 4: "Expert", 5: "Master"}
+        
+        return {
+            "skills": [
+                {
+                    "id": s.id,
+                    "skill_name": s.skill_name,
+                    "proficiency_level": s.proficiency_level,
+                    "proficiency_label": proficiency_labels.get(s.proficiency_level, "Unknown"),
+                    "years_of_experience": s.years_of_experience,
+                    "created_on": s.created_on.isoformat() if s.created_on else None,
+                    "updated_on": s.updated_on.isoformat() if s.updated_on else None,
+                }
+                for s in skills
+            ],
+            "suggestions": SKILL_SUGGESTIONS.get(employee.team, SKILL_SUGGESTIONS["DEVELOPMENT"])
+        }
+    finally:
+        db.close()
+
+
+@app.post("/employees/{employee_id}/skills")
+def create_employee_skill(employee_id: str, skill: SkillCreate, current_user: dict = Depends(get_current_user)):
+    """Add a skill to an employee's profile. Employee can add their own skills, or admin/manager can add."""
+    db: Session = SessionLocal()
+    try:
+        employee = db.query(Employee).filter(
+            or_(
+                Employee.employee_id == employee_id,
+                Employee.id == int(employee_id) if employee_id.isdigit() else False
+            )
+        ).first()
+        
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        # Check permission: employee can edit own skills, or user with edit permissions
+        is_own_profile = current_user.get("employee_id") == employee.employee_id
+        can_edit = can_edit_employee_profile(db, current_user, employee.employee_id)
+        
+        if not is_own_profile and not can_edit:
+            raise HTTPException(status_code=403, detail="You don't have permission to add skills for this employee")
+        
+        # Check for duplicate skill
+        existing = db.query(EmployeeSkill).filter(
+            EmployeeSkill.employee_id == employee.employee_id,
+            func.lower(EmployeeSkill.skill_name) == skill.skill_name.lower()
+        ).first()
+        
+        if existing:
+            raise HTTPException(status_code=400, detail="This skill already exists for this employee")
+        
+        new_skill = EmployeeSkill(
+            employee_id=employee.employee_id,
+            skill_name=skill.skill_name.strip(),
+            proficiency_level=skill.proficiency_level,
+            years_of_experience=skill.years_of_experience
+        )
+        
+        db.add(new_skill)
+        db.commit()
+        db.refresh(new_skill)
+        
+        proficiency_labels = {1: "Beginner", 2: "Intermediate", 3: "Advanced", 4: "Expert", 5: "Master"}
+        
+        return {
+            "id": new_skill.id,
+            "skill_name": new_skill.skill_name,
+            "proficiency_level": new_skill.proficiency_level,
+            "proficiency_label": proficiency_labels.get(new_skill.proficiency_level, "Unknown"),
+            "years_of_experience": new_skill.years_of_experience,
+            "message": "Skill added successfully"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.put("/employees/{employee_id}/skills/{skill_id}")
+def update_employee_skill(employee_id: str, skill_id: int, skill: SkillUpdate, current_user: dict = Depends(get_current_user)):
+    """Update an employee skill"""
+    db: Session = SessionLocal()
+    try:
+        employee = db.query(Employee).filter(
+            or_(
+                Employee.employee_id == employee_id,
+                Employee.id == int(employee_id) if employee_id.isdigit() else False
+            )
+        ).first()
+        
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        existing_skill = db.query(EmployeeSkill).filter(
+            EmployeeSkill.id == skill_id,
+            EmployeeSkill.employee_id == employee.employee_id
+        ).first()
+        
+        if not existing_skill:
+            raise HTTPException(status_code=404, detail="Skill not found")
+        
+        # Check permission
+        is_own_profile = current_user.get("employee_id") == employee.employee_id
+        can_edit = can_edit_employee_profile(db, current_user, employee.employee_id)
+        
+        if not is_own_profile and not can_edit:
+            raise HTTPException(status_code=403, detail="You don't have permission to update skills for this employee")
+        
+        # Update fields
+        if skill.skill_name is not None:
+            existing_skill.skill_name = skill.skill_name.strip()
+        if skill.proficiency_level is not None:
+            existing_skill.proficiency_level = skill.proficiency_level
+        if skill.years_of_experience is not None:
+            existing_skill.years_of_experience = skill.years_of_experience
+        
+        existing_skill.updated_on = datetime.utcnow()
+        db.commit()
+        
+        return {"message": "Skill updated successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.delete("/employees/{employee_id}/skills/{skill_id}")
+def delete_employee_skill(employee_id: str, skill_id: int, current_user: dict = Depends(get_current_user)):
+    """Delete an employee skill"""
+    db: Session = SessionLocal()
+    try:
+        employee = db.query(Employee).filter(
+            or_(
+                Employee.employee_id == employee_id,
+                Employee.id == int(employee_id) if employee_id.isdigit() else False
+            )
+        ).first()
+        
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        existing_skill = db.query(EmployeeSkill).filter(
+            EmployeeSkill.id == skill_id,
+            EmployeeSkill.employee_id == employee.employee_id
+        ).first()
+        
+        if not existing_skill:
+            raise HTTPException(status_code=404, detail="Skill not found")
+        
+        # Check permission
+        is_own_profile = current_user.get("employee_id") == employee.employee_id
+        can_edit = can_edit_employee_profile(db, current_user, employee.employee_id)
+        
+        if not is_own_profile and not can_edit:
+            raise HTTPException(status_code=403, detail="You don't have permission to delete skills for this employee")
+        
+        db.delete(existing_skill)
+        db.commit()
+        
+        return {"message": "Skill deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+# ===== EMPLOYEE ARCHIVE/RESTORE ENDPOINTS =====
+
+@app.post("/employees/{employee_id}/archive")
+def archive_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Archive a resigned employee. Only admin/managers can archive."""
+    db: Session = SessionLocal()
+    try:
+        # Check if user is admin or manager
+        user_role = current_user.get("role", "")
+        if user_role not in ["ADMIN", "MANAGER_QA", "MANAGER_DEV", "MANAGER"]:
+            raise HTTPException(status_code=403, detail="Only admins and managers can archive employees")
+        
+        employee = db.query(Employee).filter(
+            or_(
+                Employee.employee_id == employee_id,
+                Employee.id == int(employee_id) if employee_id.isdigit() else False
+            )
+        ).first()
+        
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        if employee.archived:
+            raise HTTPException(status_code=400, detail="Employee is already archived")
+        
+        # Archive the employee
+        employee.archived = True
+        employee.archived_on = datetime.utcnow()
+        employee.is_active = False
+        employee.employment_status = "Resigned"
+        
+        db.commit()
+        
+        return {"message": "Employee archived successfully", "archived_on": employee.archived_on.isoformat()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()
+
+
+@app.post("/employees/{employee_id}/restore")
+def restore_employee(employee_id: str, current_user: dict = Depends(get_current_user)):
+    """Restore an archived employee. Only admin/managers can restore."""
+    db: Session = SessionLocal()
+    try:
+        # Check if user is admin or manager
+        user_role = current_user.get("role", "")
+        if user_role not in ["ADMIN", "MANAGER_QA", "MANAGER_DEV", "MANAGER"]:
+            raise HTTPException(status_code=403, detail="Only admins and managers can restore employees")
+        
+        employee = db.query(Employee).filter(
+            or_(
+                Employee.employee_id == employee_id,
+                Employee.id == int(employee_id) if employee_id.isdigit() else False
+            )
+        ).first()
+        
+        if not employee:
+            raise HTTPException(status_code=404, detail="Employee not found")
+        
+        if not employee.archived:
+            raise HTTPException(status_code=400, detail="Employee is not archived")
+        
+        # Restore the employee
+        employee.archived = False
+        employee.archived_on = None
+        employee.is_active = True
+        employee.employment_status = "Ongoing Employee"
+        employee.resignation_date = None
+        employee.expected_lwd = None
+        
+        db.commit()
+        
+        return {"message": "Employee restored successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
 
@@ -12190,6 +12673,7 @@ def qa_planning_calendar(
             row = {
                 "employee_id": e.employee_id,
                 "employee_name": e.name,
+                "lead_name": (e.lead or "").strip() or None,
                 "allocated_hours": round(alloc_total, 1),
                 "leave_hours": round(leave_total, 1),
                 "remaining_hours": round(remaining, 1),
@@ -12515,6 +12999,7 @@ def dev_planning_get_week(
             employee_summary.append({
                 "employee_id": e.employee_id,
                 "employee_name": name,
+                "lead_name": (e.lead or "").strip() or None,
                 "role": getattr(e, "role", None) or "Developer",
                 "allocated_hours": round(alloc_total, 1),
                 "leave_hours": round(leave_total, 1),
@@ -13350,6 +13835,7 @@ def dev_planning_calendar(
             row = {
                 "employee_id": e.employee_id,
                 "employee_name": e.name,
+                "lead_name": (e.lead or "").strip() or None,
                 "allocated_hours": round(alloc_total, 1),
                 "leave_hours": round(leave_total, 1),
                 "remaining_hours": round(remaining, 1),

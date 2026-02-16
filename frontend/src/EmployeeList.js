@@ -55,14 +55,19 @@ function EmployeeList() {
       if (filters.category) params.append('category', filters.category);
       if (filters.lead) params.append('lead', filters.lead);
       if (filters.search) params.append('search', filters.search);
-      // Filter by employment status - show only ongoing by default unless archive is toggled
+      
+      // Filter by employment status
+      // Priority: showArchived > filters.employment_status (for notice period filter)
       if (showArchived) {
-        params.append('employment_status', 'Resigned');
+        params.append('archived', 'true');
+      } else if (filters.employment_status === 'Serving Notice Period') {
+        params.append('serving_notice', 'true');
       } else {
+        // Default: show ongoing employees
         params.append('employment_status', 'Ongoing Employee');
       }
 
-      const employmentForOptions = showArchived ? 'Resigned' : 'Ongoing Employee';
+      const employmentForOptions = showArchived ? 'Resigned' : (filters.employment_status || 'Ongoing Employee');
       const [empRes, overviewRes, optionsRes] = await Promise.all([
         apiFetch(`/employees?${params}`),
         apiFetch(`/employees/team-overview`),
@@ -343,6 +348,34 @@ function EmployeeList() {
             onChange={(e) => setFilters({...filters, search: e.target.value})}
           />
         </div>
+        {/* Notice Period Quick Filter */}
+        <button 
+          className={`btn-filter-notice ${filters.employment_status === 'Serving Notice Period' ? 'active' : ''}`}
+          onClick={() => {
+            if (filters.employment_status === 'Serving Notice Period') {
+              setFilters({...filters, employment_status: 'Ongoing Employee'});
+              setShowArchived(false);
+            } else {
+              setFilters({...filters, employment_status: 'Serving Notice Period'});
+              setShowArchived(false);
+            }
+          }}
+          style={{
+            padding: '6px 12px',
+            borderRadius: '6px',
+            border: filters.employment_status === 'Serving Notice Period' ? '2px solid #f59e0b' : '1px solid var(--border)',
+            background: filters.employment_status === 'Serving Notice Period' ? 'rgba(245, 158, 11, 0.15)' : 'var(--bg-secondary)',
+            color: filters.employment_status === 'Serving Notice Period' ? '#f59e0b' : 'var(--text-secondary)',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            fontSize: '0.85rem',
+            fontWeight: '500'
+          }}
+        >
+          ⏰ Notice Period
+        </button>
       </div>
 
       {/* Archive Notice */}
@@ -374,8 +407,9 @@ function EmployeeList() {
                 <SortableHeader columnKey="employee_id" onSort={handleSort} sortConfig={sortConfig}>ID</SortableHeader>
                 <th className="align-center">Photo</th>
                 <SortableHeader columnKey="name" onSort={handleSort} sortConfig={sortConfig}>Name</SortableHeader>
-                <SortableHeader columnKey="role" onSort={handleSort} sortConfig={sortConfig}>Role</SortableHeader>
+                <SortableHeader columnKey="designation" onSort={handleSort} sortConfig={sortConfig}>Designation</SortableHeader>
                 <SortableHeader columnKey="team" onSort={handleSort} sortConfig={sortConfig} className="align-center">Team</SortableHeader>
+                <SortableHeader columnKey="mode_of_work" onSort={handleSort} sortConfig={sortConfig} className="align-center">Mode</SortableHeader>
                 <SortableHeader columnKey="category" onSort={handleSort} sortConfig={sortConfig} className="align-center">Category</SortableHeader>
                 <SortableHeader columnKey="employment_status" onSort={handleSort} sortConfig={sortConfig} className="align-center">Status</SortableHeader>
                 <SortableHeader columnKey="lead" onSort={handleSort} sortConfig={sortConfig} className="align-center">Lead</SortableHeader>
@@ -402,15 +436,31 @@ function EmployeeList() {
                       <span className="emp-photo-fallback">{getInitials(emp.name)}</span>
                     </div>
                   </td>
-                  <td className="emp-name">{emp.name}</td>
-                  <td className="emp-role">{emp.role}</td>
+                  <td className="emp-name">
+                    {emp.name}
+                    {emp.employment_status === 'Serving Notice Period' && (
+                      <span className="notice-badge" title={`Expected LWD: ${emp.expected_lwd || 'TBD'}`}>
+                        ⏰
+                      </span>
+                    )}
+                  </td>
+                  <td className="emp-designation">{emp.designation || emp.role || '-'}</td>
                   <td className={`emp-team ${emp.team?.toLowerCase()} align-center`}>{emp.team}</td>
+                  <td className="emp-mode align-center">
+                    <span className={`mode-badge ${(emp.mode_of_work || 'Onsite').toLowerCase()}`}>
+                      {emp.mode_of_work || 'Onsite'}
+                    </span>
+                  </td>
                   <td className={`emp-category ${emp.category?.toLowerCase().replace('-', '')} align-center`}>
                     {emp.category}
                   </td>
                   <td className="emp-status align-center">
-                    <span className={`employment-status-badge ${emp.employment_status === 'Resigned' ? 'resigned' : 'ongoing'}`}>
-                      {emp.employment_status || 'Ongoing Employee'}
+                    <span className={`employment-status-badge ${
+                      emp.employment_status === 'Resigned' ? 'resigned' : 
+                      emp.employment_status === 'Serving Notice Period' ? 'notice' : 'ongoing'
+                    }`}>
+                      {emp.employment_status === 'Serving Notice Period' ? 'Notice' : 
+                       emp.employment_status === 'Resigned' ? 'Resigned' : 'Active'}
                     </span>
                   </td>
                   <td className="emp-lead align-center">{emp.lead}</td>
@@ -423,16 +473,68 @@ function EmployeeList() {
                         navigate(`/employees/${emp.employee_id}`);
                       }}
                     >
-                      View Profile
+                      View
                     </button>
-                    <Link
-                      to={`/planning?employee_id=${emp.employee_id}`}
-                      className="btn-view"
-                      onClick={(e) => e.stopPropagation()}
-                      title="Plan development tasks"
-                    >
-                      Plan
-                    </Link>
+                    {!showArchived && (
+                      <Link
+                        to={`/planning?employee_id=${emp.employee_id}`}
+                        className="btn-view"
+                        onClick={(e) => e.stopPropagation()}
+                        title="Plan development tasks"
+                      >
+                        Plan
+                      </Link>
+                    )}
+                    {/* Archive/Restore buttons */}
+                    {(user?.role === 'ADMIN' || user?.role?.includes('MANAGER')) && (
+                      <>
+                        {showArchived ? (
+                          <button
+                            className="btn-restore"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              if (!window.confirm(`Restore ${emp.name} from archive?`)) return;
+                              try {
+                                const res = await apiFetch(`/employees/${emp.employee_id}/restore`, { method: 'POST' });
+                                if (res.ok) {
+                                  loadData();
+                                } else {
+                                  const err = await res.json();
+                                  alert(err.detail || 'Failed to restore employee');
+                                }
+                              } catch (err) {
+                                alert('Error: ' + err.message);
+                              }
+                            }}
+                            title="Restore employee from archive"
+                          >
+                            ↩ Restore
+                          </button>
+                        ) : emp.employment_status === 'Resigned' ? (
+                          <button
+                            className="btn-archive"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              if (!window.confirm(`Archive ${emp.name}? This will move them to the archived list.`)) return;
+                              try {
+                                const res = await apiFetch(`/employees/${emp.employee_id}/archive`, { method: 'POST' });
+                                if (res.ok) {
+                                  loadData();
+                                } else {
+                                  const err = await res.json();
+                                  alert(err.detail || 'Failed to archive employee');
+                                }
+                              } catch (err) {
+                                alert('Error: ' + err.message);
+                              }
+                            }}
+                            title="Archive resigned employee"
+                          >
+                            📦 Archive
+                          </button>
+                        ) : null}
+                      </>
+                    )}
                   </td>
                 </tr>
               ))}
