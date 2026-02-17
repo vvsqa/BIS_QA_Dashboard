@@ -504,7 +504,7 @@ function EmployeeList() {
                     {!showArchived && (
                       <Link
                         to={`/planning?employee_id=${emp.employee_id}`}
-                        className="btn-view"
+                        className="btn-plan"
                         onClick={(e) => e.stopPropagation()}
                         title="Plan development tasks"
                       >

@@ -6891,11 +6891,12 @@ tbody tr:last-child td {
 }
 
 .emp-actions {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   flex-wrap: nowrap;
+  vertical-align: middle;
 }
 
 .emp-actions .btn-view,
@@ -6940,6 +6941,32 @@ tbody tr:last-child td {
 
 .btn-view:hover {
   background: #7c3aed;
+  color: white;
+}
+
+/* Plan button - distinct cyan/teal style */
+.btn-plan,
+.emp-actions .btn-plan,
+.emp-actions a.btn-plan {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 14px;
+  background: #0891b2;
+  color: white;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-decoration: none;
+}
+
+.btn-plan:hover,
+.emp-actions .btn-plan:hover,
+.emp-actions a.btn-plan:hover {
+  background: #0e7490;
   color: white;
 }
 
@@ -14959,15 +14986,20 @@ tbody tr:last-child td {
 }
 
 /* Employee table actions - make them fit better */
-.emp-table .emp-actions {
+.emp-table .emp-actions,
+td.emp-actions {
   white-space: nowrap;
   min-width: 190px;
+  vertical-align: middle;
+  text-align: center;
 }
 
 .emp-table .emp-actions .btn-view,
+.emp-table .emp-actions .btn-plan,
 .emp-table .emp-actions .btn-archive,
 .emp-table .emp-actions .btn-restore {
   margin: 0 2px;
+  vertical-align: middle;
 }
 
 /* Row-card column alignment for employee table */
