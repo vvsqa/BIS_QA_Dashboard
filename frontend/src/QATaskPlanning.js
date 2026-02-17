@@ -32,7 +32,9 @@ ChartJS.register(
   ChartDataLabels
 );
 
-const API_BASE = (process.env.REACT_APP_API_BASE || `http://${window.location.hostname}:8000`).replace(/\/$/, '');
+// API_BASE is handled by apiFetch in api.js - use relative URLs with apiFetch
+// For direct fetch calls, use empty string to use relative URLs (works with proxy/nginx)
+const API_BASE = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
 const HOURS_PER_WEEK = 40;
 const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
 const GENERIC_CATEGORIES = ['Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
