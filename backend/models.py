@@ -120,7 +120,6 @@ class TicketTracking(Base):
     frontend_developer = Column(String(100), nullable=True)
     qc_tester = Column(String(100), nullable=True)
     eta = Column(DateTime, nullable=True)                 # Expected completion date
-    previous_eta = Column(DateTime, nullable=True)        # Previous ETA when it was rescheduled (set on sync when eta changes)
     current_assignee = Column(String(100), nullable=True)
     dev_estimate_hours = Column(Float, nullable=True)     # Estimated development time
     actual_dev_hours = Column(Float, nullable=True)       # Actual development time spent
@@ -131,6 +130,10 @@ class TicketTracking(Base):
     updated_on = Column(DateTime, nullable=True)          # Last import timestamp
     created_on = Column(DateTime, nullable=True)          # Ticket created date from PM API (TicketCreatedDate)
     closed_on = Column(DateTime, nullable=True)          # Ticket closed date from PM API (TicketClosedDate); set when status is closed
+    
+    # PM Tracker sync tracking - ensures counts match live PM data
+    in_pm_tracker = Column(Boolean, default=True, nullable=False)  # False = ticket no longer exists in PM Tracker
+    last_pm_sync = Column(DateTime, nullable=True)        # Last time this ticket was seen in PM API response
 
 
 class QATicketFlag(Base):

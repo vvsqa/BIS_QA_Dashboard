@@ -12,7 +12,7 @@ from typing import Tuple, Optional
 from sqlalchemy.orm import Session
 
 from pm_api_sync import PMApiClient
-from sync_utils import upsert_tickets, log_sync_operation, _is_closed_status
+from sync_utils import upsert_tickets, log_sync_operation, _is_closed_status, mark_missing_tickets_stale
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,20 @@ def run_pm_api_sync(
         logger.info("Phase 2: Syncing %d closed tickets (full data check)...", len(closed))
         stats_closed = upsert_tickets(db, closed, sync_source="api")
 
+        # Phase 3: Mark tickets NOT in PM response as stale (in_pm_tracker=False)
+        # This ensures counts match live PM Tracker data
+        all_pm_ticket_ids = []
+        for t in mapped_tickets:
+            tid = t.get("ticket_id") or t.get("id")
+            if tid:
+                try:
+                    all_pm_ticket_ids.append(int(tid))
+                except (ValueError, TypeError):
+                    pass
+        
+        logger.info("Phase 3: Marking tickets not in PM response as stale...")
+        stale_count = mark_missing_tickets_stale(db, all_pm_ticket_ids)
+
         # Merge stats
         stats = {
             "total_records": len(mapped_tickets),
@@ -69,6 +83,7 @@ def run_pm_api_sync(
             "error_messages": stats_active["error_messages"] + stats_closed["error_messages"],
             "phase1_active_count": len(active),
             "phase2_closed_count": len(closed),
+            "records_marked_stale": stale_count,
         }
 
         message = (

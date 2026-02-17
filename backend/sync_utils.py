@@ -168,6 +168,8 @@ def upsert_tickets(
                 'updated_on': parse_field_value(ticket_data.get('updated_on'), 'datetime') or datetime.utcnow(),
                 'created_on': parse_field_value(ticket_data.get('created_on'), 'datetime'),
                 'closed_on': parse_field_value(ticket_data.get('closed_on'), 'datetime'),
+                'in_pm_tracker': True,  # Mark as active in PM Tracker
+                'last_pm_sync': datetime.utcnow(),  # Track when we last saw this ticket
             }
             
             # Check if ticket exists
@@ -222,18 +224,6 @@ def upsert_tickets(
                     db.add(priority_history)
                     logger.debug(f"Priority change tracked for ticket {ticket_id}: {existing_priority_str} -> {new_priority_str}")
                 
-                # Track ETA change (for "ETA rescheduled" highlight in ETA calendar)
-                new_eta = parsed_data.get('eta')
-                existing_eta = getattr(existing, 'eta', None)
-                if new_eta is not None and existing_eta is not None:
-                    existing_eta_d = existing_eta.date() if hasattr(existing_eta, 'date') else existing_eta
-                    new_eta_d = new_eta.date() if hasattr(new_eta, 'date') else new_eta
-                    if existing_eta_d != new_eta_d:
-                        existing.previous_eta = existing_eta
-                        logger.debug(f"ETA change tracked for ticket {ticket_id}: {existing_eta_d} -> {new_eta_d}")
-                elif new_eta is not None and existing_eta is None:
-                    existing.previous_eta = None  # was unset, now set (optional: treat as no "reschedule")
-
                 # Update existing record (open ticket, or status changed e.g. reopened)
                 for key, value in parsed_data.items():
                     setattr(existing, key, value)
@@ -399,3 +389,41 @@ def get_last_sync_info(db: Session, sync_source: Optional[str] = None) -> Option
         'fallback_from': last_sync.fallback_from,
         'fallback_reason': last_sync.fallback_reason,
     }
+
+
+def mark_missing_tickets_stale(db: Session, pm_ticket_ids: List[int]) -> int:
+    """
+    Mark tickets NOT in the PM API response as stale (in_pm_tracker=False).
+    
+    This ensures ticket counts match live PM Tracker data by excluding
+    tickets that have been deleted, moved to a different project, or
+    otherwise removed from the PM Tracker API response.
+    
+    Args:
+        db: Database session
+        pm_ticket_ids: List of ticket IDs currently in PM Tracker API response
+        
+    Returns:
+        Number of tickets marked as stale
+    """
+    if not pm_ticket_ids:
+        logger.warning("No PM ticket IDs provided - skipping stale marking")
+        return 0
+    
+    # Find tickets in DB that are marked as in_pm_tracker=True but NOT in the API response
+    stale_tickets = db.query(TicketTracking).filter(
+        TicketTracking.in_pm_tracker == True,
+        ~TicketTracking.ticket_id.in_(pm_ticket_ids)
+    ).all()
+    
+    stale_count = 0
+    for ticket in stale_tickets:
+        ticket.in_pm_tracker = False
+        stale_count += 1
+        logger.debug("Marked ticket %d as stale (not in PM Tracker)", ticket.ticket_id)
+    
+    if stale_count > 0:
+        db.commit()
+        logger.info("Marked %d tickets as stale (not in PM Tracker response)", stale_count)
+    
+    return stale_count

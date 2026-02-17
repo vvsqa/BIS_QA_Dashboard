@@ -17,7 +17,6 @@ const CATEGORY_META = {
 
 const HIGHLIGHT_META = {
   completedWithinEta: { label: 'Completed within ETA', color: '#16a34a' },
-  etaRescheduled: { label: 'ETA rescheduled', color: '#d97706' },
 };
 
 const COMPLETED_STATUS_KEYWORDS = ['complete', 'completed', 'closed', 'done', 'resolved', 'moved to live'];
@@ -147,7 +146,6 @@ function ETACalendar() {
         _category: getTicketCategory(t, todayDate),
         _etaDate: parseDateOnly(t.eta),
         _completedWithinEta: !!t.completed_within_eta,
-        _etaRescheduled: !!t.eta_rescheduled,
       }));
 
     const categoryTotals = CATEGORY_ORDER.reduce((acc, key) => ({ ...acc, [key]: 0 }), {});
@@ -283,9 +281,6 @@ function ETACalendar() {
               <span className="home-eta-legend-item home-eta-legend-highlight" style={{ color: HIGHLIGHT_META.completedWithinEta.color }}>
                 ✓ {HIGHLIGHT_META.completedWithinEta.label}
               </span>
-              <span className="home-eta-legend-item home-eta-legend-highlight" style={{ color: HIGHLIGHT_META.etaRescheduled.color }}>
-                ↻ {HIGHLIGHT_META.etaRescheduled.label}
-              </span>
             </div>
           </header>
 
@@ -419,11 +414,6 @@ function ETACalendar() {
                                   {ticket._completedWithinEta && (
                                     <span className="home-eta-badge home-eta-badge-completed-within" style={{ backgroundColor: HIGHLIGHT_META.completedWithinEta.color }}>
                                       ✓ {HIGHLIGHT_META.completedWithinEta.label}
-                                    </span>
-                                  )}
-                                  {ticket._etaRescheduled && (
-                                    <span className="home-eta-badge home-eta-badge-rescheduled" style={{ backgroundColor: HIGHLIGHT_META.etaRescheduled.color }}>
-                                      ↻ {HIGHLIGHT_META.etaRescheduled.label}
                                     </span>
                                   )}
                                 </div>

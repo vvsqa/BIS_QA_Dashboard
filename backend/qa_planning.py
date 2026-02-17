@@ -281,11 +281,13 @@ def get_qa_ticket_suggestions(
     """
     today = today or date.today()
     # All non-closed tickets (all statuses) so user can select any ticket for planning
+    # Only include tickets that are still in PM Tracker
     tickets = (
         db.query(TicketTracking)
         .filter(
             TicketTracking.status.isnot(None),
             ~TicketTracking.status.in_(CLOSED_STATUSES),
+            TicketTracking.in_pm_tracker == True
         )
         .all()
     )
@@ -382,9 +384,13 @@ def get_qa_overview_data(db: Session, today: Optional[date] = None) -> Dict[str,
     - Next in queue (first N for highlighting)
     """
     today = today or date.today()
+    # Only include tickets that are still in PM Tracker (excludes stale/deleted tickets)
     tickets = (
         db.query(TicketTracking)
-        .filter(TicketTracking.status.in_(QA_QC_STATUSES))
+        .filter(
+            TicketTracking.status.in_(QA_QC_STATUSES),
+            TicketTracking.in_pm_tracker == True
+        )
         .all()
     )
 
@@ -588,9 +594,13 @@ def get_qa_qc_review_fail_data(db: Session, today: Optional[date] = None) -> Dic
     qc_tester, qa_lead, developers, module, platform, eta, estimates, moved_to_qc_on, moved_to_fail_on, days_in_fail.
     """
     today = today or date.today()
+    # Only include tickets that are still in PM Tracker
     tickets = (
         db.query(TicketTracking)
-        .filter(TicketTracking.status.in_(QC_FAIL_STATUSES))
+        .filter(
+            TicketTracking.status.in_(QC_FAIL_STATUSES),
+            TicketTracking.in_pm_tracker == True
+        )
         .order_by(TicketTracking.ticket_id.desc())
         .all()
     )

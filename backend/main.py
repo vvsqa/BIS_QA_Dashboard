@@ -11039,7 +11039,10 @@ def dev_planning_overview(current_user: dict = Depends(get_current_user)):
     """
     db: Session = SessionLocal()
     try:
-        all_tickets = db.query(TicketTracking).all()
+        # Only include tickets that are still in PM Tracker (excludes stale/deleted tickets)
+        all_tickets = db.query(TicketTracking).filter(
+            TicketTracking.in_pm_tracker == True
+        ).all()
         today = datetime.now().date()
         
         # DEV team statuses
@@ -11238,7 +11241,6 @@ def eta_calendar_tickets(current_user: dict = Depends(get_current_user)):
         for t in tickets:
             eta_dt = t.eta
             closed_dt = getattr(t, 'closed_on', None)
-            previous_eta = getattr(t, 'previous_eta', None)
             status = (t.status or '').strip()
             is_completed = _is_completed_status_for_eta(status)
             completed_within_eta = False
@@ -11246,7 +11248,6 @@ def eta_calendar_tickets(current_user: dict = Depends(get_current_user)):
                 closed_d = closed_dt.date() if hasattr(closed_dt, 'date') else closed_dt
                 eta_d = eta_dt.date() if hasattr(eta_dt, 'date') else eta_dt
                 completed_within_eta = closed_d <= eta_d
-            eta_rescheduled = previous_eta is not None
             developers = []
             if t.backend_developer:
                 developers.append(t.backend_developer)
@@ -11260,12 +11261,10 @@ def eta_calendar_tickets(current_user: dict = Depends(get_current_user)):
                 'priority': (t.priority or '').strip() or 'Unspecified',
                 'eta': eta_dt.isoformat() if eta_dt else None,
                 'closed_on': closed_dt.isoformat() if closed_dt else None,
-                'previous_eta': previous_eta.isoformat() if previous_eta else None,
                 'qc_tester': (t.qc_tester or '').strip() or None,
                 'developers_str': ', '.join(developers) if developers else 'Not Assigned',
                 'developers': developers,
                 'completed_within_eta': completed_within_eta,
-                'eta_rescheduled': eta_rescheduled,
                 'times_moved_to_fail': get_qc_fail_count(db, t.ticket_id),
                 'open_bugs_count': open_bugs_map.get(t.ticket_id, 0),
             })
