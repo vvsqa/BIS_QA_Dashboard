@@ -8922,6 +8922,8 @@ def get_monthly_calendar(
             "total_hours": 0,
             "total_productive_hours": 0,
             "total_leave_days": 0,
+            "total_leave_hours": 0,
+            "expected_hours": 0,
             "working_days": 0
         })
         
@@ -8955,6 +8957,7 @@ def get_monthly_calendar(
                 day = leave.date.isoformat()
                 employee_data[eid]["days"][day]["leave_type"] = leave.leave_type
                 employee_data[eid]["total_leave_days"] += 1
+                employee_data[eid]["total_leave_hours"] += float(leave.hours or 0)
         
         # Calculate working days and average productive hours
         today = date.today()
@@ -9000,6 +9003,16 @@ def get_monthly_calendar(
         
         # Calculate total working days in the month
         total_working_days = get_working_days_in_range(month_start, month_end, db, include_optional_holidays=False)
+        for eid, data in employee_data.items():
+            expected = (total_working_days * 8) - float(data.get("total_leave_hours", 0) or 0)
+            employee_data[eid]["expected_hours"] = round(max(expected, 0), 1)
+
+        monthly_totals = {
+            "productive_hours": round(sum(float(v.get("total_productive_hours", 0) or 0) for v in employee_data.values()), 1),
+            "leave_hours": round(sum(float(v.get("total_leave_hours", 0) or 0) for v in employee_data.values()), 1),
+            "leave_days": round(sum(float(v.get("total_leave_days", 0) or 0) for v in employee_data.values()), 1),
+            "expected_hours": round(sum(float(v.get("expected_hours", 0) or 0) for v in employee_data.values()), 1),
+        }
         
         return {
             "month": month_start.strftime("%Y-%m"),
@@ -9008,6 +9021,7 @@ def get_monthly_calendar(
             "team": team,
             "working_days": total_working_days,
             "holidays": list(month_holidays.values()),
+            "monthly_totals": monthly_totals,
             "employees": [dict(v) for v in employee_data.values()]
         }
     finally:
@@ -9258,6 +9272,12 @@ class ApprovalRequest(BaseModel):
     entry_reviews: Optional[List[EntryReview]] = None
 
 
+class BulkApprovalRequest(BaseModel):
+    submission_ids: List[int]
+    action: str  # approve | reject | revision
+    notes: Optional[str] = None
+
+
 def _get_week_boundaries(target_date: date):
     weekday = target_date.weekday()  # Monday=0
     start = target_date - timedelta(days=weekday)
@@ -9302,6 +9322,10 @@ def _apply_entry_reviews(db: Session, submission: TimeSheetSubmission, reviews: 
     for r in reviews:
         if r.entry_source not in ["sync", "manual"]:
             raise HTTPException(status_code=400, detail="Invalid entry_source")
+        if r.status not in ["approved", "revision_required", "rejected"]:
+            raise HTTPException(status_code=400, detail="Invalid entry review status")
+        if r.status in ["revision_required", "rejected"] and not (r.notes and str(r.notes).strip()):
+            raise HTTPException(status_code=400, detail="Comment is required for rejected/revision-required entry reviews")
 
         if r.entry_source == "sync":
             entry = db.query(EnhancedTimesheet).filter(EnhancedTimesheet.id == r.entry_id).first()
@@ -9345,6 +9369,22 @@ def _apply_entry_reviews(db: Session, submission: TimeSheetSubmission, reviews: 
                 reviewed_by=current_user.get("employee_id") or current_user.get("email"),
                 reviewed_role=current_user.get("role"),
             ))
+
+
+def _has_non_approved_entry_reviews(reviews: Optional[List[EntryReview]]) -> bool:
+    if not reviews:
+        return False
+    return any((r.status or "").strip().lower() != "approved" for r in reviews)
+
+
+def _validate_lead_team_scope(db: Session, submission: TimeSheetSubmission, current_user: dict):
+    role = current_user.get("role") or ""
+    if "LEAD" not in role or "MANAGER" in role or role == "ADMIN":
+        return
+    lead_emp = db.query(Employee).filter(Employee.employee_id == current_user.get("employee_id")).first()
+    sub_emp = db.query(Employee).filter(Employee.employee_id == submission.employee_id).first()
+    if not lead_emp or not sub_emp or not lead_emp.team or not sub_emp.team or lead_emp.team != sub_emp.team:
+        raise HTTPException(status_code=403, detail="Insufficient permissions to approve/review this submission")
 
 
 @app.get("/timesheet")
@@ -9441,12 +9481,15 @@ def get_timesheet_week(
         entries = []
         for e in enhanced_entries:
             rkey = ("sync", e.id)
+            time_spent_hours = e.hours_logged or 0
             entries.append({
                 "source": "sync",
                 "id": e.id,
                 "date": e.date.isoformat(),
                 "activity_type": e.ticket_id or e.leave_type or 'Work',
-                "hours": e.hours_logged or 0,
+                "hours": time_spent_hours,
+                "time_spent_hours": time_spent_hours,
+                "planned_hours": None,
                 "productive_hours": e.productive_hours,
                 "ticket_id": e.ticket_id,
                 "task_description": e.task_description,
@@ -9458,13 +9501,19 @@ def get_timesheet_week(
             })
         for m in manual_entries:
             rkey = ("manual", m.id)
+            planned_hours = None
+            if m.planned_task_id and m.planned_task_source:
+                planned_hours = _get_planned_hours_for_entry(db, m.date, m.planned_task_id, m.planned_task_source)
+            time_spent_hours = m.hours or 0
             entries.append({
                 "source": "manual",
                 "id": m.id,
                 "date": m.date.isoformat(),
                 "activity_type": m.activity_type,
                 "task_category": getattr(m, "task_category", None),
-                "hours": m.hours or 0,
+                "hours": time_spent_hours,
+                "time_spent_hours": time_spent_hours,
+                "planned_hours": planned_hours,
                 "productive_hours": m.productive_hours,
                 "ticket_id": m.ticket_id,
                 "task_description": m.description,
@@ -10044,7 +10093,7 @@ def update_timesheet_entry(
 
 @app.post("/timesheet/submit")
 def submit_timesheet(req: SubmitRequest, current_user: dict = Depends(get_current_user)):
-    """Submit weekly timesheet for approval. Enforces minimum 36-hour rule."""
+    """Submit weekly timesheet for approval. Enforces minimum 40-hour rule."""
     db: Session = SessionLocal()
     try:
         employee_id = current_user.get("employee_id")
@@ -10072,8 +10121,8 @@ def submit_timesheet(req: SubmitRequest, current_user: dict = Depends(get_curren
         leave_hours = sum((l.hours or 0) for l in leave_entries)
         total = hours_logged + leave_hours
 
-        # Enforce minimum hours (36)
-        MIN_HOURS_REQUIRED = 36
+        # Enforce minimum hours (40)
+        MIN_HOURS_REQUIRED = 40
         if total < MIN_HOURS_REQUIRED:
             raise HTTPException(status_code=400, detail=f"Cannot submit: total hours ({total:.1f}) is less than required {MIN_HOURS_REQUIRED} hours")
 
@@ -10208,6 +10257,151 @@ def get_completed_approvals(team: Optional[str] = Query(None), current_user: dic
         db.close()
 
 
+@app.get("/timesheet/manager-summary")
+def get_timesheet_manager_summary(
+    period: str = Query("week", description="week | month"),
+    date_str: Optional[str] = Query(None, description="Reference date for weekly summary (YYYY-MM-DD)"),
+    month: Optional[str] = Query(None, description="Month for monthly summary (YYYY-MM)"),
+    team: str = Query("ALL", description="QA | DEV | DEVELOPMENT | ALL"),
+    category: str = Query("ALL", description="BILLED | UN-BILLED | ALL"),
+    current_user: dict = Depends(get_current_user),
+):
+    db: Session = SessionLocal()
+    try:
+        role = current_user.get("role") or ""
+        if not ("LEAD" in role or "MANAGER" in role or role == "ADMIN"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+
+        period_l = (period or "week").strip().lower()
+        if period_l == "month":
+            if month:
+                try:
+                    year, mon = map(int, month.split("-"))
+                    range_start = date(year, mon, 1)
+                except ValueError:
+                    raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM")
+            else:
+                today = date.today()
+                range_start = date(today.year, today.month, 1)
+            if range_start.month == 12:
+                range_end = date(range_start.year + 1, 1, 1) - timedelta(days=1)
+            else:
+                range_end = date(range_start.year, range_start.month + 1, 1) - timedelta(days=1)
+        else:
+            try:
+                ref_date = datetime.strptime(date_str, "%Y-%m-%d").date() if date_str else date.today()
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
+            range_start, range_end = _get_week_boundaries(ref_date)
+
+        visible_ids = get_visible_employee_ids(db, current_user)
+        emp_query = db.query(Employee).filter(Employee.is_active == True)
+        if visible_ids is not None:
+            emp_query = emp_query.filter(Employee.employee_id.in_(list(visible_ids)))
+
+        # Leads can only see their own team in summary
+        if "LEAD" in role and not ("MANAGER" in role or role == "ADMIN"):
+            lead_emp = db.query(Employee).filter(Employee.employee_id == current_user.get("employee_id")).first()
+            if lead_emp and lead_emp.team:
+                emp_query = emp_query.filter(Employee.team == lead_emp.team)
+
+        team_upper = (team or "ALL").upper()
+        if team_upper != "ALL":
+            team_filter = "DEVELOPMENT" if team_upper == "DEV" else team_upper
+            emp_query = emp_query.filter(Employee.team == team_filter)
+
+        category_upper = (category or "ALL").upper()
+        if category_upper != "ALL":
+            if category_upper in ["UN-BILLED", "UNBILLED"]:
+                emp_query = emp_query.filter(
+                    or_(func.upper(Employee.category) == "UN-BILLED", func.upper(Employee.category) == "UNBILLED")
+                )
+            else:
+                emp_query = emp_query.filter(func.upper(Employee.category) == category_upper)
+
+        employees = emp_query.all()
+        if not employees:
+            return {
+                "period": period_l,
+                "range_start": range_start.isoformat(),
+                "range_end": range_end.isoformat(),
+                "totals": {"productive_hours": 0, "leave_hours": 0, "leave_days": 0, "working_days": 0, "expected_hours": 0},
+                "by_team": {},
+                "by_category": {},
+            }
+
+        employee_ids = [e.employee_id for e in employees]
+        emp_meta = {
+            e.employee_id: {
+                "team": (e.team or "").upper(),
+                "category": (e.category or "UNSPECIFIED").upper(),
+                "productive_hours": 0.0,
+                "leave_hours": 0.0,
+                "leave_days": 0.0,
+                "working_days": 0,
+                "expected_hours": 0.0,
+            }
+            for e in employees
+        }
+
+        entries = db.query(TimeSheetEntry).filter(
+            TimeSheetEntry.employee_id.in_(employee_ids),
+            TimeSheetEntry.date >= range_start,
+            TimeSheetEntry.date <= range_end,
+        ).all()
+        for e in entries:
+            if e.employee_id not in emp_meta:
+                continue
+            productive = e.productive_hours if e.productive_hours is not None else (e.hours or 0.0)
+            emp_meta[e.employee_id]["productive_hours"] += float(productive or 0.0)
+
+        leaves = db.query(LeaveEntry).filter(
+            LeaveEntry.employee_id.in_(employee_ids),
+            LeaveEntry.date >= range_start,
+            LeaveEntry.date <= range_end,
+            LeaveEntry.status == "approved",
+        ).all()
+        for l in leaves:
+            if l.employee_id not in emp_meta:
+                continue
+            leave_hours = float(l.hours or 0.0)
+            emp_meta[l.employee_id]["leave_hours"] += leave_hours
+            emp_meta[l.employee_id]["leave_days"] += round(leave_hours / 8.0, 2) if leave_hours > 0 else 0
+
+        working_days = get_working_days_in_range(range_start, range_end, db, include_optional_holidays=False)
+        for emp_id in emp_meta:
+            emp_meta[emp_id]["working_days"] = working_days
+            expected = (working_days * 8.0) - emp_meta[emp_id]["leave_hours"]
+            emp_meta[emp_id]["expected_hours"] = round(max(expected, 0.0), 2)
+
+        def _empty_bucket():
+            return {"productive_hours": 0.0, "leave_hours": 0.0, "leave_days": 0.0, "working_days": 0.0, "expected_hours": 0.0, "employees": 0}
+
+        totals = _empty_bucket()
+        by_team: Dict[str, Dict[str, Any]] = defaultdict(_empty_bucket)
+        by_category: Dict[str, Dict[str, Any]] = defaultdict(_empty_bucket)
+
+        for meta in emp_meta.values():
+            for bucket in (totals, by_team[meta["team"]], by_category[meta["category"]]):
+                bucket["productive_hours"] += meta["productive_hours"]
+                bucket["leave_hours"] += meta["leave_hours"]
+                bucket["leave_days"] += meta["leave_days"]
+                bucket["working_days"] += meta["working_days"]
+                bucket["expected_hours"] += meta["expected_hours"]
+                bucket["employees"] += 1
+
+        return {
+            "period": period_l,
+            "range_start": range_start.isoformat(),
+            "range_end": range_end.isoformat(),
+            "totals": {k: round(v, 2) if isinstance(v, float) else v for k, v in totals.items()},
+            "by_team": {k: {ik: round(iv, 2) if isinstance(iv, float) else iv for ik, iv in v.items()} for k, v in by_team.items()},
+            "by_category": {k: {ik: round(iv, 2) if isinstance(iv, float) else iv for ik, iv in v.items()} for k, v in by_category.items()},
+        }
+    finally:
+        db.close()
+
+
 @app.get("/timesheet/submission/{submission_id}")
 def get_timesheet_submission(submission_id: int, current_user: dict = Depends(get_current_user)):
     db: Session = SessionLocal()
@@ -10315,22 +10509,32 @@ def approve_submission(submission_id: int, req: ApprovalRequest, current_user: d
         if not s:
             raise HTTPException(status_code=404, detail="Submission not found")
 
-        role = current_user.get("role")
+        role = current_user.get("role") or ""
         user_emp = current_user.get("employee_id")
+        _validate_lead_team_scope(db, s, current_user)
+        has_non_approved_reviews = _has_non_approved_entry_reviews(req.entry_reviews)
         if "LEAD" in role:
             if s.status not in ["Pending", "Revision Required"]:
                 raise HTTPException(status_code=400, detail="Submission not pending lead approval")
-            s.status = 'Lead Approved'
-            s.lead_id = user_emp
-            s.lead_approved_on = datetime.utcnow()
-            action = 'lead_approved'
+            if has_non_approved_reviews:
+                s.status = "Revision Required"
+                action = "revision_requested"
+            else:
+                s.status = 'Lead Approved'
+                s.lead_id = user_emp
+                s.lead_approved_on = datetime.utcnow()
+                action = 'lead_approved'
         elif "MANAGER" in role or role == 'ADMIN':
             if s.status not in ["Lead Approved"]:
                 raise HTTPException(status_code=400, detail="Submission not pending manager approval")
-            s.status = 'Approved'
-            s.manager_id = user_emp
-            s.manager_approved_on = datetime.utcnow()
-            action = 'approved'
+            if has_non_approved_reviews:
+                s.status = "Revision Required"
+                action = "revision_requested"
+            else:
+                s.status = 'Approved'
+                s.manager_id = user_emp
+                s.manager_approved_on = datetime.utcnow()
+                action = 'approved'
         else:
             raise HTTPException(status_code=403, detail="Insufficient permissions to approve")
 
@@ -10358,8 +10562,9 @@ def reject_submission(submission_id: int, req: ApprovalRequest, current_user: di
         if not s:
             raise HTTPException(status_code=404, detail="Submission not found")
 
-        role = current_user.get("role")
+        role = current_user.get("role") or ""
         user_emp = current_user.get("employee_id")
+        _validate_lead_team_scope(db, s, current_user)
         if not ("LEAD" in role or "MANAGER" in role or role == 'ADMIN'):
             raise HTTPException(status_code=403, detail="Insufficient permissions to reject")
         if s.status == "Approved":
@@ -10389,8 +10594,9 @@ def request_revision(submission_id: int, req: ApprovalRequest, current_user: dic
         if not s:
             raise HTTPException(status_code=404, detail="Submission not found")
 
-        role = current_user.get("role")
+        role = current_user.get("role") or ""
         user_emp = current_user.get("employee_id")
+        _validate_lead_team_scope(db, s, current_user)
         if not ("LEAD" in role or "MANAGER" in role or role == 'ADMIN'):
             raise HTTPException(status_code=403, detail="Insufficient permissions to request revision")
         if s.status == "Approved":
@@ -10412,12 +10618,81 @@ def request_revision(submission_id: int, req: ApprovalRequest, current_user: dic
         db.close()
 
 
+@app.post("/timesheet/approvals/bulk")
+def bulk_approval_action(req: BulkApprovalRequest, current_user: dict = Depends(get_current_user)):
+    db: Session = SessionLocal()
+    try:
+        role = current_user.get("role") or ""
+        if not ("LEAD" in role or "MANAGER" in role or role == "ADMIN"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions to process bulk approvals")
+        action = (req.action or "").strip().lower()
+        if action not in ["approve", "reject", "revision"]:
+            raise HTTPException(status_code=400, detail="Invalid action. Use approve, reject, or revision")
+        submission_ids = [int(sid) for sid in (req.submission_ids or []) if sid is not None]
+        if not submission_ids:
+            raise HTTPException(status_code=400, detail="At least one submission id is required")
+
+        results = []
+        for sid in submission_ids:
+            s = db.query(TimeSheetSubmission).filter(TimeSheetSubmission.id == sid).first()
+            if not s:
+                results.append({"submission_id": sid, "ok": False, "error": "Submission not found"})
+                continue
+            try:
+                _validate_lead_team_scope(db, s, current_user)
+                user_emp = current_user.get("employee_id")
+                if action == "approve":
+                    if "LEAD" in role:
+                        if s.status not in ["Pending", "Revision Required"]:
+                            raise HTTPException(status_code=400, detail="Submission not pending lead approval")
+                        s.status = "Lead Approved"
+                        s.lead_id = user_emp
+                        s.lead_approved_on = datetime.utcnow()
+                        log_action = "lead_approved"
+                    elif "MANAGER" in role or role == "ADMIN":
+                        if s.status not in ["Lead Approved"]:
+                            raise HTTPException(status_code=400, detail="Submission not pending manager approval")
+                        s.status = "Approved"
+                        s.manager_id = user_emp
+                        s.manager_approved_on = datetime.utcnow()
+                        log_action = "approved"
+                    else:
+                        raise HTTPException(status_code=403, detail="Insufficient permissions to approve")
+                elif action == "reject":
+                    if s.status == "Approved":
+                        raise HTTPException(status_code=400, detail="Cannot reject an approved submission")
+                    s.status = "Rejected"
+                    log_action = "rejected"
+                else:
+                    if s.status == "Approved":
+                        raise HTTPException(status_code=400, detail="Cannot request revision for an approved submission")
+                    s.status = "Revision Required"
+                    log_action = "revision_requested"
+
+                db.add(TimeSheetApprovalLog(
+                    submission_id=s.id,
+                    approver_id=current_user.get("employee_id"),
+                    approver_role=role,
+                    action=log_action,
+                    notes=req.notes,
+                ))
+                results.append({"submission_id": sid, "ok": True, "status": s.status})
+            except HTTPException as e:
+                results.append({"submission_id": sid, "ok": False, "error": e.detail})
+
+        db.commit()
+        success_count = sum(1 for r in results if r.get("ok"))
+        return {"ok": True, "processed": len(results), "successful": success_count, "results": results}
+    finally:
+        db.close()
+
+
 @app.get("/timesheet/my-week-summary")
 def get_my_week_summary(
     date_str: str = Query(..., description="Any date in week (YYYY-MM-DD)"),
     current_user: dict = Depends(get_current_user),
 ):
-    """Return current user's week summary: total_hours, leave_hours, by_category, ticket_count for submit 36h check and summary display."""
+    """Return current user's week summary: total_hours, leave_hours, by_category, ticket_count for submit 40h check and summary display."""
     db: Session = SessionLocal()
     try:
         employee_id = current_user.get("employee_id")

@@ -636,6 +636,24 @@ function CalendarModule() {
               {calendarData.employees.reduce((sum, emp) => sum + (emp.total_leave_days || 0), 0)}
             </span>
           </div>
+          <div className="summary-card">
+            <span className="summary-label">Expected Hours</span>
+            <span className="summary-value">
+              {Number(calendarData.monthly_totals?.expected_hours || 0).toFixed(1)}h
+            </span>
+          </div>
+          <div className="summary-card">
+            <span className="summary-label">Productive Hours</span>
+            <span className="summary-value">
+              {Number(calendarData.monthly_totals?.productive_hours || 0).toFixed(1)}h
+            </span>
+          </div>
+          <div className="summary-card">
+            <span className="summary-label">Leave Hours</span>
+            <span className="summary-value">
+              {Number(calendarData.monthly_totals?.leave_hours || 0).toFixed(1)}h
+            </span>
+          </div>
         </div>
         
         {/* Monthly Calendar Table */}

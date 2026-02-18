@@ -94,7 +94,7 @@ function TimeSheetModule() {
   const [selectedSubmissionId, setSelectedSubmissionId] = useState(null);
   const [submissionDetail, setSubmissionDetail] = useState(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
-  // My week summary (for 36h rule and summary when viewing current week)
+  // My week summary (for 40h rule and summary when viewing current week)
   const [myWeekSummary, setMyWeekSummary] = useState(null);
   // Plan vs actual tab
   const [planVsActualTeam, setPlanVsActualTeam] = useState('QA');
@@ -121,6 +121,12 @@ function TimeSheetModule() {
   const [approvalActionLoading, setApprovalActionLoading] = useState(false);
   const [approvalNotes, setApprovalNotes] = useState('');
   const [approvalEntryReviews, setApprovalEntryReviews] = useState({}); // { "manual-123": "approved" | "rejected" | "revision_required" }
+  const [approvalProductiveHours, setApprovalProductiveHours] = useState({}); // { "manual-123": "7.5" }
+  const [selectedApprovalIds, setSelectedApprovalIds] = useState([]);
+  const [bulkApprovalActionLoading, setBulkApprovalActionLoading] = useState(false);
+  const [managerSummaryPeriod, setManagerSummaryPeriod] = useState('week');
+  const [managerSummary, setManagerSummary] = useState(null);
+  const [managerSummaryLoading, setManagerSummaryLoading] = useState(false);
 
   const approvalsList = activeApprovalsSubTab === 'pending' ? pendingApprovals : completedApprovals;
   const { sortedData: sortedApprovalsList, sortConfig: approvalsSortConfig, handleSort: handleApprovalsSort } = useTableSort(approvalsList, { defaultSortKey: 'submitted_on', defaultSortDirection: 'desc' });
@@ -209,7 +215,7 @@ function TimeSheetModule() {
     fetchMySubmissions();
   }, [fetchMySubmissions]);
 
-  // Fetch my week summary when viewing current week (for 36h check and summary)
+  // Fetch my week summary when viewing current week (for 40h check and summary)
   useEffect(() => {
     if (!user?.employee_id || activeTab !== 'log') {
       setMyWeekSummary(null);
@@ -275,27 +281,37 @@ function TimeSheetModule() {
     else fetchCompletedApprovals();
   }, [canApproveTimesheets, activeTab, activeApprovalsSubTab, fetchPendingApprovals, fetchCompletedApprovals]);
 
+  useEffect(() => {
+    setSelectedApprovalIds([]);
+  }, [activeApprovalsSubTab, approvalsTeam]);
+
   // Fetch approval detail when a submission is selected in Approvals
   useEffect(() => {
     if (!selectedApprovalSubmissionId) {
       setApprovalDetail(null);
       setApprovalEntryReviews({});
+      setApprovalProductiveHours({});
       return;
     }
     let cancelled = false;
     setApprovalDetailLoading(true);
     setApprovalEntryReviews({});
+    setApprovalProductiveHours({});
     apiFetch(`/timesheet/submission/${selectedApprovalSubmissionId}`)
       .then((res) => (res.ok ? res.json() : Promise.reject(new Error('Failed to load'))))
       .then((data) => {
         if (!cancelled) {
           setApprovalDetail(data);
           const rev = {};
+          const prod = {};
           (data.entries || []).forEach((e) => {
             const key = `${e.source}-${e.id}`;
             if (e.review_status) rev[key] = e.review_status;
+            const initialProductive = e.review_productive_hours ?? e.productive_hours ?? e.time_spent_hours ?? e.hours ?? 0;
+            prod[key] = Number(initialProductive).toFixed(1);
           });
           setApprovalEntryReviews(rev);
+          setApprovalProductiveHours(prod);
         }
       })
       .catch(() => { if (!cancelled) setApprovalDetail(null); })
@@ -312,6 +328,12 @@ function TimeSheetModule() {
             entry_source: e.source,
             entry_id: e.id,
             status: approvalEntryReviews[`${e.source}-${e.id}`],
+            productive_hours: approvalEntryReviews[`${e.source}-${e.id}`] === 'approved'
+              ? (Number(approvalProductiveHours[`${e.source}-${e.id}`]) || Number(e.time_spent_hours ?? e.hours ?? 0))
+              : null,
+            notes: ['rejected', 'revision_required'].includes(approvalEntryReviews[`${e.source}-${e.id}`])
+              ? (approvalNotes || null)
+              : null,
           }))
       : undefined;
     const payload = { notes: approvalNotes || null, entry_reviews: entry_reviews && entry_reviews.length > 0 ? entry_reviews : null };
@@ -330,6 +352,7 @@ function TimeSheetModule() {
       setApprovalDetail(null);
       setApprovalNotes('');
       setApprovalEntryReviews({});
+      setApprovalProductiveHours({});
       if (activeApprovalsSubTab === 'pending') fetchPendingApprovals();
       else fetchCompletedApprovals();
     } catch (err) {
@@ -338,6 +361,82 @@ function TimeSheetModule() {
       setApprovalActionLoading(false);
     }
   };
+
+  const toggleApprovalSelection = (submissionId) => {
+    setSelectedApprovalIds((prev) => (
+      prev.includes(submissionId) ? prev.filter((id) => id !== submissionId) : [...prev, submissionId]
+    ));
+  };
+
+  const handleToggleSelectAllApprovals = () => {
+    if (!sortedApprovalsList.length) return;
+    const visibleIds = sortedApprovalsList.map((s) => s.id);
+    const allSelected = visibleIds.every((id) => selectedApprovalIds.includes(id));
+    setSelectedApprovalIds(allSelected ? [] : visibleIds);
+  };
+
+  const handleBulkApprovalAction = async (action) => {
+    if (!selectedApprovalIds.length) return;
+    const actionLabel = action === 'approve' ? 'approve' : action === 'reject' ? 'reject' : 'request revision for';
+    if (!window.confirm(`Are you sure you want to ${actionLabel} ${selectedApprovalIds.length} selected submission(s)?`)) return;
+    setBulkApprovalActionLoading(true);
+    try {
+      const res = await apiFetch('/timesheet/approvals/bulk', {
+        method: 'POST',
+        body: JSON.stringify({
+          submission_ids: selectedApprovalIds,
+          action,
+          notes: approvalNotes || null,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Bulk action failed');
+      }
+      const data = await res.json();
+      const failed = (data.results || []).filter((r) => !r.ok);
+      if (failed.length > 0) {
+        setError(`Processed ${data.successful}/${data.processed}. Failed: ${failed.map((f) => `#${f.submission_id}: ${f.error}`).join(', ')}`);
+      }
+      setSelectedApprovalIds([]);
+      if (activeApprovalsSubTab === 'pending') fetchPendingApprovals();
+      else fetchCompletedApprovals();
+      fetchManagerSummary();
+    } catch (err) {
+      setError(err.message || 'Bulk action failed');
+    } finally {
+      setBulkApprovalActionLoading(false);
+    }
+  };
+
+  const fetchManagerSummary = useCallback(async () => {
+    if (!canApproveTimesheets) return;
+    setManagerSummaryLoading(true);
+    try {
+      const weekRef = formatAPIDate(currentDate);
+      const monthRef = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
+      const params = new URLSearchParams({
+        period: managerSummaryPeriod,
+        team: approvalsTeam || 'ALL',
+        category: 'ALL',
+      });
+      if (managerSummaryPeriod === 'month') params.set('month', monthRef);
+      else params.set('date_str', weekRef);
+      const res = await apiFetch(`/timesheet/manager-summary?${params.toString()}`);
+      if (!res.ok) throw new Error('Failed to load manager summary');
+      const data = await res.json();
+      setManagerSummary(data);
+    } catch {
+      setManagerSummary(null);
+    } finally {
+      setManagerSummaryLoading(false);
+    }
+  }, [canApproveTimesheets, currentDate, managerSummaryPeriod, approvalsTeam]);
+
+  useEffect(() => {
+    if (activeTab !== 'approvals') return;
+    fetchManagerSummary();
+  }, [activeTab, fetchManagerSummary]);
 
   // Fetch submission detail when a row is clicked (My submissions tab)
   useEffect(() => {
@@ -598,9 +697,9 @@ function TimeSheetModule() {
 
   const submittedStatus = submissionForThisWeek?.status;
   const myWeekTotal = myWeekSummary?.total_hours ?? 0;
-  const meets36h = myWeekTotal >= 36;
+  const meets40h = myWeekTotal >= 40;
   const canSubmitThisWeek = Boolean(
-    user?.employee_id && isCurrentWeek && meets36h && submittedStatus !== 'Pending' && submittedStatus !== 'Lead Approved' && submittedStatus !== 'Approved'
+    user?.employee_id && isCurrentWeek && meets40h && submittedStatus !== 'Pending' && submittedStatus !== 'Lead Approved' && submittedStatus !== 'Approved'
   );
 
   const submitDueDate = useMemo(() => {
@@ -794,10 +893,78 @@ function TimeSheetModule() {
                   <option value="DEVELOPMENT">DEV</option>
                 </select>
               </label>
+              <label>
+                Summary period
+                <select value={managerSummaryPeriod} onChange={(e) => setManagerSummaryPeriod(e.target.value)}>
+                  <option value="week">Week</option>
+                  <option value="month">Month</option>
+                </select>
+              </label>
             </div>
+            {managerSummaryLoading ? (
+              <p className="loading-inline">Loading manager summary…</p>
+            ) : managerSummary?.totals ? (
+              <>
+                <div className="plan-vs-actual-summary">
+                  <span>Expected: {Number(managerSummary.totals.expected_hours || 0).toFixed(1)}h</span>
+                  <span>Productive: {Number(managerSummary.totals.productive_hours || 0).toFixed(1)}h</span>
+                  <span>Leave: {Number(managerSummary.totals.leave_hours || 0).toFixed(1)}h</span>
+                  <span>Working days: {Number(managerSummary.totals.working_days || 0).toFixed(0)}</span>
+                  <span>Leave days: {Number(managerSummary.totals.leave_days || 0).toFixed(1)}</span>
+                </div>
+                <div className="plan-vs-actual-entries">
+                  <h4>By Team</h4>
+                  <table className="plan-vs-actual-table">
+                    <thead>
+                      <tr>
+                        <th>Team</th>
+                        <th>Employees</th>
+                        <th>Expected</th>
+                        <th>Productive</th>
+                        <th>Leave (h)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(managerSummary.by_team || {}).map(([group, stats]) => (
+                        <tr key={`team-${group}`}>
+                          <td>{group}</td>
+                          <td>{stats.employees || 0}</td>
+                          <td>{Number(stats.expected_hours || 0).toFixed(1)}h</td>
+                          <td>{Number(stats.productive_hours || 0).toFixed(1)}h</td>
+                          <td>{Number(stats.leave_hours || 0).toFixed(1)}h</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <h4>By Category</h4>
+                  <table className="plan-vs-actual-table">
+                    <thead>
+                      <tr>
+                        <th>Category</th>
+                        <th>Employees</th>
+                        <th>Expected</th>
+                        <th>Productive</th>
+                        <th>Leave (h)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.entries(managerSummary.by_category || {}).map(([group, stats]) => (
+                        <tr key={`cat-${group}`}>
+                          <td>{group}</td>
+                          <td>{stats.employees || 0}</td>
+                          <td>{Number(stats.expected_hours || 0).toFixed(1)}h</td>
+                          <td>{Number(stats.productive_hours || 0).toFixed(1)}h</td>
+                          <td>{Number(stats.leave_hours || 0).toFixed(1)}h</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            ) : null}
             {approvalDetail ? (
               <div className="approval-detail-view">
-                <button type="button" className="btn btn-ghost back-to-list" onClick={() => { setSelectedApprovalSubmissionId(null); setApprovalDetail(null); setApprovalNotes(''); setApprovalEntryReviews({}); }}>← Back to list</button>
+                <button type="button" className="btn btn-ghost back-to-list" onClick={() => { setSelectedApprovalSubmissionId(null); setApprovalDetail(null); setApprovalNotes(''); setApprovalEntryReviews({}); setApprovalProductiveHours({}); }}>← Back to list</button>
                 {approvalDetailLoading ? (
                   <p>Loading…</p>
                 ) : (
@@ -817,7 +984,9 @@ function TimeSheetModule() {
                           <SortableHeader columnKey="date" onSort={handleApprovalEntriesSort} sortConfig={approvalEntriesSortConfig}>Date</SortableHeader>
                           <SortableHeader columnKey="activity_type" onSort={handleApprovalEntriesSort} sortConfig={approvalEntriesSortConfig}>Type</SortableHeader>
                           <th>Ticket / Description</th>
-                          <SortableHeader columnKey="hours" onSort={handleApprovalEntriesSort} sortConfig={approvalEntriesSortConfig}>Hours</SortableHeader>
+                          <SortableHeader columnKey="planned_hours" onSort={handleApprovalEntriesSort} sortConfig={approvalEntriesSortConfig}>Planned</SortableHeader>
+                          <SortableHeader columnKey="time_spent_hours" onSort={handleApprovalEntriesSort} sortConfig={approvalEntriesSortConfig}>Time spent</SortableHeader>
+                          <th>Productive</th>
                           {activeApprovalsSubTab === 'pending' && (
                             <th>Per-entry action</th>
                           )}
@@ -830,8 +999,32 @@ function TimeSheetModule() {
                             <tr key={key}>
                               <td>{entry.date}</td>
                               <td>{entry.activity_type || entry.task_category || entry.source}</td>
-                              <td>{entry.ticket_id ? `#${entry.ticket_id}` : (entry.task_description || '-')}</td>
-                              <td>{Number(entry.hours || 0).toFixed(1)}</td>
+                              <td>
+                                <div>{entry.ticket_id ? `#${entry.ticket_id}` : (entry.task_description || '-')}</div>
+                                {(entry.variance_reason_type || entry.variance_notes) && (
+                                  <small className="text-muted">
+                                    Variance: {[
+                                      entry.variance_reason_type ? (VARIANCE_REASON_TYPES.find((o) => o.value === entry.variance_reason_type)?.label || entry.variance_reason_type) : '',
+                                      entry.variance_notes || '',
+                                    ].filter(Boolean).join(' - ')}
+                                  </small>
+                                )}
+                              </td>
+                              <td>{entry.planned_hours == null ? '-' : Number(entry.planned_hours || 0).toFixed(1)}</td>
+                              <td>{Number(entry.time_spent_hours ?? entry.hours ?? 0).toFixed(1)}</td>
+                              <td>
+                                {activeApprovalsSubTab === 'pending' ? (
+                                  <input
+                                    type="number"
+                                    step="0.1"
+                                    min="0"
+                                    value={approvalProductiveHours[key] ?? Number(entry.time_spent_hours ?? entry.hours ?? 0).toFixed(1)}
+                                    onChange={(e) => setApprovalProductiveHours((prev) => ({ ...prev, [key]: e.target.value }))}
+                                  />
+                                ) : (
+                                  Number(entry.review_productive_hours ?? entry.productive_hours ?? entry.time_spent_hours ?? entry.hours ?? 0).toFixed(1)
+                                )}
+                              </td>
                               {activeApprovalsSubTab === 'pending' && (
                                 <td>
                                   <select
@@ -852,7 +1045,7 @@ function TimeSheetModule() {
                     </table>
                     {activeApprovalsSubTab === 'pending' && (
                       <div className="approval-actions">
-                        <p className="approval-actions-hint">Bulk: approve or reject the entire submission. Optionally set per-entry action above and submit with one of the buttons.</p>
+                        <p className="approval-actions-hint">Set per-entry decisions and productive time. If any entry is rejected/revision-required, this submission will stay non-final for employee correction.</p>
                         <div className="approval-buttons">
                           <button type="button" className="btn btn-primary" disabled={approvalActionLoading} onClick={() => handleApprovalAction('approve')}>Approve</button>
                           <button type="button" className="btn btn-danger" disabled={approvalActionLoading} onClick={() => handleApprovalAction('reject')}>Reject</button>
@@ -870,12 +1063,31 @@ function TimeSheetModule() {
                 ) : (
                   <>
                     <h3>{activeApprovalsSubTab === 'pending' ? 'Pending approvals' : 'Completed approvals'}</h3>
+                    {activeApprovalsSubTab === 'pending' && sortedApprovalsList.length > 0 && (
+                      <div className="approval-actions">
+                        <p className="approval-actions-hint">Select multiple submissions for bulk processing.</p>
+                        <div className="approval-buttons">
+                          <button type="button" className="btn btn-primary" disabled={bulkApprovalActionLoading || selectedApprovalIds.length === 0} onClick={() => handleBulkApprovalAction('approve')}>Approve selected</button>
+                          <button type="button" className="btn btn-danger" disabled={bulkApprovalActionLoading || selectedApprovalIds.length === 0} onClick={() => handleBulkApprovalAction('reject')}>Reject selected</button>
+                          <button type="button" className="btn btn-secondary" disabled={bulkApprovalActionLoading || selectedApprovalIds.length === 0} onClick={() => handleBulkApprovalAction('revision')}>Request revision selected</button>
+                        </div>
+                      </div>
+                    )}
                     {sortedApprovalsList.length === 0 ? (
                       <p className="text-muted">No {activeApprovalsSubTab === 'pending' ? 'pending' : 'completed'} approvals.</p>
                     ) : (
                       <table className="my-submissions-table">
                         <thead>
                           <tr>
+                            {activeApprovalsSubTab === 'pending' && (
+                              <th>
+                                <input
+                                  type="checkbox"
+                                  checked={sortedApprovalsList.length > 0 && sortedApprovalsList.every((s) => selectedApprovalIds.includes(s.id))}
+                                  onChange={handleToggleSelectAllApprovals}
+                                />
+                              </th>
+                            )}
                             <SortableHeader columnKey="employee_name" onSort={handleApprovalsSort} sortConfig={approvalsSortConfig}>Employee</SortableHeader>
                             <SortableHeader columnKey="week_start" onSort={handleApprovalsSort} sortConfig={approvalsSortConfig}>Week (Mon–Fri)</SortableHeader>
                             <SortableHeader columnKey="submitted_on" onSort={handleApprovalsSort} sortConfig={approvalsSortConfig}>Submitted</SortableHeader>
@@ -892,6 +1104,16 @@ function TimeSheetModule() {
                             const weekLabel = mon && fri ? `${mon.getDate()} ${MONTH_NAMES[mon.getMonth()].slice(0, 3)} – ${fri.getDate()} ${MONTH_NAMES[fri.getMonth()].slice(0, 3)}` : (s.week_start || '') + ' – ' + (s.week_end || '');
                             return (
                               <tr key={s.id} className="submission-row" onClick={() => setSelectedApprovalSubmissionId(s.id)}>
+                                {activeApprovalsSubTab === 'pending' && (
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedApprovalIds.includes(s.id)}
+                                      onClick={(e) => e.stopPropagation()}
+                                      onChange={() => toggleApprovalSelection(s.id)}
+                                    />
+                                  </td>
+                                )}
                                 <td>{s.employee_name}</td>
                                 <td>{weekLabel}</td>
                                 <td>{s.submitted_on ? new Date(s.submitted_on).toLocaleDateString() : '-'}</td>
@@ -1048,8 +1270,8 @@ function TimeSheetModule() {
               </div>
               {isCurrentWeek && myWeekSummary && (
                 <div className="weekly-summary-card">
-                  {myWeekTotal < 36 && (
-                    <p className="weekly-summary-min-msg">Minimum 36 hours (including leave) required. Current total: {myWeekTotal.toFixed(1)}h.</p>
+                  {myWeekTotal < 40 && (
+                    <p className="weekly-summary-min-msg">Minimum 40 hours (including leave) required. Current total: {myWeekTotal.toFixed(1)}h.</p>
                   )}
                   <div className="weekly-summary-stats">
                     <span><strong>Total:</strong> {myWeekSummary.total_hours.toFixed(1)}h</span>
