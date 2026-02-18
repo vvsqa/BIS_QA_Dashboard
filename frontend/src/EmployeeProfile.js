@@ -44,6 +44,40 @@ ChartJS.register(
   Filler
 );
 
+// Copy icon (clipboard) and check icon for "Copied" state
+const CopyIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+  </svg>
+);
+const CheckIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <polyline points="20 6 9 17 4 12"/>
+  </svg>
+);
+
+// Copy-to-clipboard wrapper for copyable text (e.g. Employee ID, Email)
+function CopyableValue({ value, children, title = 'Copy' }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = (e) => {
+    e.stopPropagation();
+    if (!value) return;
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  };
+  return (
+    <div className="copyable-value-wrap" title={title}>
+      {children}
+      <button type="button" className="copyable-value-btn copyable-value-btn-icon" onClick={handleCopy} aria-label={copied ? 'Copied' : 'Copy'}>
+        {copied ? <CheckIcon /> : <CopyIcon />}
+      </button>
+    </div>
+  );
+}
+
 // Circular Progress Component
 function CircularProgress({ value, maxValue = 100, size = 120, strokeWidth = 10, color, label }) {
   const percentage = Math.min((value / maxValue) * 100, 100);
@@ -1484,15 +1518,19 @@ function EmployeeProfile() {
             {/* Basic Info */}
             <div className="experience-item">
               <span className="experience-label">Employee ID</span>
-              <span className="experience-value" style={{ fontFamily: 'monospace', fontWeight: '600' }}>
-                {employee.employee_id}
-              </span>
+              <CopyableValue value={employee.employee_id} title="Copy Employee ID">
+                <span className="experience-value" style={{ fontFamily: 'monospace', fontWeight: '600' }}>
+                  {employee.employee_id}
+                </span>
+              </CopyableValue>
             </div>
             <div className="experience-item">
               <span className="experience-label">Email</span>
-              <span className="experience-value" style={{ fontSize: '13px' }}>
-                {employee.email}
-              </span>
+              <CopyableValue value={employee.email || ''} title="Copy Email">
+                <span className="experience-value" style={{ fontSize: '13px' }}>
+                  {employee.email}
+                </span>
+              </CopyableValue>
             </div>
             <div className="experience-item">
               <span className="experience-label">Date of Joining</span>
@@ -2300,11 +2338,15 @@ function EmployeeProfile() {
                 <h4>Employee Details</h4>
                 <div className="detail-row">
                   <span className="detail-label">Employee ID</span>
-                  <span className="detail-value">{employee.employee_id}</span>
+                  <CopyableValue value={employee.employee_id} title="Copy Employee ID">
+                    <span className="detail-value">{employee.employee_id}</span>
+                  </CopyableValue>
                 </div>
                 <div className="detail-row">
                   <span className="detail-label">Email</span>
-                  <span className="detail-value">{employee.email}</span>
+                  <CopyableValue value={employee.email || ''} title="Copy Email">
+                    <span className="detail-value">{employee.email}</span>
+                  </CopyableValue>
                 </div>
                 <div className="detail-row">
                   <span className="detail-label">Location</span>

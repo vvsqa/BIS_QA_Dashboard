@@ -8644,13 +8644,29 @@ def get_weekly_calendar(
         
         # Get employee names for filtering timesheet data
         employee_names = [emp.name for emp in employees]
+        # Map employee_id -> employee for calendar (one row per person, avoids duplicate names)
+        employee_ids = {emp.employee_id for emp in employees}
+        name_to_employee_id = {emp.name.strip(): emp.employee_id for emp in employees}
+        # Load name mappings so alternate spellings (e.g. "Gautham Krishna KP") map to same employee_id
+        names_for_query = set(employee_names)
+        try:
+            name_mappings = db.query(EmployeeNameMapping).filter(
+                EmployeeNameMapping.is_active == True
+            ).all()
+            for m in name_mappings:
+                if m.employee_id and m.employee_id in employee_ids and m.alternate_name:
+                    alt = m.alternate_name.strip()
+                    name_to_employee_id[alt] = m.employee_id
+                    names_for_query.add(alt)
+        except Exception:
+            pass
         
         # Map team for timesheet filter: EnhancedTimesheet uses "DEV", Employee uses "DEVELOPMENT"
         timesheet_team_filter = team.upper()
         if timesheet_team_filter == "DEVELOPMENT":
             timesheet_team_filter = "DEV"
         
-        # Query timesheet data
+        # Query timesheet data (include alternate names so we fetch entries for merged employees)
         query = db.query(EnhancedTimesheet).filter(
             EnhancedTimesheet.date >= week_start,
             EnhancedTimesheet.date <= week_end
@@ -8658,8 +8674,8 @@ def get_weekly_calendar(
         
         if team.upper() != "ALL":
             query = query.filter(EnhancedTimesheet.team == timesheet_team_filter)
-        if category.upper() != "ALL" and employee_names:
-            query = query.filter(EnhancedTimesheet.employee_name.in_(employee_names))
+        if category.upper() != "ALL" and names_for_query:
+            query = query.filter(EnhancedTimesheet.employee_name.in_(names_for_query))
         
         entries = query.order_by(
             EnhancedTimesheet.employee_name,
@@ -8673,16 +8689,16 @@ def get_weekly_calendar(
         )
         if team.upper() != "ALL":
             leave_query = leave_query.filter(LeaveEntry.team == timesheet_team_filter)
-        if category.upper() != "ALL" and employee_names:
-            leave_query = leave_query.filter(LeaveEntry.employee_name.in_(employee_names))
+        if category.upper() != "ALL" and names_for_query:
+            leave_query = leave_query.filter(LeaveEntry.employee_name.in_(names_for_query))
         leaves = leave_query.all()
         
-        # Build employee calendar data
+        # Build employee calendar data keyed by employee_id (one row per person, no duplicates)
         employee_data = {}
         
         # Initialize all employees
         for emp in employees:
-            employee_data[emp.name] = {
+            employee_data[emp.employee_id] = {
                 "employee_id": emp.employee_id,
                 "employee_name": emp.name,
                 "team": emp.team,
@@ -8695,7 +8711,7 @@ def get_weekly_calendar(
                 is_weekend_day = is_weekend(day)
                 holiday_info = week_holidays.get(day_key)
                 
-                employee_data[emp.name]["days"][day_key] = {
+                employee_data[emp.employee_id]["days"][day_key] = {
                     "date": day_key,
                     "entries": [],
                     "total_hours": 0,
@@ -8709,44 +8725,27 @@ def get_weekly_calendar(
                     "is_working_day": not is_weekend_day and holiday_info is None
                 }
         
-        # Add timesheet entries (also handle employees not in master list)
+        # Resolve timesheet entry to employee_id (by id or by name/mapping)
+        def _resolve_employee_id(entry_employee_id, entry_employee_name):
+            if entry_employee_id and entry_employee_id in employee_data:
+                return entry_employee_id
+            name = (entry_employee_name or "").strip()
+            return name_to_employee_id.get(name)
+        
+        # Add timesheet entries only to existing employee rows (no new rows from name variants)
         for entry in entries:
-            name = entry.employee_name
-            if name not in employee_data:
-                employee_data[name] = {
-                    "employee_id": entry.employee_id,
-                    "employee_name": name,
-                    "team": entry.team,
-                    "days": {}
-                }
-                for i in range(7):
-                    day = week_start + timedelta(days=i)
-                    day_key = day.isoformat()
-                    is_weekend_day = is_weekend(day)
-                    holiday_info = week_holidays.get(day_key)
-                    
-                    employee_data[name]["days"][day_key] = {
-                        "date": day_key,
-                        "entries": [],
-                        "total_hours": 0,
-                        "productive_hours": 0,
-                        "hours_logged": 0,
-                        "leave_type": None,
-                        "is_weekend": is_weekend_day,
-                        "is_holiday": holiday_info is not None,
-                        "holiday_name": holiday_info["name"] if holiday_info else None,
-                        "holiday_category": holiday_info["category"] if holiday_info else None,
-                        "is_working_day": not is_weekend_day and holiday_info is None
-                    }
-            
+            eid = _resolve_employee_id(entry.employee_id, entry.employee_name)
+            if eid is None:
+                continue
+            name = eid
             day_key = entry.date.isoformat()
-            if day_key in employee_data[name]["days"]:
+            if day_key in employee_data[eid]["days"]:
                 # Get hours - use productive_hours if available, otherwise hours_logged
                 productive = entry.productive_hours or 0
                 hours_logged = entry.hours_logged or 0
                 display_hours = productive if productive > 0 else hours_logged
                 
-                employee_data[name]["days"][day_key]["entries"].append({
+                employee_data[eid]["days"][day_key]["entries"].append({
                     "ticket_id": entry.ticket_id,
                     "hours": display_hours,
                     "productive_hours": productive,
@@ -8754,22 +8753,22 @@ def get_weekly_calendar(
                     "task_description": entry.task_description,
                     "project_name": entry.project_name
                 })
-                employee_data[name]["days"][day_key]["total_hours"] += display_hours
-                employee_data[name]["days"][day_key]["productive_hours"] += productive
-                employee_data[name]["days"][day_key]["hours_logged"] = employee_data[name]["days"][day_key].get("hours_logged", 0) + hours_logged
+                employee_data[eid]["days"][day_key]["total_hours"] += display_hours
+                employee_data[eid]["days"][day_key]["productive_hours"] += productive
+                employee_data[eid]["days"][day_key]["hours_logged"] = employee_data[eid]["days"][day_key].get("hours_logged", 0) + hours_logged
                 if entry.leave_type:
-                    employee_data[name]["days"][day_key]["leave_type"] = entry.leave_type
+                    employee_data[eid]["days"][day_key]["leave_type"] = entry.leave_type
         
-        # Add leave entries
+        # Add leave entries (resolve to employee_id so same person not duplicated)
         for leave in leaves:
-            name = leave.employee_name
-            if name in employee_data:
+            eid = _resolve_employee_id(leave.employee_id, leave.employee_name)
+            if eid is not None:
                 day_key = leave.date.isoformat()
-                if day_key in employee_data[name]["days"]:
-                    employee_data[name]["days"][day_key]["leave_type"] = leave.leave_type
+                if day_key in employee_data[eid]["days"]:
+                    employee_data[eid]["days"][day_key]["leave_type"] = leave.leave_type
         
         # Calculate totals per employee
-        for name, data in employee_data.items():
+        for eid, data in employee_data.items():
             total = sum(d["total_hours"] for d in data["days"].values())
             productive = sum(d["productive_hours"] for d in data["days"].values())
             data["weekly_total_hours"] = total
@@ -8864,41 +8863,60 @@ def get_monthly_calendar(
         
         # Get employee names for filtering timesheet data
         employee_names = [emp.name for emp in all_employees]
+        employee_ids = {emp.employee_id for emp in all_employees}
+        name_to_employee_id = {emp.name.strip(): emp.employee_id for emp in all_employees}
+        names_for_query = set(employee_names)
+        try:
+            name_mappings = db.query(EmployeeNameMapping).filter(
+                EmployeeNameMapping.is_active == True
+            ).all()
+            for m in name_mappings:
+                if m.employee_id and m.employee_id in employee_ids and m.alternate_name:
+                    alt = m.alternate_name.strip()
+                    name_to_employee_id[alt] = m.employee_id
+                    names_for_query.add(alt)
+        except Exception:
+            pass
         
         # Map team for timesheet filter: EnhancedTimesheet uses "DEV", Employee uses "DEVELOPMENT"
         timesheet_team_filter = team.upper()
         if timesheet_team_filter == "DEVELOPMENT":
             timesheet_team_filter = "DEV"
         
-        # Query timesheet data (filtered by employee names based on team/category)
+        # Query timesheet data (include alternate names for merged employees)
         query = db.query(EnhancedTimesheet).filter(
             EnhancedTimesheet.date >= month_start,
             EnhancedTimesheet.date <= month_end
         )
         if team.upper() != "ALL":
             query = query.filter(EnhancedTimesheet.team == timesheet_team_filter)
-        if category.upper() != "ALL" and employee_names:
-            query = query.filter(EnhancedTimesheet.employee_name.in_(employee_names))
+        if category.upper() != "ALL" and names_for_query:
+            query = query.filter(EnhancedTimesheet.employee_name.in_(names_for_query))
         entries = query.all()
         
-        # Query leaves (filtered by employee names based on team/category)
+        # Query leaves (include alternate names for merged employees)
         leave_query = db.query(LeaveEntry).filter(
             LeaveEntry.date >= month_start,
             LeaveEntry.date <= month_end
         )
         if team.upper() != "ALL":
             leave_query = leave_query.filter(LeaveEntry.team == timesheet_team_filter)
-        if category.upper() != "ALL" and employee_names:
-            leave_query = leave_query.filter(LeaveEntry.employee_name.in_(employee_names))
+        if category.upper() != "ALL" and names_for_query:
+            leave_query = leave_query.filter(LeaveEntry.employee_name.in_(names_for_query))
         leaves = leave_query.all()
         
-        # Build employee data
+        def _resolve_eid(entry_employee_id, entry_employee_name):
+            if entry_employee_id and entry_employee_id in employee_ids:
+                return entry_employee_id
+            return name_to_employee_id.get((entry_employee_name or "").strip())
+        
+        # Build employee data keyed by employee_id (one row per person, no duplicates)
         employee_data = defaultdict(lambda: {
             "days": defaultdict(lambda: {
-                "hours": 0, 
+                "hours": 0,
                 "productive_hours": 0,
                 "hours_logged": 0,
-                "leave_type": None, 
+                "leave_type": None,
                 "entries": []
             }),
             "total_hours": 0,
@@ -8909,38 +8927,34 @@ def get_monthly_calendar(
         
         # Initialize all active employees (even those with no entries)
         for emp in all_employees:
-            employee_data[emp.name]["employee_id"] = emp.employee_id
-            employee_data[emp.name]["employee_name"] = emp.name
-            employee_data[emp.name]["team"] = emp.team
+            employee_data[emp.employee_id]["employee_id"] = emp.employee_id
+            employee_data[emp.employee_id]["employee_name"] = emp.name
+            employee_data[emp.employee_id]["team"] = emp.team
         
         for entry in entries:
-            name = entry.employee_name
+            eid = _resolve_eid(entry.employee_id, entry.employee_name)
+            if eid is None:
+                continue
             day = entry.date.isoformat()
-            employee_data[name]["employee_id"] = entry.employee_id
-            employee_data[name]["employee_name"] = name
-            employee_data[name]["team"] = entry.team
-            
-            # Consolidate productive hours (preferred) or hours_logged (fallback) per day
             productive = entry.productive_hours if entry.productive_hours is not None else None
             time_spent = entry.hours_logged or 0
-            
-            # Use productive hours if available, otherwise use time spent
             display_hours = productive if productive is not None else time_spent
             
-            employee_data[name]["days"][day]["productive_hours"] += productive if productive is not None else 0
-            employee_data[name]["days"][day]["hours_logged"] += time_spent
-            employee_data[name]["days"][day]["hours"] = display_hours  # Display value
-            employee_data[name]["days"][day]["entries"].append(entry.ticket_id)
+            employee_data[eid]["days"][day]["productive_hours"] += productive if productive is not None else 0
+            employee_data[eid]["days"][day]["hours_logged"] += time_spent
+            employee_data[eid]["days"][day]["hours"] = display_hours
+            employee_data[eid]["days"][day]["entries"].append(entry.ticket_id)
             if entry.leave_type:
-                employee_data[name]["days"][day]["leave_type"] = entry.leave_type
-            employee_data[name]["total_hours"] += display_hours
-            employee_data[name]["total_productive_hours"] += productive if productive is not None else 0
+                employee_data[eid]["days"][day]["leave_type"] = entry.leave_type
+            employee_data[eid]["total_hours"] += display_hours
+            employee_data[eid]["total_productive_hours"] += productive if productive is not None else 0
         
         for leave in leaves:
-            name = leave.employee_name
-            day = leave.date.isoformat()
-            employee_data[name]["days"][day]["leave_type"] = leave.leave_type
-            employee_data[name]["total_leave_days"] += 1
+            eid = _resolve_eid(leave.employee_id, leave.employee_name)
+            if eid is not None:
+                day = leave.date.isoformat()
+                employee_data[eid]["days"][day]["leave_type"] = leave.leave_type
+                employee_data[eid]["total_leave_days"] += 1
         
         # Calculate working days and average productive hours
         today = date.today()

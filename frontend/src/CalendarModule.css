@@ -456,6 +456,24 @@
   margin-top: 2px;
 }
 
+.weekly-stats-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.weekly-total-inline {
+  font-size: 11px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.weekly-total-inline.below-target {
+  color: var(--accent-red);
+  font-weight: 700;
+}
+
 /* ===== Employee Row ===== */
 .employee-row {
   display: table-row;
@@ -770,6 +788,15 @@
   display: block;
   font-size: 16px;
   color: var(--accent-purple);
+}
+
+.total-cell.weekly-below-target {
+  background: rgba(239, 68, 68, 0.12);
+  border-left: 2px solid rgba(239, 68, 68, 0.8) !important;
+}
+
+.total-cell.weekly-below-target strong {
+  color: var(--accent-red);
 }
 
 /* ===== Monthly View ===== */

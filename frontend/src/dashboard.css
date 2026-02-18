@@ -8245,6 +8245,7 @@ tbody tr:last-child td {
   background: rgba(139, 92, 246, 0.05);
   border-radius: var(--radius-md);
   border: 1px solid rgba(139, 92, 246, 0.1);
+  min-width: 0; /* allow grid item to shrink, prevent overlap */
 }
 
 .experience-label {
@@ -8259,6 +8260,9 @@ tbody tr:last-child td {
   font-size: 20px;
   font-weight: 600;
   color: var(--text-primary);
+  word-break: break-word;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 
 .experience-value.highlight {
@@ -8269,6 +8273,49 @@ tbody tr:last-child td {
   font-size: 24px;
   font-weight: 700;
   color: var(--accent-purple);
+}
+
+/* Copyable value (Employee ID, Email) */
+.copyable-value-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.copyable-value-wrap .experience-value,
+.copyable-value-wrap .detail-value {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.copyable-value-btn {
+  flex-shrink: 0;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent-purple);
+  background: rgba(139, 92, 246, 0.15);
+  border: 1px solid rgba(139, 92, 246, 0.3);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s;
+}
+.copyable-value-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  border-radius: 6px;
+}
+.copyable-value-btn:hover {
+  background: rgba(139, 92, 246, 0.25);
+  color: #c4b5fd;
+}
+.copyable-value-btn:active {
+  transform: scale(0.98);
+}
+.copyable-value-btn-icon:focus {
+  outline: none;
 }
 
 .emp-header-left {
@@ -15220,6 +15267,7 @@ td.emp-actions {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+  min-width: 0; /* allow grid item to shrink, prevent overlap */
 }
 
 .experience-label {
@@ -15233,6 +15281,9 @@ td.emp-actions {
   font-size: 0.95rem;
   color: var(--text-primary);
   font-weight: 500;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  min-width: 0;
 }
 
 .experience-value.highlight {

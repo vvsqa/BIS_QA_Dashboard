@@ -493,12 +493,24 @@ function CalendarModule() {
                     </td>
                   );
                 })}
-                <td className={`total-cell ${getHoursColorClass(emp.weekly_total_hours / 5)}`}>
-                  <strong>{parseFloat(emp.weekly_total_hours || 0).toFixed(1)}h</strong>
-                  <div className="weekly-avg">
-                    Avg: {((emp.weekly_total_hours || 0) / 5).toFixed(1)}h/day
-                  </div>
-                </td>
+                {(() => {
+                  const weeklyTotal = parseFloat(emp.weekly_total_hours || 0);
+                  const weeklyAvg = weeklyTotal / 5;
+                  const isBelowWeeklyTarget = weeklyTotal < 40;
+                  return (
+                    <td className={`total-cell ${getHoursColorClass(weeklyAvg)} ${isBelowWeeklyTarget ? 'weekly-below-target' : ''}`}>
+                      <strong>{weeklyTotal.toFixed(1)}h</strong>
+                      <div className="weekly-stats-row">
+                        <span className="weekly-avg">
+                          Avg: {weeklyAvg.toFixed(1)}h/day
+                        </span>
+                        <span className={`weekly-total-inline ${isBelowWeeklyTarget ? 'below-target' : ''}`}>
+                          Week: {weeklyTotal.toFixed(1)}h
+                        </span>
+                      </div>
+                    </td>
+                  );
+                })()}
               </tr>
             ))}
           </tbody>
