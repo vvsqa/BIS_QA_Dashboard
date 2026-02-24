@@ -42,7 +42,7 @@ const ACTIVITY_TYPES = [
   'Other'
 ];
 
-const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous'];
+const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Half Day Leave', 'Miscellaneous'];
 
 const VARIANCE_REASON_TYPES = [
   { value: '', label: '— Select reason (optional) —' },
@@ -533,7 +533,12 @@ function TimeSheetModule() {
     if (!entryForm.activity_type) errs.activity_type = 'Activity type is required';
     if (entryForm.hours === '' || entryForm.hours == null) errs.hours = 'Hours spent is required';
     else if (Number(entryForm.hours) <= 0) errs.hours = 'Hours must be greater than 0';
-    if (!entryForm.task_description?.trim() && !entryForm.ticket_id) errs.task_description = 'Task description or Ticket ID is required';
+    if (
+      !entryForm.task_description?.trim() &&
+      !entryForm.ticket_id &&
+      entryForm.task_category !== 'Leave' &&
+      entryForm.task_category !== 'Half Day Leave'
+    ) errs.task_description = 'Task description or Ticket ID is required';
     setEntryFormErrors(errs);
     if (Object.keys(errs).length) return;
 
@@ -1362,7 +1367,7 @@ function TimeSheetModule() {
                             )}
                             {dayData.entries && dayData.entries.length > 0 && (
                               <div className="day-entries">
-                                {dayData.entries.slice(0, 2).map((entry, idx) => {
+                                {dayData.entries.map((entry, idx) => {
                                   const isTicket = entry.ticket_id && /^\d+$/.test(String(entry.ticket_id));
                                   return (
                                     <div 
@@ -1402,9 +1407,6 @@ function TimeSheetModule() {
                                     </div>
                                   );
                                 })}
-                                {dayData.entries.length > 2 && (
-                                  <div className="more-entries">+{dayData.entries.length - 2} more</div>
-                                )}
                               </div>
                             )}
                             <div className={`day-total ${getHoursColorClass(totalHours)}`}>
@@ -1490,7 +1492,15 @@ function TimeSheetModule() {
                       Task category *
                       <select
                         value={entryForm.task_category || 'Ticket'}
-                        onChange={(e) => setEntryForm((prev) => ({ ...prev, task_category: e.target.value, ticket_id: e.target.value !== 'Ticket' ? '' : prev.ticket_id }))}
+                        onChange={(e) => {
+                          const nextCategory = e.target.value;
+                          setEntryForm((prev) => ({
+                            ...prev,
+                            task_category: nextCategory,
+                            ticket_id: nextCategory !== 'Ticket' ? '' : prev.ticket_id,
+                            hours: nextCategory === 'Half Day Leave' ? '4' : prev.hours,
+                          }));
+                        }}
                       >
                         {TASK_CATEGORIES.map((c) => (
                           <option key={c} value={c}>{c}</option>
@@ -1549,6 +1559,7 @@ function TimeSheetModule() {
                         step="0.1"
                         value={entryForm.hours}
                         onChange={(e) => setEntryForm((prev) => ({ ...prev, hours: e.target.value }))}
+                        disabled={entryForm.task_category === 'Half Day Leave'}
                       />
                       {entryFormErrors.hours && <span className="form-error">{entryFormErrors.hours}</span>}
                     </label>
@@ -1645,7 +1656,15 @@ function TimeSheetModule() {
                         Task category *
                         <select
                           value={entryForm.task_category || 'Ticket'}
-                          onChange={(e) => setEntryForm((prev) => ({ ...prev, task_category: e.target.value, ticket_id: e.target.value !== 'Ticket' ? '' : prev.ticket_id }))}
+                          onChange={(e) => {
+                            const nextCategory = e.target.value;
+                            setEntryForm((prev) => ({
+                              ...prev,
+                              task_category: nextCategory,
+                              ticket_id: nextCategory !== 'Ticket' ? '' : prev.ticket_id,
+                              hours: nextCategory === 'Half Day Leave' ? '4' : prev.hours,
+                            }));
+                          }}
                         >
                           {TASK_CATEGORIES.map((c) => (
                             <option key={c} value={c}>{c}</option>
@@ -1704,6 +1723,7 @@ function TimeSheetModule() {
                           step="0.1"
                           value={entryForm.hours}
                           onChange={(e) => setEntryForm((prev) => ({ ...prev, hours: e.target.value }))}
+                          disabled={entryForm.task_category === 'Half Day Leave'}
                         />
                         {entryFormErrors.hours && <span className="form-error">{entryFormErrors.hours}</span>}
                       </label>

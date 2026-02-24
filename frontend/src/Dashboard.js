@@ -367,16 +367,51 @@ function Dashboard() {
     });
   };
 
+  const normalizeMemberName = (name) => String(name || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const compactMemberName = (name) => normalizeMemberName(name).replace(/\s+/g, '');
+
+  const namesLikelySame = (a, b) => {
+    const na = normalizeMemberName(a);
+    const nb = normalizeMemberName(b);
+    if (!na || !nb) return false;
+    if (na === nb) return true;
+
+    const ca = compactMemberName(a);
+    const cb = compactMemberName(b);
+    if (ca && cb && ca === cb) return true;
+
+    // Handle suffix variations like "Gautham Krishna" vs "Gautham Krishna K P"
+    if (na.length >= 6 && nb.length >= 6 && (na.startsWith(nb) || nb.startsWith(na))) {
+      return true;
+    }
+    return false;
+  };
+
+  const normalizeTeamLabel = (team) => {
+    const t = (team || '').toUpperCase();
+    if (t === 'DEVELOPMENT' || t === 'DEV') return 'DEV';
+    if (t === 'QA') return 'QA';
+    return t || 'BIS Team';
+  };
+
   // Classify a person's team - returns 'DEV', 'QA', or 'BIS Team'
   const classifyPerson = (name) => {
     if (!name) return 'Unknown';
-    const normalizedName = name.trim().toLowerCase();
-    if (employeeTeamMap[normalizedName]) {
-      const team = (employeeTeamMap[normalizedName] || '').toUpperCase();
-      if (team === 'DEVELOPMENT' || team === 'DEV') return 'DEV';
-      if (team === 'QA') return 'QA';
-      return team || 'BIS Team';
-    }
+
+    const rawLower = String(name).trim().toLowerCase();
+    const normalizedName = normalizeMemberName(name);
+
+    const exactTeam = employeeTeamMap[rawLower] || employeeTeamMap[normalizedName];
+    if (exactTeam) return normalizeTeamLabel(exactTeam);
+
+    const matchedEmployee = allEmployees.find((emp) => namesLikelySame(emp?.name, name));
+    if (matchedEmployee?.team) return normalizeTeamLabel(matchedEmployee.team);
+
     // Not in employee database = BIS Team (client)
     return 'BIS Team';
   };
@@ -397,6 +432,16 @@ function Dashboard() {
     });
     
     return { dev, qa, bis };
+  };
+
+  const getTicketMemberTeam = (name, tracking) => {
+    if (!name || !tracking) return classifyPerson(name);
+    const qaMembers = tracking.qc_testers || [];
+    const devMembers = tracking.developers || [];
+
+    if (qaMembers.some((m) => namesLikelySame(m, name))) return 'QA';
+    if (devMembers.some((m) => namesLikelySame(m, name))) return 'DEV';
+    return classifyPerson(name);
   };
 
   // Test backend connection on mount
@@ -2422,8 +2467,14 @@ function Dashboard() {
 
                 {/* QA Team - Only show internal QA team members */}
                 {(() => {
-                  const qaSegregated = segregateTeamMembers(ticketTracking.qc_testers || []);
-                  const hasQa = qaSegregated.qa.length > 0;
+                  // PM QC tester field should always appear under QA Team, even when
+                  // naming variation does not exactly match employee master.
+                  const qaMembers = [...new Set(
+                    (ticketTracking.qc_testers || [])
+                      .map((n) => (n || '').trim())
+                      .filter(Boolean)
+                  )];
+                  const hasQa = qaMembers.length > 0;
                   
                   return (
                     <div className="team-group">
@@ -2436,7 +2487,7 @@ function Dashboard() {
                       </div>
                       <div className="team-members">
                         {hasQa ? (
-                          qaSegregated.qa.map((tester, idx) => (
+                          qaMembers.map((tester, idx) => (
                             <span 
                               key={idx} 
                               className={`member-chip qa ${isValidEmployee(tester) ? 'clickable' : ''}`}
@@ -2455,9 +2506,9 @@ function Dashboard() {
                 {/* BIS Team (Client) - Show all BIS members with real names after QA */}
                 {(() => {
                   const devSegregated = segregateTeamMembers(ticketTracking.developers || []);
-                  const qaSegregated = segregateTeamMembers(ticketTracking.qc_testers || []);
-                  // Combine all BIS members from both dev and QA lists
-                  const allBisMembers = [...new Set([...devSegregated.bis, ...qaSegregated.bis])];
+                  // BIS list should only include non-internal names from developer fields.
+                  // QC tester names are rendered under QA Team.
+                  const allBisMembers = [...new Set(devSegregated.bis)];
                   
                   return allBisMembers.length > 0 && (
                     <div className="team-group">
@@ -2493,14 +2544,19 @@ function Dashboard() {
                       <span>Currently Assigned To</span>
                     </div>
                     <div className="team-members">
+                      {(() => {
+                        const assigneeTeam = getTicketMemberTeam(ticketTracking.current_assignee, ticketTracking);
+                        return (
                       <span 
-                        className={`member-chip ${classifyPerson(ticketTracking.current_assignee) === 'DEV' ? 'developer' : classifyPerson(ticketTracking.current_assignee) === 'QA' ? 'qa' : 'bis-team'} ${isValidEmployee(ticketTracking.current_assignee) ? 'clickable' : ''}`}
+                        className={`member-chip ${assigneeTeam === 'DEV' ? 'developer' : assigneeTeam === 'QA' ? 'qa' : 'bis-team'} ${isValidEmployee(ticketTracking.current_assignee) ? 'clickable' : ''}`}
                         onClick={() => handleNameClick(ticketTracking.current_assignee)}
                         style={isValidEmployee(ticketTracking.current_assignee) ? { cursor: 'pointer' } : {}}
                       >
                         {ticketTracking.current_assignee}
-                        {classifyPerson(ticketTracking.current_assignee) === 'BIS Team' && ' (BIS)'}
+                        {assigneeTeam === 'BIS Team' && ' (BIS)'}
                       </span>
+                        );
+                      })()}
                     </div>
                   </div>
                 )}

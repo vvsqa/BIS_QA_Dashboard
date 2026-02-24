@@ -39,8 +39,8 @@ ChartJS.register(
 const HOURS_PER_WEEK = 40;
 const DEFAULT_USER_NAME = '';
 const DEFAULT_USER_ROLE = '';
-const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
-const GENERIC_CATEGORIES = ['Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
+const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Half Day Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
+const GENERIC_CATEGORIES = ['Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Half Day Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
 const TASK_CATEGORY_COLORS = {
   Ticket: '#60a5fa',
   'Team Meetings': '#a78bfa',
@@ -48,6 +48,7 @@ const TASK_CATEGORY_COLORS = {
   Training: '#fbbf24',
   KT: '#f97316',
   Leave: '#94a3b8',
+  'Half Day Leave': '#94a3b8',
   Miscellaneous: '#64748b',
   'Generic Task': '#0ea5e9',
   Regression: '#f43f5e',
@@ -2395,10 +2396,11 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                       ticket_id_input: v === 'Ticket' ? form.ticket_id_input : '',
                       generic_category: v !== 'Ticket' ? v : '',
                     };
-                    // Set defaults for Leave category
-                    if (v === 'Leave') {
-                      updates.total_hours = 8;
-                      updates.max_hours_per_day = 8;
+                    // Set defaults for Leave categories
+                    if (v === 'Leave' || v === 'Half Day Leave') {
+                      const leaveHours = v === 'Half Day Leave' ? 4 : 8;
+                      updates.total_hours = leaveHours;
+                      updates.max_hours_per_day = leaveHours;
                     }
                     setForm({ ...form, ...updates });
                     if (v !== 'Ticket') setLookedUpTicket(null);
@@ -2540,7 +2542,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                   />
                   {formErrors.start_date && <span className="form-error">{formErrors.start_date}</span>}
                 </div>
-                {form.task_category === 'Leave' ? (
+                {form.task_category === 'Leave' || form.task_category === 'Half Day Leave' ? (
                   <div className="form-group">
                     <label>Leave type *</label>
                     <div className="leave-type-options">
@@ -2559,6 +2561,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                           name="leave_type"
                           checked={form.total_hours === 8}
                           onChange={() => setForm({ ...form, total_hours: 8, max_hours_per_day: 8 })}
+                          disabled={form.task_category === 'Half Day Leave'}
                         />
                         Full Day (8h)
                       </label>
@@ -2593,7 +2596,7 @@ function DevelopmentTaskPlanning({ showParentTitle = true }) {
                 )}
               </div>
 
-              {form.task_category !== 'Leave' && (
+              {form.task_category !== 'Leave' && form.task_category !== 'Half Day Leave' && (
                 <div className="form-group">
                   <label>Max hours per day for this task</label>
                   <select

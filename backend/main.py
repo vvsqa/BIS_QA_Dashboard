@@ -9692,13 +9692,22 @@ def get_team_timesheet_weekly(
             
             employees_data.append(emp_data)
         
-        # Non-managers see only their own row; managers see all DEV and QA data
+        # Managers see all team rows.
+        # Leads see self + direct reportees for the selected team.
+        # Regular employees see only their own row.
         role = (current_user.get("role") or "").upper()
         is_manager = role == "ADMIN" or "MANAGER" in role
+        is_lead = "LEAD" in role and not is_manager
         viewer_team = team
         if not is_manager:
             viewer_employee_id = current_user.get("employee_id")
-            if viewer_employee_id:
+            if is_lead:
+                visible_ids = get_visible_employee_ids(db, current_user) or set()
+                employees_data = [e for e in employees_data if e.get("employee_id") in visible_ids]
+                # Keep team selection stable for lead views even when no rows in chosen team.
+                if employees_data:
+                    viewer_team = team
+            elif viewer_employee_id:
                 employees_data = [e for e in employees_data if e.get("employee_id") == viewer_employee_id]
                 if employees_data:
                     viewer_team = employees_data[0].get("team") or team
@@ -9987,14 +9996,14 @@ def add_timesheet_entry(
         if not emp:
             raise HTTPException(status_code=404, detail="Employee not found")
 
-        # Prevent edits when week is already submitted and pending approval
+        # Allow changes until final approval; lock only once fully approved.
         ws, _ = _get_week_boundaries(req.date)
         existing_submission = db.query(TimeSheetSubmission).filter(
             TimeSheetSubmission.employee_id == target_employee,
             TimeSheetSubmission.week_start == ws
         ).first()
-        if existing_submission and existing_submission.status in ["Pending", "Lead Approved", "Approved"]:
-            raise HTTPException(status_code=400, detail="Timesheet already submitted for this week. Revisions required before editing.")
+        if existing_submission and existing_submission.status in ["Approved"]:
+            raise HTTPException(status_code=400, detail="Timesheet already approved for this week. No further edits allowed.")
 
         if req.task_category == "Ticket" and not (req.ticket_id and str(req.ticket_id).strip()):
             raise HTTPException(status_code=400, detail="Ticket ID is required when task category is Ticket")
@@ -10050,8 +10059,6 @@ def delete_timesheet_entry(entry_id: int, current_user: dict = Depends(get_curre
             TimeSheetSubmission.employee_id == entry.employee_id,
             TimeSheetSubmission.week_start == ws
         ).first()
-        if existing_submission and existing_submission.status in ["Pending", "Lead Approved", "Approved"]:
-            raise HTTPException(status_code=400, detail="Timesheet already submitted for this week. Revisions required before deleting.")
         db.delete(entry)
         db.commit()
         return {"ok": True}
@@ -10080,8 +10087,8 @@ def update_timesheet_entry(
             TimeSheetSubmission.employee_id == entry.employee_id,
             TimeSheetSubmission.week_start == ws
         ).first()
-        if existing_submission and existing_submission.status in ["Pending", "Lead Approved", "Approved"]:
-            raise HTTPException(status_code=400, detail="Timesheet already submitted for this week. Revisions required before editing.")
+        if existing_submission and existing_submission.status in ["Approved"]:
+            raise HTTPException(status_code=400, detail="Timesheet already approved for this week. No further edits allowed.")
 
         if req.task_category == "Ticket" and not (req.ticket_id and str(req.ticket_id).strip()):
             raise HTTPException(status_code=400, detail="Ticket ID is required when task category is Ticket")
@@ -12605,6 +12612,7 @@ def qa_planning_add_task(
             "Training",
             "KT",
             "Leave",
+            "Half Day Leave",
             "Miscellaneous",
             "Generic Task",
             "Regression",
@@ -12616,6 +12624,7 @@ def qa_planning_add_task(
             "Training",
             "KT",
             "Leave",
+            "Half Day Leave",
             "Miscellaneous",
             "Generic Task",
             "Regression",
@@ -12629,6 +12638,9 @@ def qa_planning_add_task(
             raise HTTPException(status_code=400, detail="Invalid task category. Use: " + ", ".join(TASK_CATEGORIES))
         body.task_category = normalized_task_category
         max_hours_per_day = body.max_hours_per_day if body.max_hours_per_day is not None else 8.0
+        is_half_day_leave = body.task_category == "Half Day Leave"
+        if is_half_day_leave:
+            max_hours_per_day = 4.0
 
         ticket_id = body.ticket_id
         ticket_title = None
@@ -12662,7 +12674,10 @@ def qa_planning_add_task(
         if not can_access_employee(db, current_user, emp.employee_id):
             raise HTTPException(status_code=403, detail="Access denied to this employee")
 
-        total_hours = body.total_hours if body.total_hours is not None else (max_hours_per_day if body.task_category == "Leave" else 8.0)
+        if is_half_day_leave:
+            total_hours = 4.0
+        else:
+            total_hours = body.total_hours if body.total_hours is not None else (max_hours_per_day if is_leave_category else 8.0)
         if body.task_category == "Ticket" and tkt and tkt.qa_estimate_hours and (body.total_hours is None or body.total_hours <= 0):
             total_hours = float(tkt.qa_estimate_hours)
         if total_hours is None or total_hours < 0.5:
@@ -13660,6 +13675,9 @@ def dev_planning_add_task(
         if body.end_date and body.end_date < body.start_date:
             raise HTTPException(status_code=400, detail="End date cannot be before start date")
         max_hours_per_day = body.max_hours_per_day if body.max_hours_per_day is not None else 8.0
+        is_half_day_leave = body.task_category == "Half Day Leave"
+        if is_half_day_leave:
+            max_hours_per_day = 4.0
         if max_hours_per_day < 0.5 or max_hours_per_day > 8:
             raise HTTPException(status_code=400, detail="Max hours per day must be 0.5–8")
 
@@ -13702,8 +13720,11 @@ def dev_planning_add_task(
         employee_id = emp.employee_id
         employee_name = emp.name
 
-        # Total hours: use total_hours if provided (1-40), else derive from end_date or ticket
-        if body.total_hours is not None:
+        # Total hours: for Half Day Leave always 4h, else use total_hours if provided (1-40), else derive from end_date or ticket
+        if is_half_day_leave:
+            total_hours = 4.0
+            body.end_date = body.start_date
+        elif body.total_hours is not None:
             total_hours = min(max(float(body.total_hours), 0.5), HOURS_PER_WEEK)
             body.end_date = body.start_date  # spillover will extend
         elif body.end_date:

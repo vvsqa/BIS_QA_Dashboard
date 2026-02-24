@@ -36,8 +36,8 @@ ChartJS.register(
 // For direct fetch calls, use empty string to use relative URLs (works with proxy/nginx)
 const API_BASE = (process.env.REACT_APP_API_BASE || '').replace(/\/$/, '');
 const HOURS_PER_WEEK = 40;
-const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
-const GENERIC_CATEGORIES = ['Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
+const TASK_CATEGORIES = ['Ticket', 'Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Half Day Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
+const GENERIC_CATEGORIES = ['Team Meetings', 'Customer Support', 'Training', 'KT', 'Leave', 'Half Day Leave', 'Miscellaneous', 'Generic Task', 'Regression', 'Live Testing'];
 const QA_TASK_TYPES = ['Manual Testing', 'Automation Testing', 'API Testing', 'Non-Functional Testing'];
 const MAX_HOURS_PER_DAY_OPTIONS = [0.5, 1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5.5, 6, 6.5, 7, 7.5, 8];
 
@@ -73,6 +73,7 @@ const TASK_CATEGORY_COLORS = {
   Training: '#fbbf24',
   KT: '#f97316',
   Leave: '#94a3b8',
+  'Half Day Leave': '#94a3b8',
   Miscellaneous: '#64748b',
   'Generic Task': '#0ea5e9',
   Regression: '#f43f5e',
@@ -3470,9 +3471,10 @@ function QATaskPlanning({ showParentTitle = false }) {
                   onChange={(e) => {
                     const cat = e.target.value;
                     const updates = { task_category: cat, ticket_id: null, ticket_id_input: '', task_type: cat === 'Ticket' ? 'Manual Testing' : '', generic_category: cat !== 'Ticket' ? cat : '' };
-                    if (cat === 'Leave') {
-                      updates.total_hours = 8;
-                      updates.max_hours_per_day = 8;
+                    if (cat === 'Leave' || cat === 'Half Day Leave') {
+                      const leaveHours = cat === 'Half Day Leave' ? 4 : 8;
+                      updates.total_hours = leaveHours;
+                      updates.max_hours_per_day = leaveHours;
                     }
                     setForm({ ...form, ...updates });
                     setLookedUpTicket(null);
@@ -3742,7 +3744,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                     <span className="qa-info-hint">Only {startDateAvailable}h available on this date</span>
                   )}
                 </div>
-                {form.task_category === 'Leave' ? (
+                {form.task_category === 'Leave' || form.task_category === 'Half Day Leave' ? (
                   <div className="qa-form-group">
                     <label>Leave type *</label>
                     <div className="qa-leave-type-options">
@@ -3761,6 +3763,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                           name="leave_type"
                           checked={form.total_hours === 8}
                           onChange={() => setForm({ ...form, total_hours: 8, max_hours_per_day: 8 })}
+                          disabled={form.task_category === 'Half Day Leave'}
                         />
                         Full Day (8h)
                       </label>
@@ -3785,7 +3788,7 @@ function QATaskPlanning({ showParentTitle = false }) {
                 )}
               </div>
 
-              {form.task_category !== 'Leave' && (
+              {form.task_category !== 'Leave' && form.task_category !== 'Half Day Leave' && (
                 <div className="qa-form-row-grid">
                   <div className="qa-form-group">
                     <label>Max hours per day for this task</label>
