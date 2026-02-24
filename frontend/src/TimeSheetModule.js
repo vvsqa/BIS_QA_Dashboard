@@ -51,6 +51,12 @@ const VARIANCE_REASON_TYPES = [
   { value: 'other', label: 'Other' },
 ];
 
+const toOptionalTrimmedString = (value) => {
+  if (value == null) return null;
+  const text = String(value).trim();
+  return text || null;
+};
+
 function TimeSheetModule() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -566,8 +572,8 @@ function TimeSheetModule() {
       task_category: task.category || 'Ticket',
       date: entryForm.date,
       hours: Number(task.hours),
-      ticket_id: task.ticket_id?.trim() || null,
-      task_description: (task.activity_description || task.ticket_title || '').trim() || null,
+      ticket_id: toOptionalTrimmedString(task.ticket_id),
+      task_description: toOptionalTrimmedString(task.activity_description || task.ticket_title),
       project_name: null,
       employee_id: selectedEmployeeId || user?.employee_id,
       planned_task_id: task.id,
@@ -579,6 +585,7 @@ function TimeSheetModule() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to add entry');
       }
+      closeEntryForm();
       await fetchTimesheetData();
     } catch (err) {
       setError(err.message || 'Failed to add entry');
@@ -606,8 +613,8 @@ function TimeSheetModule() {
       task_category: addWithMyTimeTask.category || 'Ticket',
       date: entryForm.date,
       hours: hoursNum,
-      ticket_id: addWithMyTimeTask.ticket_id?.trim() || null,
-      task_description: (addWithMyTimeTask.activity_description || addWithMyTimeTask.ticket_title || '').trim() || null,
+      ticket_id: toOptionalTrimmedString(addWithMyTimeTask.ticket_id),
+      task_description: toOptionalTrimmedString(addWithMyTimeTask.activity_description || addWithMyTimeTask.ticket_title),
       project_name: null,
       employee_id: selectedEmployeeId || user?.employee_id,
       planned_task_id: addWithMyTimeTask.id,
@@ -621,10 +628,7 @@ function TimeSheetModule() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.detail || 'Failed to add entry');
       }
-      setAddWithMyTimeTask(null);
-      setAddWithMyTimeHours('');
-      setAddWithMyTimeVarianceNotes('');
-      setAddWithMyTimeReasonType('');
+      closeEntryForm();
       await fetchTimesheetData();
     } catch (err) {
       setAddWithMyTimeError(err.message || 'Failed to add entry');

@@ -9887,13 +9887,35 @@ def get_timesheet_planned_tasks(
             raise HTTPException(status_code=404, detail="Employee not found")
 
         team_upper = (emp.team or "").upper()
+        employee_names_for_match = set()
+        if emp.name:
+            employee_names_for_match.add(emp.name.strip())
+
+        # Include alternate/canonical names mapped to this employee so planned tasks
+        # from sheets with variant names still appear in timesheet modal/calendar flows.
+        try:
+            name_mappings = db.query(EmployeeNameMapping).filter(
+                EmployeeNameMapping.is_active == True,
+                or_(
+                    EmployeeNameMapping.employee_id == emp.employee_id,
+                    EmployeeNameMapping.canonical_name == emp.name
+                )
+            ).all()
+            for m in name_mappings:
+                if m.alternate_name:
+                    employee_names_for_match.add(m.alternate_name.strip())
+                if m.canonical_name:
+                    employee_names_for_match.add(m.canonical_name.strip())
+        except Exception:
+            pass
+
         planned_tasks = []
         if "DEV" in team_upper or team_upper == "DEVELOPMENT":
             rows = db.query(DevPlannedTask, DevPlannedAllocation).join(
                 DevPlannedAllocation, DevPlannedAllocation.task_id == DevPlannedTask.id
             ).filter(
                 DevPlannedTask.status == "active",
-                DevPlannedTask.employee_name == emp.name,
+                DevPlannedTask.employee_name.in_(employee_names_for_match),
                 DevPlannedAllocation.allocation_date == target_date,
             ).all()
             for t, a in rows:
@@ -9914,7 +9936,7 @@ def get_timesheet_planned_tasks(
                 QAPlannedAllocation, QAPlannedAllocation.task_id == QAPlannedTask.id
             ).filter(
                 QAPlannedTask.status == "active",
-                QAPlannedTask.employee_name == emp.name,
+                QAPlannedTask.employee_name.in_(employee_names_for_match),
                 QAPlannedAllocation.allocation_date == target_date,
             ).all()
             for t, a in rows:

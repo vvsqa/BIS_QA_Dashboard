@@ -559,15 +559,17 @@
 .add-log-section h4 { font-size: 0.95rem; color: var(--text-secondary); margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border-color); }
 .planned-tasks-section .planned-tasks-loading,
 .planned-tasks-section .planned-tasks-empty { font-size: 0.9rem; color: var(--text-muted); margin: 8px 0; }
-.planned-tasks-list { list-style: none; padding: 0; margin: 0; }
-.planned-task-item { padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 8px; background: var(--bg-tertiary); }
-.planned-task-info { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 6px; }
-.planned-task-ticket { font-weight: 600; color: var(--text-primary); }
-.planned-task-desc { font-size: 0.85rem; color: var(--text-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.planned-task-hours { font-size: 0.85rem; color: var(--accent-blue); }
-.planned-task-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.btn-small { padding: 6px 10px; font-size: 0.8rem; border-radius: 6px; border: none; cursor: pointer; background: var(--bg-card); border: 1px solid var(--border-color); color: var(--text-secondary); }
-.btn-small.btn-primary { background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan)); color: white; border: none; }
+.timesheet-add-log-modal .planned-tasks-list { list-style: none; padding: 0; margin: 0; }
+.timesheet-add-log-modal .planned-task-item { padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; margin-bottom: 8px; background: var(--bg-tertiary); display: block; }
+.timesheet-add-log-modal .planned-task-info { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.timesheet-add-log-modal .planned-task-ticket { font-weight: 600; color: var(--text-primary); }
+.timesheet-add-log-modal .planned-task-desc { font-size: 0.85rem; color: var(--text-muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 280px; min-width: 180px; }
+.timesheet-add-log-modal .planned-task-hours { font-size: 0.85rem; color: var(--accent-blue); }
+.timesheet-add-log-modal .planned-task-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.timesheet-add-log-modal .btn-small { padding: 7px 12px; font-size: 0.8rem; border-radius: 8px; border: 1px solid var(--border-color); cursor: pointer; background: var(--bg-card); color: var(--text-secondary); line-height: 1.2; min-height: 34px; white-space: nowrap; }
+.timesheet-add-log-modal .btn-small:hover { border-color: var(--accent-blue); color: var(--text-primary); background: rgba(59, 130, 246, 0.08); }
+.timesheet-add-log-modal .btn-small.btn-primary { background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan)); color: white; border: none; }
+.timesheet-add-log-modal .btn-small.btn-ghost { background: transparent; }
 .add-with-my-time-form { margin-top: 10px; padding: 10px; background: var(--bg-card); border-radius: 6px; border: 1px solid var(--border-color); display: grid; gap: 8px; }
 .add-with-my-time-form input[type="number"],
 .add-with-my-time-form input[type="text"] { padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border-color); background: var(--bg-tertiary); }
