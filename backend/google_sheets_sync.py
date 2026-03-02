@@ -18,7 +18,7 @@ import os
 import sys
 import logging
 import re
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
 
@@ -42,7 +42,7 @@ except ImportError:
     logger.warning("Google API libraries not installed. Run: pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib")
 
 from sqlalchemy.orm import Session
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 from database import SessionLocal, engine
 from models import EnhancedTimesheet, LeaveEntry, Employee, EmployeeNameMapping
 from config.google_sheets_config import (
@@ -74,6 +74,13 @@ class GoogleSheetsSync:
     @classmethod
     def _compact_person_name(cls, name: Optional[str]) -> str:
         return cls._normalize_person_name(name).replace(' ', '')
+
+    @staticmethod
+    def _first_day_of_previous_month(ref: Optional[date] = None) -> date:
+        d = ref or date.today()
+        first_of_current = date(d.year, d.month, 1)
+        last_of_previous = first_of_current - timedelta(days=1)
+        return date(last_of_previous.year, last_of_previous.month, 1)
     
     def __init__(self, credentials_file: Optional[str] = None, auth_method: Optional[str] = None):
         """
@@ -429,7 +436,7 @@ class GoogleSheetsSync:
 
         return data, max_date
     
-    def fetch_sheet_data(self, team: str, months_back: int = 6) -> List[Dict]:
+    def fetch_sheet_data(self, team: str, months_back: int = 6, cutoff_date: Optional[date] = None) -> List[Dict]:
         """
         Fetch data from the Google Sheet for a specific team.
         
@@ -442,9 +449,10 @@ class GoogleSheetsSync:
         """
         from dateutil.relativedelta import relativedelta
         
-        # Calculate cutoff date (6 months ago from today)
-        cutoff_date = date.today() - relativedelta(months=months_back)
-        logger.info(f"Fetching data from {cutoff_date} onwards (last {months_back} months)")
+        # Allow explicit cutoff for rolling sync window.
+        if cutoff_date is None:
+            cutoff_date = date.today() - relativedelta(months=months_back)
+        logger.info(f"Fetching data from {cutoff_date} onwards")
         
         service = self._get_service()
         sheet_id = get_sheet_id(team)
@@ -530,12 +538,19 @@ class GoogleSheetsSync:
             'rows_skipped': 0,
             'errors': 0,
             'synced_at': datetime.utcnow().isoformat(),
-            'data_from': (date.today() - __import__('dateutil.relativedelta', fromlist=['relativedelta']).relativedelta(months=months_back)).isoformat()
+            'data_from': None
         }
         
         try:
-            # Fetch data from Google Sheets (only last N months)
-            rows = self.fetch_sheet_data(team, months_back=months_back)
+            # Dynamic sync window:
+            # - Keep data from 2025-09-01 in app
+            # - Only current + previous month are mutable and re-synced
+            static_floor_date = date(2025, 9, 1)
+            dynamic_window_start = max(static_floor_date, self._first_day_of_previous_month(date.today()))
+            stats['data_from'] = dynamic_window_start.isoformat()
+
+            # Fetch only the dynamic window to avoid touching frozen historical data
+            rows = self.fetch_sheet_data(team, months_back=months_back, cutoff_date=dynamic_window_start)
             stats['rows_processed'] = len(rows)
             
             # Load name mappings for automatic name normalization
@@ -573,6 +588,7 @@ class GoogleSheetsSync:
             # Track entries seen in this batch to handle duplicates within the sheet
             seen_entries = set()
             touched_employees = set()
+            touched_employee_ids = set()
             sync_started_at = datetime.utcnow()
             
             for row_data in rows:
@@ -630,6 +646,8 @@ class GoogleSheetsSync:
                             or employee_id_by_name.get(self._normalize_person_name(employee_name))
                             or employee_id_by_name.get(self._compact_person_name(employee_name))
                         )
+                    if employee_id:
+                        touched_employee_ids.add(employee_id)
                     
                     # Create or update enhanced timesheet entry
                     sheet_row_id = str(row_data.get('_row_number', '')).strip()
@@ -733,13 +751,19 @@ class GoogleSheetsSync:
 
             # Remove stale Google Sheets rows for employees included in this run.
             # This keeps sync idempotent when sheet rows are edited/moved (e.g., ticket/task change).
-            if touched_employees:
+            if touched_employees or touched_employee_ids:
+                identity_filters = []
+                if touched_employee_ids:
+                    identity_filters.append(EnhancedTimesheet.employee_id.in_(list(touched_employee_ids)))
+                if touched_employees:
+                    identity_filters.append(EnhancedTimesheet.employee_name.in_(list(touched_employees)))
                 stale_rows = db.query(EnhancedTimesheet).filter(
                     and_(
                         EnhancedTimesheet.source == 'google_sheets',
                         EnhancedTimesheet.team == team,
-                        EnhancedTimesheet.employee_name.in_(list(touched_employees)),
-                        EnhancedTimesheet.synced_on < sync_started_at
+                        EnhancedTimesheet.date >= dynamic_window_start,
+                        EnhancedTimesheet.synced_on < sync_started_at,
+                        or_(*identity_filters)
                     )
                 ).delete(synchronize_session=False)
                 stats['timesheets_deleted'] += int(stale_rows or 0)
