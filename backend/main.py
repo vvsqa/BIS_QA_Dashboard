@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, date
 from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
 from pydantic import BaseModel, Field
+import re
 import tempfile
 import os
 import shutil
@@ -809,8 +810,10 @@ def get_team_classification(db: Session) -> dict:
     team_map = {}
     for emp in employees:
         if emp.name:
-            # Store with normalized name (lowercase for comparison)
-            team_map[emp.name.strip().lower()] = emp.team or "UNKNOWN"
+            raw_name = emp.name.strip()
+            team_map[raw_name.lower()] = emp.team or "UNKNOWN"
+            team_map[_normalize_person_name(raw_name)] = emp.team or "UNKNOWN"
+            team_map[_compact_person_name(raw_name)] = emp.team or "UNKNOWN"
     return team_map
 
 
@@ -822,10 +825,12 @@ def classify_person(name: str, team_map: dict) -> str:
     if not name:
         return "Unknown"
     
-    normalized_name = name.strip().lower()
-    
-    if normalized_name in team_map:
-        team = team_map[normalized_name]
+    raw_name = name.strip().lower()
+    norm_name = _normalize_person_name(name)
+    compact_name = _compact_person_name(name)
+
+    team = team_map.get(raw_name) or team_map.get(norm_name) or team_map.get(compact_name)
+    if team:
         if team == "DEVELOPMENT":
             return "DEV"
         elif team == "QA":
@@ -8646,7 +8651,14 @@ def get_weekly_calendar(
         employee_names = [emp.name for emp in employees]
         # Map employee_id -> employee for calendar (one row per person, avoids duplicate names)
         employee_ids = {emp.employee_id for emp in employees}
-        name_to_employee_id = {emp.name.strip(): emp.employee_id for emp in employees}
+        name_to_employee_id = {}
+        for emp in employees:
+            if not emp.name:
+                continue
+            raw_name = emp.name.strip()
+            name_to_employee_id[raw_name] = emp.employee_id
+            name_to_employee_id[_normalize_person_name(raw_name)] = emp.employee_id
+            name_to_employee_id[_compact_person_name(raw_name)] = emp.employee_id
         # Load name mappings so alternate spellings (e.g. "Gautham Krishna KP") map to same employee_id
         names_for_query = set(employee_names)
         try:
@@ -8657,6 +8669,8 @@ def get_weekly_calendar(
                 if m.employee_id and m.employee_id in employee_ids and m.alternate_name:
                     alt = m.alternate_name.strip()
                     name_to_employee_id[alt] = m.employee_id
+                    name_to_employee_id[_normalize_person_name(alt)] = m.employee_id
+                    name_to_employee_id[_compact_person_name(alt)] = m.employee_id
                     names_for_query.add(alt)
         except Exception:
             pass
@@ -8730,7 +8744,11 @@ def get_weekly_calendar(
             if entry_employee_id and entry_employee_id in employee_data:
                 return entry_employee_id
             name = (entry_employee_name or "").strip()
-            return name_to_employee_id.get(name)
+            return (
+                name_to_employee_id.get(name)
+                or name_to_employee_id.get(_normalize_person_name(name))
+                or name_to_employee_id.get(_compact_person_name(name))
+            )
         
         # Add timesheet entries only to existing employee rows (no new rows from name variants)
         for entry in entries:
@@ -8864,7 +8882,14 @@ def get_monthly_calendar(
         # Get employee names for filtering timesheet data
         employee_names = [emp.name for emp in all_employees]
         employee_ids = {emp.employee_id for emp in all_employees}
-        name_to_employee_id = {emp.name.strip(): emp.employee_id for emp in all_employees}
+        name_to_employee_id = {}
+        for emp in all_employees:
+            if not emp.name:
+                continue
+            raw_name = emp.name.strip()
+            name_to_employee_id[raw_name] = emp.employee_id
+            name_to_employee_id[_normalize_person_name(raw_name)] = emp.employee_id
+            name_to_employee_id[_compact_person_name(raw_name)] = emp.employee_id
         names_for_query = set(employee_names)
         try:
             name_mappings = db.query(EmployeeNameMapping).filter(
@@ -8874,6 +8899,8 @@ def get_monthly_calendar(
                 if m.employee_id and m.employee_id in employee_ids and m.alternate_name:
                     alt = m.alternate_name.strip()
                     name_to_employee_id[alt] = m.employee_id
+                    name_to_employee_id[_normalize_person_name(alt)] = m.employee_id
+                    name_to_employee_id[_compact_person_name(alt)] = m.employee_id
                     names_for_query.add(alt)
         except Exception:
             pass
@@ -8908,7 +8935,12 @@ def get_monthly_calendar(
         def _resolve_eid(entry_employee_id, entry_employee_name):
             if entry_employee_id and entry_employee_id in employee_ids:
                 return entry_employee_id
-            return name_to_employee_id.get((entry_employee_name or "").strip())
+            raw_name = (entry_employee_name or "").strip()
+            return (
+                name_to_employee_id.get(raw_name)
+                or name_to_employee_id.get(_normalize_person_name(raw_name))
+                or name_to_employee_id.get(_compact_person_name(raw_name))
+            )
         
         # Build employee data keyed by employee_id (one row per person, no duplicates)
         employee_data = defaultdict(lambda: {
@@ -9315,6 +9347,35 @@ def _get_planned_hours_for_entry(db: Session, entry_date: date, planned_task_id:
     return None
 
 
+def _norm_text(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s if s else None
+
+
+def _normalize_person_name(name: Optional[str]) -> str:
+    text = str(name or "").lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _compact_person_name(name: Optional[str]) -> str:
+    return _normalize_person_name(name).replace(" ", "")
+
+
+def _same_entry_identity(entry: TimeSheetEntry, req: TimeEntryCreate) -> bool:
+    return (
+        _norm_text(entry.activity_type) == _norm_text(req.activity_type) and
+        _norm_text(entry.task_category) == _norm_text(req.task_category) and
+        _norm_text(entry.ticket_id) == _norm_text(req.ticket_id) and
+        _norm_text(entry.description) == _norm_text(req.task_description) and
+        _norm_text(entry.project_name) == _norm_text(req.project_name) and
+        entry.planned_task_id == req.planned_task_id and
+        _norm_text(entry.planned_task_source) == _norm_text(req.planned_task_source)
+    )
+
+
 def _apply_entry_reviews(db: Session, submission: TimeSheetSubmission, reviews: Optional[List[EntryReview]], current_user: dict):
     if not reviews:
         return
@@ -9681,6 +9742,17 @@ def get_team_timesheet_weekly(
                 if leave.employee_id == emp.employee_id:
                     day_key = leave.date.isoformat()
                     if day_key in emp_data["days"]:
+                        emp_data["days"][day_key]["entries"].append({
+                            "source": "leave",
+                            "id": leave.id,
+                            "date": day_key,
+                            "activity_type": leave.leave_type or "Leave",
+                            "task_category": leave.leave_type or "Leave",
+                            "hours": leave.hours or 0,
+                            "ticket_id": None,
+                            "task_description": leave.leave_type or "Leave",
+                            "project_name": None,
+                        })
                         emp_data["days"][day_key]["leave_hours"] += leave.hours or 0
             
             # Calculate weekly total
@@ -9768,6 +9840,13 @@ def get_team_timesheet_weekly(
                         for leave in leave_v:
                             day_key = leave.date.isoformat()
                             if day_key in emp_data["days"]:
+                                emp_data["days"][day_key]["entries"].append({
+                                    "source": "leave", "id": leave.id, "date": day_key,
+                                    "activity_type": leave.leave_type or "Leave",
+                                    "task_category": leave.leave_type or "Leave",
+                                    "hours": leave.hours or 0, "ticket_id": None,
+                                    "task_description": leave.leave_type or "Leave", "project_name": None,
+                                })
                                 emp_data["days"][day_key]["leave_hours"] += leave.hours or 0
                         emp_data["weekly_total"] = round(sum(
                             d["total_hours"] + d["leave_hours"] for d in emp_data["days"].values()
@@ -10018,6 +10097,20 @@ def add_timesheet_entry(
                         detail="Comment (variance notes) is required when entered hours differ from planned hours",
                     )
 
+        # Duplicate-safe save: if a logically identical entry already exists for this day,
+        # update it instead of creating a duplicate row.
+        same_day_entries = db.query(TimeSheetEntry).filter(
+            TimeSheetEntry.employee_id == target_employee,
+            TimeSheetEntry.date == req.date,
+        ).all()
+        duplicate_entry = next((e for e in same_day_entries if _same_entry_identity(e, req)), None)
+        if duplicate_entry:
+            duplicate_entry.hours = req.hours
+            duplicate_entry.variance_notes = req.variance_notes.strip() if req.variance_notes and str(req.variance_notes).strip() else None
+            duplicate_entry.variance_reason_type = req.variance_reason_type.strip() if req.variance_reason_type and str(req.variance_reason_type).strip() else None
+            db.commit()
+            return {"ok": True, "entry_id": duplicate_entry.id, "deduplicated": True}
+
         entry = TimeSheetEntry(
             employee_id=target_employee,
             employee_name=emp.name,
@@ -10066,6 +10159,24 @@ def delete_timesheet_entry(entry_id: int, current_user: dict = Depends(get_curre
         db.close()
 
 
+@app.delete("/timesheet/leave-entry/{leave_id}")
+def delete_timesheet_leave_entry(leave_id: int, current_user: dict = Depends(get_current_user)):
+    db: Session = SessionLocal()
+    try:
+        leave = db.query(LeaveEntry).filter(LeaveEntry.id == leave_id).first()
+        if not leave:
+            raise HTTPException(status_code=404, detail="Leave entry not found")
+        actor_emp = current_user.get("employee_id")
+        actor_role = current_user.get("role")
+        if leave.employee_id != actor_emp and not ("LEAD" in actor_role or "MANAGER" in actor_role or actor_role == "ADMIN"):
+            raise HTTPException(status_code=403, detail="Insufficient permissions to delete this leave entry")
+        db.delete(leave)
+        db.commit()
+        return {"ok": True}
+    finally:
+        db.close()
+
+
 @app.put("/timesheet/entry/{entry_id}")
 def update_timesheet_entry(
     entry_id: int,
@@ -10102,6 +10213,22 @@ def update_timesheet_entry(
                         status_code=400,
                         detail="Comment (variance notes) is required when entered hours differ from planned hours",
                     )
+
+        # If edit changes this entry to match another existing row, merge into that row
+        # to avoid duplicate entries after save.
+        same_day_entries = db.query(TimeSheetEntry).filter(
+            TimeSheetEntry.employee_id == entry.employee_id,
+            TimeSheetEntry.date == req.date,
+            TimeSheetEntry.id != entry.id,
+        ).all()
+        duplicate_entry = next((e for e in same_day_entries if _same_entry_identity(e, req)), None)
+        if duplicate_entry:
+            duplicate_entry.hours = req.hours
+            duplicate_entry.variance_notes = req.variance_notes.strip() if req.variance_notes and str(req.variance_notes).strip() else None
+            duplicate_entry.variance_reason_type = req.variance_reason_type.strip() if req.variance_reason_type and str(req.variance_reason_type).strip() else None
+            db.delete(entry)
+            db.commit()
+            return {"ok": True, "merged_into_entry_id": duplicate_entry.id}
 
         entry.date = req.date
         entry.activity_type = req.activity_type
@@ -12639,6 +12766,7 @@ def qa_planning_add_task(
         body.task_category = normalized_task_category
         max_hours_per_day = body.max_hours_per_day if body.max_hours_per_day is not None else 8.0
         is_half_day_leave = body.task_category == "Half Day Leave"
+        is_leave_category = body.task_category in ["Leave", "Half Day Leave"]
         if is_half_day_leave:
             max_hours_per_day = 4.0
 

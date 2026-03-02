@@ -656,6 +656,33 @@ function TimeSheetModule() {
     }
   };
 
+  const handleDeleteLeaveEntry = async (leaveId) => {
+    if (!window.confirm('Are you sure you want to delete this leave entry?')) return;
+
+    try {
+      const res = await apiFetch(`/timesheet/leave-entry/${leaveId}`, { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || 'Failed to delete leave entry');
+      }
+      await fetchTimesheetData();
+    } catch (err) {
+      setError(err.message || 'Failed to delete leave entry');
+    }
+  };
+
+  const handleEditExistingEntry = (dayKey, employeeId, entry) => {
+    openEntryForm(dayKey, employeeId, {
+      id: entry.id,
+      task_category: entry.task_category || 'Ticket',
+      activity_type: entry.activity_type || '',
+      hours: entry.hours,
+      ticket_id: entry.ticket_id || '',
+      task_description: entry.task_description || '',
+      project_name: entry.project_name || '',
+    });
+  };
+
   // Calculate daily totals
   const dailyTotals = useMemo(() => {
     if (!timesheetData?.employees) return [];
@@ -1394,12 +1421,28 @@ function TimeSheetModule() {
                                       <span className="ticket-hours">{parseFloat(entry.hours || 0).toFixed(1)}h</span>
                                       {entry.source === 'manual' && canAddLogs && (
                                         <button
+                                          className="entry-edit-btn"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleEditExistingEntry(dayKey, emp.employee_id, entry);
+                                          }}
+                                          title="Edit entry"
+                                        >
+                                          ✎
+                                        </button>
+                                      )}
+                                      {(entry.source === 'manual' || entry.source === 'leave') && canAddLogs && (
+                                        <button
                                           className="entry-delete-btn"
                                           onClick={(e) => {
                                             e.stopPropagation();
-                                            handleDeleteEntry(entry.id);
+                                            if (entry.source === 'leave') {
+                                              handleDeleteLeaveEntry(entry.id);
+                                            } else {
+                                              handleDeleteEntry(entry.id);
+                                            }
                                           }}
-                                          title="Delete entry"
+                                          title={entry.source === 'leave' ? 'Delete leave entry' : 'Delete entry'}
                                         >
                                           ×
                                         </button>

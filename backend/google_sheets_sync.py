@@ -17,6 +17,7 @@ Usage:
 import os
 import sys
 import logging
+import re
 from datetime import datetime, date
 from typing import Optional, List, Dict, Any, Tuple
 from pathlib import Path
@@ -63,6 +64,16 @@ class GoogleSheetsSync:
     # Leave type indicators in the data
     LEAVE_TYPES = ['leave', 'wfh', 'holiday', 'sick leave', 'half day', 'casual leave', 
                    'earned leave', 'comp off', 'work from home', 'public holiday']
+
+    @staticmethod
+    def _normalize_person_name(name: Optional[str]) -> str:
+        text = str(name or '').lower()
+        text = re.sub(r'[^a-z0-9]+', ' ', text)
+        return re.sub(r'\s+', ' ', text).strip()
+
+    @classmethod
+    def _compact_person_name(cls, name: Optional[str]) -> str:
+        return cls._normalize_person_name(name).replace(' ', '')
     
     def __init__(self, credentials_file: Optional[str] = None, auth_method: Optional[str] = None):
         """
@@ -514,6 +525,7 @@ class GoogleSheetsSync:
             'rows_processed': 0,
             'timesheets_added': 0,
             'timesheets_updated': 0,
+            'timesheets_deleted': 0,
             'leaves_added': 0,
             'rows_skipped': 0,
             'errors': 0,
@@ -528,25 +540,55 @@ class GoogleSheetsSync:
             
             # Load name mappings for automatic name normalization
             name_mappings = {}
+            employee_id_by_name = {}
             try:
                 mappings = db.query(EmployeeNameMapping).filter(
                     EmployeeNameMapping.is_active == True
                 ).all()
-                name_mappings = {m.alternate_name: (m.canonical_name, m.employee_id) for m in mappings}
+                for m in mappings:
+                    if not (m.alternate_name and m.canonical_name):
+                        continue
+                    alt = m.alternate_name.strip()
+                    canonical = m.canonical_name.strip()
+                    payload = (canonical, m.employee_id)
+                    name_mappings[alt] = payload
+                    name_mappings[self._normalize_person_name(alt)] = payload
+                    name_mappings[self._compact_person_name(alt)] = payload
                 logger.info(f"Loaded {len(name_mappings)} name mappings")
             except Exception as e:
                 logger.warning(f"Could not load name mappings: {e}")
+
+            try:
+                employees = db.query(Employee).filter(Employee.is_active == True).all()
+                for e in employees:
+                    if not e.name:
+                        continue
+                    name = e.name.strip()
+                    employee_id_by_name[name] = e.employee_id
+                    employee_id_by_name[self._normalize_person_name(name)] = e.employee_id
+                    employee_id_by_name[self._compact_person_name(name)] = e.employee_id
+            except Exception as e:
+                logger.warning(f"Could not preload employee name lookup map: {e}")
             
             # Track entries seen in this batch to handle duplicates within the sheet
             seen_entries = set()
+            touched_employees = set()
+            sync_started_at = datetime.utcnow()
             
             for row_data in rows:
                 try:
                     raw_employee_name = str(row_data.get('employee_name', '')).strip()
                     
                     # Apply name mapping if exists
-                    if raw_employee_name in name_mappings:
-                        employee_name, mapped_emp_id = name_mappings[raw_employee_name]
+                    normalized_raw = self._normalize_person_name(raw_employee_name)
+                    compact_raw = self._compact_person_name(raw_employee_name)
+                    mapping_hit = (
+                        name_mappings.get(raw_employee_name)
+                        or name_mappings.get(normalized_raw)
+                        or name_mappings.get(compact_raw)
+                    )
+                    if mapping_hit:
+                        employee_name, mapped_emp_id = mapping_hit
                     else:
                         employee_name = raw_employee_name
                         mapped_emp_id = None
@@ -555,6 +597,8 @@ class GoogleSheetsSync:
                     
                     if not employee_name or not parsed_date:
                         continue
+
+                    touched_employees.add(employee_name)
                     
                     ticket_id_raw = str(row_data.get('ticket_id', '') or '').strip() or 'UNASSIGNED'
                     ticket_id = ticket_id_raw[:150]  # Truncate to fit database column
@@ -581,23 +625,42 @@ class GoogleSheetsSync:
                     if mapped_emp_id:
                         employee_id = mapped_emp_id
                     else:
-                        employee = db.query(Employee).filter(
-                            Employee.name == employee_name
-                        ).first()
-                        employee_id = employee.employee_id if employee else None
+                        employee_id = (
+                            employee_id_by_name.get(employee_name)
+                            or employee_id_by_name.get(self._normalize_person_name(employee_name))
+                            or employee_id_by_name.get(self._compact_person_name(employee_name))
+                        )
                     
                     # Create or update enhanced timesheet entry
-                    existing = db.query(EnhancedTimesheet).filter(
-                        and_(
-                            EnhancedTimesheet.employee_name == employee_name,
-                            EnhancedTimesheet.ticket_id == ticket_id,
-                            EnhancedTimesheet.date == parsed_date,
-                            EnhancedTimesheet.team == team
-                        )
-                    ).first()
+                    sheet_row_id = str(row_data.get('_row_number', '')).strip()
+                    existing = None
+
+                    # Prefer row-id match first so edits to ticket/task/date replace the same row
+                    # instead of creating duplicate rows on subsequent syncs.
+                    if sheet_row_id:
+                        existing = db.query(EnhancedTimesheet).filter(
+                            and_(
+                                EnhancedTimesheet.source == 'google_sheets',
+                                EnhancedTimesheet.team == team,
+                                EnhancedTimesheet.sheet_row_id == sheet_row_id
+                            )
+                        ).first()
+
+                    # Backward-compat fallback for older rows without stable row-id linkage
+                    if not existing:
+                        existing = db.query(EnhancedTimesheet).filter(
+                            and_(
+                                EnhancedTimesheet.employee_name == employee_name,
+                                EnhancedTimesheet.ticket_id == ticket_id,
+                                EnhancedTimesheet.date == parsed_date,
+                                EnhancedTimesheet.team == team,
+                                EnhancedTimesheet.source == 'google_sheets'
+                            )
+                        ).first()
                     
                     if existing:
                         # Update existing entry
+                        existing.employee_name = employee_name
                         existing.hours_logged = hours_logged
                         existing.productive_hours = productive_hours
                         existing.time_logged_minutes = int((hours_logged or 0) * 60)
@@ -606,6 +669,10 @@ class GoogleSheetsSync:
                         existing.project_name = project_name
                         existing.synced_on = datetime.utcnow()
                         existing.employee_id = employee_id
+                        existing.ticket_id = ticket_id
+                        existing.date = parsed_date
+                        if sheet_row_id:
+                            existing.sheet_row_id = sheet_row_id
                         stats['timesheets_updated'] += 1
                     else:
                         # Create new entry
@@ -622,7 +689,7 @@ class GoogleSheetsSync:
                             project_name=project_name,
                             team=team,
                             source='google_sheets',
-                            sheet_row_id=str(row_data.get('_row_number', '')),
+                            sheet_row_id=sheet_row_id,
                             synced_on=datetime.utcnow()
                         )
                         db.add(new_entry)
@@ -663,6 +730,19 @@ class GoogleSheetsSync:
                         logger.error(f"Error processing row {row_data.get('_row_number', '?')}: {e}")
                     stats['errors'] += 1
                     continue
+
+            # Remove stale Google Sheets rows for employees included in this run.
+            # This keeps sync idempotent when sheet rows are edited/moved (e.g., ticket/task change).
+            if touched_employees:
+                stale_rows = db.query(EnhancedTimesheet).filter(
+                    and_(
+                        EnhancedTimesheet.source == 'google_sheets',
+                        EnhancedTimesheet.team == team,
+                        EnhancedTimesheet.employee_name.in_(list(touched_employees)),
+                        EnhancedTimesheet.synced_on < sync_started_at
+                    )
+                ).delete(synchronize_session=False)
+                stats['timesheets_deleted'] += int(stale_rows or 0)
             
             db.commit()
             logger.info(f"Sync completed for {team}: {stats}")
