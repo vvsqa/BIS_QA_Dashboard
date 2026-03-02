@@ -585,10 +585,27 @@ class GoogleSheetsSync:
             except Exception as e:
                 logger.warning(f"Could not preload employee name lookup map: {e}")
             
+            # Replace strategy for dynamic window:
+            # remove existing Google Sheets rows in mutable window, then insert fresh rows.
+            # This ensures latest sheet state is reflected exactly for current+previous month.
+            replaced_ts = db.query(EnhancedTimesheet).filter(
+                and_(
+                    EnhancedTimesheet.source == 'google_sheets',
+                    EnhancedTimesheet.team == team,
+                    EnhancedTimesheet.date >= dynamic_window_start,
+                )
+            ).delete(synchronize_session=False)
+            db.query(LeaveEntry).filter(
+                and_(
+                    LeaveEntry.source == 'google_sheets',
+                    LeaveEntry.team == team,
+                    LeaveEntry.date >= dynamic_window_start,
+                )
+            ).delete(synchronize_session=False)
+            stats['timesheets_deleted'] += int(replaced_ts or 0)
+
             # Track entries seen in this batch to handle duplicates within the sheet
             seen_entries = set()
-            touched_employees = set()
-            touched_employee_ids = set()
             sync_started_at = datetime.utcnow()
             
             for row_data in rows:
@@ -614,8 +631,6 @@ class GoogleSheetsSync:
                     if not employee_name or not parsed_date:
                         continue
 
-                    touched_employees.add(employee_name)
-                    
                     ticket_id_raw = str(row_data.get('ticket_id', '') or '').strip() or 'UNASSIGNED'
                     ticket_id = ticket_id_raw[:150]  # Truncate to fit database column
                     hours_logged = self._parse_hours(row_data.get('hours_logged', 0))
@@ -646,72 +661,26 @@ class GoogleSheetsSync:
                             or employee_id_by_name.get(self._normalize_person_name(employee_name))
                             or employee_id_by_name.get(self._compact_person_name(employee_name))
                         )
-                    if employee_id:
-                        touched_employee_ids.add(employee_id)
-                    
-                    # Create or update enhanced timesheet entry
+                    # Create new entry (window was purged at start, so inserts are authoritative)
                     sheet_row_id = str(row_data.get('_row_number', '')).strip()
-                    existing = None
-
-                    # Prefer row-id match first so edits to ticket/task/date replace the same row
-                    # instead of creating duplicate rows on subsequent syncs.
-                    if sheet_row_id:
-                        existing = db.query(EnhancedTimesheet).filter(
-                            and_(
-                                EnhancedTimesheet.source == 'google_sheets',
-                                EnhancedTimesheet.team == team,
-                                EnhancedTimesheet.sheet_row_id == sheet_row_id
-                            )
-                        ).first()
-
-                    # Backward-compat fallback for older rows without stable row-id linkage
-                    if not existing:
-                        existing = db.query(EnhancedTimesheet).filter(
-                            and_(
-                                EnhancedTimesheet.employee_name == employee_name,
-                                EnhancedTimesheet.ticket_id == ticket_id,
-                                EnhancedTimesheet.date == parsed_date,
-                                EnhancedTimesheet.team == team,
-                                EnhancedTimesheet.source == 'google_sheets'
-                            )
-                        ).first()
-                    
-                    if existing:
-                        # Update existing entry
-                        existing.employee_name = employee_name
-                        existing.hours_logged = hours_logged
-                        existing.productive_hours = productive_hours
-                        existing.time_logged_minutes = int((hours_logged or 0) * 60)
-                        existing.leave_type = leave_type
-                        existing.task_description = task_description
-                        existing.project_name = project_name
-                        existing.synced_on = datetime.utcnow()
-                        existing.employee_id = employee_id
-                        existing.ticket_id = ticket_id
-                        existing.date = parsed_date
-                        if sheet_row_id:
-                            existing.sheet_row_id = sheet_row_id
-                        stats['timesheets_updated'] += 1
-                    else:
-                        # Create new entry
-                        new_entry = EnhancedTimesheet(
-                            employee_id=employee_id,
-                            employee_name=employee_name,
-                            ticket_id=ticket_id,
-                            date=parsed_date,
-                            hours_logged=hours_logged,
-                            productive_hours=productive_hours,
-                            time_logged_minutes=int((hours_logged or 0) * 60),
-                            leave_type=leave_type,
-                            task_description=task_description,
-                            project_name=project_name,
-                            team=team,
-                            source='google_sheets',
-                            sheet_row_id=sheet_row_id,
-                            synced_on=datetime.utcnow()
-                        )
-                        db.add(new_entry)
-                        stats['timesheets_added'] += 1
+                    new_entry = EnhancedTimesheet(
+                        employee_id=employee_id,
+                        employee_name=employee_name,
+                        ticket_id=ticket_id,
+                        date=parsed_date,
+                        hours_logged=hours_logged,
+                        productive_hours=productive_hours,
+                        time_logged_minutes=int((hours_logged or 0) * 60),
+                        leave_type=leave_type,
+                        task_description=task_description,
+                        project_name=project_name,
+                        team=team,
+                        source='google_sheets',
+                        sheet_row_id=sheet_row_id,
+                        synced_on=datetime.utcnow()
+                    )
+                    db.add(new_entry)
+                    stats['timesheets_added'] += 1
                     
                     # Flush periodically to make entries visible to subsequent queries
                     if (stats['timesheets_added'] + stats['timesheets_updated']) % 500 == 0:
@@ -749,25 +718,6 @@ class GoogleSheetsSync:
                     stats['errors'] += 1
                     continue
 
-            # Remove stale Google Sheets rows for employees included in this run.
-            # This keeps sync idempotent when sheet rows are edited/moved (e.g., ticket/task change).
-            if touched_employees or touched_employee_ids:
-                identity_filters = []
-                if touched_employee_ids:
-                    identity_filters.append(EnhancedTimesheet.employee_id.in_(list(touched_employee_ids)))
-                if touched_employees:
-                    identity_filters.append(EnhancedTimesheet.employee_name.in_(list(touched_employees)))
-                stale_rows = db.query(EnhancedTimesheet).filter(
-                    and_(
-                        EnhancedTimesheet.source == 'google_sheets',
-                        EnhancedTimesheet.team == team,
-                        EnhancedTimesheet.date >= dynamic_window_start,
-                        EnhancedTimesheet.synced_on < sync_started_at,
-                        or_(*identity_filters)
-                    )
-                ).delete(synchronize_session=False)
-                stats['timesheets_deleted'] += int(stale_rows or 0)
-            
             db.commit()
             logger.info(f"Sync completed for {team}: {stats}")
             
