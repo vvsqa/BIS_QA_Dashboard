@@ -12,6 +12,9 @@ import TimeSheetModule from "./TimeSheetModule";
 import TaskPlanning from "./TaskPlanning";
 import MyTasks from "./MyTasks";
 import ETACalendar from "./ETACalendar";
+import QACycleDashboard from "./QACycleDashboard";
+import QAMetricsDashboard from "./QAMetricsDashboard";
+import AutomationCoverageDashboard from "./AutomationCoverageDashboard";
 import ClientProfiles from "./ClientProfiles";
 import ClientModuleAccess from "./ClientModuleAccess";
 import { isPathAllowedForClient } from "./clientModules";
@@ -68,6 +71,16 @@ function ReportsRoute() {
   return <Navigate to="/" replace />;
 }
 
+// Reports access guard for multiple routes (returns children if has access)
+function ReportsAccessGuard({ children }) {
+  const { user } = useAuth();
+  const hasAccess = user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD') || user?.role === 'CLIENT';
+  if (hasAccess) {
+    return children;
+  }
+  return <Navigate to="/" replace />;
+}
+
 function AdminOnlyRoute({ children }) {
   const { user } = useAuth();
   if (user?.role !== 'ADMIN') {
@@ -117,6 +130,11 @@ function AppRoutes() {
         <Route path="/employees/:employeeId" element={<ProtectedRoute><EmployeeProfile /></ProtectedRoute>} />
         <Route path="/employees/:employeeId/review/new" element={<ProtectedRoute><PerformanceReview /></ProtectedRoute>} />
         <Route path="/reports" element={<ProtectedRoute><ReportsRoute /></ProtectedRoute>} />
+        <Route path="/qa-cycle" element={<ProtectedRoute><ReportsAccessGuard><QACycleDashboard /></ReportsAccessGuard></ProtectedRoute>} />
+        <Route path="/qa-metrics" element={<ProtectedRoute><ReportsAccessGuard><QAMetricsDashboard /></ReportsAccessGuard></ProtectedRoute>} />
+        {/* Public QA Metrics Dashboard - No authentication required */}
+        <Route path="/public/qa-metrics" element={<QAMetricsDashboard isPublic={true} />} />
+        <Route path="/automation" element={<ProtectedRoute><ReportsAccessGuard><AutomationCoverageDashboard /></ReportsAccessGuard></ProtectedRoute>} />
         <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
         <Route path="/admin/clients" element={<ProtectedRoute><AdminOnlyRoute><ClientProfiles /></AdminOnlyRoute></ProtectedRoute>} />
         <Route path="/admin/client-modules" element={<ProtectedRoute><AdminOnlyRoute><ClientModuleAccess /></AdminOnlyRoute></ProtectedRoute>} />

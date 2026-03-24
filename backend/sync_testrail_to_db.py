@@ -241,7 +241,7 @@ def get_custom_field(item, field_name):
 
 
 def fetch_test_plans(project_id):
-    """Fetch all test plans for a project with pagination"""
+    """Fetch all active (non-completed/non-deleted) test plans for a project with pagination"""
     all_plans = []
     offset = 0
     limit = 250  # TestRail API limit
@@ -251,7 +251,11 @@ def fetch_test_plans(project_id):
             response = requests.get(
                 "{}/get_plans/{}".format(API_BASE, project_id),
                 headers=headers,
-                params={"offset": offset, "limit": limit},
+                params={
+                    "offset": offset,
+                    "limit": limit,
+                    "is_completed": 0  # Only fetch active plans (not completed/closed/deleted)
+                },
                 timeout=30
             )
             response.raise_for_status()
@@ -265,15 +269,17 @@ def fetch_test_plans(project_id):
             
             if not plans:
                 break
-                
-            all_plans.extend(plans)
+            
+            # Filter out any plans that might still be marked as completed
+            active_plans = [p for p in plans if not p.get("is_completed")]
+            all_plans.extend(active_plans)
             
             # If we got fewer than limit, we've reached the end
             if len(plans) < limit:
                 break
                 
             offset += limit
-            print("  Fetched {} plans so far...".format(len(all_plans)))
+            print("  Fetched {} active plans so far...".format(len(all_plans)))
             
         return all_plans
     except Exception as e:
@@ -297,9 +303,7 @@ def fetch_plan_details(plan_id):
 
 
 def fetch_test_runs(plan_id):
-    """Fetch all test runs in a plan"""
-    # Note: TestRail get_runs endpoint may not support pagination
-    # It returns all runs for a plan
+    """Fetch all active (non-completed) test runs in a plan"""
     try:
         response = requests.get(
             "{}/get_runs/{}".format(API_BASE, plan_id),
@@ -314,8 +318,10 @@ def fetch_test_runs(plan_id):
             runs = runs.get("runs", [])
         elif not isinstance(runs, list):
             runs = []
-            
-        return runs
+        
+        # Filter out completed/deleted runs
+        active_runs = [r for r in runs if not r.get("is_completed")]
+        return active_runs
     except Exception as e:
         # Some plans may not have runs yet, which is okay
         if "400" in str(e) or "404" in str(e):

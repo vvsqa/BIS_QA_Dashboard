@@ -8,6 +8,7 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const backend = (process.env.REACT_APP_DEV_PROXY_TARGET || '').trim();
 const apiPaths = [
+  '/api',
   '/timesheet',
   '/auth',
   '/calendar',
@@ -32,6 +33,7 @@ const apiPaths = [
   '/uploads',
   '/login',
   '/eta-calendar',
+  '/automation',
 ];
 
 function isApiPath(pathname) {

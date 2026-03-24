@@ -9,6 +9,8 @@ export const CLIENT_MODULES = [
   { id: 'all_bugs', label: 'All Bugs Dashboard', paths: ['/all-bugs'] },
   { id: 'calendar', label: 'Calendar', paths: ['/calendar'] },
   { id: 'timesheet', label: 'Timesheet', paths: ['/timesheet'] },
+  { id: 'qa_cycle', label: 'QA Cycle Dashboard', paths: ['/qa-cycle'] },
+  { id: 'automation', label: 'Automation Coverage', paths: ['/automation'] },
 ];
 
 const pathsByModuleId = new Map(CLIENT_MODULES.map((m) => [m.id, m.paths]));

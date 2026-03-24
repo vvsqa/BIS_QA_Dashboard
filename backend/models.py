@@ -978,3 +978,79 @@ class QATaskHoldHistory(Base):
 
     created_by = Column(String(100))
     created_on = Column(DateTime, default=datetime.utcnow)
+
+
+# ===== AUTOMATION COVERAGE TRACKING (TestRail Project 18) =====
+
+class AutomationTestRun(Base):
+    """
+    Test runs from TestRail Project 18 (Automation Coverage tracking).
+    Ticket ID is extracted from run name (starts with ticket_id_).
+    """
+    __tablename__ = "automation_test_runs"
+
+    id = Column(Integer, primary_key=True)
+    run_id = Column(Integer, unique=True, index=True)  # TestRail run ID
+    plan_id = Column(Integer, index=True, nullable=True)  # TestRail plan ID
+    ticket_id = Column(Integer, index=True)  # PM Tracker ID (extracted from run name)
+    name = Column(String(500))
+    description = Column(Text, nullable=True)
+    created_on = Column(DateTime)
+    updated_on = Column(DateTime)
+    status = Column(String(50), nullable=True)
+    custom_fields = Column(JSONB, nullable=True)
+
+
+class AutomationTestCase(Base):
+    """
+    Test cases from TestRail Project 18 with automation-specific fields.
+    Tracks whether test cases are automated or manual, with effort metrics.
+    """
+    __tablename__ = "automation_test_cases"
+
+    id = Column(Integer, primary_key=True)
+    case_id = Column(Integer, index=True)  # TestRail case ID (not unique - same case can be in multiple runs)
+    run_id = Column(Integer, index=True)  # TestRail run ID
+    test_id = Column(Integer, unique=True, index=True)  # TestRail test ID (unique per run)
+    ticket_id = Column(Integer, index=True)  # PM Tracker ID
+    title = Column(String(500))
+    section = Column(String(200), nullable=True)
+    priority = Column(String(50), nullable=True)
+    
+    # Automation tracking fields (from custom fields)
+    automation_status = Column(String(50), nullable=True, index=True)  # Automated, Planned, Not Automatable, etc.
+    automation_candidate = Column(String(50), nullable=True, index=True)  # Yes, No, None - whether case should be automated
+    execution_method = Column(String(50), nullable=True, index=True)  # Automated, Manual
+    reusability_frequency = Column(String(50), nullable=True)  # High, Medium, Low
+    automation_maintenance = Column(String(50), nullable=True)  # None, Low, Medium, High
+    
+    # Status change tracking dates
+    planned_on = Column(DateTime, nullable=True, index=True)  # When automation_status changed to "Planned"
+    automated_on = Column(DateTime, nullable=True, index=True)  # When automation_status changed to "Automated"
+    
+    # Automation effort tracking
+    automation_estimated_hours = Column(Float, nullable=True)
+    automation_actual_hours = Column(Float, nullable=True)
+    automation_planned_start = Column(DateTime, nullable=True)
+    automation_actual_start = Column(DateTime, nullable=True)
+    automation_actual_end = Column(DateTime, nullable=True)
+    
+    # Test result status
+    status_id = Column(Integer, nullable=True)  # TestRail status ID (1=Passed, 2=Blocked, etc.)
+    status_name = Column(String(50), nullable=True, index=True)  # Passed, Failed, Blocked, Retest, Untested
+    
+    # Additional fields
+    business_criticality = Column(String(50), nullable=True)  # High, Medium, Low
+    functionality = Column(String(200), nullable=True)
+    sub_functionality = Column(String(200), nullable=True)
+    life_cycle_status = Column(String(50), nullable=True)  # Active, Deprecated, etc.
+    
+    # Ticket references from test case
+    test_case_created_ticket_ref = Column(String(100), nullable=True)
+    test_case_modified_ticket_ref = Column(String(100), nullable=True)
+    
+    # All custom fields as JSON for flexibility
+    custom_fields = Column(JSONB, nullable=True)
+    
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, onupdate=datetime.utcnow)

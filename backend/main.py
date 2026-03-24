@@ -35,6 +35,7 @@ from models import (
     DevPlanningWeek, DevPlannedTask, DevPlannedAllocation, DevPlanningAuditLog,
     QAPlanningWeek, QAPlannedTask, QAPlannedAllocation, QATaskHoldHistory,
     User, AdminConfig, ClientProfile,
+    AutomationTestRun, AutomationTestCase,
 )
 from auth import (
     authenticate_user, hash_password, create_access_token,
@@ -69,6 +70,19 @@ from google_sheets_sync import GoogleSheetsSync, get_sheets_sync_status
 from sheets_scheduler import get_scheduler, start_auto_sync, stop_auto_sync
 from pm_tracker_scheduler import start_pm_auto_sync, stop_pm_auto_sync, get_pm_scheduler_status
 from redmine_scheduler import start_redmine_auto_sync, stop_redmine_auto_sync, get_redmine_scheduler_status
+from testrail_scheduler import (
+    start_testrail_auto_sync,
+    stop_testrail_auto_sync,
+    get_testrail_scheduler_status,
+    trigger_testrail_sync_now,
+)
+from google_sheets_export import (
+    start_sheets_export_scheduler,
+    stop_sheets_export_scheduler,
+    trigger_manual_export,
+    get_sheets_exporter,
+    GOOGLE_EXPORT_AVAILABLE,
+)
 from pm_sync_runner import run_pm_api_sync
 from pm_api_sync import PMApiClient
 from sync_utils import upsert_tickets, log_sync_operation, get_last_sync_info, cleanup_sync_history
@@ -218,7 +232,7 @@ app.add_middleware(
 # Startup and shutdown events for auto-sync schedulers
 @app.on_event("startup")
 async def startup_event():
-    """Start Google Sheets and PM Tracker auto-sync schedulers on application startup."""
+    """Start auto-sync schedulers on application startup."""
     try:
         if start_auto_sync():
             print("[OK] Google Sheets auto-sync started")
@@ -240,6 +254,20 @@ async def startup_event():
             print("[INFO] Redmine auto-sync is disabled (set REDMINE_AUTO_SYNC=true to enable)")
     except Exception as e:
         print(f"[WARNING] Failed to start Redmine auto-sync: {e}")
+    try:
+        if start_testrail_auto_sync():
+            print("[OK] TestRail auto-sync started (test data kept up to date)")
+        else:
+            print("[INFO] TestRail auto-sync is disabled (set TESTRAIL_AUTO_SYNC=true to enable)")
+    except Exception as e:
+        print(f"[WARNING] Failed to start TestRail auto-sync: {e}")
+    try:
+        if start_sheets_export_scheduler():
+            print("[OK] Google Sheets Export auto-sync started (exports every hour)")
+        else:
+            print("[INFO] Google Sheets Export is disabled (set SHEETS_EXPORT_AUTO_SYNC=true to enable)")
+    except Exception as e:
+        print(f"[WARNING] Failed to start Google Sheets Export scheduler: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -259,6 +287,16 @@ async def shutdown_event():
         print("[OK] Redmine auto-sync stopped")
     except Exception as e:
         print(f"[WARNING] Error stopping Redmine auto-sync: {e}")
+    try:
+        stop_testrail_auto_sync()
+        print("[OK] TestRail auto-sync stopped")
+    except Exception as e:
+        print(f"[WARNING] Error stopping TestRail auto-sync: {e}")
+    try:
+        stop_sheets_export_scheduler()
+        print("[OK] Google Sheets Export stopped")
+    except Exception as e:
+        print(f"[WARNING] Error stopping Google Sheets Export: {e}")
 
 
 # ===== AUTH ENDPOINTS =====
@@ -2040,6 +2078,1202 @@ def testrail_status_breakdown(ticket_id: int = Query(...)):
         db.close()
 
 
+# ===== AUTOMATION COVERAGE ENDPOINTS (TestRail Project 18) =====
+
+def _dedupe_automation_cases(cases: List[AutomationTestCase]) -> List[AutomationTestCase]:
+    """Return one record per logical test case for overall calculations.
+
+    We prefer the latest synced row (higher DB id) when the same case appears
+    in multiple runs.
+    """
+    deduped = {}
+    for case in cases:
+        key = case.case_id if case.case_id is not None else "test_{}".format(case.test_id)
+        existing = deduped.get(key)
+        if existing is None or (case.id or 0) > (existing.id or 0):
+            deduped[key] = case
+    return list(deduped.values())
+
+
+@app.get("/automation/summary")
+def automation_summary(
+    ticket_id: Optional[int] = Query(None),
+    run_id: Optional[str] = Query(None, description="Specific run ID or 'all' for combined view")
+):
+    """Get automation vs manual test execution summary for a ticket.
+    Returns counts and percentages of automated vs manual test cases with pass/fail breakdown.
+    Optionally filter by specific test run.
+    """
+    db: Session = SessionLocal()
+    try:
+        query = db.query(AutomationTestCase)
+        if ticket_id is not None:
+            query = query.filter(AutomationTestCase.ticket_id == ticket_id)
+        
+        # When specific run_id is provided, don't dedupe - show exact run data
+        # When 'all' or no run_id, dedupe to get unique case counts
+        if run_id and run_id != 'all':
+            try:
+                run_id_int = int(run_id)
+                query = query.filter(AutomationTestCase.run_id == run_id_int)
+                cases = query.all()  # No deduplication for specific run
+            except ValueError:
+                cases = _dedupe_automation_cases(query.all())
+        else:
+            cases = _dedupe_automation_cases(query.all())
+        
+        if not cases:
+            return {
+                "ticket_id": ticket_id,
+                "total_cases": 0,
+                "automated": {"count": 0, "percentage": 0, "passed": 0, "failed": 0, "blocked": 0, "retest": 0, "untested": 0},
+                "manual": {"count": 0, "percentage": 0, "passed": 0, "failed": 0, "blocked": 0, "retest": 0, "untested": 0},
+                "automation_coverage": 0,
+                "planned_count": 0,
+                "candidates_yes": 0,
+                "candidates_no": 0,
+                "candidates_none": 0,
+            }
+        
+        total = len(cases)
+        planned_count = 0
+        candidates_yes = 0
+        candidates_no = 0
+        candidates_none = 0
+        
+        automated = {"count": 0, "passed": 0, "failed": 0, "blocked": 0, "retest": 0, "untested": 0}
+        manual = {"count": 0, "passed": 0, "failed": 0, "blocked": 0, "retest": 0, "untested": 0}
+        
+        for case in cases:
+            is_automated = (
+                (case.automation_status and case.automation_status.lower() == "automated") or
+                (case.execution_method and case.execution_method.lower() == "automated")
+            )
+            
+            is_planned = (
+                case.automation_status and case.automation_status.lower() == "planned"
+            )
+            
+            target = automated if is_automated else manual
+            target["count"] += 1
+            
+            status = (case.status_name or "Untested").lower()
+            if status == "passed":
+                target["passed"] += 1
+            elif status == "failed":
+                target["failed"] += 1
+            elif status == "blocked":
+                target["blocked"] += 1
+            elif status == "retest":
+                target["retest"] += 1
+            else:
+                target["untested"] += 1
+            
+            if is_planned:
+                planned_count += 1
+            
+            # Count automation candidates
+            candidate = (case.automation_candidate or "").strip()
+            if candidate.lower() == "yes":
+                candidates_yes += 1
+            elif candidate.lower() == "no":
+                candidates_no += 1
+            else:
+                candidates_none += 1
+        
+        automated["percentage"] = round((automated["count"] / total * 100), 1) if total > 0 else 0
+        manual["percentage"] = round((manual["count"] / total * 100), 1) if total > 0 else 0
+        
+        return {
+            "ticket_id": ticket_id,
+            "total_cases": total,
+            "automated": automated,
+            "manual": manual,
+            "automation_coverage": automated["percentage"],
+            "planned_count": planned_count,
+            "candidates_yes": candidates_yes,
+            "candidates_no": candidates_no,
+            "candidates_none": candidates_none,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/automation/test-cases")
+def automation_test_cases(
+    ticket_id: Optional[int] = Query(None),
+    run_id: Optional[str] = Query(None, description="Specific run ID or 'all' for combined view")
+):
+    """Get all test cases with automation details for a ticket"""
+    db: Session = SessionLocal()
+    try:
+        query = db.query(AutomationTestCase)
+        if ticket_id is not None:
+            query = query.filter(AutomationTestCase.ticket_id == ticket_id)
+        
+        # When specific run_id is provided, don't dedupe - show all entries for that run
+        if run_id and run_id != 'all':
+            try:
+                run_id_int = int(run_id)
+                query = query.filter(AutomationTestCase.run_id == run_id_int)
+                cases = query.all()  # No deduplication for specific run
+            except ValueError:
+                cases = _dedupe_automation_cases(query.all())
+        else:
+            cases = _dedupe_automation_cases(query.all())
+        
+        return [
+            {
+                "test_id": case.test_id,
+                "case_id": case.case_id,
+                "run_id": case.run_id,
+                "title": case.title,
+                "section": case.section,
+                "priority": case.priority,
+                "automation_status": case.automation_status,
+                "execution_method": case.execution_method,
+                "reusability_frequency": case.reusability_frequency,
+                "automation_maintenance": case.automation_maintenance,
+                "status_name": case.status_name,
+                "status_id": case.status_id,
+                "business_criticality": case.business_criticality,
+                "functionality": case.functionality,
+                "sub_functionality": case.sub_functionality,
+                "life_cycle_status": case.life_cycle_status,
+                "is_automated": (
+                    (case.automation_status and case.automation_status.lower() == "automated") or
+                    (case.execution_method and case.execution_method.lower() == "automated")
+                )
+            }
+            for case in cases
+        ]
+    finally:
+        db.close()
+
+
+@app.get("/automation/effort")
+def automation_effort(
+    ticket_id: Optional[int] = Query(None),
+    run_id: Optional[str] = Query(None, description="Specific run ID or 'all' for combined view")
+):
+    """Get automation effort hours and timeline for a ticket"""
+    db: Session = SessionLocal()
+    try:
+        query = db.query(AutomationTestCase)
+        if ticket_id is not None:
+            query = query.filter(AutomationTestCase.ticket_id == ticket_id)
+        if run_id and run_id != 'all':
+            try:
+                run_id_int = int(run_id)
+                query = query.filter(AutomationTestCase.run_id == run_id_int)
+                cases = query.all()  # No deduplication for specific run
+            except ValueError:
+                cases = _dedupe_automation_cases(query.all())
+        else:
+            cases = _dedupe_automation_cases(query.all())
+        
+        total_estimated = 0.0
+        total_actual = 0.0
+        cases_with_effort = []
+        
+        for case in cases:
+            estimated = case.automation_estimated_hours or 0
+            actual = case.automation_actual_hours or 0
+            
+            if estimated > 0 or actual > 0:
+                total_estimated += estimated
+                total_actual += actual
+                cases_with_effort.append({
+                    "case_id": case.case_id,
+                    "run_id": case.run_id,
+                    "title": case.title,
+                    "automation_status": case.automation_status,
+                    "estimated_hours": estimated,
+                    "actual_hours": actual,
+                    "variance": round(actual - estimated, 2) if estimated > 0 else None,
+                    "planned_start": case.automation_planned_start.isoformat() if case.automation_planned_start else None,
+                    "actual_start": case.automation_actual_start.isoformat() if case.automation_actual_start else None,
+                    "actual_end": case.automation_actual_end.isoformat() if case.automation_actual_end else None
+                })
+        
+        return {
+            "ticket_id": ticket_id,
+            "total_estimated_hours": round(total_estimated, 2),
+            "total_actual_hours": round(total_actual, 2),
+            "total_variance": round(total_actual - total_estimated, 2) if total_estimated > 0 else None,
+            "efficiency": round((total_estimated / total_actual * 100), 1) if total_actual > 0 else None,
+            "cases_count": len(cases_with_effort),
+            "cases": cases_with_effort
+        }
+    finally:
+        db.close()
+
+
+@app.get("/automation/test-runs")
+def automation_test_runs(ticket_id: Optional[int] = Query(None)):
+    """Get all test runs for a ticket with automation breakdown"""
+    db: Session = SessionLocal()
+    try:
+        query = db.query(AutomationTestRun)
+        if ticket_id is not None:
+            query = query.filter(AutomationTestRun.ticket_id == ticket_id)
+        # Show runs in creation order (oldest -> newest)
+        runs = query.order_by(AutomationTestRun.created_on.asc(), AutomationTestRun.run_id.asc()).all()
+        
+        result = []
+        for run in runs:
+            cases = db.query(AutomationTestCase).filter(
+                AutomationTestCase.run_id == run.run_id
+            ).all()
+            
+            automated_count = 0
+            manual_count = 0
+            passed = 0
+            failed = 0
+            
+            for case in cases:
+                is_automated = (
+                    (case.automation_status and case.automation_status.lower() == "automated") or
+                    (case.execution_method and case.execution_method.lower() == "automated")
+                )
+                if is_automated:
+                    automated_count += 1
+                else:
+                    manual_count += 1
+                
+                if case.status_name == "Passed":
+                    passed += 1
+                elif case.status_name == "Failed":
+                    failed += 1
+            
+            total = len(cases)
+            result.append({
+                "run_id": run.run_id,
+                "plan_id": run.plan_id,
+                "name": run.name,
+                "status": run.status,
+                "created_on": run.created_on.isoformat() if run.created_on else None,
+                "total_cases": total,
+                "automated_count": automated_count,
+                "manual_count": manual_count,
+                "automation_percentage": round((automated_count / total * 100), 1) if total > 0 else 0,
+                "passed": passed,
+                "failed": failed,
+                "pass_rate": round((passed / total * 100), 1) if total > 0 else 0
+            })
+        
+        return result
+    finally:
+        db.close()
+
+
+@app.get("/automation/dashboard-metrics")
+def automation_dashboard_metrics(ticket_id: Optional[int] = Query(None)):
+    """Get automation coverage metrics, optionally filtered by ticket."""
+    db: Session = SessionLocal()
+    try:
+        cases_query = db.query(AutomationTestCase)
+        runs_query = db.query(AutomationTestRun)
+        if ticket_id is not None:
+            cases_query = cases_query.filter(AutomationTestCase.ticket_id == ticket_id)
+            runs_query = runs_query.filter(AutomationTestRun.ticket_id == ticket_id)
+
+        all_cases = cases_query.all()
+        all_cases = _dedupe_automation_cases(all_cases)
+        all_runs = runs_query.all()
+        
+        if not all_cases:
+            return {
+                "total_cases": 0,
+                "total_automated": 0,
+                "total_manual": 0,
+                "total_planned": 0,
+                "candidates_yes": 0,
+                "candidates_no": 0,
+                "candidates_none": 0,
+                "overall_automation_percentage": 0,
+                "tickets_with_automation": 0,
+                "total_runs": 0,
+                "runs_with_automated_cases": 0,
+                "runs_with_manual_cases": 0,
+                "reusability_breakdown": {},
+                "status_breakdown": {"automated": {}, "manual": {}},
+                "ticket_id": ticket_id,
+            }
+        
+        total = len(all_cases)
+        automated_count = 0
+        manual_count = 0
+        planned_count = 0
+        candidates_yes = 0
+        candidates_no = 0
+        candidates_none = 0
+        tickets = set()
+        
+        reusability = defaultdict(int)
+        automated_status = defaultdict(int)
+        manual_status = defaultdict(int)
+        
+        for case in all_cases:
+            if case.ticket_id is not None:
+                tickets.add(case.ticket_id)
+            
+            is_automated = (
+                (case.automation_status and case.automation_status.lower() == "automated") or
+                (case.execution_method and case.execution_method.lower() == "automated")
+            )
+            
+            is_planned = (
+                case.automation_status and case.automation_status.lower() == "planned"
+            )
+            
+            if is_automated:
+                automated_count += 1
+                automated_status[case.status_name or "Untested"] += 1
+            else:
+                manual_count += 1
+                manual_status[case.status_name or "Untested"] += 1
+            
+            if is_planned:
+                planned_count += 1
+            
+            # Count automation candidates
+            candidate = (case.automation_candidate or "").strip()
+            if candidate.lower() == "yes":
+                candidates_yes += 1
+            elif candidate.lower() == "no":
+                candidates_no += 1
+            else:
+                candidates_none += 1
+            
+            if case.reusability_frequency:
+                reusability[case.reusability_frequency] += 1
+
+        runs_with_automated_cases = 0
+        runs_with_manual_cases = 0
+        for run in all_runs:
+            run_cases = db.query(AutomationTestCase).filter(
+                AutomationTestCase.run_id == run.run_id
+            ).all()
+            if not run_cases:
+                continue
+
+            automated_in_run = 0
+            manual_in_run = 0
+            for case in run_cases:
+                is_automated = (
+                    (case.automation_status and case.automation_status.lower() == "automated") or
+                    (case.execution_method and case.execution_method.lower() == "automated")
+                )
+                if is_automated:
+                    automated_in_run += 1
+                else:
+                    manual_in_run += 1
+
+            if automated_in_run > 0:
+                runs_with_automated_cases += 1
+            if manual_in_run > 0:
+                runs_with_manual_cases += 1
+        
+        # Automation percentage based on candidates (Yes) - the target cases to automate
+        remaining_to_automate = max(0, candidates_yes - automated_count)
+        automation_percentage = round((automated_count / candidates_yes * 100), 1) if candidates_yes > 0 else 0
+        
+        return {
+            "total_cases": total,
+            "total_automated": automated_count,
+            "total_manual": manual_count,
+            "total_planned": planned_count,
+            "candidates_yes": candidates_yes,
+            "candidates_no": candidates_no,
+            "candidates_none": candidates_none,
+            "remaining_to_automate": remaining_to_automate,
+            "overall_automation_percentage": automation_percentage,
+            "tickets_with_automation": len(tickets),
+            "total_runs": len(all_runs),
+            "runs_with_automated_cases": runs_with_automated_cases,
+            "runs_with_manual_cases": runs_with_manual_cases,
+            "reusability_breakdown": dict(reusability),
+            "status_breakdown": {
+                "automated": dict(automated_status),
+                "manual": dict(manual_status)
+            },
+            "ticket_id": ticket_id,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/automation/overall-functionality")
+def automation_overall_functionality():
+    """Get overall automation status across all core cases, grouped by functionality."""
+    db: Session = SessionLocal()
+    try:
+        all_cases = db.query(AutomationTestCase).all()
+        all_cases = _dedupe_automation_cases(all_cases)
+        if not all_cases:
+            return {
+                "overall": {
+                    "total_core_cases": 0,
+                    "automated_cases": 0,
+                    "manual_cases": 0,
+                    "planned_cases": 0,
+                    "candidates_yes": 0,
+                    "candidates_no": 0,
+                    "candidates_none": 0,
+                    "automation_percentage": 0,
+                    "status_breakdown": {}
+                },
+                "by_functionality": [],
+                "by_section": []
+            }
+
+        functionality = defaultdict(
+            lambda: {
+                "total_cases": 0,
+                "automated_cases": 0,
+                "manual_cases": 0,
+                "status_breakdown": defaultdict(int)
+            }
+        )
+        section = defaultdict(
+            lambda: {
+                "total_cases": 0,
+                "automated_cases": 0,
+                "manual_cases": 0,
+                "status_breakdown": defaultdict(int)
+            }
+        )
+
+        overall_status_breakdown = defaultdict(int)
+        overall_automated = 0
+        overall_planned = 0
+        candidates_yes = 0
+        candidates_no = 0
+        candidates_none = 0
+
+        for case in all_cases:
+            is_automated = (
+                (case.automation_status and case.automation_status.lower() == "automated") or
+                (case.execution_method and case.execution_method.lower() == "automated")
+            )
+            
+            is_planned = (
+                case.automation_status and case.automation_status.lower() == "planned"
+            )
+
+            status_key = case.automation_status or "Not Set"
+            overall_status_breakdown[status_key] += 1
+
+            func_key = case.functionality or "Unknown"
+            functionality[func_key]["total_cases"] += 1
+            functionality[func_key]["status_breakdown"][status_key] += 1
+
+            section_key = case.section or "Unknown"
+            section[section_key]["total_cases"] += 1
+            section[section_key]["status_breakdown"][status_key] += 1
+
+            if is_automated:
+                overall_automated += 1
+                functionality[func_key]["automated_cases"] += 1
+                section[section_key]["automated_cases"] += 1
+            else:
+                functionality[func_key]["manual_cases"] += 1
+                section[section_key]["manual_cases"] += 1
+            
+            if is_planned:
+                overall_planned += 1
+            
+            # Count automation candidates
+            candidate = (case.automation_candidate or "").strip()
+            if candidate.lower() == "yes":
+                candidates_yes += 1
+            elif candidate.lower() == "no":
+                candidates_no += 1
+            else:
+                candidates_none += 1
+
+        overall_total = len(all_cases)
+        by_functionality = []
+        for func_name, data in sorted(functionality.items(), key=lambda x: -x[1]["total_cases"]):
+            auto_pct = round((data["automated_cases"] / data["total_cases"] * 100), 1) if data["total_cases"] else 0
+            by_functionality.append({
+                "functionality": str(func_name),
+                "total_cases": data["total_cases"],
+                "automated_cases": data["automated_cases"],
+                "manual_cases": data["manual_cases"],
+                "automation_percentage": auto_pct,
+                "status_breakdown": dict(data["status_breakdown"])
+            })
+
+        by_section = []
+        for section_name, data in sorted(section.items(), key=lambda x: -x[1]["total_cases"]):
+            auto_pct = round((data["automated_cases"] / data["total_cases"] * 100), 1) if data["total_cases"] else 0
+            by_section.append({
+                "section": str(section_name),
+                "total_cases": data["total_cases"],
+                "automated_cases": data["automated_cases"],
+                "manual_cases": data["manual_cases"],
+                "automation_percentage": auto_pct,
+                "status_breakdown": dict(data["status_breakdown"])
+            })
+
+        # Automation percentage based on candidates (Yes) - the target cases to automate
+        # Remaining = Candidates (Yes) - Already Automated
+        remaining_to_automate = max(0, candidates_yes - overall_automated)
+        automation_percentage = round((overall_automated / candidates_yes * 100), 1) if candidates_yes > 0 else 0
+        
+        return {
+            "overall": {
+                "total_core_cases": overall_total,
+                "automated_cases": overall_automated,
+                "manual_cases": overall_total - overall_automated,
+                "planned_cases": overall_planned,
+                "candidates_yes": candidates_yes,
+                "candidates_no": candidates_no,
+                "candidates_none": candidates_none,
+                "remaining_to_automate": remaining_to_automate,
+                "automation_percentage": automation_percentage,
+                "status_breakdown": dict(overall_status_breakdown)
+            },
+            "by_functionality": by_functionality,
+            "by_section": by_section
+        }
+    finally:
+        db.close()
+
+
+@app.get("/automation/search-tickets")
+def automation_search_tickets(query: str = Query("", description="Search query for ticket ID")):
+    """Search tickets that have automation coverage data"""
+    db: Session = SessionLocal()
+    try:
+        ticket_ids_query = db.query(AutomationTestCase.ticket_id).filter(
+            AutomationTestCase.ticket_id.isnot(None)
+        ).distinct()
+        
+        if query:
+            query_str = query.strip()
+            if query_str.isdigit():
+                ticket_ids_query = ticket_ids_query.filter(
+                    AutomationTestCase.ticket_id.cast(String).like(f"{query_str}%")
+                )
+        
+        ticket_ids = [row[0] for row in ticket_ids_query.all()]
+        
+        results = []
+        for ticket_id in ticket_ids[:50]:
+            cases = db.query(AutomationTestCase).filter(
+                AutomationTestCase.ticket_id == ticket_id
+            ).all()
+            cases = _dedupe_automation_cases(cases)
+            
+            # Count unique run IDs for this ticket
+            run_ids = set(c.run_id for c in cases if c.run_id is not None)
+            run_count = len(run_ids)
+            
+            total = len(cases)
+            automated = sum(1 for c in cases if (
+                (c.automation_status and c.automation_status.lower() == "automated") or
+                (c.execution_method and c.execution_method.lower() == "automated")
+            ))
+            
+            tracking = db.query(TicketTracking).filter(
+                TicketTracking.ticket_id == ticket_id
+            ).first()
+            
+            results.append({
+                "ticket_id": ticket_id,
+                "title": tracking.title if tracking else f"Ticket #{ticket_id}",
+                "status": tracking.status if tracking else None,
+                "total_cases": total,
+                "automated_cases": automated,
+                "manual_cases": total - automated,
+                "automation_percentage": round((automated / total * 100), 1) if total > 0 else 0,
+                "run_count": run_count
+            })
+        
+        results.sort(key=lambda x: x["ticket_id"], reverse=True)
+        return results
+    finally:
+        db.close()
+
+
+@app.get("/automation/reusability-metrics")
+def automation_reusability_metrics(
+    ticket_id: Optional[int] = None,
+    run_id: Optional[str] = Query(None, description="Specific run ID or 'all' for combined view")
+):
+    """Get reusability metrics for test cases, optionally filtered by ticket and run"""
+    db: Session = SessionLocal()
+    try:
+        query = db.query(AutomationTestCase)
+        if ticket_id:
+            query = query.filter(AutomationTestCase.ticket_id == ticket_id)
+        if run_id and run_id != 'all':
+            try:
+                run_id_int = int(run_id)
+                query = query.filter(AutomationTestCase.run_id == run_id_int)
+            except ValueError:
+                pass
+        
+        cases = query.all()
+        
+        if not cases:
+            return {
+                "ticket_id": ticket_id,
+                "total_cases": 0,
+                "reusability_breakdown": {},
+                "by_automation_status": {}
+            }
+        
+        reusability = defaultdict(lambda: {"total": 0, "automated": 0, "manual": 0})
+        
+        for case in cases:
+            freq = case.reusability_frequency or "Not Set"
+            is_automated = (
+                (case.automation_status and case.automation_status.lower() == "automated") or
+                (case.execution_method and case.execution_method.lower() == "automated")
+            )
+            
+            reusability[freq]["total"] += 1
+            if is_automated:
+                reusability[freq]["automated"] += 1
+            else:
+                reusability[freq]["manual"] += 1
+        
+        return {
+            "ticket_id": ticket_id,
+            "total_cases": len(cases),
+            "reusability_breakdown": {
+                freq: {
+                    "total": data["total"],
+                    "automated": data["automated"],
+                    "manual": data["manual"],
+                    "automation_percentage": round((data["automated"] / data["total"] * 100), 1) if data["total"] > 0 else 0
+                }
+                for freq, data in reusability.items()
+            }
+        }
+    finally:
+        db.close()
+
+
+@app.get("/automation/progress")
+def automation_progress(
+    ticket_id: Optional[int] = Query(None),
+    run_id: Optional[str] = Query(None, description="Specific run ID or 'all' for combined view")
+):
+    """Get automation progress metrics: overall percentage, maintenance breakdown, by section and functionality"""
+    db: Session = SessionLocal()
+    try:
+        query = db.query(AutomationTestCase)
+        if ticket_id is not None:
+            query = query.filter(AutomationTestCase.ticket_id == ticket_id)
+        if run_id and run_id != 'all':
+            try:
+                run_id_int = int(run_id)
+                query = query.filter(AutomationTestCase.run_id == run_id_int)
+                cases = query.all()  # No deduplication for specific run
+            except ValueError:
+                cases = _dedupe_automation_cases(query.all())
+        else:
+            cases = _dedupe_automation_cases(query.all())
+
+        if not cases:
+            return {
+                "ticket_id": ticket_id,
+                "overall": {
+                    "total_cases": 0,
+                    "automated_cases": 0,
+                    "remaining_cases": 0,
+                    "not_automatable": 0,
+                    "automation_percentage": 0,
+                    "candidates_yes": 0,
+                    "candidates_no": 0,
+                    "candidates_none": 0,
+                    "planned_cases": 0,
+                },
+                "maintenance_breakdown": [],
+                "by_section": [],
+                "by_functionality": []
+            }
+
+        total_cases = len(cases)
+        automated_cases = 0
+        not_automatable = 0
+        planned_cases = 0
+        candidates_yes = 0
+        candidates_no = 0
+        candidates_none = 0
+        
+        maintenance_counts = defaultdict(int)
+        section_data = defaultdict(lambda: {"total": 0, "automated": 0})
+        functionality_data = defaultdict(lambda: {"total": 0, "automated": 0})
+
+        for case in cases:
+            is_automated = (
+                (case.automation_status and case.automation_status.lower() == "automated") or
+                (case.execution_method and case.execution_method.lower() == "automated")
+            )
+            
+            is_not_automatable = (
+                case.automation_status and case.automation_status.lower() == "not automatable"
+            )
+            
+            is_planned = (
+                case.automation_status and case.automation_status.lower() == "planned"
+            )
+
+            if is_automated:
+                automated_cases += 1
+                maint_status = case.automation_maintenance or "No Maintenance Required"
+                maintenance_counts[maint_status] += 1
+            
+            if is_not_automatable:
+                not_automatable += 1
+            
+            if is_planned:
+                planned_cases += 1
+            
+            # Count automation candidates
+            candidate = (case.automation_candidate or "").strip()
+            if candidate.lower() == "yes":
+                candidates_yes += 1
+            elif candidate.lower() == "no":
+                candidates_no += 1
+            else:
+                candidates_none += 1
+
+            # Track by section
+            section = case.section or "Unknown"
+            section_data[section]["total"] += 1
+            if is_automated:
+                section_data[section]["automated"] += 1
+
+            # Track by functionality
+            func = case.functionality or "Unknown"
+            functionality_data[func]["total"] += 1
+            if is_automated:
+                functionality_data[func]["automated"] += 1
+
+        # Remaining to automate = Candidates (Yes) - Already Automated
+        # Automation percentage is based on candidates that should be automated
+        remaining_cases = max(0, candidates_yes - automated_cases)
+        automation_percentage = round((automated_cases / candidates_yes * 100), 1) if candidates_yes > 0 else 0
+
+        # Build maintenance breakdown
+        maintenance_breakdown = []
+        for status, count in sorted(maintenance_counts.items(), key=lambda x: -x[1]):
+            pct = round((count / automated_cases * 100), 1) if automated_cases > 0 else 0
+            maintenance_breakdown.append({
+                "status": status,
+                "count": count,
+                "percentage": pct
+            })
+
+        # Build section breakdown
+        by_section = []
+        for section, data in sorted(section_data.items(), key=lambda x: -x[1]["total"]):
+            remaining = data["total"] - data["automated"]
+            pct = round((data["automated"] / data["total"] * 100), 1) if data["total"] > 0 else 0
+            by_section.append({
+                "section": section,
+                "total": data["total"],
+                "automated": data["automated"],
+                "remaining": remaining,
+                "percentage": pct
+            })
+
+        # Build functionality breakdown
+        by_functionality = []
+        for func, data in sorted(functionality_data.items(), key=lambda x: -x[1]["total"]):
+            remaining = data["total"] - data["automated"]
+            pct = round((data["automated"] / data["total"] * 100), 1) if data["total"] > 0 else 0
+            by_functionality.append({
+                "functionality": func,
+                "total": data["total"],
+                "automated": data["automated"],
+                "remaining": remaining,
+                "percentage": pct
+            })
+
+        return {
+            "ticket_id": ticket_id,
+            "overall": {
+                "total_cases": total_cases,
+                "automated_cases": automated_cases,
+                "remaining_cases": remaining_cases,
+                "not_automatable": not_automatable,
+                "automation_percentage": automation_percentage,
+                "candidates_yes": candidates_yes,
+                "candidates_no": candidates_no,
+                "candidates_none": candidates_none,
+                "planned_cases": planned_cases,
+            },
+            "maintenance_breakdown": maintenance_breakdown,
+            "by_section": by_section,
+            "by_functionality": by_functionality
+        }
+    finally:
+        db.close()
+
+
+@app.get("/automation/planned-cases")
+def automation_planned_cases(
+    period: Optional[str] = Query(None, description="Filter period: day, week, month, quarter, year, all"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    automation_candidate: Optional[str] = Query(None, description="Filter by automation candidate: Yes, No, None"),
+    ticket_id: Optional[int] = Query(None, description="Filter by ticket ID"),
+):
+    """Get planned automation cases with date filters and trend data."""
+    db: Session = SessionLocal()
+    try:
+        query = db.query(AutomationTestCase).filter(
+            AutomationTestCase.automation_status.ilike("planned")
+        )
+        
+        if ticket_id is not None:
+            query = query.filter(AutomationTestCase.ticket_id == ticket_id)
+        
+        if automation_candidate:
+            query = query.filter(AutomationTestCase.automation_candidate == automation_candidate)
+        
+        # Date filtering based on planned_on
+        now = datetime.now()
+        filter_start = None
+        filter_end = None
+        
+        if start_date and end_date:
+            try:
+                filter_start = datetime.strptime(start_date, "%Y-%m-%d")
+                filter_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+            except ValueError:
+                pass
+        elif period:
+            if period == "day":
+                filter_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                filter_end = now
+            elif period == "week":
+                filter_start = now - timedelta(days=now.weekday())
+                filter_start = filter_start.replace(hour=0, minute=0, second=0, microsecond=0)
+                filter_end = now
+            elif period == "month":
+                filter_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                filter_end = now
+            elif period == "quarter":
+                quarter_start_month = ((now.month - 1) // 3) * 3 + 1
+                filter_start = now.replace(month=quarter_start_month, day=1, hour=0, minute=0, second=0, microsecond=0)
+                filter_end = now
+            elif period == "year":
+                filter_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+                filter_end = now
+        
+        # Get all planned cases (for total count)
+        all_planned_cases = _dedupe_automation_cases(query.all())
+        total_planned = len(all_planned_cases)
+        
+        # Filter by date range if specified
+        if filter_start and filter_end:
+            period_cases = [c for c in all_planned_cases if c.planned_on and filter_start <= c.planned_on <= filter_end]
+        else:
+            period_cases = all_planned_cases
+        
+        planned_in_period = len(period_cases)
+        
+        # Calculate candidates pending planning
+        candidates_query = db.query(AutomationTestCase).filter(
+            AutomationTestCase.automation_candidate == "Yes",
+            or_(
+                AutomationTestCase.automation_status.is_(None),
+                ~AutomationTestCase.automation_status.ilike("planned"),
+                ~AutomationTestCase.automation_status.ilike("automated"),
+                ~AutomationTestCase.automation_status.ilike("in progress")
+            )
+        )
+        if ticket_id is not None:
+            candidates_query = candidates_query.filter(AutomationTestCase.ticket_id == ticket_id)
+        candidates_pending = len(_dedupe_automation_cases(candidates_query.all()))
+        
+        # Group by date for trend chart
+        by_date = defaultdict(int)
+        for case in period_cases:
+            if case.planned_on:
+                date_str = case.planned_on.strftime("%Y-%m-%d")
+                by_date[date_str] += 1
+        
+        by_date_list = [{"date": d, "count": c} for d, c in sorted(by_date.items())]
+        
+        # Build case list
+        cases_list = []
+        for case in period_cases:
+            cases_list.append({
+                "case_id": case.case_id,
+                "test_id": case.test_id,
+                "title": case.title,
+                "ticket_id": case.ticket_id,
+                "section": case.section,
+                "functionality": case.functionality,
+                "automation_candidate": case.automation_candidate,
+                "automation_status": case.automation_status,
+                "planned_on": case.planned_on.isoformat() if case.planned_on else None,
+                "business_criticality": case.business_criticality,
+            })
+        
+        return {
+            "summary": {
+                "total_planned": total_planned,
+                "planned_in_period": planned_in_period,
+                "candidates_pending_planning": candidates_pending,
+            },
+            "by_date": by_date_list,
+            "cases": cases_list,
+            "filters": {
+                "period": period,
+                "start_date": start_date,
+                "end_date": end_date,
+                "automation_candidate": automation_candidate,
+                "ticket_id": ticket_id,
+            }
+        }
+    finally:
+        db.close()
+
+
+@app.get("/automation/automated-cases")
+def automation_automated_cases(
+    period: Optional[str] = Query(None, description="Filter period: day, week, month, quarter, year, all"),
+    start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD)"),
+    automation_candidate: Optional[str] = Query(None, description="Filter by automation candidate: Yes, No, None"),
+    ticket_id: Optional[int] = Query(None, description="Filter by ticket ID"),
+):
+    """Get automated cases with date filters and trend data."""
+    db: Session = SessionLocal()
+    try:
+        query = db.query(AutomationTestCase).filter(
+            or_(
+                AutomationTestCase.automation_status.ilike("automated"),
+                AutomationTestCase.execution_method.ilike("automated")
+            )
+        )
+        
+        if ticket_id is not None:
+            query = query.filter(AutomationTestCase.ticket_id == ticket_id)
+        
+        if automation_candidate:
+            query = query.filter(AutomationTestCase.automation_candidate == automation_candidate)
+        
+        # Date filtering based on automated_on
+        now = datetime.now()
+        filter_start = None
+        filter_end = None
+        
+        if start_date and end_date:
+            try:
+                filter_start = datetime.strptime(start_date, "%Y-%m-%d")
+                filter_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+            except ValueError:
+                pass
+        elif period:
+            if period == "day":
+                filter_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                filter_end = now
+            elif period == "week":
+                filter_start = now - timedelta(days=now.weekday())
+                filter_start = filter_start.replace(hour=0, minute=0, second=0, microsecond=0)
+                filter_end = now
+            elif period == "month":
+                filter_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                filter_end = now
+            elif period == "quarter":
+                quarter_start_month = ((now.month - 1) // 3) * 3 + 1
+                filter_start = now.replace(month=quarter_start_month, day=1, hour=0, minute=0, second=0, microsecond=0)
+                filter_end = now
+            elif period == "year":
+                filter_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+                filter_end = now
+        
+        # Get all automated cases (for total count)
+        all_automated_cases = _dedupe_automation_cases(query.all())
+        total_automated = len(all_automated_cases)
+        
+        # Filter by date range if specified
+        if filter_start and filter_end:
+            period_cases = [c for c in all_automated_cases if c.automated_on and filter_start <= c.automated_on <= filter_end]
+        else:
+            period_cases = all_automated_cases
+        
+        automated_in_period = len(period_cases)
+        
+        # Calculate automation candidate stats
+        candidates_yes = len([c for c in all_automated_cases if c.automation_candidate == "Yes"])
+        candidates_no = len([c for c in all_automated_cases if c.automation_candidate == "No"])
+        
+        # Calculate pending automation (Candidate=Yes but not yet Automated)
+        pending_query = db.query(AutomationTestCase).filter(
+            AutomationTestCase.automation_candidate == "Yes",
+            ~or_(
+                AutomationTestCase.automation_status.ilike("automated"),
+                AutomationTestCase.execution_method.ilike("automated")
+            )
+        )
+        if ticket_id is not None:
+            pending_query = pending_query.filter(AutomationTestCase.ticket_id == ticket_id)
+        pending_automation = len(_dedupe_automation_cases(pending_query.all()))
+        
+        # Group by date for trend chart
+        by_date = defaultdict(int)
+        for case in period_cases:
+            if case.automated_on:
+                date_str = case.automated_on.strftime("%Y-%m-%d")
+                by_date[date_str] += 1
+        
+        by_date_list = [{"date": d, "count": c} for d, c in sorted(by_date.items())]
+        
+        # Build case list
+        cases_list = []
+        for case in period_cases:
+            cases_list.append({
+                "case_id": case.case_id,
+                "test_id": case.test_id,
+                "title": case.title,
+                "ticket_id": case.ticket_id,
+                "section": case.section,
+                "functionality": case.functionality,
+                "automation_candidate": case.automation_candidate,
+                "automation_status": case.automation_status,
+                "automated_on": case.automated_on.isoformat() if case.automated_on else None,
+                "business_criticality": case.business_criticality,
+                "status_name": case.status_name,
+            })
+        
+        return {
+            "summary": {
+                "total_automated": total_automated,
+                "automated_in_period": automated_in_period,
+                "automation_candidates_yes": candidates_yes,
+                "automation_candidates_no": candidates_no,
+                "pending_automation": pending_automation,
+            },
+            "by_date": by_date_list,
+            "cases": cases_list,
+            "filters": {
+                "period": period,
+                "start_date": start_date,
+                "end_date": end_date,
+                "automation_candidate": automation_candidate,
+                "ticket_id": ticket_id,
+            }
+        }
+    finally:
+        db.close()
+
+
+@app.get("/automation/workflow-summary")
+def automation_workflow_summary(ticket_id: Optional[int] = Query(None)):
+    """Get automation workflow summary: Candidate → Planned → Automated counts."""
+    db: Session = SessionLocal()
+    try:
+        query = db.query(AutomationTestCase)
+        if ticket_id is not None:
+            query = query.filter(AutomationTestCase.ticket_id == ticket_id)
+        
+        all_cases = _dedupe_automation_cases(query.all())
+        
+        # Count by workflow stage
+        candidates_yes = 0
+        candidates_no = 0
+        planned = 0
+        automated = 0
+        not_automatable = 0
+        
+        for case in all_cases:
+            # Count candidates
+            if case.automation_candidate == "Yes":
+                candidates_yes += 1
+            elif case.automation_candidate == "No":
+                candidates_no += 1
+            
+            # Count by status
+            status = (case.automation_status or "").lower()
+            exec_method = (case.execution_method or "").lower()
+            
+            if status == "automated" or exec_method == "automated":
+                automated += 1
+            elif status == "planned":
+                planned += 1
+            elif status == "not automatable":
+                not_automatable += 1
+        
+        # Pending = Candidate Yes but not Planned or Automated
+        pending_planning = 0
+        for case in all_cases:
+            if case.automation_candidate == "Yes":
+                status = (case.automation_status or "").lower()
+                exec_method = (case.execution_method or "").lower()
+                if status not in ["planned", "automated", "in progress"] and exec_method != "automated":
+                    pending_planning += 1
+        
+        return {
+            "workflow": {
+                "candidates_yes": candidates_yes,
+                "candidates_no": candidates_no,
+                "pending_planning": pending_planning,
+                "planned": planned,
+                "automated": automated,
+                "not_automatable": not_automatable,
+            },
+            "total_cases": len(all_cases),
+            "ticket_id": ticket_id,
+        }
+    finally:
+        db.close()
+
+
+@app.post("/automation/sync")
+def automation_sync():
+    """Trigger a sync of automation coverage data from TestRail Project 18.
+    This runs the sync_automation_testrail script to fetch latest data.
+    """
+    import subprocess
+    import sys
+    
+    try:
+        script_path = os.path.join(os.path.dirname(__file__), "sync_automation_testrail.py")
+        
+        if not os.path.exists(script_path):
+            raise HTTPException(status_code=500, detail="Sync script not found")
+        
+        result = subprocess.run(
+            [sys.executable, script_path],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            cwd=os.path.dirname(__file__)
+        )
+        
+        if result.returncode != 0:
+            return {
+                "success": False,
+                "message": "Sync failed",
+                "error": result.stderr[-2000:] if result.stderr else "Unknown error",
+                "output": result.stdout[-2000:] if result.stdout else ""
+            }
+        
+        return {
+            "success": True,
+            "message": "Automation coverage data synced successfully",
+            "output": result.stdout[-2000:] if result.stdout else ""
+        }
+        
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Sync timed out after 5 minutes")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ===== TICKET TRACKING ENDPOINTS =====
 
 @app.get("/tickets/search")
@@ -2521,6 +3755,27 @@ def get_ticket_sync_status():
 def get_redmine_sync_status():
     """Get status of Redmine auto-sync scheduler and last sync result."""
     return get_redmine_scheduler_status()
+
+
+@app.get("/testrail/sync/status")
+def get_testrail_sync_status():
+    """Get status of TestRail auto-sync scheduler and last sync result."""
+    return get_testrail_scheduler_status()
+
+
+@app.post("/testrail/sync")
+def trigger_testrail_sync():
+    """Trigger TestRail sync immediately."""
+    try:
+        result = trigger_testrail_sync_now()
+        status_code = 200 if result.get("success") else 500
+        if status_code != 200:
+            raise HTTPException(status_code=status_code, detail=result)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"TestRail sync failed: {str(e)}")
 
 
 @app.post("/redmine/sync")
@@ -8344,6 +9599,1450 @@ def preview_weekly_report_v2(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ===== QA METRICS DASHBOARD (4 KEY METRICS) =====
+
+def _get_qa_metrics_data(period: str, db: Session, start_date: str = None, end_date: str = None):
+    """
+    Internal function to get QA metrics data.
+    Used by both authenticated and public endpoints.
+    """
+    from pathlib import Path
+    from collections import defaultdict, Counter
+    import json
+    
+    # Period definitions
+    PERIOD_DAYS = {
+        'past_week': 7,
+        'past_month': 30,
+        'past_quarter': 90,
+        'past_year': 365,
+        'overall': None,
+    }
+    
+    # Status definitions
+    QC_TESTING = 'QC Testing'
+    QC_TESTING_IN_PROGRESS = 'QC Testing in Progress'
+    QC_REVIEW_FAIL = 'QC Review Fail'
+    QC_TESTING_HOLD = 'QC Testing Hold'
+    QC_TESTING_ON_HOLD = 'QC Testing On-hold'
+    BIS_TESTING = 'BIS Testing'
+    QC_FAIL_STATUSES = {QC_REVIEW_FAIL, 'Tested - Awaiting Fixes'}
+    
+    # Find the latest PM Activity Export file
+    reports_dir = Path("reports")
+    export_files = list(reports_dir.glob("PM_Activity_Export_*.csv"))
+    if not export_files:
+        raise HTTPException(status_code=404, detail="No PM Activity Export file found")
+    
+    latest_export = max(export_files, key=lambda f: f.stat().st_mtime)
+    
+    # Load data
+    try:
+        with open(latest_export, 'r', encoding='utf-8') as f:
+            raw_data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse data: {e}")
+    
+    # Group by ticket
+    ticket_history = defaultdict(list)
+    for record in raw_data:
+        ticket_id = record.get('ticketId')
+        if ticket_id:
+            try:
+                ticket_id = int(ticket_id)
+            except (ValueError, TypeError):
+                pass
+            change_date = datetime.strptime(record['statusChangeDate'], '%Y-%m-%d %H:%M:%S')
+            ticket_history[ticket_id].append({
+                'date': change_date,
+                'old_status': record.get('oldStatus'),
+                'new_status': record.get('newStatus'),
+            })
+    
+    # Sort histories
+    for tid in ticket_history:
+        ticket_history[tid].sort(key=lambda x: x['date'])
+    
+    # Optional explicit date-range filter (YYYY-MM-DD)
+    range_start = None
+    range_end = None
+    if start_date:
+        try:
+            range_start = datetime.strptime(start_date, "%Y-%m-%d")
+        except ValueError:
+            range_start = None
+    if end_date:
+        try:
+            range_end = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        except ValueError:
+            range_end = None
+
+    # Filter by period and only tickets that entered QA
+    days = PERIOD_DAYS.get(period)
+    cutoff_date = datetime.now() - timedelta(days=days) if days else None
+    
+    def ticket_entered_qa(history):
+        for h in history:
+            if h.get('new_status') in (QC_TESTING, QC_TESTING_IN_PROGRESS):
+                return True
+        return False
+    
+    def calculate_business_days(start, end):
+        if not start or not end or end <= start:
+            return 0.0
+        total = 0
+        current = start
+        while current < end:
+            if current.weekday() < 5:
+                total += 1
+            current += timedelta(days=1)
+        return total
+    
+    # Calculate metrics for filtered tickets
+    tickets_data = []
+    all_test_cycles = []
+    all_waiting_times = []
+    cycle_distribution = Counter()
+    daily_stats = defaultdict(list)
+    
+    ticket_lookup = {t.ticket_id: t for t in db.query(TicketTracking).all()}
+    
+    for ticket_id, history in ticket_history.items():
+        if not ticket_entered_qa(history):
+            continue
+        
+        # Check period/date-range filter
+        if range_start or range_end:
+            has_activity_in_period = any(
+                (range_start is None or h['date'] >= range_start) and
+                (range_end is None or h['date'] <= range_end)
+                for h in history
+            )
+            if not has_activity_in_period:
+                continue
+        elif cutoff_date:
+            has_activity_in_period = any(h['date'] >= cutoff_date for h in history)
+            if not has_activity_in_period:
+                continue
+        
+        # Calculate metrics
+        first_qc_testing = None
+        first_bis_testing = None
+        test_cycles = []
+        waiting_times = []
+        in_qc_testing = False
+        in_progress = False
+        in_dev_hold = False
+        in_qa_hold = False
+        qc_testing_entry = None
+        progress_entry = None
+        dev_hold_entry = None
+        qa_hold_entry = None
+        
+        # Time tracking
+        total_active_testing_days = 0.0
+        total_waiting_in_queue_days = 0.0
+        total_dev_hold_days = 0.0
+        total_qa_hold_days = 0.0
+        
+        for h in history:
+            new_status = h.get('new_status', '')
+            change_date = h['date']
+            
+            # First QC Testing
+            if new_status == QC_TESTING and first_qc_testing is None:
+                first_qc_testing = change_date
+                qc_testing_entry = change_date
+                in_qc_testing = True
+            elif new_status == QC_TESTING and not in_qc_testing:
+                qc_testing_entry = change_date
+                in_qc_testing = True
+            
+            # First BIS Testing
+            if new_status == BIS_TESTING and first_bis_testing is None:
+                first_bis_testing = change_date
+            
+            # Track QC Testing in Progress (active testing time)
+            if new_status == QC_TESTING_IN_PROGRESS:
+                if in_qc_testing and qc_testing_entry:
+                    wait_days = calculate_business_days(qc_testing_entry, change_date)
+                    waiting_times.append(wait_days)
+                    total_waiting_in_queue_days += wait_days
+                    all_waiting_times.append(wait_days)
+                    in_qc_testing = False
+                
+                # Close any hold periods
+                if in_dev_hold and dev_hold_entry:
+                    total_dev_hold_days += calculate_business_days(dev_hold_entry, change_date)
+                    in_dev_hold = False
+                if in_qa_hold and qa_hold_entry:
+                    total_qa_hold_days += calculate_business_days(qa_hold_entry, change_date)
+                    in_qa_hold = False
+                
+                progress_entry = change_date
+                in_progress = True
+            
+            # Track QA Hold (QC Testing Hold / On-hold)
+            if new_status in (QC_TESTING_HOLD, QC_TESTING_ON_HOLD):
+                if in_qc_testing and qc_testing_entry:
+                    wait_days = calculate_business_days(qc_testing_entry, change_date)
+                    waiting_times.append(wait_days)
+                    total_waiting_in_queue_days += wait_days
+                    all_waiting_times.append(wait_days)
+                    in_qc_testing = False
+                
+                if in_progress and progress_entry:
+                    total_active_testing_days += calculate_business_days(progress_entry, change_date)
+                    in_progress = False
+                
+                qa_hold_entry = change_date
+                in_qa_hold = True
+            
+            # Track Dev Hold (QC Review Fail / Tested - Awaiting Fixes)
+            if new_status in QC_FAIL_STATUSES:
+                if in_progress and progress_entry:
+                    cycle_days = calculate_business_days(progress_entry, change_date)
+                    total_active_testing_days += cycle_days
+                    test_cycles.append({'days': cycle_days, 'result': 'Fail'})
+                    all_test_cycles.append({'days': cycle_days, 'result': 'Fail'})
+                    in_progress = False
+                    progress_entry = None
+                
+                dev_hold_entry = change_date
+                in_dev_hold = True
+            
+            # BIS Testing - close all periods
+            if new_status == BIS_TESTING:
+                if in_progress and progress_entry:
+                    cycle_days = calculate_business_days(progress_entry, change_date)
+                    total_active_testing_days += cycle_days
+                    test_cycles.append({'days': cycle_days, 'result': 'Pass'})
+                    all_test_cycles.append({'days': cycle_days, 'result': 'Pass'})
+                    in_progress = False
+                
+                if in_dev_hold and dev_hold_entry:
+                    total_dev_hold_days += calculate_business_days(dev_hold_entry, change_date)
+                    in_dev_hold = False
+                if in_qa_hold and qa_hold_entry:
+                    total_qa_hold_days += calculate_business_days(qa_hold_entry, change_date)
+                    in_qa_hold = False
+        
+        # QC Cycle Time
+        qc_cycle_days = None
+        if first_qc_testing and first_bis_testing:
+            qc_cycle_days = calculate_business_days(first_qc_testing, first_bis_testing)
+            daily_stats[first_bis_testing.strftime('%Y-%m-%d')].append(qc_cycle_days)
+        
+        # Cycle distribution
+        num_cycles = len(test_cycles)
+        if num_cycles > 0:
+            if num_cycles == 1:
+                cycle_distribution['1'] += 1
+            elif num_cycles == 2:
+                cycle_distribution['2'] += 1
+            else:
+                cycle_distribution['3+'] += 1
+        
+        ticket = ticket_lookup.get(ticket_id)
+        tickets_data.append({
+            'ticket_id': ticket_id,
+            'current_status': history[-1]['new_status'] if history else '',
+            'priority': getattr(ticket, 'priority', '') if ticket else '',
+            'platform': getattr(ticket, 'subdepartment', '') if ticket else '',
+            'qc_tester': getattr(ticket, 'qc_tester', '') if ticket else '',
+            'first_qc_testing': first_qc_testing.isoformat() if first_qc_testing else None,
+            'first_bis_testing': first_bis_testing.isoformat() if first_bis_testing else None,
+            'qc_cycle_days': round(qc_cycle_days, 1) if qc_cycle_days else None,
+            'test_cycles': num_cycles,
+            'active_testing_days': round(total_active_testing_days, 1) if total_active_testing_days > 0 else None,
+            'waiting_in_queue_days': round(total_waiting_in_queue_days, 1) if total_waiting_in_queue_days > 0 else None,
+            'dev_hold_days': round(total_dev_hold_days, 1) if total_dev_hold_days > 0 else None,
+            'qa_hold_days': round(total_qa_hold_days, 1) if total_qa_hold_days > 0 else None,
+            'waiting_events': len(waiting_times),
+            'avg_test_cycle_days': round(sum(c['days'] for c in test_cycles) / len(test_cycles), 1) if test_cycles else None,
+            'avg_waiting_days': round(sum(waiting_times) / len(waiting_times), 1) if waiting_times else None,
+        })
+    
+    # Aggregate metrics
+    completed = [t for t in tickets_data if t['qc_cycle_days'] is not None]
+    cycle_days_list = [t['qc_cycle_days'] for t in completed]
+    tickets_with_cycles = [t for t in tickets_data if t['test_cycles'] > 0]
+    one_cycle = len([t for t in tickets_with_cycles if t['test_cycles'] == 1])
+    
+    # Daily trend (last 14 days)
+    daily_trend = []
+    sorted_dates = sorted(daily_stats.keys())[-14:]
+    for date in sorted_dates:
+        vals = daily_stats[date]
+        daily_trend.append({
+            'date': date,
+            'avg_days': round(sum(vals) / len(vals), 1) if vals else 0,
+            'count': len(vals),
+        })
+    
+    return {
+        'metrics': {
+            'total_tickets': len(tickets_data),
+            'completed_tickets': len(completed),
+            'avg_qc_cycle_days': round(sum(cycle_days_list) / len(cycle_days_list), 1) if cycle_days_list else 0,
+            'median_qc_cycle_days': round(sorted(cycle_days_list)[len(cycle_days_list)//2], 1) if cycle_days_list else 0,
+            'total_test_cycles': len(all_test_cycles),
+            'avg_test_cycle_days': round(sum(c['days'] for c in all_test_cycles) / len(all_test_cycles), 1) if all_test_cycles else 0,
+            'pass_cycles': len([c for c in all_test_cycles if c['result'] == 'Pass']),
+            'fail_cycles': len([c for c in all_test_cycles if c['result'] == 'Fail']),
+            'first_pass_rate': round(one_cycle / len(tickets_with_cycles) * 100, 1) if tickets_with_cycles else 0,
+            'one_cycle_count': one_cycle,
+            'multi_cycle_count': len(tickets_with_cycles) - one_cycle,
+            'total_waiting_events': len(all_waiting_times),
+            'avg_waiting_days': round(sum(all_waiting_times) / len(all_waiting_times), 1) if all_waiting_times else 0,
+            'max_waiting_days': round(max(all_waiting_times), 1) if all_waiting_times else 0,
+            'cycle_distribution': dict(cycle_distribution),
+            'daily_trend': daily_trend,
+        },
+        'tickets': tickets_data,
+    }
+
+
+@app.get("/api/qa-metrics")
+async def get_qa_metrics(
+    period: str = Query("past_month", description="Time period"),
+    start_date: str = Query(None, description="Start date YYYY-MM-DD"),
+    end_date: str = Query(None, description="End date YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access)
+):
+    """Get QA metrics (authenticated)."""
+    return _get_qa_metrics_data(period, db, start_date=start_date, end_date=end_date)
+
+
+@app.get("/api/public/qa-metrics")
+async def get_qa_metrics_public(
+    period: str = Query("past_month", description="Time period"),
+    start_date: str = Query(None, description="Start date YYYY-MM-DD"),
+    end_date: str = Query(None, description="End date YYYY-MM-DD"),
+    db: Session = Depends(get_db)
+):
+    """Get QA metrics (public - no auth required)."""
+    return _get_qa_metrics_data(period, db, start_date=start_date, end_date=end_date)
+
+
+def _export_qa_metrics_tickets_excel(period: str, db: Session, start_date: str = None, end_date: str = None):
+    """Create and return Excel export path for QA metrics tickets."""
+    from pathlib import Path
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from openpyxl.utils import get_column_letter
+
+    data = _get_qa_metrics_data(period, db, start_date=start_date, end_date=end_date)
+    tickets = data.get("tickets", [])
+    metrics = data.get("metrics", {})
+
+    wb = Workbook()
+    # Set calculation mode to automatic
+    wb.calculation.calcMode = "auto"
+    
+    ws_summary = wb.active
+    ws_summary.title = "Summary"
+
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+
+    title = "QA Metrics Ticket Export"
+    ws_summary["A1"] = title
+    ws_summary["A1"].font = Font(bold=True, size=14)
+    ws_summary["A3"] = f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    if start_date or end_date:
+        ws_summary["A4"] = f"Range: {start_date or '...'} to {end_date or '...'}"
+    else:
+        ws_summary["A4"] = f"Period: {period.replace('_', ' ').title()}"
+
+    # Summary metrics with formulas referencing Tickets sheet
+    # Note: Tickets data starts at row 7, columns: A=ID, F=QC Start, G=BIS Date, H=Total QC Days, 
+    # I=Active Testing, J=Queue Wait, K=Dev Hold, L=QA Hold, M=Test Cycles, N=Avg Test Cycle, O=Waiting Events, P=Avg Waiting
+    
+    ws_summary["A6"] = "Metric"
+    ws_summary["B6"] = "Value"
+    ws_summary["C6"] = "Formula"
+    ws_summary["A6"].fill = header_fill
+    ws_summary["B6"].fill = header_fill
+    ws_summary["C6"].fill = header_fill
+    ws_summary["A6"].font = header_font
+    ws_summary["B6"].font = header_font
+    ws_summary["C6"].font = header_font
+    
+    # Calculate data range for Tickets sheet
+    first_row = 7
+    last_row = first_row + len(tickets) - 1 if tickets else first_row
+    
+    # Row 7: Total Tickets
+    ws_summary["A7"] = "Total Tickets"
+    ws_summary["B7"] = f"=COUNTA(Tickets!A{first_row}:A{last_row})" if tickets else 0
+    ws_summary["C7"] = f"COUNTA(Tickets!A{first_row}:A{last_row})"
+    
+    # Row 8: Completed Tickets (those with BIS Testing date in column G)
+    ws_summary["A8"] = "Completed Tickets"
+    ws_summary["B8"] = f"=COUNTA(Tickets!G{first_row}:G{last_row})" if tickets else 0
+    ws_summary["C8"] = f"COUNTA(Tickets!G{first_row}:G{last_row})"
+    
+    # Row 9: Avg QC Cycle Days (column H)
+    ws_summary["A9"] = "Avg QC Cycle Days"
+    ws_summary["B9"] = f'=IF(COUNTA(Tickets!H{first_row}:H{last_row})>0,ROUND(AVERAGE(Tickets!H{first_row}:H{last_row}),1),0)' if tickets else 0
+    ws_summary["C9"] = f"ROUND(AVERAGE(Tickets!H{first_row}:H{last_row}),1)"
+    
+    # Row 10: Median QC Cycle Days (column H)
+    ws_summary["A10"] = "Median QC Cycle Days"
+    ws_summary["B10"] = f'=IF(COUNTA(Tickets!H{first_row}:H{last_row})>0,MEDIAN(Tickets!H{first_row}:H{last_row}),0)' if tickets else 0
+    ws_summary["C10"] = f"MEDIAN(Tickets!H{first_row}:H{last_row})"
+    
+    # Row 11: Total Test Cycles (sum of column M)
+    ws_summary["A11"] = "Total Test Cycles"
+    ws_summary["B11"] = f"=SUM(Tickets!M{first_row}:M{last_row})" if tickets else 0
+    ws_summary["C11"] = f"SUM(Tickets!M{first_row}:M{last_row})"
+    
+    # Row 12: Avg Test Cycles per Ticket
+    ws_summary["A12"] = "Avg Test Cycles per Ticket"
+    ws_summary["B12"] = f'=IF(COUNTA(Tickets!M{first_row}:M{last_row})>0,ROUND(AVERAGE(Tickets!M{first_row}:M{last_row}),1),0)' if tickets else 0
+    ws_summary["C12"] = f"ROUND(AVERAGE(Tickets!M{first_row}:M{last_row}),1)"
+    
+    # Row 13: First Pass Rate % (tickets with exactly 1 test cycle)
+    ws_summary["A13"] = "First Pass Rate %"
+    ws_summary["B13"] = f'=IF(COUNTA(Tickets!M{first_row}:M{last_row})>0,ROUND(COUNTIF(Tickets!M{first_row}:M{last_row},1)/COUNTA(Tickets!M{first_row}:M{last_row})*100,1),0)' if tickets else 0
+    ws_summary["C13"] = f"COUNTIF(M=1) / COUNT(M) * 100"
+    
+    # Row 14: Avg Active Testing Days (column I)
+    ws_summary["A14"] = "Avg Active Testing Days"
+    ws_summary["B14"] = f'=IF(COUNTA(Tickets!I{first_row}:I{last_row})>0,ROUND(AVERAGE(Tickets!I{first_row}:I{last_row}),1),0)' if tickets else 0
+    ws_summary["C14"] = f"ROUND(AVERAGE(Tickets!I{first_row}:I{last_row}),1)"
+    
+    # Row 15: Avg Queue Wait Days (column J)
+    ws_summary["A15"] = "Avg Queue Wait Days"
+    ws_summary["B15"] = f'=IF(COUNTA(Tickets!J{first_row}:J{last_row})>0,ROUND(AVERAGE(Tickets!J{first_row}:J{last_row}),1),0)' if tickets else 0
+    ws_summary["C15"] = f"ROUND(AVERAGE(Tickets!J{first_row}:J{last_row}),1)"
+    
+    # Row 16: Avg Dev Hold Days (column K)
+    ws_summary["A16"] = "Avg Dev Hold Days"
+    ws_summary["B16"] = f'=IF(COUNTA(Tickets!K{first_row}:K{last_row})>0,ROUND(AVERAGE(Tickets!K{first_row}:K{last_row}),1),0)' if tickets else 0
+    ws_summary["C16"] = f"ROUND(AVERAGE(Tickets!K{first_row}:K{last_row}),1)"
+    
+    # Row 17: Avg QA Hold Days (column L)
+    ws_summary["A17"] = "Avg QA Hold Days"
+    ws_summary["B17"] = f'=IF(COUNTA(Tickets!L{first_row}:L{last_row})>0,ROUND(AVERAGE(Tickets!L{first_row}:L{last_row}),1),0)' if tickets else 0
+    ws_summary["C17"] = f"ROUND(AVERAGE(Tickets!L{first_row}:L{last_row}),1)"
+    
+    # Row 18: Max QC Cycle Days
+    ws_summary["A18"] = "Max QC Cycle Days"
+    ws_summary["B18"] = f'=IF(COUNTA(Tickets!H{first_row}:H{last_row})>0,MAX(Tickets!H{first_row}:H{last_row}),0)' if tickets else 0
+    ws_summary["C18"] = f"MAX(Tickets!H{first_row}:H{last_row})"
+    
+    # Row 19: Min QC Cycle Days
+    ws_summary["A19"] = "Min QC Cycle Days"
+    ws_summary["B19"] = f'=IF(COUNTA(Tickets!H{first_row}:H{last_row})>0,MIN(Tickets!H{first_row}:H{last_row}),0)' if tickets else 0
+    ws_summary["C19"] = f"MIN(Tickets!H{first_row}:H{last_row})"
+    
+    ws_summary.column_dimensions["A"].width = 28
+    ws_summary.column_dimensions["B"].width = 16
+    ws_summary.column_dimensions["C"].width = 45
+
+    ws = wb.create_sheet("Tickets")
+    
+    headers = [
+        "Ticket ID",
+        "Current Status",
+        "Priority",
+        "Platform",
+        "QC Tester",
+        "First QC Testing",
+        "First BIS Testing",
+        "Total QC Days",
+        "Active Testing Days",
+        "Queue Wait Days",
+        "Dev Hold Days",
+        "QA Hold Days",
+        "Test Cycles",
+        "Avg Test Cycle Days",
+        "Waiting Events",
+        "Avg Waiting Days",
+    ]
+
+    header_row = 6
+    for col, label in enumerate(headers, start=1):
+        cell = ws.cell(row=header_row, column=col, value=label)
+        cell.fill = header_fill
+        cell.font = header_font
+
+    first_data_row = header_row + 1
+    last_data_row = header_row + len(tickets)
+
+    # We'll add raw duration columns (Q-T) for formula-based calculations
+    # Q = Raw Active Testing Days, R = Raw Queue Wait Days, S = Raw Dev Hold Days, T = Raw QA Hold Days
+    # U = Raw Test Cycles, V = Raw Waiting Events
+    extra_headers = ["Raw Active", "Raw Queue", "Raw Dev Hold", "Raw QA Hold", "Raw Cycles", "Raw Wait Events"]
+    for col_offset, label in enumerate(extra_headers, start=17):
+        cell = ws.cell(row=header_row, column=col_offset, value=label)
+        cell.fill = header_fill
+        cell.font = header_font
+    
+    for idx, t in enumerate(tickets, start=first_data_row):
+        ws.cell(row=idx, column=1, value=t.get("ticket_id"))
+        ws.cell(row=idx, column=2, value=t.get("current_status"))
+        ws.cell(row=idx, column=3, value=t.get("priority"))
+        ws.cell(row=idx, column=4, value=t.get("platform"))
+        ws.cell(row=idx, column=5, value=t.get("qc_tester"))
+        start_val = t.get("first_qc_testing")
+        end_val = t.get("first_bis_testing")
+        start_dt = datetime.fromisoformat(start_val) if start_val else None
+        end_dt = datetime.fromisoformat(end_val) if end_val else None
+        ws.cell(row=idx, column=6, value=start_dt)  # F - First QC Testing
+        ws.cell(row=idx, column=7, value=end_dt)    # G - First BIS Testing
+        
+        # H - Total QC Days (formula)
+        ws.cell(row=idx, column=8, value=f'=IF(AND(F{idx}<>"",G{idx}<>""),NETWORKDAYS(F{idx},G{idx}),"")')
+        
+        # I - Active Testing Days (formula referencing raw data in Q)
+        ws.cell(row=idx, column=9, value=f'=IF(Q{idx}<>"",Q{idx},"")')
+        
+        # J - Queue Wait Days (formula referencing raw data in R)
+        ws.cell(row=idx, column=10, value=f'=IF(R{idx}<>"",R{idx},"")')
+        
+        # K - Dev Hold Days (formula referencing raw data in S)
+        ws.cell(row=idx, column=11, value=f'=IF(S{idx}<>"",S{idx},"")')
+        
+        # L - QA Hold Days (formula referencing raw data in T)
+        ws.cell(row=idx, column=12, value=f'=IF(T{idx}<>"",T{idx},"")')
+        
+        # M - Test Cycles (formula referencing raw data in U)
+        ws.cell(row=idx, column=13, value=f'=IF(U{idx}<>"",U{idx},"")')
+        
+        # N - Avg Test Cycle Days (formula: Active Testing / Cycles)
+        ws.cell(row=idx, column=14, value=f'=IF(AND(U{idx}<>"",U{idx}>0),ROUND(Q{idx}/U{idx},1),"")')
+        
+        # O - Waiting Events (formula referencing raw data in V)
+        ws.cell(row=idx, column=15, value=f'=IF(V{idx}<>"",V{idx},"")')
+        
+        # P - Avg Waiting Days (formula: Queue Wait / Waiting Events)
+        ws.cell(row=idx, column=16, value=f'=IF(AND(V{idx}<>"",V{idx}>0),ROUND(R{idx}/V{idx},1),"")')
+        
+        # Raw data columns (Q-V) - these hold the actual calculated values
+        ws.cell(row=idx, column=17, value=t.get("active_testing_days") or "")     # Q - Raw Active
+        ws.cell(row=idx, column=18, value=t.get("waiting_in_queue_days") or "")   # R - Raw Queue
+        ws.cell(row=idx, column=19, value=t.get("dev_hold_days") or "")           # S - Raw Dev Hold
+        ws.cell(row=idx, column=20, value=t.get("qa_hold_days") or "")            # T - Raw QA Hold
+        ws.cell(row=idx, column=21, value=t.get("test_cycles") or "")             # U - Raw Cycles
+        ws.cell(row=idx, column=22, value=t.get("waiting_events") or "")
+
+    for col, width in {
+        "A": 12, "B": 24, "C": 14, "D": 18, "E": 18,
+        "F": 22, "G": 22, "H": 14, "I": 18, "J": 16,
+        "K": 14, "L": 14, "M": 12, "N": 18, "O": 14, "P": 18,
+        "Q": 12, "R": 12, "S": 14, "T": 14, "U": 12, "V": 14
+    }.items():
+        ws.column_dimensions[col].width = width
+    for row in range(first_data_row, last_data_row + 1):
+        ws.cell(row=row, column=6).number_format = "YYYY-MM-DD HH:MM"
+        ws.cell(row=row, column=7).number_format = "YYYY-MM-DD HH:MM"
+
+    ws["R2"] = "Stats Formulas"
+    ws["R3"] = "Avg QC Days (col H)"
+    if tickets:
+        ws["S3"] = f'=IF(COUNTA(H{first_data_row}:H{last_data_row})>0,AVERAGE(H{first_data_row}:H{last_data_row}),0)'
+    else:
+        ws["S3"] = 0
+    ws["R4"] = "Median QC Days (col H)"
+    if tickets:
+        ws["S4"] = f'=IF(COUNTA(H{first_data_row}:H{last_data_row})>0,MEDIAN(H{first_data_row}:H{last_data_row}),0)'
+    else:
+        ws["S4"] = 0
+    ws["R5"] = "First Pass Rate % (col M)"
+    if tickets:
+        ws["S5"] = f'=IF(COUNTA(M{first_data_row}:M{last_data_row})>0,COUNTIF(M{first_data_row}:M{last_data_row},1)/COUNTA(M{first_data_row}:M{last_data_row})*100,0)'
+    else:
+        ws["S5"] = 0
+
+    output_path = Path("reports") / f"QA_Metrics_Tickets_{period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    output_path.parent.mkdir(exist_ok=True)
+    wb.save(output_path)
+    return output_path
+
+
+@app.get("/api/qa-metrics/export")
+async def export_qa_metrics(
+    period: str = Query("past_month", description="Time period"),
+    start_date: str = Query(None, description="Start date YYYY-MM-DD"),
+    end_date: str = Query(None, description="End date YYYY-MM-DD"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access)
+):
+    """Export QA metrics ticket list to Excel (authenticated)."""
+    from fastapi.responses import FileResponse
+
+    file_path = _export_qa_metrics_tickets_excel(period, db, start_date=start_date, end_date=end_date)
+    return FileResponse(
+        path=str(file_path),
+        filename=file_path.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+@app.get("/api/public/qa-metrics/export")
+async def export_qa_metrics_public(
+    period: str = Query("past_month", description="Time period"),
+    start_date: str = Query(None, description="Start date YYYY-MM-DD"),
+    end_date: str = Query(None, description="End date YYYY-MM-DD"),
+    db: Session = Depends(get_db)
+):
+    """Export QA metrics ticket list to Excel (public - no auth required)."""
+    from fastapi.responses import FileResponse
+
+    file_path = _export_qa_metrics_tickets_excel(period, db, start_date=start_date, end_date=end_date)
+    return FileResponse(
+        path=str(file_path),
+        filename=file_path.name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+def _get_qa_metrics_comparison_data(db: Session):
+    """Internal function for QA metrics comparison."""
+    from pathlib import Path
+    from collections import defaultdict
+    import json
+    
+    PERIOD_DAYS = {
+        'past_week': 7,
+        'past_month': 30,
+        'past_quarter': 90,
+        'past_year': 365,
+        'overall': None,
+    }
+    
+    QC_TESTING = 'QC Testing'
+    QC_TESTING_IN_PROGRESS = 'QC Testing in Progress'
+    BIS_TESTING = 'BIS Testing'
+    
+    reports_dir = Path("reports")
+    export_files = list(reports_dir.glob("PM_Activity_Export_*.csv"))
+    if not export_files:
+        return {}
+    
+    latest_export = max(export_files, key=lambda f: f.stat().st_mtime)
+    
+    try:
+        with open(latest_export, 'r', encoding='utf-8') as f:
+            raw_data = json.load(f)
+    except:
+        return {}
+    
+    ticket_history = defaultdict(list)
+    for record in raw_data:
+        ticket_id = record.get('ticketId')
+        if ticket_id:
+            try:
+                ticket_id = int(ticket_id)
+            except:
+                pass
+            change_date = datetime.strptime(record['statusChangeDate'], '%Y-%m-%d %H:%M:%S')
+            ticket_history[ticket_id].append({
+                'date': change_date,
+                'new_status': record.get('newStatus'),
+            })
+    
+    for tid in ticket_history:
+        ticket_history[tid].sort(key=lambda x: x['date'])
+    
+    def calculate_business_days(start, end):
+        if not start or not end or end <= start:
+            return 0.0
+        total = 0
+        current = start
+        while current < end:
+            if current.weekday() < 5:
+                total += 1
+            current += timedelta(days=1)
+        return total
+    
+    def ticket_entered_qa(history):
+        for h in history:
+            if h.get('new_status') in (QC_TESTING, QC_TESTING_IN_PROGRESS):
+                return True
+        return False
+    
+    result = {}
+    now = datetime.now()
+    
+    for period_key, days in PERIOD_DAYS.items():
+        cutoff = now - timedelta(days=days) if days else None
+        
+        total = 0
+        completed = 0
+        cycle_days_list = []
+        first_pass = 0
+        tickets_with_cycles = 0
+        
+        for ticket_id, history in ticket_history.items():
+            if not ticket_entered_qa(history):
+                continue
+            
+            if cutoff:
+                if not any(h['date'] >= cutoff for h in history):
+                    continue
+            
+            total += 1
+            
+            first_qc = None
+            first_bis = None
+            cycle_count = 0
+            
+            for h in history:
+                if h['new_status'] == QC_TESTING and first_qc is None:
+                    first_qc = h['date']
+                if h['new_status'] == BIS_TESTING and first_bis is None:
+                    first_bis = h['date']
+                if h['new_status'] == QC_TESTING_IN_PROGRESS:
+                    cycle_count += 1
+            
+            if first_qc and first_bis:
+                completed += 1
+                days_val = calculate_business_days(first_qc, first_bis)
+                cycle_days_list.append(days_val)
+            
+            if cycle_count > 0:
+                tickets_with_cycles += 1
+                if cycle_count == 1:
+                    first_pass += 1
+        
+        result[period_key] = {
+            'total_tickets': total,
+            'completed_tickets': completed,
+            'avg_qc_cycle_days': round(sum(cycle_days_list) / len(cycle_days_list), 1) if cycle_days_list else 0,
+            'first_pass_rate': round(first_pass / tickets_with_cycles * 100, 1) if tickets_with_cycles else 0,
+        }
+    
+    return result
+
+
+@app.get("/api/qa-metrics/comparison")
+async def get_qa_metrics_comparison(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access)
+):
+    """Get QA metrics comparison (authenticated)."""
+    return _get_qa_metrics_comparison_data(db)
+
+
+@app.get("/api/public/qa-metrics/comparison")
+async def get_qa_metrics_comparison_public(
+    db: Session = Depends(get_db)
+):
+    """Get QA metrics comparison (public - no auth required)."""
+    return _get_qa_metrics_comparison_data(db)
+
+
+# ===== QA CYCLE TIME DASHBOARD =====
+
+@app.get("/reports/qa-metrics/download")
+async def download_qa_metrics_excel(
+    start_date: str = Query(None, description="Filter start date (YYYY-MM-DD)"),
+    end_date: str = Query(None, description="Filter end date (YYYY-MM-DD)"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access)
+):
+    """
+    Generate and download QA Metrics Excel with the 4 key metrics:
+    1. QC Cycle Time (Overall) - Days from QC Testing to BIS Testing
+    2. Test Cycle Time - Days per test cycle
+    3. Number of Testing Cycles - Count of loops
+    4. QC Waiting Time - Days waiting in queue
+    
+    All calculated columns use Excel formulas (highlighted in yellow).
+    """
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+    from collections import defaultdict
+    import json
+    from qa_metrics_excel import generate_qa_metrics_excel
+    
+    # Parse date filters
+    filter_start = None
+    filter_end = None
+    if start_date:
+        try:
+            filter_start = datetime.strptime(start_date, '%Y-%m-%d')
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            filter_end = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        except ValueError:
+            pass
+
+    # Find the latest PM Activity Export file
+    reports_dir = Path("reports")
+    export_files = list(reports_dir.glob("PM_Activity_Export_*.csv"))
+    if not export_files:
+        raise HTTPException(status_code=404, detail="No PM Activity Export file found. Please run the data fetch script first.")
+    
+    latest_export = max(export_files, key=lambda f: f.stat().st_mtime)
+    logger.info(f"Generating QA Metrics Excel from: {latest_export}")
+    
+    # Load JSON data from the export file
+    try:
+        with open(latest_export, 'r', encoding='utf-8') as f:
+            raw_data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse PM Activity Export file: {e}")
+    
+    # Group by ticket (with optional date filtering)
+    ticket_history = defaultdict(list)
+    for record in raw_data:
+        ticket_id = record.get('ticketId')
+        if ticket_id:
+            try:
+                ticket_id = int(ticket_id)
+            except (ValueError, TypeError):
+                pass
+            
+            change_date = datetime.strptime(record['statusChangeDate'], '%Y-%m-%d %H:%M:%S')
+            
+            # Apply date filter
+            if filter_start and change_date < filter_start:
+                continue
+            if filter_end and change_date > filter_end:
+                continue
+                
+            ticket_history[ticket_id].append({
+                'date': change_date,
+                'old_status': record.get('oldStatus'),
+                'new_status': record.get('newStatus'),
+            })
+    
+    # Sort each ticket's history
+    for tid in ticket_history:
+        ticket_history[tid].sort(key=lambda x: x['date'])
+    
+    # Get ticket metadata from database for enrichment
+    tickets = db.query(TicketTracking).all()
+    ticket_lookup = {t.ticket_id: t for t in tickets}
+    
+    # Generate Excel with 4 key metrics
+    date_suffix = ""
+    if filter_start or filter_end:
+        if start_date and end_date:
+            date_suffix = f"_{start_date}_to_{end_date}"
+        elif start_date:
+            date_suffix = f"_from_{start_date}"
+        elif end_date:
+            date_suffix = f"_until_{end_date}"
+    output_path = Path("reports") / f"QA_Metrics_4Key{date_suffix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    
+    try:
+        generated_path = generate_qa_metrics_excel(
+            ticket_history=ticket_history,
+            ticket_lookup=ticket_lookup,
+            output_path=output_path
+        )
+        
+        return FileResponse(
+            path=str(generated_path),
+            filename=generated_path.name,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate QA Metrics Excel: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate metrics: {str(e)}")
+
+
+@app.get("/reports/qa-dashboard/download")
+async def download_qa_dashboard(
+    start_date: str = Query(None, description="Filter start date (YYYY-MM-DD)"),
+    end_date: str = Query(None, description="Filter end date (YYYY-MM-DD)"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access)
+):
+    """
+    Generate and download QA Dashboard Excel file with embedded formulas.
+    Reads from PM Activity Export JSON file for status history.
+    Supports optional date range filtering.
+    """
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+    from collections import defaultdict
+    import json
+    from qa_dashboard_excel import generate_qa_dashboard_excel
+    
+    # Parse date filters
+    filter_start = None
+    filter_end = None
+    if start_date:
+        try:
+            filter_start = datetime.strptime(start_date, '%Y-%m-%d')
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            filter_end = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        except ValueError:
+            pass
+
+    # Find the latest PM Activity Export file
+    reports_dir = Path("reports")
+    export_files = list(reports_dir.glob("PM_Activity_Export_*.csv"))
+    if not export_files:
+        raise HTTPException(status_code=404, detail="No PM Activity Export file found. Please run the data fetch script first.")
+    
+    latest_export = max(export_files, key=lambda f: f.stat().st_mtime)
+    logger.info(f"Generating QA Dashboard Excel from: {latest_export}")
+    
+    # Load JSON data from the export file
+    try:
+        with open(latest_export, 'r', encoding='utf-8') as f:
+            raw_data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse PM Activity Export file: {e}")
+    
+    # Group by ticket (with optional date filtering)
+    ticket_history = defaultdict(list)
+    for record in raw_data:
+        ticket_id = record.get('ticketId')
+        if ticket_id:
+            try:
+                ticket_id = int(ticket_id)
+            except (ValueError, TypeError):
+                pass
+            
+            change_date = datetime.strptime(record['statusChangeDate'], '%Y-%m-%d %H:%M:%S')
+            
+            # Apply date filter
+            if filter_start and change_date < filter_start:
+                continue
+            if filter_end and change_date > filter_end:
+                continue
+                
+            ticket_history[ticket_id].append({
+                'date': change_date,
+                'old_status': record.get('oldStatus'),
+                'new_status': record.get('newStatus'),
+            })
+    
+    # Sort each ticket's history
+    for tid in ticket_history:
+        ticket_history[tid].sort(key=lambda x: x['date'])
+    
+    # Get ticket metadata from database for enrichment
+    tickets = db.query(TicketTracking).all()
+    ticket_lookup = {t.ticket_id: t for t in tickets}
+    
+    # Generate Excel with formulas (include date range in filename if filtered)
+    date_suffix = ""
+    if filter_start or filter_end:
+        if start_date and end_date:
+            date_suffix = f"_{start_date}_to_{end_date}"
+        elif start_date:
+            date_suffix = f"_from_{start_date}"
+        elif end_date:
+            date_suffix = f"_until_{end_date}"
+    output_path = Path("reports") / f"QA_Dashboard{date_suffix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    
+    try:
+        generated_path = generate_qa_dashboard_excel(
+            ticket_history=ticket_history,
+            ticket_lookup=ticket_lookup,
+            output_path=output_path
+        )
+        
+        return FileResponse(
+            path=str(generated_path),
+            filename=generated_path.name,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate QA Dashboard Excel: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate dashboard: {str(e)}")
+
+
+@app.get("/api/qa-dashboard/metrics")
+def get_qa_dashboard_metrics(
+    start_date: str = Query(None, description="Filter start date (YYYY-MM-DD)"),
+    end_date: str = Query(None, description="Filter end date (YYYY-MM-DD)"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access)
+):
+    """
+    Get QA cycle time metrics for the dashboard.
+    Reads from PM Activity Export JSON file for status history,
+    and enriches with ticket metadata from TicketTracking table.
+    Supports optional date range filtering.
+    """
+    from collections import Counter, defaultdict
+    from datetime import datetime, timedelta
+    
+    # Parse date filters
+    filter_start = None
+    filter_end = None
+    if start_date:
+        try:
+            filter_start = datetime.strptime(start_date, '%Y-%m-%d')
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            filter_end = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        except ValueError:
+            pass
+    from pathlib import Path
+    import json
+    
+    # Status definitions - tracking all existing PM statuses
+    # QA-related statuses (tickets actively in QA)
+    QA_STATUSES = {'QC Testing', 'QC Testing in Progress', 'QC Review Fail', 'QC Testing On-hold', 'QC Testing Hold', 'Tested - Awaiting Fixes'}
+    QA_START_STATUSES = {'QC Testing', 'QC Testing in Progress'}  # When ticket enters QA
+    QA_END_STATUSES = {'BIS Testing', 'Closed', 'Approved for Live', 'Moved to Live'}  # When ticket exits QA successfully
+    QA_HOLD_STATUSES = {'QC Testing On-hold', 'QC Testing Hold', 'Hold/Pending'}  # Hold statuses (time not counted)
+    QA_FAIL_STATUSES = {'QC Review Fail', 'Tested - Awaiting Fixes'}  # Failed QA review
+    
+    # Find the latest PM Activity Export file
+    reports_dir = Path("reports")
+    export_files = list(reports_dir.glob("PM_Activity_Export_*.csv"))
+    if not export_files:
+        raise HTTPException(status_code=404, detail="No PM Activity Export file found. Please run the data fetch script first.")
+    
+    latest_export = max(export_files, key=lambda f: f.stat().st_mtime)
+    logger.info(f"Loading QA dashboard data from: {latest_export}")
+    
+    # Load JSON data from the export file
+    try:
+        with open(latest_export, 'r', encoding='utf-8') as f:
+            raw_data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse PM Activity Export file: {e}")
+    
+    # Group by ticket (with optional date filtering)
+    ticket_history = defaultdict(list)
+    for record in raw_data:
+        ticket_id = record.get('ticketId')
+        if ticket_id:
+            try:
+                ticket_id = int(ticket_id)
+            except (ValueError, TypeError):
+                pass
+            
+            change_date = datetime.strptime(record['statusChangeDate'], '%Y-%m-%d %H:%M:%S')
+            
+            # Apply date filter - include ticket if any activity is in range
+            if filter_start and change_date < filter_start:
+                continue
+            if filter_end and change_date > filter_end:
+                continue
+                
+            ticket_history[ticket_id].append({
+                'date': change_date,
+                'old_status': record.get('oldStatus'),
+                'new_status': record.get('newStatus'),
+            })
+    
+    # Sort each ticket's history by date
+    for tid in ticket_history:
+        ticket_history[tid].sort(key=lambda x: x['date'])
+    
+    # Get ticket metadata from database for enrichment
+    tickets = db.query(TicketTracking).all()
+    ticket_lookup = {t.ticket_id: t for t in tickets}
+    
+    # Calculate metrics
+    results = []
+    status_counts = Counter()
+    monthly_qa_times = defaultdict(list)
+    platform_qa_times = defaultdict(list)
+    priority_qa_times = defaultdict(list)
+    cycle_distribution = defaultdict(list)
+    qc_tester_qa_times = defaultdict(list)
+    developer_qa_times = defaultdict(list)
+    
+    for ticket_id, history in ticket_history.items():
+        if not history:
+            continue
+            
+        current_status = history[-1]['new_status'] if history else None
+        status_counts[current_status] += 1
+        
+        qa_start = None
+        qa_end = None
+        qa_cycles = 0
+        fail_count = 0
+        total_hold_hours = 0.0
+        hold_start = None
+        
+        for h in history:
+            if h['new_status'] in QA_START_STATUSES:
+                if qa_start is None:
+                    qa_start = h['date']
+                qa_cycles += 1
+            
+            if h['new_status'] in QA_END_STATUSES and qa_start is not None:
+                qa_end = h['date']
+            
+            if h['new_status'] in QA_HOLD_STATUSES:
+                hold_start = h['date']
+            elif hold_start is not None and h['new_status'] not in QA_HOLD_STATUSES:
+                hold_duration = (h['date'] - hold_start).total_seconds() / 3600
+                total_hold_hours += hold_duration
+                hold_start = None
+            
+            if h['new_status'] in QA_FAIL_STATUSES:
+                fail_count += 1
+        
+        # Calculate QA business days
+        qa_business_days = None
+        if qa_start and qa_end:
+            gross_hours = (qa_end - qa_start).total_seconds() / 3600
+            net_hours = max(gross_hours - total_hold_hours, 0)
+            qa_business_days = net_hours / 8
+            
+            # Track by month
+            month_key = qa_end.strftime('%Y-%m')
+            monthly_qa_times[month_key].append(qa_business_days)
+            
+            # Get enrichment from ticket_lookup
+            ticket = ticket_lookup.get(ticket_id)
+            if ticket:
+                platform = ticket.subdepartment or 'Unknown'
+                priority = ticket.priority or 'Unknown'
+                platform_qa_times[platform].append(qa_business_days)
+                priority_qa_times[priority].append(qa_business_days)
+                
+                # Track by QC tester
+                qc_tester = ticket.qc_tester or 'Unassigned'
+                qc_tester_qa_times[qc_tester].append(qa_business_days)
+                
+                # Track by developer
+                backend_dev = ticket.backend_developer or ''
+                frontend_dev = ticket.frontend_developer or ''
+                if backend_dev:
+                    developer_qa_times[backend_dev].append(qa_business_days)
+                if frontend_dev and frontend_dev != backend_dev:
+                    developer_qa_times[frontend_dev].append(qa_business_days)
+            
+            # Track by cycle count
+            cycle_key = '1 cycle' if qa_cycles == 1 else ('2 cycles' if qa_cycles == 2 else '3+ cycles')
+            cycle_distribution[cycle_key].append(qa_business_days)
+        
+        ticket = ticket_lookup.get(ticket_id)
+        results.append({
+            'ticket_id': ticket_id,
+            'title': ticket.title if ticket else '',
+            'current_status': current_status,
+            'priority': ticket.priority if ticket else '',
+            'subdepartment': ticket.subdepartment if ticket else '',
+            'qc_tester': ticket.qc_tester if ticket else '',
+            'qa_business_days': round(qa_business_days, 2) if qa_business_days else None,
+            'qa_cycles': qa_cycles,
+            'qa_fail_count': fail_count,
+            'qa_hold_hours': round(total_hold_hours, 2),
+        })
+    
+    # Calculate summary stats
+    qa_completed = [r for r in results if r['qa_business_days'] is not None]
+    avg_qa_days = sum(r['qa_business_days'] for r in qa_completed) / len(qa_completed) if qa_completed else 0
+    
+    sorted_days = sorted([r['qa_business_days'] for r in qa_completed])
+    median_qa_days = sorted_days[len(sorted_days)//2] if sorted_days else 0
+    
+    total_fails = sum(r['qa_fail_count'] for r in results)
+    avg_cycles = sum(r['qa_cycles'] for r in results) / len(results) if results else 0
+    first_pass = len([r for r in qa_completed if r['qa_cycles'] == 1])
+    first_pass_rate = (first_pass / len(qa_completed) * 100) if qa_completed else 0
+    
+    # Platform breakdown
+    platform_breakdown = []
+    for platform, times in sorted(platform_qa_times.items(), key=lambda x: -len(x[1])):
+        if times:
+            platform_breakdown.append({
+                'platform': platform,
+                'tickets': len(times),
+                'avg_days': round(sum(times) / len(times), 1),
+                'total_days': round(sum(times), 1),
+            })
+    
+    # Priority breakdown
+    priority_breakdown = []
+    priority_order = ['URGENT', 'High (Bugs)', 'High', 'Medium', 'Low']
+    for priority, times in sorted(priority_qa_times.items(), 
+                                   key=lambda x: priority_order.index(x[0]) if x[0] in priority_order else 99):
+        if times:
+            priority_breakdown.append({
+                'priority': priority,
+                'tickets': len(times),
+                'avg_days': round(sum(times) / len(times), 1),
+                'total_days': round(sum(times), 1),
+            })
+    
+    # Cycle distribution
+    cycle_breakdown = []
+    total_completed = len(qa_completed)
+    total_qa_time = sum(r['qa_business_days'] for r in qa_completed)
+    
+    for cycle_key in ['1 cycle', '2 cycles', '3+ cycles']:
+        times = cycle_distribution.get(cycle_key, [])
+        if times:
+            cycle_breakdown.append({
+                'cycles': cycle_key,
+                'tickets': len(times),
+                'avg_days': round(sum(times) / len(times), 1),
+                'total_days': round(sum(times), 1),
+                'pct_tickets': round(len(times) / total_completed * 100, 1) if total_completed else 0,
+                'pct_time': round(sum(times) / total_qa_time * 100, 1) if total_qa_time else 0,
+            })
+    
+    # Monthly trend
+    monthly_trend = []
+    for month, times in sorted(monthly_qa_times.items())[-12:]:
+        monthly_trend.append({
+            'month': month,
+            'avg_days': round(sum(times) / len(times), 1) if times else 0,
+            'tickets': len(times),
+        })
+    
+    # Status distribution
+    status_distribution = [
+        {'status': status or 'Unknown', 'count': count}
+        for status, count in status_counts.most_common(10)
+    ]
+    
+    # In QA now (all QA-related statuses)
+    in_qa_now = sum(status_counts.get(s, 0) for s in QA_STATUSES)
+    
+    # Total hold hours
+    total_hold_hours = sum(r['qa_hold_hours'] for r in results if r['qa_hold_hours'])
+    
+    # QC Tester breakdown
+    qc_tester_breakdown = []
+    for tester, times in sorted(qc_tester_qa_times.items(), key=lambda x: -len(x[1])):
+        if times:
+            qc_tester_breakdown.append({
+                'name': tester,
+                'tickets': len(times),
+                'avg_days': round(sum(times) / len(times), 1),
+                'total_days': round(sum(times), 1),
+            })
+    
+    # Developer breakdown
+    developer_breakdown = []
+    for dev, times in sorted(developer_qa_times.items(), key=lambda x: -len(x[1])):
+        if times:
+            developer_breakdown.append({
+                'name': dev,
+                'tickets': len(times),
+                'avg_days': round(sum(times) / len(times), 1),
+                'total_days': round(sum(times), 1),
+            })
+    
+    return {
+        'summary': {
+            'total_tickets': len(results),
+            'qa_completed': len(qa_completed),
+            'avg_qa_days': round(avg_qa_days, 2),
+            'median_qa_days': round(median_qa_days, 2),
+            'first_pass_rate': round(first_pass_rate, 1),
+            'avg_cycles': round(avg_cycles, 2),
+            'total_fails': total_fails,
+            'in_qa_now': in_qa_now,
+            'total_hold_hours': round(total_hold_hours, 1),
+        },
+        'platform_breakdown': platform_breakdown[:10],
+        'priority_breakdown': priority_breakdown[:10],
+        'cycle_breakdown': cycle_breakdown,
+        'monthly_trend': monthly_trend,
+        'qc_tester_breakdown': qc_tester_breakdown[:15],
+        'developer_breakdown': developer_breakdown[:15],
+        'status_distribution': status_distribution,
+        'reduction_targets': {
+            'baseline': round(avg_qa_days, 2),
+            'target_10': round(avg_qa_days * 0.9, 2),
+            'target_20': round(avg_qa_days * 0.8, 2),
+            'target_30': round(avg_qa_days * 0.7, 2),
+            'target_50': round(avg_qa_days * 0.5, 2),
+        },
+        'generated_at': datetime.now().isoformat(),
+        'date_filter': {
+            'start_date': start_date,
+            'end_date': end_date,
+            'filtered': bool(filter_start or filter_end),
+        },
+    }
+
+
+@app.get("/api/qa-dashboard/tickets")
+def get_qa_dashboard_tickets(
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    platform: str = Query(None),
+    priority: str = Query(None),
+    min_cycles: int = Query(None, ge=1),
+    start_date: str = Query(None, description="Filter start date (YYYY-MM-DD)"),
+    end_date: str = Query(None, description="Filter end date (YYYY-MM-DD)"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access)
+):
+    """
+    Get ticket-level QA cycle time data for the dashboard table.
+    Reads from PM Activity Export JSON file.
+    Supports pagination, filtering, and date range filtering.
+    """
+    from collections import defaultdict
+    from pathlib import Path
+    import json
+    
+    # Parse date filters
+    filter_start = None
+    filter_end = None
+    if start_date:
+        try:
+            filter_start = datetime.strptime(start_date, '%Y-%m-%d')
+        except ValueError:
+            pass
+    if end_date:
+        try:
+            filter_end = datetime.strptime(end_date, '%Y-%m-%d').replace(hour=23, minute=59, second=59)
+        except ValueError:
+            pass
+    
+    # Status definitions - tracking all existing PM statuses
+    # QA-related statuses (tickets actively in QA)
+    QA_STATUSES = {'QC Testing', 'QC Testing in Progress', 'QC Review Fail', 'QC Testing On-hold', 'QC Testing Hold', 'Tested - Awaiting Fixes'}
+    QA_START_STATUSES = {'QC Testing', 'QC Testing in Progress'}  # When ticket enters QA
+    QA_END_STATUSES = {'BIS Testing', 'Closed', 'Approved for Live', 'Moved to Live'}  # When ticket exits QA successfully
+    QA_HOLD_STATUSES = {'QC Testing On-hold', 'QC Testing Hold', 'Hold/Pending'}  # Hold statuses (time not counted)
+    QA_FAIL_STATUSES = {'QC Review Fail', 'Tested - Awaiting Fixes'}  # Failed QA review
+    
+    # Find the latest PM Activity Export file
+    reports_dir = Path("reports")
+    export_files = list(reports_dir.glob("PM_Activity_Export_*.csv"))
+    if not export_files:
+        raise HTTPException(status_code=404, detail="No PM Activity Export file found.")
+    
+    latest_export = max(export_files, key=lambda f: f.stat().st_mtime)
+    
+    # Load JSON data
+    try:
+        with open(latest_export, 'r', encoding='utf-8') as f:
+            raw_data = json.load(f)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse PM Activity Export file: {e}")
+    
+    # Group by ticket (with optional date filtering)
+    ticket_history = defaultdict(list)
+    for record in raw_data:
+        ticket_id = record.get('ticketId')
+        if ticket_id:
+            try:
+                ticket_id = int(ticket_id)
+            except (ValueError, TypeError):
+                pass
+            
+            change_date = datetime.strptime(record['statusChangeDate'], '%Y-%m-%d %H:%M:%S')
+            
+            # Apply date filter
+            if filter_start and change_date < filter_start:
+                continue
+            if filter_end and change_date > filter_end:
+                continue
+                
+            ticket_history[ticket_id].append({
+                'date': change_date,
+                'old_status': record.get('oldStatus'),
+                'new_status': record.get('newStatus'),
+            })
+    
+    # Sort each ticket's history
+    for tid in ticket_history:
+        ticket_history[tid].sort(key=lambda x: x['date'])
+    
+    # Get ticket metadata from database for enrichment
+    tickets = db.query(TicketTracking).all()
+    ticket_lookup = {t.ticket_id: t for t in tickets}
+    
+    # Calculate metrics
+    results = []
+    
+    for ticket_id, history in ticket_history.items():
+        if not history:
+            continue
+            
+        current_status = history[-1]['new_status'] if history else None
+        
+        qa_start = None
+        qa_end = None
+        qa_cycles = 0
+        fail_count = 0
+        total_hold_hours = 0.0
+        hold_start = None
+        
+        for h in history:
+            if h['new_status'] in QA_START_STATUSES:
+                if qa_start is None:
+                    qa_start = h['date']
+                qa_cycles += 1
+            
+            if h['new_status'] in QA_END_STATUSES and qa_start is not None:
+                qa_end = h['date']
+            
+            if h['new_status'] in QA_HOLD_STATUSES:
+                hold_start = h['date']
+            elif hold_start is not None:
+                hold_duration = (h['date'] - hold_start).total_seconds() / 3600
+                total_hold_hours += hold_duration
+                hold_start = None
+            
+            if h['new_status'] in QA_FAIL_STATUSES:
+                fail_count += 1
+        
+        qa_business_days = None
+        if qa_start and qa_end:
+            gross_hours = (qa_end - qa_start).total_seconds() / 3600
+            net_hours = max(gross_hours - total_hold_hours, 0)
+            qa_business_days = net_hours / 8
+        
+        ticket = ticket_lookup.get(ticket_id)
+        
+        # Apply filters
+        if platform and ticket and ticket.subdepartment != platform:
+            continue
+        if priority and ticket and ticket.priority != priority:
+            continue
+        if min_cycles and qa_cycles < min_cycles:
+            continue
+        
+        results.append({
+            'ticket_id': ticket_id,
+            'title': ticket.title if ticket else '',
+            'current_status': current_status,
+            'priority': ticket.priority if ticket else '',
+            'subdepartment': ticket.subdepartment if ticket else '',
+            'qc_tester': ticket.qc_tester if ticket else '',
+            'backend_dev': ticket.backend_developer if ticket else '',
+            'frontend_dev': ticket.frontend_developer if ticket else '',
+            'current_assignee': ticket.current_assignee if ticket else '',
+            'qa_start': qa_start.isoformat() if qa_start else None,
+            'qa_end': qa_end.isoformat() if qa_end else None,
+            'qa_business_days': round(qa_business_days, 2) if qa_business_days else None,
+            'qa_cycles': qa_cycles,
+            'qa_fail_count': fail_count,
+            'qa_hold_hours': round(total_hold_hours, 2),
+        })
+    
+    # Sort by ticket_id descending
+    results.sort(key=lambda x: x['ticket_id'], reverse=True)
+    
+    total = len(results)
+    paginated = results[offset:offset + limit]
+    
+    return {
+        'total': total,
+        'offset': offset,
+        'limit': limit,
+        'tickets': paginated,
+    }
+
+
 # ===== CALENDAR AND TASK PLANNING PYDANTIC MODELS =====
 
 class PlannedTaskCreate(BaseModel):
@@ -8488,6 +11187,55 @@ def trigger_scheduled_sync(teams: Optional[str] = Query(None, description="Comma
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to trigger sync: {str(e)}")
+
+
+# ===== GOOGLE SHEETS EXPORT ENDPOINTS =====
+
+@app.get("/sync/sheets-export/status")
+def get_sheets_export_status():
+    """Get Google Sheets export configuration status."""
+    import os
+    credentials_configured = bool(os.getenv("SHEETS_EXPORT_CREDENTIALS_FILE"))
+    spreadsheet_configured = bool(os.getenv("SHEETS_EXPORT_SPREADSHEET_ID"))
+    auto_sync_enabled = os.getenv("SHEETS_EXPORT_AUTO_SYNC", "false").lower() == "true"
+    
+    return {
+        "configured": credentials_configured and spreadsheet_configured,
+        "credentials_file": credentials_configured,
+        "spreadsheet_id": spreadsheet_configured,
+        "auto_sync_enabled": auto_sync_enabled,
+        "google_api_available": GOOGLE_EXPORT_AVAILABLE,
+        "spreadsheet_url": f"https://docs.google.com/spreadsheets/d/{os.getenv('SHEETS_EXPORT_SPREADSHEET_ID', '')}" if spreadsheet_configured else None
+    }
+
+
+@app.post("/sync/sheets-export/trigger")
+def trigger_sheets_export():
+    """
+    Manually trigger an export of all data to Google Sheets.
+    
+    This exports:
+    - PM_Tickets: All tickets from PM Tool
+    - PM_Status_History: Ticket status change history
+    - TestRail_Runs: Test runs from TestRail
+    - TestRail_Cases: Test cases with automation status
+    - TestRail_Bugs: Bug tracking data
+    - TestRail_Results: Test execution results
+    """
+    try:
+        result = trigger_manual_export()
+        if result.get("success"):
+            return {
+                "success": True,
+                "message": "Export completed successfully",
+                "details": result
+            }
+        else:
+            raise HTTPException(status_code=500, detail=result.get("error", "Export failed"))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
 
 # ===== CALENDAR API ENDPOINTS =====

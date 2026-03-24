@@ -169,6 +169,39 @@ export default function AppSidebar() {
             Reports
           </Link>
         )}
+        {/* QA Cycle Dashboard - accessible to managers, leads, admins, and clients */}
+        {(isClient ? clientCanSee('/qa-cycle') : (user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD'))) && (
+          <Link to="/qa-cycle" className={`nav-item ${path === '/qa-cycle' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+              <circle cx="12" cy="12" r="3" />
+            </svg>
+            QA Cycle Dashboard
+          </Link>
+        )}
+        {/* QA Metrics Dashboard - 4 Key Metrics */}
+        {(isClient ? clientCanSee('/qa-metrics') : (user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD'))) && (
+          <Link to="/qa-metrics" className={`nav-item ${path === '/qa-metrics' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M3 3v18h18" />
+              <path d="M18 9l-5 5-4-4-3 3" />
+              <circle cx="18" cy="9" r="2" />
+              <circle cx="13" cy="14" r="2" />
+              <circle cx="9" cy="10" r="2" />
+              <circle cx="6" cy="13" r="2" />
+            </svg>
+            QA Metrics (4 Key)
+          </Link>
+        )}
+        {/* Automation Coverage Dashboard - accessible to managers, leads, admins, and clients */}
+        {(isClient ? clientCanSee('/automation') : (user?.role === 'ADMIN' || user?.role?.includes('MANAGER') || user?.role?.includes('LEAD'))) && (
+          <Link to="/automation" className={`nav-item ${path === '/automation' ? 'active' : ''}`}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            Automation Coverage
+          </Link>
+        )}
         {!isClient && user?.role === 'ADMIN' && (
           <>
             <Link to="/admin/clients" className={`nav-item ${path === '/admin/clients' ? 'active' : ''}`}>

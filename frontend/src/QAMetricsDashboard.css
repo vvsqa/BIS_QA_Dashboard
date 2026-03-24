@@ -1,0 +1,568 @@
+/* QA Metrics Dashboard Styles */
+
+/* Public Layout (No Sidebar) */
+.qam-public-layout {
+  min-height: 100vh;
+  background: var(--bg-primary);
+}
+
+.qam-public-main {
+  padding: 2rem;
+  max-width: 1600px;
+  margin: 0 auto;
+}
+
+.qam-public-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 2rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.qam-public-header h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.qam-public-header .header-subtitle {
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  margin-top: 0.25rem;
+}
+
+/* Period Selector */
+.qam-period-select {
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.qam-period-select:hover {
+  border-color: var(--accent-blue);
+}
+
+.qam-range-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+}
+
+.qam-range-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.qam-range-controls span {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* Content Layout */
+.qam-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  padding: 1rem 0;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+/* Sections */
+.qam-section {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+  border: 1px solid var(--border-color);
+}
+
+.qam-section-title {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  text-align: center;
+}
+
+.qam-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+/* Period Filter Cards */
+.qam-period-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 1rem;
+}
+
+.qam-period-filter-card {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.25rem;
+  cursor: pointer;
+  border: 2px solid var(--border-color);
+  transition: all 0.2s ease;
+  text-align: center;
+  position: relative;
+}
+
+.qam-period-filter-card:hover {
+  border-color: var(--accent-blue);
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(52, 152, 219, 0.15);
+}
+
+.qam-period-filter-active {
+  border-color: var(--accent-blue);
+  background: linear-gradient(135deg, rgba(52, 152, 219, 0.15) 0%, rgba(52, 152, 219, 0.05) 100%);
+}
+
+.qam-period-filter-label {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 1rem;
+  margin-bottom: 0.25rem;
+}
+
+.qam-period-filter-count {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.qam-period-filter-active .qam-period-filter-label {
+  color: var(--accent-blue);
+}
+
+.qam-period-filter-active .qam-period-filter-count {
+  color: var(--accent-blue);
+}
+
+.qam-period-filter-indicator {
+  position: absolute;
+  bottom: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: var(--accent-blue);
+  font-size: 0.75rem;
+}
+
+/* Metrics Section */
+.qam-metrics-section {
+  background: transparent;
+  padding: 0;
+  border: none;
+}
+
+/* 4 Key Metrics Grid */
+.qam-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1rem;
+}
+
+.qam-metric-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  padding: 1.25rem;
+  border: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.2s, box-shadow 0.2s;
+  text-align: center;
+}
+
+.qam-metric-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.qam-metric-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+}
+
+.qam-metric-blue::before { background: linear-gradient(90deg, #3498db, #2980b9); }
+.qam-metric-purple::before { background: linear-gradient(90deg, #9b59b6, #8e44ad); }
+.qam-metric-orange::before { background: linear-gradient(90deg, #e67e22, #d35400); }
+.qam-metric-teal::before { background: linear-gradient(90deg, #1abc9c, #16a085); }
+
+.qam-metric-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.qam-metric-icon {
+  font-size: 1.25rem;
+}
+
+.qam-metric-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.qam-metric-value {
+  font-size: 2.75rem;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.25rem;
+}
+
+.qam-metric-unit {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  margin-left: 0.25rem;
+}
+
+.qam-metric-blue .qam-metric-value { color: #3498db; }
+.qam-metric-purple .qam-metric-value { color: #9b59b6; }
+.qam-metric-orange .qam-metric-value { color: #e67e22; }
+.qam-metric-teal .qam-metric-value { color: #1abc9c; }
+
+.qam-metric-stats {
+  display: flex;
+  justify-content: space-between;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--border-color);
+  margin-top: auto;
+}
+
+.qam-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+}
+
+.qam-stat-value {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.qam-stat-green {
+  color: #27ae60 !important;
+}
+
+.qam-stat-yellow {
+  color: #f1c40f !important;
+}
+
+.qam-stat-red {
+  color: #e74c3c !important;
+}
+
+.qam-stat-label {
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-top: 0.15rem;
+}
+
+/* Charts Grid */
+.qam-charts-grid {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 1rem;
+}
+
+.qam-chart-card {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+}
+
+.qam-chart-card h3 {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 1rem;
+  text-align: center;
+}
+
+.qam-chart-container {
+  height: 250px;
+  position: relative;
+}
+
+.qam-chart-wide {
+  grid-column: span 1;
+}
+
+/* Filter Input */
+.qam-filter-input {
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  width: 250px;
+}
+
+.qam-filter-input:focus {
+  outline: none;
+  border-color: var(--accent-blue);
+}
+
+/* Table Styles */
+.qam-table-container {
+  overflow-x: auto;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-color);
+}
+
+.qam-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.qam-table th {
+  background: var(--bg-secondary);
+  padding: 0.75rem 1rem;
+  text-align: center;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 2px solid var(--border-color);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.qam-table th:hover {
+  background: var(--bg-tertiary);
+}
+
+.qam-table td {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+  text-align: center;
+}
+
+.qam-table tbody tr:hover {
+  background: var(--bg-secondary);
+}
+
+.qam-ticket-id {
+  font-weight: 600;
+  color: var(--accent-blue);
+}
+
+.qam-ticket-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+
+.qam-ticket-link:hover {
+  text-decoration-style: solid;
+  background: rgba(52, 152, 219, 0.1);
+}
+
+.qam-date-cell {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.qam-table-footer {
+  padding: 1rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  background: var(--bg-secondary);
+}
+
+/* Badges */
+.qam-badge {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.qam-badge-green {
+  background: rgba(39, 174, 96, 0.15);
+  color: #27ae60;
+}
+
+.qam-badge-yellow {
+  background: rgba(241, 196, 15, 0.15);
+  color: #d4a90a;
+}
+
+.qam-badge-red {
+  background: rgba(231, 76, 60, 0.15);
+  color: #e74c3c;
+}
+
+.qam-badge-orange {
+  background: rgba(230, 126, 34, 0.15);
+  color: #e67e22;
+}
+
+.qam-badge-purple {
+  background: rgba(142, 68, 173, 0.15);
+  color: #8e44ad;
+}
+
+/* Legend */
+.qam-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+}
+
+.qam-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-primary);
+}
+
+.qam-legend-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+/* Methodology Section */
+.qam-methodology {
+  background: var(--bg-secondary);
+}
+
+.qam-method-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 1rem;
+}
+
+.qam-method-card {
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  padding: 1.25rem;
+  border: 1px solid var(--border-color);
+}
+
+.qam-method-card h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--accent-blue);
+  margin-bottom: 0.75rem;
+}
+
+.qam-method-card p {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+  line-height: 1.5;
+}
+
+.qam-method-card strong {
+  color: var(--text-primary);
+}
+
+.qam-formula-block {
+  display: block;
+  background: var(--bg-tertiary);
+  padding: 0.75rem 1rem;
+  border-radius: var(--radius-sm);
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 0.8rem;
+  color: var(--accent-blue);
+  margin: 0.5rem 0;
+  overflow-x: auto;
+}
+
+/* Responsive */
+@media (max-width: 1400px) {
+  .qam-metrics-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  .qam-comparison-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (max-width: 1024px) {
+  .qam-charts-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .qam-method-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .qam-comparison-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .qam-metrics-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .qam-comparison-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .qam-section-header {
+    flex-direction: column;
+    gap: 1rem;
+    align-items: stretch;
+  }
+  
+  .qam-filter-input {
+    width: 100%;
+  }
+}
