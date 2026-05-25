@@ -534,7 +534,9 @@ class GoogleSheetsSync:
             'timesheets_added': 0,
             'timesheets_updated': 0,
             'timesheets_deleted': 0,
+            'timesheets_aggregated': 0,
             'leaves_added': 0,
+            'leaves_aggregated': 0,
             'rows_skipped': 0,
             'errors': 0,
             'synced_at': datetime.utcnow().isoformat(),
@@ -604,8 +606,11 @@ class GoogleSheetsSync:
             ).delete(synchronize_session=False)
             stats['timesheets_deleted'] += int(replaced_ts or 0)
 
-            # Track entries seen in this batch to handle duplicates within the sheet
-            seen_entries = set()
+            # Each sheet row is stored individually (keyed by sheet_row_id).
+            # The DB UniqueConstraint includes sheet_row_id so multiple entries
+            # for the same ticket on the same day are preserved separately.
+            seen_entries = {}  # entry_key -> EnhancedTimesheet (pending row)
+            seen_leaves = {}   # (employee_name, date, leave_type) -> LeaveEntry
             sync_started_at = datetime.utcnow()
             
             for row_data in rows:
@@ -641,17 +646,10 @@ class GoogleSheetsSync:
                     # Use leave_type from fetched data (already detected during fetch)
                     leave_type = row_data.get('leave_type') or self._is_leave_entry(row_data)
                     
-                    # Create a unique key for this entry
-                    entry_key = (employee_name, ticket_id, parsed_date, team)
-                    
-                    # Skip if we've already seen this entry in this batch
-                    if entry_key in seen_entries:
-                        # If duplicate in the sheet, just accumulate hours to the existing entry
-                        stats['rows_skipped'] += 1
-                        continue
-                    
-                    seen_entries.add(entry_key)
-                    
+                    # Each sheet row gets a unique key using row number — no aggregation
+                    sheet_row_id = str(row_data.get('_row_number', '')).strip()
+                    entry_key = (employee_name, ticket_id, parsed_date, team, sheet_row_id)
+
                     # Find employee ID - use mapped ID if available, otherwise look up
                     if mapped_emp_id:
                         employee_id = mapped_emp_id
@@ -662,7 +660,6 @@ class GoogleSheetsSync:
                             or employee_id_by_name.get(self._compact_person_name(employee_name))
                         )
                     # Create new entry (window was purged at start, so inserts are authoritative)
-                    sheet_row_id = str(row_data.get('_row_number', '')).strip()
                     new_entry = EnhancedTimesheet(
                         employee_id=employee_id,
                         employee_name=employee_name,
@@ -680,14 +677,16 @@ class GoogleSheetsSync:
                         synced_on=datetime.utcnow()
                     )
                     db.add(new_entry)
+                    seen_entries[entry_key] = new_entry
                     stats['timesheets_added'] += 1
-                    
+
                     # Flush periodically to make entries visible to subsequent queries
                     if (stats['timesheets_added'] + stats['timesheets_updated']) % 500 == 0:
                         db.flush()
-                    
+
                     # Create leave entry if this is a leave
                     if leave_type:
+                        leave_key = (employee_name, parsed_date, leave_type)
                         existing_leave = db.query(LeaveEntry).filter(
                             and_(
                                 LeaveEntry.employee_name == employee_name,
@@ -695,7 +694,7 @@ class GoogleSheetsSync:
                                 LeaveEntry.leave_type == leave_type
                             )
                         ).first()
-                        
+
                         if not existing_leave:
                             leave_entry = LeaveEntry(
                                 employee_id=employee_id,
@@ -707,7 +706,13 @@ class GoogleSheetsSync:
                                 source='google_sheets'
                             )
                             db.add(leave_entry)
+                            seen_leaves[leave_key] = leave_entry
                             stats['leaves_added'] += 1
+                        else:
+                            # Same-key leave already in DB (e.g. cross-team carryover).
+                            # Track it so further duplicates within this batch can
+                            # still aggregate hours into a known row.
+                            seen_leaves[leave_key] = existing_leave
                     
                 except Exception as e:
                     # Rollback the transaction to recover from errors

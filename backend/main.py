@@ -68,8 +68,15 @@ from dev_planning import (
 )
 from google_sheets_sync import GoogleSheetsSync, get_sheets_sync_status
 from sheets_scheduler import get_scheduler, start_auto_sync, stop_auto_sync
-from pm_tracker_scheduler import start_pm_auto_sync, stop_pm_auto_sync, get_pm_scheduler_status
+from pm_tracker_scheduler import start_pm_auto_sync, stop_pm_auto_sync, get_pm_scheduler_status, unpause_pm_sync
+from sync_health import sync_health
 from redmine_scheduler import start_redmine_auto_sync, stop_redmine_auto_sync, get_redmine_scheduler_status
+from monthly_report_scheduler import (
+    start_monthly_report_scheduler,
+    stop_monthly_report_scheduler,
+    get_monthly_report_status,
+    get_monthly_report_scheduler,
+)
 from testrail_scheduler import (
     start_testrail_auto_sync,
     stop_testrail_auto_sync,
@@ -101,6 +108,15 @@ from qa_planning import (
     QA_QC_STATUSES,
     CLOSED_STATUSES,
     get_qa_ticket_suggestions,
+    calculate_qc_priority_score,
+    get_status_durations,
+    get_qc_cycle_details,
+    get_qc_cycles_summary,
+    get_ageing_overview,
+    get_ageing_bottlenecks,
+    get_ticket_flow_rate,
+    get_bis_to_closed_tracking,
+    get_qa_activity_summary,
 )
 
 
@@ -219,6 +235,10 @@ PROFILE_PHOTO_DIR = os.path.join(UPLOADS_ROOT, "profile_photos")
 os.makedirs(PROFILE_PHOTO_DIR, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=UPLOADS_ROOT), name="uploads")
 
+# GZIP compression for faster network transfer
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
@@ -268,6 +288,24 @@ async def startup_event():
             print("[INFO] Google Sheets Export is disabled (set SHEETS_EXPORT_AUTO_SYNC=true to enable)")
     except Exception as e:
         print(f"[WARNING] Failed to start Google Sheets Export scheduler: {e}")
+    try:
+        if start_monthly_report_scheduler():
+            print("[OK] Monthly Team Report scheduler started (runs on last day of every month)")
+        else:
+            print("[INFO] Monthly Team Report scheduler is disabled (set MONTHLY_REPORT_AUTO=true to enable)")
+    except Exception as e:
+        print(f"[WARNING] Failed to start Monthly Team Report scheduler: {e}")
+    # One-time Google Sheets sync on startup (ensures fresh data regardless of auto-sync setting)
+    import threading
+    def _startup_sheets_sync():
+        try:
+            sync = GoogleSheetsSync()
+            result = sync.sync_all()
+            print(f"[OK] Startup Google Sheets sync completed: {result}")
+        except Exception as e:
+            print(f"[WARNING] Startup Google Sheets sync failed: {e}")
+    threading.Thread(target=_startup_sheets_sync, daemon=True).start()
+    print("[INFO] Google Sheets startup sync triggered in background")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -297,6 +335,11 @@ async def shutdown_event():
         print("[OK] Google Sheets Export stopped")
     except Exception as e:
         print(f"[WARNING] Error stopping Google Sheets Export: {e}")
+    try:
+        stop_monthly_report_scheduler()
+        print("[OK] Monthly Team Report scheduler stopped")
+    except Exception as e:
+        print(f"[WARNING] Error stopping Monthly Team Report scheduler: {e}")
 
 
 # ===== AUTH ENDPOINTS =====
@@ -3232,6 +3275,35 @@ def automation_workflow_summary(ticket_id: Optional[int] = Query(None)):
         db.close()
 
 
+@app.get("/automation/sync-status")
+def automation_sync_status():
+    """Get the last sync status for TestRail automation data."""
+    db: Session = SessionLocal()
+    try:
+        last_sync = db.query(SyncLog).filter(
+            SyncLog.sync_source == "testrail_automation"
+        ).order_by(SyncLog.completed_at.desc()).first()
+        
+        if not last_sync:
+            return {
+                "last_sync": None,
+                "success": None,
+                "message": "No sync has been performed yet"
+            }
+        
+        return {
+            "last_sync": last_sync.completed_at.isoformat() if last_sync.completed_at else None,
+            "started_at": last_sync.started_at.isoformat() if last_sync.started_at else None,
+            "success": last_sync.success,
+            "message": last_sync.message,
+            "records_processed": last_sync.total_records,
+            "records_created": last_sync.records_added,
+            "duration_seconds": last_sync.duration_seconds
+        }
+    finally:
+        db.close()
+
+
 @app.post("/automation/sync")
 def automation_sync():
     """Trigger a sync of automation coverage data from TestRail Project 18.
@@ -3272,6 +3344,155 @@ def automation_sync():
         raise HTTPException(status_code=504, detail="Sync timed out after 5 minutes")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/automation/sync-to-sheets")
+def automation_sync_to_google_sheets(skip_testrail: bool = Query(False, description="Skip TestRail sync, only export existing data to Sheets")):
+    """
+    Full sync: Fetch TestRail data → Database → Google Sheets.
+    This performs:
+    1. Sync TestRail automation data to database (with 30s timeout, skippable)
+    2. Export TestRail data to Google Sheets
+    Returns the sync timestamp for display in the sheet.
+    Even if TestRail sync fails, will still export existing data to Sheets.
+    Set skip_testrail=true to only export existing data without fetching from TestRail.
+    """
+    import subprocess
+    import sys
+    from datetime import datetime
+    
+    results = {
+        "testrail_sync": None,
+        "sheets_export": None,
+        "timestamp": None,
+        "success": False
+    }
+    
+    # Step 1: Sync TestRail to Database (with shorter timeout, continue on failure)
+    if skip_testrail:
+        results["testrail_sync"] = {
+            "success": True,
+            "skipped": True,
+            "message": "TestRail sync skipped, using existing data"
+        }
+    else:
+        try:
+            script_path = os.path.join(os.path.dirname(__file__), "sync_automation_testrail.py")
+            
+            if os.path.exists(script_path):
+                sync_result = subprocess.run(
+                    [sys.executable, script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    cwd=os.path.dirname(__file__)
+                )
+                
+                if sync_result.returncode != 0:
+                    results["testrail_sync"] = {
+                        "success": False,
+                        "error": (sync_result.stderr[-500:] if sync_result.stderr else "") + 
+                                 (sync_result.stdout[-500:] if sync_result.stdout else "") or "Unknown error"
+                    }
+                else:
+                    results["testrail_sync"] = {"success": True}
+            else:
+                results["testrail_sync"] = {
+                    "success": False,
+                    "error": "TestRail sync script not found"
+                }
+        except subprocess.TimeoutExpired:
+            results["testrail_sync"] = {
+                "success": False,
+                "error": "TestRail sync timed out (30s). Continuing with existing data..."
+            }
+        except Exception as e:
+            results["testrail_sync"] = {
+                "success": False,
+                "error": f"TestRail sync error: {str(e)}"
+            }
+    
+    # Step 2: Export to Google Sheets (always attempt this)
+    try:
+        exporter = get_sheets_exporter()
+        if exporter:
+            db = SessionLocal()
+            try:
+                runs_result = exporter.export_testrail_runs(db)
+                cases_result = exporter.export_testrail_cases(db)
+                
+                results["sheets_export"] = {
+                    "success": runs_result.get("success", False) and cases_result.get("success", False),
+                    "runs_exported": runs_result.get("rows", 0),
+                    "cases_exported": cases_result.get("rows", 0)
+                }
+            finally:
+                db.close()
+        else:
+            results["sheets_export"] = {
+                "success": False,
+                "error": "Google Sheets export not configured"
+            }
+    except Exception as e:
+        results["sheets_export"] = {
+            "success": False,
+            "error": str(e)
+        }
+    
+    # Set timestamp
+    results["timestamp"] = datetime.now().isoformat()
+    
+    # Success if sheets export worked (TestRail sync is optional since we may have existing data)
+    results["success"] = results["sheets_export"].get("success", False)
+    
+    return results
+
+
+@app.post("/automation/export-to-sheets")
+def automation_export_to_google_sheets_only():
+    """
+    Export existing TestRail data from database to Google Sheets.
+    Does NOT fetch new data from TestRail - uses existing database data.
+    Use this when TestRail API is unreachable but you want to sync existing data to Sheets.
+    """
+    from datetime import datetime
+    
+    results = {
+        "sheets_export": None,
+        "timestamp": None,
+        "success": False
+    }
+    
+    try:
+        exporter = get_sheets_exporter()
+        if exporter:
+            db = SessionLocal()
+            try:
+                runs_result = exporter.export_testrail_runs(db)
+                cases_result = exporter.export_testrail_cases(db)
+                
+                results["sheets_export"] = {
+                    "success": runs_result.get("success", False) and cases_result.get("success", False),
+                    "runs_exported": runs_result.get("rows", 0),
+                    "cases_exported": cases_result.get("rows", 0)
+                }
+            finally:
+                db.close()
+        else:
+            results["sheets_export"] = {
+                "success": False,
+                "error": "Google Sheets export not configured"
+            }
+    except Exception as e:
+        results["sheets_export"] = {
+            "success": False,
+            "error": str(e)
+        }
+    
+    results["timestamp"] = datetime.now().isoformat()
+    results["success"] = results["sheets_export"].get("success", False)
+    
+    return results
 
 
 # ===== TICKET TRACKING ENDPOINTS =====
@@ -3535,6 +3756,48 @@ def _sync_from_api(
     """
     success, message, stats, sync_source = run_pm_api_sync(db, start_time)
     return success, message, stats, sync_source, fallback_from is not None, fallback_reason
+
+
+# ===== SYNC HEALTH ENDPOINTS =====
+
+@app.get("/sync/health")
+def get_sync_health():
+    """
+    Unified sync health status for all sync sources.
+    Returns freshness (FRESH/STALE/CRITICAL), consecutive failures,
+    pause status, and last sync details for PM Tracker, Redmine, and Google Sheets.
+    """
+    return sync_health.get_overall_health()
+
+
+@app.get("/sync/health/{source_name}")
+def get_sync_health_source(source_name: str):
+    """Get health status for a specific sync source."""
+    valid_sources = ["pm_tracker", "redmine", "google_sheets"]
+    if source_name not in valid_sources:
+        raise HTTPException(status_code=404, detail=f"Unknown sync source: {source_name}. Valid: {valid_sources}")
+    return sync_health.get_source(source_name).get_status()
+
+
+@app.post("/sync/health/{source_name}/unpause")
+def unpause_sync_source(source_name: str):
+    """
+    Unpause a sync source that was auto-paused due to consecutive failures.
+    Use this after fixing the underlying issue (e.g., re-authenticating MFA).
+    """
+    if source_name == "pm_tracker":
+        return unpause_pm_sync()
+    valid_sources = ["pm_tracker", "redmine", "google_sheets"]
+    if source_name not in valid_sources:
+        raise HTTPException(status_code=404, detail=f"Unknown sync source: {source_name}")
+    health = sync_health.get_source(source_name)
+    was_paused = health.is_paused
+    health.unpause()
+    return {
+        "was_paused": was_paused,
+        "is_paused": health.is_paused,
+        "message": f"{source_name} sync unpaused." if was_paused else f"{source_name} was not paused.",
+    }
 
 
 @app.get("/ticket-tracking/sync-method")
@@ -4489,6 +4752,174 @@ def get_newly_released_to_qa(
             "period_days": days,
             "from": start.isoformat(),
             "to": end.isoformat(),
+        }
+    finally:
+        db.close()
+
+
+# Dev statuses for automation planning analysis
+DEV_TEAM_STATUSES = [
+    'In Progress', 'Technical Review', 'Start Code Review', 'Code Review Passed',
+    'Code Review Failed', 'Approved for Live', 'Ready For Development', 
+    'Express Lane Review', 'QC Review Fail', 'Tested - Awaiting Fixes', 'Re-opened'
+]
+
+@app.get("/tickets-dashboard/automation-planning")
+def get_automation_planning_analysis():
+    """
+    Analyze tickets in Dev status to identify modules/areas with high volume,
+    helping prioritize automation efforts for upcoming QA work.
+    """
+    db: Session = SessionLocal()
+    try:
+        # Get all tickets in Dev team statuses
+        dev_tickets = db.query(TicketTracking).filter(
+            TicketTracking.status.in_(DEV_TEAM_STATUSES)
+        ).all()
+        
+        if not dev_tickets:
+            return {
+                "total_dev_tickets": 0,
+                "by_subdepartment": [],
+                "by_priority": [],
+                "by_module_keyword": [],
+                "tickets": [],
+                "recommendations": []
+            }
+        
+        # Group by subdepartment
+        subdepartment_counts = defaultdict(lambda: {"count": 0, "tickets": [], "priorities": defaultdict(int)})
+        priority_counts = defaultdict(int)
+        module_keywords = defaultdict(lambda: {"count": 0, "tickets": []})
+        
+        # Common module keywords to extract from titles
+        KEYWORD_PATTERNS = [
+            'Dashboard', 'Report', 'API', 'Login', 'Auth', 'User', 'Admin',
+            'Payment', 'Invoice', 'Order', 'Cart', 'Checkout', 'Product',
+            'Notification', 'Email', 'SMS', 'Calendar', 'Schedule', 'Booking',
+            'Search', 'Filter', 'Export', 'Import', 'Upload', 'Download',
+            'Settings', 'Config', 'Profile', 'Account', 'Registration',
+            'Integration', 'Sync', 'Webhook', 'Mobile', 'App', 'Web',
+            'Database', 'Migration', 'Performance', 'Security', 'Bug', 'Fix'
+        ]
+        
+        today = datetime.now().date()
+        all_ticket_data = []
+        
+        for ticket in dev_tickets:
+            subdept = (ticket.subdepartment or 'Unknown').strip() or 'Unknown'
+            priority = (ticket.priority or 'Unknown').strip() or 'Unknown'
+            title = (ticket.title or '').strip()
+            status = ticket.status or 'Unknown'
+            
+            # Calculate age
+            created_date = None
+            if ticket.created_on:
+                created_date = ticket.created_on.date() if hasattr(ticket.created_on, 'date') else ticket.created_on
+            age_days = (today - created_date).days if created_date else None
+            
+            ticket_data = {
+                "ticket_id": ticket.ticket_id,
+                "title": title or f"Ticket #{ticket.ticket_id}",
+                "status": status,
+                "priority": priority,
+                "subdepartment": subdept,
+                "assignee": ticket.current_assignee or 'Unassigned',
+                "backend_developer": ticket.backend_developer,
+                "frontend_developer": ticket.frontend_developer,
+                "eta": ticket.eta.isoformat() if ticket.eta else None,
+                "age_days": age_days,
+                "dev_estimate": ticket.dev_estimate_hours,
+                "dev_actual": ticket.actual_dev_hours,
+                "created_on": ticket.created_on.isoformat() if ticket.created_on else None
+            }
+            
+            all_ticket_data.append(ticket_data)
+            
+            # Count by subdepartment
+            subdepartment_counts[subdept]["count"] += 1
+            subdepartment_counts[subdept]["tickets"].append(ticket_data)
+            subdepartment_counts[subdept]["priorities"][priority] += 1
+            
+            # Count by priority
+            priority_counts[priority] += 1
+            
+            # Extract module keywords from title
+            if title:
+                title_lower = title.lower()
+                for keyword in KEYWORD_PATTERNS:
+                    if keyword.lower() in title_lower:
+                        module_keywords[keyword]["count"] += 1
+                        module_keywords[keyword]["tickets"].append(ticket_data)
+        
+        # Format subdepartment data
+        by_subdepartment = []
+        for subdept, data in sorted(subdepartment_counts.items(), key=lambda x: x[1]["count"], reverse=True):
+            by_subdepartment.append({
+                "subdepartment": subdept,
+                "count": data["count"],
+                "percentage": round(data["count"] / len(dev_tickets) * 100, 1),
+                "priorities": dict(data["priorities"]),
+                "ticket_ids": [t["ticket_id"] for t in data["tickets"]]
+            })
+        
+        # Format priority data
+        by_priority = []
+        for priority, count in sorted(priority_counts.items(), key=lambda x: x[1], reverse=True):
+            by_priority.append({
+                "priority": priority,
+                "count": count,
+                "percentage": round(count / len(dev_tickets) * 100, 1)
+            })
+        
+        # Format module keywords (top 15)
+        by_module_keyword = []
+        for keyword, data in sorted(module_keywords.items(), key=lambda x: x[1]["count"], reverse=True)[:15]:
+            by_module_keyword.append({
+                "keyword": keyword,
+                "count": data["count"],
+                "percentage": round(data["count"] / len(dev_tickets) * 100, 1),
+                "ticket_ids": [t["ticket_id"] for t in data["tickets"]]
+            })
+        
+        # Generate recommendations
+        recommendations = []
+        if by_subdepartment:
+            top_subdept = by_subdepartment[0]
+            if top_subdept["count"] >= 5:
+                recommendations.append({
+                    "type": "high_volume_subdepartment",
+                    "message": f"Focus automation on '{top_subdept['subdepartment']}' - {top_subdept['count']} tickets ({top_subdept['percentage']}%) coming to QA",
+                    "priority": "high"
+                })
+        
+        if by_module_keyword:
+            top_keywords = [k for k in by_module_keyword[:3] if k["count"] >= 3]
+            if top_keywords:
+                keyword_list = ", ".join([k["keyword"] for k in top_keywords])
+                recommendations.append({
+                    "type": "common_modules",
+                    "message": f"Common areas: {keyword_list} - consider creating reusable test automation for these",
+                    "priority": "medium"
+                })
+        
+        # Check for urgent/high priority concentration
+        urgent_high = sum(c for p, c in priority_counts.items() if 'urgent' in p.lower() or 'high' in p.lower())
+        if urgent_high > len(dev_tickets) * 0.3:
+            recommendations.append({
+                "type": "priority_alert",
+                "message": f"{urgent_high} tickets ({round(urgent_high/len(dev_tickets)*100)}%) are Urgent/High priority - prioritize automation for quick turnaround",
+                "priority": "high"
+            })
+        
+        return {
+            "total_dev_tickets": len(dev_tickets),
+            "by_subdepartment": by_subdepartment,
+            "by_priority": by_priority,
+            "by_module_keyword": by_module_keyword,
+            "tickets": sorted(all_ticket_data, key=lambda x: (x["priority"] or "ZZZ", -(x["age_days"] or 0))),
+            "recommendations": recommendations,
+            "dev_statuses_included": DEV_TEAM_STATUSES
         }
     finally:
         db.close()
@@ -9466,6 +9897,127 @@ def generate_ticket_report_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/reports/developer/{employee_id}")
+def download_developer_report(
+    employee_id: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access),
+):
+    """Generate and download a developer performance PDF report."""
+    from developer_report import generate_developer_report_pdf
+
+    try:
+        output_path, filename = generate_developer_report_pdf(db, employee_id)
+        return FileResponse(
+            output_path,
+            media_type="application/pdf",
+            filename=filename,
+        )
+    except ValueError as e:
+        message = str(e)
+        if "not found" in message.lower():
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/reports/developer/team/{lead_name}")
+def download_team_developer_reports(
+    lead_name: str,
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access),
+):
+    """Generate and download ZIP of developer reports for all team members reporting to a lead."""
+    from developer_report import generate_team_reports_zip
+
+    try:
+        zip_path, zip_filename, employee_names = generate_team_reports_zip(db, lead_name)
+        return FileResponse(
+            zip_path,
+            media_type="application/zip",
+            filename=zip_filename,
+            headers={"X-Employees-Included": ", ".join(employee_names)},
+        )
+    except ValueError as e:
+        message = str(e)
+        if "not found" in message.lower() or "no development" in message.lower():
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/reports/developer/bulk")
+def download_bulk_developer_reports(
+    employee_ids: str = Query(..., description="Comma-separated employee IDs"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access),
+):
+    """Generate and download ZIP of developer reports for specified employees."""
+    from developer_report import generate_bulk_reports_zip
+
+    try:
+        ids = [eid.strip() for eid in employee_ids.split(",") if eid.strip()]
+        if not ids:
+            raise HTTPException(status_code=400, detail="No employee IDs provided")
+        
+        zip_path, zip_filename = generate_bulk_reports_zip(db, ids)
+        return FileResponse(
+            zip_path,
+            media_type="application/zip",
+            filename=zip_filename,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/reports/open-bugs")
+def download_open_bugs_report(
+    sort_by: str = Query("ageing", description="Sort by: ageing, bug_id, ticket_id, developer, severity"),
+    sort_order: str = Query("desc", description="Sort order: asc or desc"),
+    developer: str = Query(None, description="Filter by developer name (optional)"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access),
+):
+    """Generate and download a PDF report of all currently open bugs."""
+    from open_bugs_report import generate_open_bugs_report_pdf
+
+    try:
+        output_path, filename = generate_open_bugs_report_pdf(
+            db, sort_by=sort_by, sort_order=sort_order, developer_filter=developer
+        )
+        return FileResponse(
+            output_path,
+            media_type="application/pdf",
+            filename=filename,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/reports/open-bugs/preview")
+def preview_open_bugs_report(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access),
+):
+    """Get preview data for open bugs report."""
+    from open_bugs_report import get_open_bugs_preview
+
+    try:
+        return get_open_bugs_preview(db)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/reports/weekly-v2")
 def generate_weekly_report_v2(
     date: str = Query(None, description="Reference date (YYYY-MM-DD) for the week"),
@@ -10559,6 +11111,150 @@ async def download_qa_dashboard(
         raise HTTPException(status_code=500, detail=f"Failed to generate dashboard: {str(e)}")
 
 
+@app.get("/reports/production-bugs/download")
+async def download_production_bugs_report(
+    format: str = Query("excel", description="Report format: 'excel' or 'pdf'"),
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access)
+):
+    """
+    Generate and download Production & Pre-Production Bugs Report.
+    
+    This report includes:
+    - Bugs found in Production, Pre-production, and BIS Testing environments
+    - Ticket-wise details with developers, testers, and time tracking
+    - Statistics by environment, severity, and module
+    
+    Parameters:
+    - format: 'excel' for XLSX file, 'pdf' for PDF file
+    """
+    from fastapi.responses import FileResponse
+    from pathlib import Path
+    import subprocess
+    import sys
+    
+    try:
+        # Run the report generation script
+        script_path = Path(__file__).parent / "scripts" / "generate_prod_bugs_report.py"
+        
+        if not script_path.exists():
+            raise HTTPException(status_code=500, detail="Report generation script not found")
+        
+        # Execute the script
+        result = subprocess.run(
+            [sys.executable, str(script_path)],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).parent)
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"Report generation failed: {result.stderr}")
+            raise HTTPException(status_code=500, detail=f"Report generation failed: {result.stderr[:200]}")
+        
+        # Parse output to get file paths
+        output_lines = result.stdout.strip().split('\n')
+        excel_file = None
+        pdf_file = None
+        
+        for line in output_lines:
+            if 'Excel:' in line or 'Excel Report:' in line:
+                excel_file = line.split(':', 1)[-1].strip()
+            elif 'PDF:' in line or 'PDF Report:' in line:
+                pdf_file = line.split(':', 1)[-1].strip()
+        
+        # Select file based on format
+        if format.lower() == 'pdf':
+            if not pdf_file or not Path(pdf_file).exists():
+                raise HTTPException(status_code=500, detail="PDF report was not generated")
+            file_path = Path(pdf_file)
+            media_type = "application/pdf"
+        else:
+            if not excel_file or not Path(excel_file).exists():
+                raise HTTPException(status_code=500, detail="Excel report was not generated")
+            file_path = Path(excel_file)
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        
+        return FileResponse(
+            path=str(file_path),
+            filename=file_path.name,
+            media_type=media_type
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to generate Production Bugs report: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate report: {str(e)}")
+
+
+@app.get("/reports/production-bugs/preview")
+async def preview_production_bugs_report(
+    db: Session = Depends(get_db),
+    current_user: dict = Depends(require_reports_access)
+):
+    """
+    Get preview/summary data for Production & Pre-Production Bugs Report.
+    Returns statistics without generating the full report files.
+    """
+    from collections import defaultdict
+    
+    REPORT_ENVIRONMENTS = ['Production', 'Pre-production', 'BIS Testing (Pre)']
+    
+    # Query bugs in Production and Pre-Production environments
+    bugs = db.query(Bug).filter(
+        Bug.environment.in_(REPORT_ENVIRONMENTS)
+    ).all()
+    
+    # Get unique ticket IDs
+    ticket_ids = list(set(b.ticket_id for b in bugs if b.ticket_id))
+    
+    # Get ticket details
+    tickets = {}
+    if ticket_ids:
+        ticket_records = db.query(TicketTracking).filter(
+            TicketTracking.ticket_id.in_(ticket_ids)
+        ).all()
+        tickets = {t.ticket_id: t for t in ticket_records}
+    
+    # Filter out tickets with N/A titles
+    def is_valid_ticket(ticket):
+        if not ticket or not ticket.title:
+            return False
+        title_lower = ticket.title.strip().lower()
+        return title_lower not in ['n/a', 'na', '-', '']
+    
+    valid_ticket_ids = [tid for tid in ticket_ids if is_valid_ticket(tickets.get(tid))]
+    valid_bugs = [b for b in bugs if b.ticket_id in valid_ticket_ids]
+    
+    # Calculate statistics
+    env_stats = defaultdict(lambda: {"total": 0, "open": 0, "closed": 0})
+    sev_stats = defaultdict(lambda: {"prod": 0, "preprod": 0})
+    
+    for bug in valid_bugs:
+        env = bug.environment or "Unknown"
+        env_stats[env]["total"] += 1
+        if bug.status and bug.status.lower() in ['closed', 'resolved', 'rejected']:
+            env_stats[env]["closed"] += 1
+        else:
+            env_stats[env]["open"] += 1
+        
+        sev = bug.severity or "Unknown"
+        if bug.environment == 'Production':
+            sev_stats[sev]["prod"] += 1
+        else:
+            sev_stats[sev]["preprod"] += 1
+    
+    return {
+        "total_bugs": len(valid_bugs),
+        "tickets_affected": len(valid_ticket_ids),
+        "excluded_tickets": len(ticket_ids) - len(valid_ticket_ids),
+        "environment_breakdown": dict(env_stats),
+        "severity_breakdown": dict(sev_stats),
+        "generated_at": datetime.now().isoformat()
+    }
+
+
 @app.get("/api/qa-dashboard/metrics")
 def get_qa_dashboard_metrics(
     start_date: str = Query(None, description="Filter start date (YYYY-MM-DD)"),
@@ -11122,6 +11818,89 @@ def get_google_sheets_status():
         "scheduler": scheduler_status
     }
 
+# ===== MONTHLY TEAM REPORT ENDPOINTS =====
+
+@app.get("/reports/monthly-team/status")
+def monthly_team_report_status(current_user: dict = Depends(get_current_user)):
+    """Get the monthly team report scheduler status (next/last run)."""
+    return get_monthly_report_status()
+
+
+@app.post("/reports/monthly-team/generate")
+def trigger_monthly_team_report(
+    month: Optional[str] = Query(
+        None, description="Month in YYYY-MM. Defaults to the current month."
+    ),
+    teams: Optional[str] = Query(
+        None,
+        description="Comma-separated team keys to generate (QA,DEV). Default: both.",
+    ),
+    send_email: Optional[bool] = Query(
+        None,
+        description=(
+            "Whether to email the PDFs after generation. "
+            "If omitted, follows MONTHLY_REPORT_EMAIL_ENABLED env var. "
+            "Pass true/false to override."
+        ),
+    ),
+    current_user: dict = Depends(get_current_user),
+):
+    """Manually generate the per-team monthly PDF reports (one PDF per team)."""
+    teams_list = [t.strip().upper() for t in teams.split(",")] if teams else None
+    result = get_monthly_report_scheduler().trigger_manual(
+        month, send_email=send_email, teams=teams_list
+    )
+    if not result.get("success"):
+        raise HTTPException(
+            status_code=500, detail=result.get("error", "Report generation failed")
+        )
+    return result
+
+
+@app.get("/reports/monthly-team/download")
+def download_monthly_team_report(
+    team: str = Query("QA", description="Team key: QA or DEV"),
+    month: Optional[str] = Query(
+        None, description="Month in YYYY-MM. Defaults to the latest available report for the team."
+    ),
+    current_user: dict = Depends(get_current_user),
+):
+    """Download a previously generated monthly team report PDF."""
+    team_key = team.upper()
+    if team_key not in {"QA", "DEV"}:
+        raise HTTPException(status_code=400, detail="team must be QA or DEV")
+    reports_dir = os.path.join(os.path.dirname(__file__), "reports")
+    prefix = f"Monthly_Team_Report_{team_key}_"
+    if month:
+        try:
+            year, mon = map(int, month.split("-"))
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid month format. Use YYYY-MM")
+        filename = f"{prefix}{year:04d}-{mon:02d}.pdf"
+    else:
+        try:
+            candidates = [
+                f for f in os.listdir(reports_dir)
+                if f.startswith(prefix) and f.endswith(".pdf")
+            ]
+        except FileNotFoundError:
+            candidates = []
+        if not candidates:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No monthly {team_key} report has been generated yet.",
+            )
+        filename = sorted(candidates)[-1]
+    path = os.path.join(reports_dir, filename)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"Report not found: {filename}")
+    return FileResponse(
+        path,
+        media_type="application/pdf",
+        filename=filename,
+    )
+
+
 @app.post("/sync/google-sheets")
 def trigger_google_sheets_sync(team: Optional[str] = Query(None, description="Team to sync: QA, DEV, or leave empty for all")):
     """Trigger a manual sync from Google Sheets."""
@@ -11333,7 +12112,6 @@ def get_weekly_calendar(
     team: str = Query("ALL", description="Team: QA, DEV, or ALL"),
     date_str: str = Query(None, description="Any date in the week (YYYY-MM-DD). Defaults to current week."),
     category: str = Query("ALL", description="Category: BILLED, UN-BILLED, or ALL"),
-    current_user: dict = Depends(get_current_user),
 ):
     """
     Get weekly calendar view showing daily time entries per employee.
@@ -11391,10 +12169,8 @@ def get_weekly_calendar(
             else:
                 emp_query = emp_query.filter(func.upper(Employee.category) == category_upper)
         employees = emp_query.all()
-        visible = get_visible_employee_ids(db, current_user)
-        if visible is not None:
-            employees = [e for e in employees if e.employee_id in visible]
-        
+        # No auth — show all employees
+
         # Get employee names for filtering timesheet data
         employee_names = [emp.name for emp in employees]
         # Map employee_id -> employee for calendar (one row per person, avoids duplicate names)
@@ -11479,6 +12255,8 @@ def get_weekly_calendar(
                     "total_hours": 0,
                     "productive_hours": 0,
                     "hours_logged": 0,
+                    "ticket_hours": 0,
+                    "non_ticket_hours": 0,
                     "leave_type": None,
                     "is_weekend": is_weekend_day,
                     "is_holiday": holiday_info is not None,
@@ -11498,30 +12276,42 @@ def get_weekly_calendar(
                 or name_to_employee_id.get(_compact_person_name(name))
             )
         
+        # Classify ticket vs non-ticket: numeric ticket_id = ticket task
+        def _is_ticket_task(tid):
+            if not tid:
+                return False
+            tid_str = str(tid).strip()
+            return tid_str.isdigit() and int(tid_str) > 0
+
         # Add timesheet entries only to existing employee rows (no new rows from name variants)
         for entry in entries:
             eid = _resolve_employee_id(entry.employee_id, entry.employee_name)
             if eid is None:
                 continue
-            name = eid
             day_key = entry.date.isoformat()
             if day_key in employee_data[eid]["days"]:
                 # Get hours - use productive_hours if available, otherwise hours_logged
                 productive = entry.productive_hours or 0
                 hours_logged = entry.hours_logged or 0
                 display_hours = productive if productive > 0 else hours_logged
-                
+                is_ticket = _is_ticket_task(entry.ticket_id)
+
                 employee_data[eid]["days"][day_key]["entries"].append({
                     "ticket_id": entry.ticket_id,
                     "hours": display_hours,
                     "productive_hours": productive,
                     "hours_logged": hours_logged,
                     "task_description": entry.task_description,
-                    "project_name": entry.project_name
+                    "project_name": entry.project_name,
+                    "is_ticket_task": is_ticket
                 })
                 employee_data[eid]["days"][day_key]["total_hours"] += display_hours
                 employee_data[eid]["days"][day_key]["productive_hours"] += productive
                 employee_data[eid]["days"][day_key]["hours_logged"] = employee_data[eid]["days"][day_key].get("hours_logged", 0) + hours_logged
+                if is_ticket:
+                    employee_data[eid]["days"][day_key]["ticket_hours"] = employee_data[eid]["days"][day_key].get("ticket_hours", 0) + display_hours
+                else:
+                    employee_data[eid]["days"][day_key]["non_ticket_hours"] = employee_data[eid]["days"][day_key].get("non_ticket_hours", 0) + display_hours
                 if entry.leave_type:
                     employee_data[eid]["days"][day_key]["leave_type"] = entry.leave_type
         
@@ -11537,19 +12327,26 @@ def get_weekly_calendar(
         for eid, data in employee_data.items():
             total = sum(d["total_hours"] for d in data["days"].values())
             productive = sum(d["productive_hours"] for d in data["days"].values())
+            ticket_hrs = sum(d.get("ticket_hours", 0) for d in data["days"].values())
+            non_ticket_hrs = sum(d.get("non_ticket_hours", 0) for d in data["days"].values())
             data["weekly_total_hours"] = total
             data["weekly_productive_hours"] = productive
-        
+            data["weekly_ticket_hours"] = ticket_hrs
+            data["weekly_non_ticket_hours"] = non_ticket_hrs
+            # Expected hours: 8 per working day
+            working_day_count = sum(1 for d in data["days"].values() if d["is_working_day"])
+            data["expected_hours"] = working_day_count * 8
+
         # Calculate working days in the week (excluding weekends and holidays)
         working_days = get_working_days_in_range(week_start, week_end, db, include_optional_holidays=False)
-        
+
         return {
             "week_start": week_start.isoformat(),
             "week_end": week_end.isoformat(),
             "team": team,
             "working_days": working_days,
             "holidays": list(week_holidays.values()),
-            "employees": list(employee_data.values())
+            "employees": sorted(employee_data.values(), key=lambda e: (e.get("employee_name") or "").lower())
         }
     finally:
         db.close()
@@ -11560,7 +12357,6 @@ def get_monthly_calendar(
     team: str = Query("ALL", description="Team: QA, DEV, or ALL"),
     month: str = Query(None, description="Month (YYYY-MM). Defaults to current month."),
     category: str = Query("ALL", description="Category: BILLED, UN-BILLED, or ALL"),
-    current_user: dict = Depends(get_current_user),
 ):
     """
     Get monthly calendar view showing summary per employee.
@@ -11623,10 +12419,8 @@ def get_monthly_calendar(
             else:
                 emp_query = emp_query.filter(func.upper(Employee.category) == category_upper)
         all_employees = emp_query.all()
-        visible = get_visible_employee_ids(db, current_user)
-        if visible is not None:
-            all_employees = [e for e in all_employees if e.employee_id in visible]
-        
+        # No auth — show all employees
+
         # Get employee names for filtering timesheet data
         employee_names = [emp.name for emp in all_employees]
         employee_ids = {emp.employee_id for emp in all_employees}
@@ -11690,17 +12484,28 @@ def get_monthly_calendar(
                 or name_to_employee_id.get(_compact_person_name(raw_name))
             )
         
+        # Classify ticket vs non-ticket
+        def _is_ticket_task(tid):
+            if not tid:
+                return False
+            tid_str = str(tid).strip()
+            return tid_str.isdigit() and int(tid_str) > 0
+
         # Build employee data keyed by employee_id (one row per person, no duplicates)
         employee_data = defaultdict(lambda: {
             "days": defaultdict(lambda: {
                 "hours": 0,
                 "productive_hours": 0,
                 "hours_logged": 0,
+                "ticket_hours": 0,
+                "non_ticket_hours": 0,
                 "leave_type": None,
                 "entries": []
             }),
             "total_hours": 0,
             "total_productive_hours": 0,
+            "total_ticket_hours": 0,
+            "total_non_ticket_hours": 0,
             "total_leave_days": 0,
             "total_leave_hours": 0,
             "expected_hours": 0,
@@ -11721,11 +12526,23 @@ def get_monthly_calendar(
             productive = entry.productive_hours if entry.productive_hours is not None else None
             time_spent = entry.hours_logged or 0
             display_hours = productive if productive is not None else time_spent
-            
+            is_ticket = _is_ticket_task(entry.ticket_id)
+
             employee_data[eid]["days"][day]["productive_hours"] += productive if productive is not None else 0
             employee_data[eid]["days"][day]["hours_logged"] += time_spent
-            employee_data[eid]["days"][day]["hours"] = display_hours
-            employee_data[eid]["days"][day]["entries"].append(entry.ticket_id)
+            employee_data[eid]["days"][day]["hours"] += display_hours
+            employee_data[eid]["days"][day]["entries"].append({
+                "ticket_id": entry.ticket_id,
+                "hours": display_hours,
+                "task_description": entry.task_description,
+                "is_ticket_task": is_ticket
+            })
+            if is_ticket:
+                employee_data[eid]["days"][day]["ticket_hours"] += display_hours
+                employee_data[eid]["total_ticket_hours"] += display_hours
+            else:
+                employee_data[eid]["days"][day]["non_ticket_hours"] += display_hours
+                employee_data[eid]["total_non_ticket_hours"] += display_hours
             if entry.leave_type:
                 employee_data[eid]["days"][day]["leave_type"] = entry.leave_type
             employee_data[eid]["total_hours"] += display_hours
@@ -11802,7 +12619,7 @@ def get_monthly_calendar(
             "working_days": total_working_days,
             "holidays": list(month_holidays.values()),
             "monthly_totals": monthly_totals,
-            "employees": [dict(v) for v in employee_data.values()]
+            "employees": sorted([dict(v) for v in employee_data.values()], key=lambda e: (e.get("employee_name") or "").lower())
         }
     finally:
         db.close()
@@ -14466,6 +15283,820 @@ def eta_calendar_tickets(current_user: dict = Depends(get_current_user)):
         db.close()
 
 
+# ===== LIVE PM DATA ENDPOINTS (new modules) =====
+from pm_live_data import (
+    get_live_qc_queue, get_live_team_board, get_live_activity_summary, get_live_bis_tracking,
+    fetch_live_tickets,
+    load_module_ownership, save_module_ownership, auto_detect_modules_and_members,
+    get_live_resource_occupancy, get_live_assignment_suggestions, get_live_module_ownership_matrix,
+    get_live_team_queue, get_live_automation_utilization, get_live_dev_dashboard,
+)
+
+
+@app.post("/live/refresh")
+def force_refresh_pm_data():
+    """Force refresh PM data from API, clearing all caches."""
+    from pm_live_data import clear_response_cache
+    clear_response_cache()
+    success, tickets, msg = fetch_live_tickets(force_refresh=True)
+    return {'success': success, 'ticket_count': len(tickets) if tickets else 0, 'message': msg}
+
+
+@app.get("/live/qc-queue")
+def live_qc_queue():
+    """Live QC queue fetched directly from PM API."""
+    return get_live_qc_queue()
+
+
+@app.get("/live/team-board")
+def live_team_board():
+    """Live team board fetched directly from PM API."""
+    return get_live_team_board()
+
+
+@app.get("/live/team-board/activity-distribution")
+def live_activity_distribution():
+    """Live activity distribution."""
+    board = get_live_team_board()
+    dist = {}
+    for m in board.get('members', []):
+        a = m['activity']
+        dist[a] = dist.get(a, 0) + 1
+    plat = {}
+    for m in board.get('members', []):
+        if m['activity'] != 'idle':
+            p = m.get('platform', 'Web')
+            plat[p] = plat.get(p, 0) + 1
+    return {'activity_distribution': dist, 'platform_distribution': plat, 'summary': board.get('summary', {})}
+
+
+@app.get("/live/team-board/member/{name}")
+def live_team_board_member(name: str):
+    """Live member detail."""
+    board = get_live_team_board()
+    for m in board.get('members', []):
+        if m['name'].lower() == name.lower() or m['employee_id'] == name:
+            return m
+    raise HTTPException(status_code=404, detail="Member not found")
+
+
+@app.get("/live/qa-activity-summary")
+def live_activity_summary(
+    period: str = Query('past_5_days', regex='^(past_5_days|current_month|custom)$'),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+):
+    """Live QA activity summary from PM API."""
+    sd = None
+    ed = None
+    if period == 'custom' and start_date and end_date:
+        sd = date.fromisoformat(start_date)
+        ed = date.fromisoformat(end_date)
+    return get_live_activity_summary(period=period, start_override=sd, end_override=ed)
+
+
+@app.get("/live/bis-to-closed")
+def live_bis_to_closed():
+    """Live BIS tracking from PM API."""
+    return get_live_bis_tracking()
+
+
+@app.get("/live/qc-review-fail")
+def live_qc_review_fail():
+    """Live QC review fail tickets from PM API."""
+    data = get_live_qc_queue()
+    return data.get('qc_failed', {'tickets': [], 'total': 0})
+
+
+@app.get("/live/reports/weekly")
+def generate_weekly_report(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
+    """Generate and download QA Report Excel."""
+    import subprocess
+    script = os.path.join(os.path.dirname(__file__), 'generate_qa_reports.py')
+    cmd = ['python', script]
+    if start_date and end_date:
+        cmd += [f'--start={start_date}', f'--end={end_date}']
+    subprocess.run(cmd, cwd=os.path.dirname(__file__), timeout=30)
+    from datetime import date as d
+    report_date = end_date if end_date else d.today().strftime("%Y-%m-%d")
+    path = os.path.join(os.path.dirname(__file__), 'reports', f'QA_Report_{d.fromisoformat(report_date).strftime("%Y%m%d")}.xlsx')
+    if os.path.exists(path):
+        return FileResponse(path, filename=os.path.basename(path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    raise HTTPException(status_code=500, detail="Report generation failed")
+
+
+@app.get("/live/reports/monthly")
+def generate_monthly_report(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
+    """Generate and download QA Monthly Report Excel."""
+    import subprocess
+    script = os.path.join(os.path.dirname(__file__), 'generate_qa_reports.py')
+    cmd = ['python', script]
+    if start_date and end_date:
+        cmd += [f'--start={start_date}', f'--end={end_date}']
+    subprocess.run(cmd, cwd=os.path.dirname(__file__), timeout=30)
+    from datetime import date as d
+    report_date = end_date if end_date else d.today().strftime("%Y-%m-%d")
+    path = os.path.join(os.path.dirname(__file__), 'reports', f'QA_Report_{d.fromisoformat(report_date).strftime("%Y%m%d")}.xlsx')
+    if os.path.exists(path):
+        return FileResponse(path, filename=os.path.basename(path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    raise HTTPException(status_code=500, detail="Report generation failed")
+
+
+@app.get("/live/reports/automation-weekly")
+def generate_automation_report(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
+    """Generate and download Automation Utilization Report PDF."""
+    import subprocess
+    script = os.path.join(os.path.dirname(__file__), 'generate_automation_pdf_report.py')
+    cmd = ['python', script]
+    if start_date and end_date:
+        cmd += [f'--start={start_date}', f'--end={end_date}']
+    subprocess.run(cmd, cwd=os.path.dirname(__file__), timeout=120)
+    from datetime import date as d
+    report_date = end_date if end_date else d.today().strftime("%Y-%m-%d")
+    path = os.path.join(os.path.dirname(__file__), 'reports', f'Automation_Utilization_Report_{d.fromisoformat(report_date).strftime("%Y%m%d")}.pdf')
+    if os.path.exists(path):
+        return FileResponse(path, filename=os.path.basename(path), media_type='application/pdf')
+    raise HTTPException(status_code=500, detail="Report generation failed")
+
+
+@app.get("/live/reports/module-ownership")
+def generate_module_report():
+    """Download Module Ownership Report Excel."""
+    path = os.path.join(os.path.dirname(__file__), 'reports', 'Module_Ownership_Report.xlsx')
+    if os.path.exists(path):
+        return FileResponse(path, filename=os.path.basename(path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    raise HTTPException(status_code=404, detail="Report not found. Generate it first.")
+
+
+@app.get("/live/reports/dev-weekly")
+def generate_dev_weekly_report(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
+    """Generate and download Dev Report Excel."""
+    import subprocess
+    script = os.path.join(os.path.dirname(__file__), 'generate_dev_report.py')
+    cmd = ['python', script]
+    if start_date and end_date:
+        cmd += [f'--start={start_date}', f'--end={end_date}']
+    subprocess.run(cmd, cwd=os.path.dirname(__file__), timeout=30)
+    from datetime import date as d
+    path = os.path.join(os.path.dirname(__file__), 'reports', f'Dev_Report_{d.today().strftime("%Y%m%d")}.xlsx')
+    if os.path.exists(path):
+        return FileResponse(path, filename=os.path.basename(path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    raise HTTPException(status_code=500, detail="Report generation failed")
+
+
+@app.get("/live/reports/dev-monthly")
+def generate_dev_monthly_report(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
+    """Generate and download Dev Report Excel."""
+    import subprocess
+    script = os.path.join(os.path.dirname(__file__), 'generate_dev_report.py')
+    cmd = ['python', script]
+    if start_date and end_date:
+        cmd += [f'--start={start_date}', f'--end={end_date}']
+    subprocess.run(cmd, cwd=os.path.dirname(__file__), timeout=30)
+    from datetime import date as d
+    path = os.path.join(os.path.dirname(__file__), 'reports', f'Dev_Report_{d.today().strftime("%Y%m%d")}.xlsx')
+    if os.path.exists(path):
+        return FileResponse(path, filename=os.path.basename(path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    raise HTTPException(status_code=500, detail="Report generation failed")
+
+
+# ===== MODULE OWNERSHIP & RESOURCE PLANNING =====
+
+@app.get("/live/module-ownership")
+def get_module_ownership_config():
+    return load_module_ownership()
+
+
+@app.put("/live/module-ownership")
+def update_module_ownership_config(body: dict = Body(...)):
+    data = load_module_ownership()
+    if 'modules' in body:
+        data['modules'] = body['modules']
+    if 'team_members' in body:
+        data['team_members'] = body['team_members']
+    save_module_ownership(data)
+    return {'success': True, 'data': data}
+
+
+@app.post("/live/module-ownership/auto-detect")
+def auto_detect_ownership():
+    return auto_detect_modules_and_members()
+
+
+@app.post("/live/export-tickets")
+def export_tickets_to_excel(body: dict = Body(...)):
+    """Generate formatted Excel from ticket list with hyperlinks."""
+    import tempfile
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    tickets = body.get('tickets', [])
+    filename = body.get('filename', 'Tickets')
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = filename[:31]  # Excel tab name limit
+
+    # Styles
+    header_font = Font(bold=True, color='FFFFFF', size=10)
+    header_fill = PatternFill(start_color='1a1a2e', end_color='1a1a2e', fill_type='solid')
+    link_font = Font(color='0563C1', underline='single', size=9)
+    data_font = Font(size=9)
+    center = Alignment(horizontal='center', vertical='center')
+    left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+    border = Border(
+        left=Side(style='thin', color='CCCCCC'), right=Side(style='thin', color='CCCCCC'),
+        top=Side(style='thin', color='CCCCCC'), bottom=Side(style='thin', color='CCCCCC')
+    )
+    alt_fill = PatternFill(start_color='F5F5F5', end_color='F5F5F5', fill_type='solid')
+
+    # Status colors
+    status_fills = {
+        'QC Testing': PatternFill(start_color='E3F2FD', end_color='E3F2FD', fill_type='solid'),
+        'QC Testing in Progress': PatternFill(start_color='E8F5E9', end_color='E8F5E9', fill_type='solid'),
+        'QC Testing Hold': PatternFill(start_color='FFF3E0', end_color='FFF3E0', fill_type='solid'),
+        'QC Review Fail': PatternFill(start_color='FFEBEE', end_color='FFEBEE', fill_type='solid'),
+        'BIS Testing': PatternFill(start_color='EDE7F6', end_color='EDE7F6', fill_type='solid'),
+        'Approved for Live': PatternFill(start_color='E0F7FA', end_color='E0F7FA', fill_type='solid'),
+        'In Progress': PatternFill(start_color='FFF9C4', end_color='FFF9C4', fill_type='solid'),
+        'Code Review Passed': PatternFill(start_color='C8E6C9', end_color='C8E6C9', fill_type='solid'),
+        'Start Code Review': PatternFill(start_color='BBDEFB', end_color='BBDEFB', fill_type='solid'),
+    }
+
+    headers = ['Ticket', 'Title', 'Status', 'Priority', 'Platform', 'Module', 'QC Tester', 'Developer', 'Est Hrs', 'Actual Hrs', 'ETA']
+    col_widths = [12, 50, 22, 18, 10, 22, 20, 20, 10, 10, 14]
+
+    # Title row
+    ws.merge_cells('A1:K1')
+    title_cell = ws['A1']
+    title_cell.value = f'{filename} — {len(tickets)} tickets'
+    title_cell.font = Font(bold=True, size=13, color='1a1a2e')
+    title_cell.alignment = Alignment(horizontal='left', vertical='center')
+    ws.row_dimensions[1].height = 28
+
+    # Headers
+    for c, (h, w) in enumerate(zip(headers, col_widths), 1):
+        cell = ws.cell(row=3, column=c, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = center
+        cell.border = border
+        ws.column_dimensions[chr(64 + c) if c <= 26 else 'A'].width = w
+
+    PM_URL = 'https://www.bissafety.app/pm/tickets#!/'
+
+    # Data rows
+    for i, t in enumerate(tickets, 4):
+        tid = t.get('ticket_id', '')
+        row_fill = alt_fill if (i % 2 == 0) else None
+
+        # Ticket ID with hyperlink
+        cell = ws.cell(row=i, column=1, value=f'#{tid}')
+        cell.hyperlink = f'{PM_URL}{tid}'
+        cell.font = link_font
+        cell.alignment = center
+        cell.border = border
+        if row_fill: cell.fill = row_fill
+
+        vals = [
+            t.get('title', ''), t.get('status', ''), t.get('priority', ''),
+            t.get('platform', ''), t.get('module', ''),
+            t.get('qc_tester', ''), t.get('developers_str', '') or t.get('developer', ''),
+            t.get('qa_estimate_hours') or t.get('dev_estimate_hours') or '',
+            t.get('qa_actual_hours') or t.get('actual_dev_hours') or '',
+            t.get('eta', ''),
+        ]
+        for c, v in enumerate(vals, 2):
+            cell = ws.cell(row=i, column=c, value=v if v else '')
+            cell.font = data_font
+            cell.alignment = left if c == 2 else center
+            cell.border = border
+            if row_fill: cell.fill = row_fill
+            # Color status cell
+            if c == 3 and v in status_fills:
+                cell.fill = status_fills[v]
+
+    # Freeze header
+    ws.freeze_panes = 'A4'
+    # Auto-filter
+    ws.auto_filter.ref = f'A3:K{3 + len(tickets)}'
+
+    tmp = tempfile.NamedTemporaryFile(suffix='.xlsx', delete=False)
+    wb.save(tmp.name)
+    tmp.close()
+
+    safe_filename = filename.replace(' ', '_').replace('/', '-')
+    return FileResponse(tmp.name, filename=f'{safe_filename}.xlsx',
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+
+
+@app.get("/live/automation-utilization")
+def live_automation_utilization():
+    return get_live_automation_utilization()
+
+
+@app.get("/live/automation-team")
+def live_automation_team():
+    from automation_team_tracker import get_team_stats
+    return get_team_stats()
+
+
+@app.get("/live/automation-team/{person}")
+def live_automation_member_weekly(person: str):
+    from automation_team_tracker import get_member_weekly_activity
+    return get_member_weekly_activity(person)
+
+
+@app.post("/live/automation-team/log")
+def automation_team_manual_entry(body: dict = Body(...)):
+    from automation_team_tracker import add_manual_entry
+    return add_manual_entry(
+        person=body.get('person', ''),
+        entry_date=body.get('date', ''),
+        module=body.get('module', ''),
+        cases_scripted=body.get('cases_scripted', 0),
+        cases_executed=body.get('cases_executed', 0),
+        activity=body.get('activity', 'scripting'),
+        notes=body.get('notes', ''),
+    )
+
+
+@app.post("/live/automation-team/import-excel")
+def automation_team_import():
+    from automation_team_tracker import import_from_excel
+    excel_path = os.environ.get('AUTOMATION_DASHBOARD_EXCEL', r'D:\Vishnu VS\bis-automation\automation_dashboard.xlsx')
+    return import_from_excel(excel_path, person='Vishnu VS')
+
+
+@app.post("/live/automation-team/sync-git")
+def automation_team_sync_git():
+    from automation_team_tracker import sync_git_activity
+    return sync_git_activity()
+
+
+@app.get("/live/team-queue")
+def live_team_queue_endpoint():
+    return get_live_team_queue()
+
+
+@app.get("/live/resource-occupancy")
+def live_resource_occupancy_endpoint():
+    return get_live_resource_occupancy()
+
+
+@app.get("/live/assignment-suggestions")
+def live_assignment_suggestions_endpoint():
+    return get_live_assignment_suggestions()
+
+
+@app.get("/live/module-ownership-matrix")
+def live_module_matrix():
+    return get_live_module_ownership_matrix()
+
+
+@app.get("/live/dev-dashboard")
+def live_dev_dashboard():
+    """Dev team pipeline insights: resource-wise, ticket-wise, module-wise."""
+    return get_live_dev_dashboard()
+
+
+@app.get("/live/module-tickets/{module_name}")
+def live_module_tickets(module_name: str, status_group: str = Query('all'), platform: Optional[str] = Query(None)):
+    """Get tickets for a specific module, optionally filtered by status group and platform."""
+    success, all_tickets, _ = fetch_live_tickets()
+    if not success:
+        return {'tickets': [], 'count': 0}
+
+    DEV_NEAR_QC = {'Code Review Passed'}
+    DEV_CODE_REVIEW = {'Start Code Review', 'Code Review Failed'}
+    DEV_IN_PROGRESS = {'In Progress', 'Hold/Pending'}
+    DEV_EARLY = {'Planning', 'Ready For Development', 'NEW', 'DRAFT', 'Ready for Design',
+                 'Technical Review', 'Design Review', 'Design In Progress', 'Testing In Progress'}
+    QC_STATUSES_SET = {'QC Testing', 'QC Testing in Progress', 'QC Testing Hold'}
+
+    filtered = [t for t in all_tickets if t.get('module') == module_name]
+    if platform:
+        filtered = [t for t in filtered if t.get('platform') == platform]
+
+    QC_SET = {'QC Testing', 'QC Testing in Progress', 'QC Testing Hold'}
+    DEV_CR_PASSED = {'Code Review Passed'}
+    DEV_CR = {'Start Code Review', 'Code Review Failed'}
+    DEV_WIP = {'In Progress', 'Hold/Pending'}
+    DEV_EARLY_SET = {'Planning', 'Ready For Development', 'NEW', 'DRAFT', 'Ready for Design',
+                     'Technical Review', 'Design Review', 'Design In Progress', 'Testing In Progress'}
+    DEV_ALL = DEV_CR_PASSED | DEV_CR | DEV_WIP | DEV_EARLY_SET
+
+    if status_group == 'qc_active':
+        filtered = [t for t in filtered if t['status'] in QC_SET]
+    elif status_group == 'in_progress':
+        filtered = [t for t in filtered if t['status'] == 'QC Testing in Progress']
+    elif status_group == 'qc_failed':
+        filtered = [t for t in filtered if t['status'] == 'QC Review Fail']
+    elif status_group == 'bis':
+        filtered = [t for t in filtered if t['status'] == 'BIS Testing']
+    elif status_group == 'approved':
+        filtered = [t for t in filtered if t['status'] == 'Approved for Live']
+    elif status_group == 'dev_pipeline':
+        filtered = [t for t in filtered if t['status'] in DEV_ALL]
+    elif status_group == 'cr_passed':
+        filtered = [t for t in filtered if t['status'] in DEV_CR_PASSED]
+    elif status_group == 'dev_in_progress':
+        filtered = [t for t in filtered if t['status'] in DEV_WIP and not t.get('qc_tester')]
+    elif status_group == 'dev_refix':
+        filtered = [t for t in filtered if t['status'] in DEV_ALL and t.get('qc_tester')]
+
+    result = [{
+        'ticket_id': t['ticket_id'], 'title': t['title'], 'status': t['status'],
+        'priority': t['priority'], 'qc_tester': t.get('qc_tester') or '-',
+        'developers_str': t.get('developers_str', '-'),
+        'qa_estimate_hours': t.get('qa_estimate_hours', 0),
+        'qa_actual_hours': t.get('qa_actual_hours', 0),
+        'eta': t.get('eta'), 'platform': t.get('platform', 'Web'),
+    } for t in filtered]
+
+    return {'tickets': result, 'count': len(result), 'module': module_name, 'status_group': status_group}
+
+
+# ===== QC QUEUE & AGEING ANALYTICS (old - database backed) =====
+
+@app.get("/qc-queue")
+def get_qc_queue():
+    """
+    Smart-prioritized QC testing queue. Each ticket scored 0-100 based on
+    priority, ageing in QC, re-entry after fail, ETA urgency, and ticket type.
+    Higher score = should be picked up first. Tickets tested by dev are separated.
+    """
+    db: Session = SessionLocal()
+    try:
+        data = get_qa_overview_data(db)
+        queue = data.get('queue', [])
+
+        scored_queue = []
+        dev_tested = []
+        for t in queue:
+            scoring = calculate_qc_priority_score(t)
+            t['priority_score'] = scoring['score']
+            t['score_breakdown'] = scoring['breakdown']
+            if t.get('tested_by_dev'):
+                dev_tested.append(t)
+            else:
+                scored_queue.append(t)
+
+        # Sort by score descending
+        scored_queue.sort(key=lambda t: (-t['priority_score'], t['ticket_id']))
+        dev_tested.sort(key=lambda t: (-t['priority_score'], t['ticket_id']))
+
+        return {
+            'queue': scored_queue,
+            'dev_tested': dev_tested,
+            'total': len(scored_queue),
+            'dev_tested_count': len(dev_tested),
+            'status_cards': data.get('status_cards', {}),
+        }
+    finally:
+        db.close()
+
+
+@app.get("/qc-queue/scoring/{ticket_id}")
+def get_qc_queue_scoring(ticket_id: int):
+    """Score breakdown for a specific ticket (tooltip data)."""
+    db: Session = SessionLocal()
+    try:
+        from qa_planning import get_moved_to_qc_date, is_retesting_after_failure, get_retest_cycle_count, get_module_for_ticket, get_platform_for_ticket
+        ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+
+        today = date.today()
+        moved_qc = get_moved_to_qc_date(db, ticket_id)
+        moved_qc_date = moved_qc.date() if moved_qc and hasattr(moved_qc, 'date') else None
+        days_in_qc = (today - moved_qc_date).days if moved_qc_date else 0
+
+        t = {
+            'ticket_id': ticket_id,
+            'priority': (ticket.priority or '').strip(),
+            'days_in_qc': days_in_qc,
+            'retest_cycle_count': get_retest_cycle_count(db, ticket_id),
+            'eta': ticket.eta.isoformat() if ticket.eta else None,
+        }
+        return calculate_qc_priority_score(t, today)
+    finally:
+        db.close()
+
+
+@app.get("/tickets/{ticket_id}/status-durations")
+def get_ticket_status_durations(ticket_id: int):
+    """Time spent in each status (business days) for a ticket."""
+    db: Session = SessionLocal()
+    try:
+        return get_status_durations(db, ticket_id)
+    finally:
+        db.close()
+
+
+@app.get("/tickets/{ticket_id}/qc-cycles")
+def get_ticket_qc_cycles(ticket_id: int):
+    """Cycle-by-cycle QC breakdown: how many times ticket went through QC testing."""
+    db: Session = SessionLocal()
+    try:
+        return get_qc_cycle_details(db, ticket_id)
+    finally:
+        db.close()
+
+
+@app.get("/qc-cycles/summary")
+def qc_cycles_summary():
+    """
+    Aggregate QC cycle stats: avg cycles per ticket, first-pass rate,
+    cycle distribution, top cycling tickets.
+    """
+    db: Session = SessionLocal()
+    try:
+        return get_qc_cycles_summary(db)
+    finally:
+        db.close()
+
+
+@app.get("/ageing/overview")
+def ageing_overview():
+    """Team-wide ageing: tickets by age bucket (0-3d, 3-7d, 7-15d, 15+d), avg ageing."""
+    db: Session = SessionLocal()
+    try:
+        return get_ageing_overview(db)
+    finally:
+        db.close()
+
+
+@app.get("/ageing/bottlenecks")
+def ageing_bottlenecks(
+    limit: int = Query(20, ge=1, le=100),
+):
+    """Tickets with longest QC wait, with per-status duration breakdown."""
+    db: Session = SessionLocal()
+    try:
+        return get_ageing_bottlenecks(db, limit=limit)
+    finally:
+        db.close()
+
+
+@app.get("/analytics/ticket-flow")
+def ticket_flow_rate(
+    weeks: int = Query(8, ge=1, le=52),
+):
+    """
+    Rate of tickets entering and exiting QA per week.
+    Shows weekly in/out counts and net change for throughput analysis.
+    """
+    db: Session = SessionLocal()
+    try:
+        return get_ticket_flow_rate(db, weeks=weeks)
+    finally:
+        db.close()
+
+
+@app.get("/analytics/bis-to-closed")
+def bis_to_closed():
+    """
+    Track duration from BIS Testing to Closed/Moved to Live for each ticket.
+    Shows avg days, per-ticket breakdown, and tickets still pending in BIS.
+    """
+    db: Session = SessionLocal()
+    try:
+        return get_bis_to_closed_tracking(db)
+    finally:
+        db.close()
+
+
+@app.get("/analytics/qa-activity-summary")
+def qa_activity_summary(
+    period: str = Query('past_5_days', regex='^(past_5_days|current_month|custom)$'),
+    start_date: Optional[str] = Query(None, description="Custom start date YYYY-MM-DD"),
+    end_date: Optional[str] = Query(None, description="Custom end date YYYY-MM-DD"),
+):
+    """
+    QA team activity summary for selected period.
+    Per-member story: tickets worked on, status transitions, holds,
+    priority details, current state. Designed for sharing with management.
+    Supports custom date range with period=custom&start_date=...&end_date=...
+    """
+    db: Session = SessionLocal()
+    try:
+        sd_override = None
+        ed_override = None
+        if period == 'custom' and start_date and end_date:
+            from datetime import date as date_type
+            sd_override = date_type.fromisoformat(start_date)
+            ed_override = date_type.fromisoformat(end_date)
+        return get_qa_activity_summary(db, period=period, start_date_override=sd_override, end_date_override=ed_override)
+    finally:
+        db.close()
+
+
+# ===== TEAM ACTIVITY BOARD (read-only, computed from synced PM data) =====
+
+@app.get("/team-board")
+def get_team_board():
+    """
+    All QA team members with their current ticket assignments, activity type,
+    ETA, hours, workload, and idle status. Read-only view of synced PM data.
+    """
+    db: Session = SessionLocal()
+    try:
+        today = date.today()
+        qa_employees = get_qa_employees(db)
+        overview = get_qa_overview_data(db, today)
+        queue = overview.get('queue', [])
+
+        # Build tester → tickets mapping from active QC tickets
+        tester_tickets = {}
+        for t in queue:
+            tester = (t.get('qc_tester') or '').strip()
+            if tester:
+                for name in (n.strip() for n in tester.split(',') if n.strip()):
+                    name_lower = name.lower()
+                    if name_lower not in tester_tickets:
+                        tester_tickets[name_lower] = {'name': name, 'tickets': []}
+                    tester_tickets[name_lower]['tickets'].append(t)
+
+        members = []
+        busy_count = 0
+        idle_count = 0
+        total_days = 0
+
+        for emp in qa_employees:
+            emp_name = (emp.name or '').strip()
+            emp_lower = emp_name.lower()
+            assigned = tester_tickets.get(emp_lower, {}).get('tickets', [])
+
+            # Determine activity status
+            if not assigned:
+                activity = 'idle'
+                idle_count += 1
+            else:
+                statuses = [t.get('activity_type', '') for t in assigned]
+                if 'on_hold' in statuses and len(set(statuses)) == 1:
+                    activity = 'on_hold'
+                elif 'in_progress' in statuses or 'pending_retest' in statuses:
+                    activity = 'active'
+                    busy_count += 1
+                else:
+                    activity = 'assigned'
+                    busy_count += 1
+
+            # Total ageing across assigned tickets
+            member_days = sum(t.get('days_in_qc', 0) for t in assigned)
+            total_days += member_days
+
+            # Primary ticket (highest score)
+            primary_ticket = None
+            if assigned:
+                scored = []
+                for t in assigned:
+                    s = calculate_qc_priority_score(t, today)
+                    scored.append((s['score'], t))
+                scored.sort(key=lambda x: -x[0])
+                pt = scored[0][1]
+                primary_ticket = {
+                    'ticket_id': pt.get('ticket_id'),
+                    'title': pt.get('title', ''),
+                    'status': pt.get('status', ''),
+                    'priority': pt.get('priority', ''),
+                    'days_in_qc': pt.get('days_in_qc', 0),
+                    'eta': pt.get('eta'),
+                    'activity_label': pt.get('activity_label', ''),
+                    'module': pt.get('module', ''),
+                    'retest_cycle_count': pt.get('retest_cycle_count', 0),
+                    'tested_by_dev': pt.get('tested_by_dev', False),
+                }
+
+            members.append({
+                'employee_id': emp.employee_id,
+                'name': emp_name,
+                'designation': emp.designation,
+                'platform': emp.platform or 'Web',
+                'activity': activity,
+                'ticket_count': len(assigned),
+                'primary_ticket': primary_ticket,
+                'all_tickets': [
+                    {
+                        'ticket_id': t.get('ticket_id'),
+                        'title': t.get('title', ''),
+                        'status': t.get('status', ''),
+                        'priority': t.get('priority', ''),
+                        'days_in_qc': t.get('days_in_qc', 0),
+                        'activity_label': t.get('activity_label', ''),
+                        'eta': t.get('eta'),
+                        'module': t.get('module', ''),
+                        'tested_by_dev': t.get('tested_by_dev', False),
+                    }
+                    for t in assigned
+                ],
+                'total_qa_estimate_hours': sum(t.get('qa_estimate_hours') or 0 for t in assigned),
+                'total_qa_actual_hours': sum(t.get('qa_actual_hours') or 0 for t in assigned),
+            })
+
+        # Sort: active first, then assigned, then on_hold, then idle
+        activity_order = {'active': 0, 'assigned': 1, 'on_hold': 2, 'idle': 3}
+        members.sort(key=lambda m: (activity_order.get(m['activity'], 9), m['name']))
+
+        return {
+            'members': members,
+            'summary': {
+                'total_members': len(members),
+                'busy': busy_count,
+                'idle': idle_count,
+                'on_hold': sum(1 for m in members if m['activity'] == 'on_hold'),
+                'total_qc_tickets': overview.get('total', 0),
+                'avg_ageing': round(total_days / len(queue), 1) if queue else 0,
+            },
+            'status_cards': overview.get('status_cards', {}),
+        }
+    finally:
+        db.close()
+
+
+@app.get("/team-board/member/{employee_id}")
+def get_team_board_member(employee_id: str):
+    """Single member deep-dive: all assigned tickets with status durations."""
+    db: Session = SessionLocal()
+    try:
+        emp = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+        if not emp:
+            raise HTTPException(status_code=404, detail="Employee not found")
+
+        today = date.today()
+        overview = get_qa_overview_data(db, today)
+        queue = overview.get('queue', [])
+        emp_lower = (emp.name or '').strip().lower()
+
+        assigned = []
+        for t in queue:
+            tester = (t.get('qc_tester') or '').strip().lower()
+            if emp_lower and emp_lower in tester:
+                durations = get_status_durations(db, t['ticket_id'], today)
+                cycles = get_qc_cycle_details(db, t['ticket_id'], today)
+                scoring = calculate_qc_priority_score(t, today)
+                assigned.append({
+                    **t,
+                    'priority_score': scoring['score'],
+                    'status_durations': durations.get('durations', {}),
+                    'total_hold_days': durations.get('total_hold_days', 0),
+                    'cycle_details': cycles,
+                })
+
+        assigned.sort(key=lambda t: -(t.get('priority_score', 0)))
+
+        return {
+            'employee_id': emp.employee_id,
+            'name': emp.name,
+            'designation': emp.designation,
+            'platform': emp.platform or 'Web',
+            'ticket_count': len(assigned),
+            'tickets': assigned,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/team-board/idle-members")
+def get_idle_members():
+    """QA members with no active QC ticket — available for assignment in PM tool."""
+    db: Session = SessionLocal()
+    try:
+        board = get_team_board()
+        idle = [m for m in board['members'] if m['activity'] == 'idle']
+        return {'idle_members': idle, 'count': len(idle)}
+    finally:
+        db.close()
+
+
+@app.get("/team-board/activity-distribution")
+def get_activity_distribution():
+    """Breakdown: how many members on each activity type."""
+    db: Session = SessionLocal()
+    try:
+        board = get_team_board()
+        dist = {}
+        for m in board['members']:
+            activity = m['activity']
+            dist[activity] = dist.get(activity, 0) + 1
+
+        # Also break down by platform
+        platform_dist = {}
+        for m in board['members']:
+            if m['activity'] != 'idle':
+                platform = m.get('platform', 'Web')
+                platform_dist[platform] = platform_dist.get(platform, 0) + 1
+
+        return {
+            'activity_distribution': dist,
+            'platform_distribution': platform_dist,
+            'summary': board['summary'],
+        }
+    finally:
+        db.close()
+
+
 @app.get("/qa-planning/overview")
 def qa_planning_overview(current_user: dict = Depends(get_current_user)):
     """
@@ -14492,7 +16123,7 @@ def qa_planning_overview(current_user: dict = Depends(get_current_user)):
 
 
 @app.get("/qa-planning/qc-review-fail")
-def qa_planning_qc_review_fail(current_user: dict = Depends(get_current_user)):
+def qa_planning_qc_review_fail():
     """
     List tickets in QC Review Fail status (and Tested - Awaiting Fixes, Code Review Failed).
     Returns tickets with full details for the QC Review Fail tab.

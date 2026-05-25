@@ -487,7 +487,7 @@ class EnhancedTimesheet(Base):
     updated_on = Column(DateTime, onupdate=datetime.utcnow)
     
     __table_args__ = (
-        UniqueConstraint('employee_name', 'ticket_id', 'date', 'team', name='uq_enhanced_timesheet_entry'),
+        UniqueConstraint('employee_name', 'ticket_id', 'date', 'team', 'sheet_row_id', name='uq_enhanced_timesheet_entry_v2'),
     )
 
 

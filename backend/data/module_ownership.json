@@ -1,0 +1,230 @@
+{
+  "last_updated": "2026-05-21T14:37:05.976423",
+  "modules": {
+    "Forms": {
+      "primary_owners": ["Aravind K V"],
+      "support_owners": ["Sariga KA", "Amalraj R"]
+    },
+    "Classroom Calendar": {
+      "primary_owners": ["Suby Baby"],
+      "support_owners": ["Kavyagayathry S"]
+    },
+    "Reporting": {
+      "primary_owners": ["Amalraj R"],
+      "support_owners": ["Aravind K V", "Kavyagayathry S"]
+    },
+    "Training Matrix": {
+      "primary_owners": ["Julie Varghese"],
+      "support_owners": ["Vincy JP"]
+    },
+    "Assets": {
+      "primary_owners": ["Subhash S V Nair"],
+      "support_owners": ["Aravind K V"]
+    },
+    "Accounting": {
+      "primary_owners": ["Reshma R"],
+      "support_owners": ["Anna Job"]
+    },
+    "Training Record Management": {
+      "primary_owners": ["Julie Varghese"],
+      "support_owners": ["Nandana TR"]
+    },
+    "Folders": {
+      "primary_owners": ["Reshma Madhavan Nair"],
+      "support_owners": ["Subhash S V Nair"]
+    },
+    "Project Management": {
+      "primary_owners": [],
+      "support_owners": []
+    },
+    "E-Commerce": {
+      "primary_owners": ["Reshma Madhavan Nair"],
+      "support_owners": ["Nandana TR"]
+    },
+    "User Management": {
+      "primary_owners": ["Aravind K V"],
+      "support_owners": ["Sariga KA"]
+    },
+    "Online Course": {
+      "primary_owners": ["Vincy JP"],
+      "support_owners": ["Suby Baby", "Reshma Madhavan Nair"]
+    },
+    "Reporting Dashboard": {
+      "primary_owners": ["Kavyagayathry S"],
+      "support_owners": ["Amalraj R", "Anna Job"]
+    },
+    "Virtual Proctor": {
+      "primary_owners": ["Subhash S V Nair"],
+      "support_owners": []
+    },
+    "Playbook": {
+      "primary_owners": ["Reshma R"],
+      "support_owners": []
+    }
+  },
+  "team_members": [
+    "Amala A",
+    "Amalraj R",
+    "Anjaly Dominic",
+    "Anna Job",
+    "Aravind K V",
+    "Arya U S",
+    "Gautham Krishna",
+    "Julie Varghese",
+    "Kavyagayathry S",
+    "Nandana TR",
+    "Reshma Madhavan Nair",
+    "Reshma R",
+    "Sariga KA",
+    "Subhash S V Nair",
+    "Suby Baby",
+    "Varsha Dcruz P",
+    "Vincy JP",
+    "Vivek V Nair"
+  ],
+  "main_modules": [
+    "Forms",
+    "Classroom Calendar",
+    "Reporting",
+    "Training Matrix",
+    "Assets",
+    "Accounting",
+    "Training Record Management",
+    "Folders",
+    "Project Management",
+    "E-Commerce",
+    "User Management",
+    "Online Course",
+    "Reporting Dashboard",
+    "Virtual Proctor",
+    "Playbook"
+  ],
+  "mobile_team": [
+    "Arya U S",
+    "Amala A",
+    "Anjaly Dominic",
+    "Gautham Krishna"
+  ],
+  "automation_team": [
+    "Varsha Dcruz P",
+    "Vivek V Nair"
+  ],
+  "testrail_mapping": {
+    "Forms": {
+      "section_ids": [
+        11017,
+        16049,
+        10988
+      ],
+      "keywords": [
+        "form"
+      ]
+    },
+    "Classroom Calendar": {
+      "section_ids": [
+        11113,
+        11456
+      ],
+      "keywords": [
+        "calendar",
+        "classroom"
+      ]
+    },
+    "Reporting": {
+      "section_ids": [
+        11100
+      ],
+      "keywords": [
+        "report"
+      ]
+    },
+    "Reporting Dashboard": {
+      "section_ids": [],
+      "keywords": [
+        "reporting dashboard"
+      ]
+    },
+    "Training Matrix": {
+      "section_ids": [],
+      "keywords": [
+        "training matrix",
+        "training topic"
+      ]
+    },
+    "Assets": {
+      "section_ids": [
+        11050
+      ],
+      "keywords": [
+        "asset"
+      ]
+    },
+    "Accounting": {
+      "section_ids": [],
+      "keywords": [
+        "accounting",
+        "billing",
+        "invoice"
+      ]
+    },
+    "Training Record Management": {
+      "section_ids": [],
+      "keywords": [
+        "training record",
+        "upload generic record"
+      ]
+    },
+    "Folders": {
+      "section_ids": [
+        11138
+      ],
+      "keywords": [
+        "folder"
+      ]
+    },
+    "Project Management": {
+      "section_ids": [],
+      "keywords": [
+        "project management",
+        "event management"
+      ]
+    },
+    "E-Commerce": {
+      "section_ids": [],
+      "keywords": [
+        "e-commerce",
+        "purchase",
+        "store"
+      ]
+    },
+    "User Management": {
+      "section_ids": [
+        11049
+      ],
+      "keywords": [
+        "user"
+      ]
+    },
+    "Online Course": {
+      "section_ids": [],
+      "keywords": [
+        "online course",
+        "course"
+      ]
+    },
+    "Virtual Proctor": {
+      "section_ids": [],
+      "keywords": [
+        "virtual proctor"
+      ]
+    },
+    "Playbook": {
+      "section_ids": [
+        11602
+      ],
+      "keywords": [
+        "playbook"
+      ]
+    }
+  }
+}

@@ -103,7 +103,9 @@ function AutomationCoverageDashboard() {
   const [overallFunctionality, setOverallFunctionality] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState(null);
+  const [syncStep, setSyncStep] = useState('');
   const [automationProgress, setAutomationProgress] = useState(null);
+  const [lastSyncStatus, setLastSyncStatus] = useState(null);
 
   const searchTickets = useCallback(async (query) => {
     if (!query || query.length < 2) {
@@ -335,12 +337,25 @@ function AutomationCoverageDashboard() {
     }
   }, []);
 
+  const loadSyncStatus = useCallback(async () => {
+    try {
+      const response = await apiFetch(`${BACKEND_URL}/automation/sync-status`);
+      if (response.ok) {
+        const data = await response.json();
+        setLastSyncStatus(data);
+      }
+    } catch (err) {
+      console.error('Failed to load sync status:', err);
+    }
+  }, []);
+
   useEffect(() => {
     loadOverallMetrics();
     loadOverallFunctionality();
     loadGlobalData();
     loadWorkflowSummary();
-  }, [loadOverallMetrics, loadOverallFunctionality, loadGlobalData, loadWorkflowSummary]);
+    loadSyncStatus();
+  }, [loadOverallMetrics, loadOverallFunctionality, loadGlobalData, loadWorkflowSummary, loadSyncStatus]);
 
   useEffect(() => {
     loadOverallMetrics(selectedTicketId);
@@ -377,33 +392,82 @@ function AutomationCoverageDashboard() {
     setTestRuns([]);
   }, []);
 
-  const syncFromTestRail = useCallback(async () => {
+  const fullSync = useCallback(async (skipTestRail = false) => {
     setSyncing(true);
     setSyncMessage(null);
+    setSyncStep(skipTestRail ? 'Exporting to Sheets...' : 'Syncing...');
+    
     try {
-      const response = await apiFetch(`${BACKEND_URL}/automation/sync`, {
+      // Single call that handles TestRail sync + Google Sheets export
+      const url = skipTestRail 
+        ? `${BACKEND_URL}/automation/sync-to-sheets?skip_testrail=true`
+        : `${BACKEND_URL}/automation/sync-to-sheets`;
+      
+      const response = await apiFetch(url, {
         method: 'POST',
       });
       const data = await response.json();
-      
-      if (data.success) {
-        setSyncMessage({ type: 'success', text: 'Data synced successfully from TestRail!' });
-        loadOverallMetrics(selectedTicketId);
-        loadOverallFunctionality();
-        loadWorkflowSummary(selectedTicketId);
-        if (selectedTicketId) {
-          loadTicketData(selectedTicketId);
-        } else {
-          loadGlobalData();
+
+      // Update sync status
+      try {
+        const statusResponse = await apiFetch(`${BACKEND_URL}/automation/sync-status`);
+        if (statusResponse.ok) {
+          const statusData = await statusResponse.json();
+          setLastSyncStatus(statusData);
         }
+      } catch (e) { /* ignore */ }
+
+      // Build result message
+      const casesExported = data.sheets_export?.cases_exported || 0;
+      const runsExported = data.sheets_export?.runs_exported || 0;
+      const testrailSkipped = data.testrail_sync?.skipped;
+      const testrailSuccess = data.testrail_sync?.success;
+      const sheetsSuccess = data.sheets_export?.success;
+
+      if (sheetsSuccess && testrailSkipped) {
+        setSyncMessage({
+          type: 'success',
+          text: `Export complete! ${casesExported} cases, ${runsExported} runs synced to Google Sheets`
+        });
+      } else if (sheetsSuccess && testrailSuccess) {
+        setSyncMessage({
+          type: 'success',
+          text: `Full sync complete! ${casesExported} cases, ${runsExported} runs exported to Google Sheets`
+        });
+      } else if (sheetsSuccess && !testrailSuccess) {
+        const testrailError = data.testrail_sync?.error || 'TestRail unavailable';
+        setSyncMessage({
+          type: 'warning',
+          text: `Google Sheets updated (${casesExported} cases). TestRail: ${testrailError.substring(0, 80)}`
+        });
       } else {
-        setSyncMessage({ type: 'error', text: data.message || 'Sync failed' });
+        const errorMsg = data.sheets_export?.error || 'Sync failed';
+        setSyncMessage({ type: 'error', text: errorMsg });
+      }
+
+      // Reload all data
+      loadOverallMetrics(selectedTicketId);
+      loadOverallFunctionality();
+      loadWorkflowSummary(selectedTicketId);
+      if (selectedTicketId) {
+        loadTicketData(selectedTicketId);
+      } else {
+        loadGlobalData();
       }
     } catch (err) {
-      setSyncMessage({ type: 'error', text: 'Failed to sync: ' + err.message });
+      // If request timed out, offer quick export option
+      if (err.message && err.message.includes('timeout')) {
+        setSyncMessage({ 
+          type: 'warning', 
+          text: 'TestRail sync timed out. Click "Quick Export" to sync existing data to Sheets.' 
+        });
+      } else {
+        setSyncMessage({ type: 'error', text: 'Failed to sync: ' + err.message });
+      }
     } finally {
       setSyncing(false);
-      setTimeout(() => setSyncMessage(null), 5000);
+      setSyncStep('');
+      setTimeout(() => setSyncMessage(null), 12000);
     }
   }, [loadOverallMetrics, loadOverallFunctionality, loadWorkflowSummary, selectedTicketId, loadTicketData, loadGlobalData]);
 
@@ -2121,26 +2185,62 @@ function AutomationCoverageDashboard() {
               Refresh
             </button>
             <button 
-              className="btn btn-primary" 
-              onClick={syncFromTestRail}
+              className="btn btn-google-sheets" 
+              onClick={() => fullSync(false)}
               disabled={syncing}
-              title="Sync latest data from TestRail Project 18"
+              title="Full sync: TestRail → Database → Google Sheets"
             >
               {syncing ? (
                 <>
                   <span className="btn-spinner"></span>
-                  Syncing...
+                  {syncStep}
                 </>
               ) : (
                 <>
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16" style={{marginRight: '0.5rem'}}>
-                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
+                    <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" />
                   </svg>
-                  Sync from TestRail
+                  Sync to Sheets
                 </>
               )}
             </button>
+            <button 
+              className="btn btn-secondary" 
+              onClick={() => fullSync(true)}
+              disabled={syncing}
+              title="Quick export: Skip TestRail, export existing data to Google Sheets"
+              style={{fontSize: '0.8rem', padding: '0.4rem 0.8rem'}}
+            >
+              Quick Export
+            </button>
           </div>
+        </div>
+
+        {/* Last Sync Status */}
+        <div className="auto-sync-status">
+          <span className="sync-status-label">Last TestRail Sync:</span>
+          {lastSyncStatus?.last_sync ? (
+            <>
+              <span className={`sync-status-time ${lastSyncStatus.success ? 'sync-success' : 'sync-failed'}`}>
+                {new Date(lastSyncStatus.last_sync).toLocaleString()}
+              </span>
+              {lastSyncStatus.success ? (
+                <span className="sync-status-badge success">✓ Success</span>
+              ) : (
+                <span className="sync-status-badge failed">✗ Failed</span>
+              )}
+              {lastSyncStatus.records_created > 0 && (
+                <span className="sync-status-records">
+                  ({lastSyncStatus.records_created} records synced)
+                </span>
+              )}
+            </>
+          ) : (
+            <span className="sync-status-time sync-never">Never synced</span>
+          )}
+          <span className="sync-auto-info" title="Data syncs automatically every hour">
+            🔄 Auto-sync: Hourly
+          </span>
         </div>
 
         {syncMessage && (

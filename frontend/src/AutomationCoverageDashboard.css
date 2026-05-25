@@ -37,6 +37,15 @@
   background: #2980b9;
 }
 
+.header-actions .btn-google-sheets {
+  background: #0f9d58;
+  color: white;
+}
+
+.header-actions .btn-google-sheets:hover:not(:disabled) {
+  background: #0b8043;
+}
+
 .header-actions .btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;
@@ -51,6 +60,75 @@
   border-radius: 50%;
   animation: spin 1s linear infinite;
   margin-right: 0.5rem;
+}
+
+/* Last Sync Status Bar */
+.auto-sync-status {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.625rem 1rem;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  margin-bottom: 1rem;
+  font-size: 0.8125rem;
+  border: 1px solid var(--border-color);
+  flex-wrap: wrap;
+}
+
+.sync-status-label {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.sync-status-time {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+.sync-status-time.sync-success {
+  color: #27ae60;
+}
+
+.sync-status-time.sync-failed {
+  color: #e74c3c;
+}
+
+.sync-status-time.sync-never {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.sync-status-badge {
+  padding: 0.125rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.sync-status-badge.success {
+  background: rgba(39, 174, 96, 0.15);
+  color: #27ae60;
+}
+
+.sync-status-badge.failed {
+  background: rgba(231, 76, 60, 0.15);
+  color: #e74c3c;
+}
+
+.sync-status-records {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.sync-auto-info {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  cursor: help;
 }
 
 /* Sync Message */
@@ -74,6 +152,12 @@
   background: rgba(231, 76, 60, 0.15);
   color: #e74c3c;
   border: 1px solid rgba(231, 76, 60, 0.3);
+}
+
+.auto-sync-warning {
+  background: rgba(243, 156, 18, 0.15);
+  color: #f39c12;
+  border: 1px solid rgba(243, 156, 18, 0.3);
 }
 
 /* Tabs */

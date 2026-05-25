@@ -5,8 +5,7 @@ import { TicketExternalLink } from './ticketUtils';
 import AppSidebar from './AppSidebar';
 import './CalendarModule.css';
 
-import { apiFetch } from './api';
-import { useAuth } from './AuthContext';
+import { API_BASE } from './api';
 
 // Helper function to format date as YYYY-MM-DD (for API calls)
 const formatDate = formatAPIDate;
@@ -37,24 +36,10 @@ const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June',
 
 function CalendarModule() {
   const navigate = useNavigate();
-  const { user } = useAuth();
-  
-  // Determine if user can view all teams (Admin/Manager)
-  const canViewAllTeams = user?.permissions?.can_view_all_teams_calendar || 
-                          user?.role === 'ADMIN' || 
-                          user?.role?.includes('MANAGER');
-  
-  // Get user's team for filtering (DEV team members see DEV, QA team members see QA)
-  const userTeam = user?.team || null;
-  
-  // State - default team based on user's team (unless they can view all)
+
+  // State
   const [view, setView] = useState('weekly'); // 'weekly' or 'monthly'
-  const [team, setTeam] = useState(() => {
-    if (canViewAllTeams) return 'ALL';
-    if (userTeam === 'DEVELOPMENT') return 'DEVELOPMENT';
-    if (userTeam === 'QA') return 'QA';
-    return 'ALL'; // Fallback
-  });
+  const [team, setTeam] = useState('ALL');
   const [category, setCategory] = useState('ALL'); // BILLED, UN-BILLED, or ALL
   const [currentDate, setCurrentDate] = useState(new Date());
   const [calendarData, setCalendarData] = useState(null);
@@ -65,27 +50,9 @@ function CalendarModule() {
   const [syncing, setSyncing] = useState(false);
   const [filterOptions, setFilterOptions] = useState({ teams: [], categories: [] });
   
-  // Update team filter when user data loads
+  // Filter options — hardcoded teams since no auth
   useEffect(() => {
-    if (!canViewAllTeams && userTeam) {
-      setTeam(userTeam);
-    }
-  }, [canViewAllTeams, userTeam]);
-
-  // Fetch filter options for team/category dropdowns (ongoing employees only)
-  useEffect(() => {
-    const loadFilterOptions = async () => {
-      try {
-        const res = await apiFetch(`/employees/filter-options?employment_status=${encodeURIComponent('Ongoing Employee')}`);
-        if (res.ok) {
-          const data = await res.json();
-          setFilterOptions({ teams: data.teams || [], categories: data.categories || [] });
-        }
-      } catch (err) {
-        console.error('Failed to load calendar filter options:', err);
-      }
-    };
-    loadFilterOptions();
+    setFilterOptions({ teams: ['QA', 'DEVELOPMENT'], categories: ['BILLED', 'UN-BILLED'] });
   }, []);
 
   // Calculate week boundaries
@@ -118,7 +85,7 @@ function CalendarModule() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000); // 30 second timeout
       
-      const response = await apiFetch(url, { signal: controller.signal });
+      const response = await fetch(`${API_BASE}${url}`, { signal: controller.signal });
       clearTimeout(timeoutId);
       
       if (!response.ok) {
@@ -140,7 +107,7 @@ function CalendarModule() {
   // Fetch sync status
   const fetchSyncStatus = async () => {
     try {
-      const response = await apiFetch(`/sync/google-sheets/status`);
+      const response = await fetch(`${API_BASE}/sync/google-sheets/status`);
       if (response.ok) {
         const data = await response.json();
         setSyncStatus(data);
@@ -154,7 +121,7 @@ function CalendarModule() {
   const handleSync = async () => {
     setSyncing(true);
     try {
-      const response = await apiFetch(`/sync/google-sheets?team=${team !== 'ALL' ? team : ''}`, {
+      const response = await fetch(`${API_BASE}/sync/google-sheets?team=${team !== 'ALL' ? team : ''}`, {
         method: 'POST'
       });
       if (!response.ok) {
@@ -173,7 +140,7 @@ function CalendarModule() {
   // Start auto-sync (real-time mode)
   const handleStartAutoSync = async (realtime = true) => {
     try {
-      const response = await apiFetch(`/sync/google-sheets/start?realtime=${realtime}`, {
+      const response = await fetch(`${API_BASE}/sync/google-sheets/start?realtime=${realtime}`, {
         method: 'POST'
       });
       if (!response.ok) {
@@ -191,7 +158,7 @@ function CalendarModule() {
   // Stop auto-sync
   const handleStopAutoSync = async () => {
     try {
-      const response = await apiFetch(`/sync/google-sheets/stop`, {
+      const response = await fetch(`${API_BASE}/sync/google-sheets/stop`, {
         method: 'POST'
       });
       if (!response.ok) {
@@ -247,7 +214,7 @@ function CalendarModule() {
     // Auto-refresh sync status every 10 seconds
     const statusInterval = setInterval(async () => {
       try {
-        const response = await apiFetch(`/sync/google-sheets/status`);
+        const response = await fetch(`${API_BASE}/sync/google-sheets/status`);
         if (response.ok) {
           const status = await response.json();
           
@@ -260,7 +227,7 @@ function CalendarModule() {
               // Refresh calendar data
               const viewParam = view === 'weekly' ? `weekly?team=${team}&date_str=${formatDate(currentDate)}` 
                 : `monthly?team=${team}&month=${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
-              apiFetch(`/calendar/${viewParam}`)
+              fetch(`${API_BASE}/calendar/${viewParam}`)
                 .then(r => r.json())
                 .then(data => setCalendarData(data))
                 .catch(err => console.error('Failed to refresh calendar:', err));
@@ -434,7 +401,7 @@ function CalendarModule() {
                       )}
                       {dayData.entries && dayData.entries.length > 0 && (
                         <div className="day-entries">
-                          {dayData.entries.slice(0, 3).map((entry, idx) => {
+                          {dayData.entries.slice(0, 5).map((entry, idx) => {
                             const isTicket = entry.ticket_id && 
                               entry.ticket_id !== 'LEAVE' && 
                               entry.ticket_id !== 'UNASSIGNED' &&
@@ -482,32 +449,44 @@ function CalendarModule() {
                               </div>
                             );
                           })}
-                          {dayData.entries.length > 3 && (
-                            <div className="more-entries">+{dayData.entries.length - 3} more</div>
+                          {dayData.entries.length > 5 && (
+                            <div className="more-entries">+{dayData.entries.length - 5} more</div>
                           )}
                         </div>
                       )}
                       <div className={`day-total ${getHoursColorClass(dayData.total_hours)}`}>
                         <strong>{dayData.total_hours > 0 ? `${parseFloat(dayData.total_hours).toFixed(1)}h` : '-'}</strong>
+                        {dayData.is_working_day && dayData.total_hours > 0 && dayData.total_hours !== 8 && (
+                          <span style={{fontSize:'0.6rem',color: dayData.total_hours >= 8 ? 'var(--accent-green,#4caf50)' : 'var(--accent-red,#f44336)', marginLeft:'2px'}}>
+                            {dayData.total_hours >= 8 ? `+${(dayData.total_hours - 8).toFixed(1)}` : `${(dayData.total_hours - 8).toFixed(1)}`}
+                          </span>
+                        )}
                       </div>
                     </td>
                   );
                 })}
                 {(() => {
                   const weeklyTotal = parseFloat(emp.weekly_total_hours || 0);
-                  const weeklyAvg = weeklyTotal / 5;
-                  const isBelowWeeklyTarget = weeklyTotal < 40;
+                  const expectedHrs = emp.expected_hours || 40;
+                  const diff = weeklyTotal - expectedHrs;
+                  const isBelowTarget = weeklyTotal < expectedHrs;
+                  const ticketHrs = emp.weekly_ticket_hours || 0;
+                  const nonTicketHrs = emp.weekly_non_ticket_hours || 0;
                   return (
-                    <td className={`total-cell ${getHoursColorClass(weeklyAvg)} ${isBelowWeeklyTarget ? 'weekly-below-target' : ''}`}>
+                    <td className={`total-cell ${isBelowTarget ? 'hours-low' : 'hours-full'}`}>
                       <strong>{weeklyTotal.toFixed(1)}h</strong>
                       <div className="weekly-stats-row">
-                        <span className="weekly-avg">
-                          Avg: {weeklyAvg.toFixed(1)}h/day
+                        <span className="weekly-avg" style={{color: diff >= 0 ? 'var(--accent-green, #4caf50)' : 'var(--accent-red, #f44336)'}}>
+                          {diff >= 0 ? '+' : ''}{diff.toFixed(1)}h
                         </span>
-                        <span className={`weekly-total-inline ${isBelowWeeklyTarget ? 'below-target' : ''}`}>
-                          Week: {weeklyTotal.toFixed(1)}h
-                        </span>
+                        <span style={{fontSize:'0.65rem',color:'var(--text-muted)'}}>/ {expectedHrs}h</span>
                       </div>
+                      {(ticketHrs > 0 || nonTicketHrs > 0) && (
+                        <div style={{fontSize:'0.6rem',color:'var(--text-muted)',marginTop:'2px'}}>
+                          <span title="Ticket hours">T:{ticketHrs.toFixed(1)}</span>
+                          {nonTicketHrs > 0 && <span title="Non-ticket hours" style={{marginLeft:'4px'}}>NT:{nonTicketHrs.toFixed(1)}</span>}
+                        </div>
+                      )}
                     </td>
                   );
                 })()}
@@ -612,7 +591,7 @@ function CalendarModule() {
 
     const dayColWidth = 52;
     const dayColGap = 6;
-    const rowTemplate = `180px 50px 50px 50px repeat(${calendarDays.length}, ${dayColWidth}px)`;
+    const rowTemplate = `180px 50px 55px 45px 45px repeat(${calendarDays.length}, ${dayColWidth}px)`;
 
     return (
       <div className="calendar-monthly">
@@ -667,7 +646,8 @@ function CalendarModule() {
                 style={{ gridTemplateColumns: rowTemplate, columnGap: `${dayColGap}px` }}
               >
                 <div className="employee-col header-cell">Employee</div>
-                <div className="stats-col header-cell">Avg</div>
+                <div className="stats-col header-cell">Total</div>
+                <div className="stats-col header-cell">T/NT</div>
                 <div className="stats-col header-cell">Days</div>
                 <div className="stats-col header-cell">Leave</div>
                 {calendarDays.map((day, idx) => {
@@ -707,7 +687,14 @@ function CalendarModule() {
                     <span className="employee-team">{emp.team}</span>
                   </div>
                   <div className="stats-col">
-                    <span className="stat-value">{emp.avg_productive_hours?.toFixed(1) || '0.0'}h</span>
+                    <span className="stat-value" style={{color: (emp.total_hours || 0) < (emp.working_days || 0) * 8 ? 'var(--accent-red,#f44336)' : 'var(--accent-green,#4caf50)'}}>
+                      {(emp.total_hours || 0).toFixed(0)}h
+                    </span>
+                  </div>
+                  <div className="stats-col" title="Ticket / Non-ticket hours">
+                    <span className="stat-value" style={{fontSize:'0.65rem'}}>
+                      {(emp.total_ticket_hours || 0).toFixed(0)}/{(emp.total_non_ticket_hours || 0).toFixed(0)}
+                    </span>
                   </div>
                   <div className="stats-col">
                     <span className="stat-value">{emp.working_days || 0}</span>
@@ -766,8 +753,8 @@ function CalendarModule() {
                     const isFullDayLeave = hasLeave && leaveType.toLowerCase().includes('half') === false;
                     const isHalfDayLeave = hasLeave && leaveType.toLowerCase().includes('half');
                     
-                    // Low hours detection (below 7 hours without any leave)
-                    const isLowHoursNoLeave = !hasLeave && isWorkingDay && displayHours > 0 && displayHours < 7;
+                    // Low hours detection (below 8 hours without any leave)
+                    const isLowHoursNoLeave = !hasLeave && isWorkingDay && displayHours > 0 && displayHours < 8;
                     
                     // No entries for past date - highlight with warning (only working days)
                     if (hasNoEntries && isWorkingDay) {
@@ -815,7 +802,7 @@ function CalendarModule() {
                         <div 
                           key={dayIdx} 
                           className={`day-col heatmap-cell low-hours-no-leave ${getHoursColorClass(displayHours)}`}
-                          title={`${formatDisplayDate(day)}: ${displayHours.toFixed(1)}h - Below 7 hours, no leave applied`}
+                          title={`${formatDisplayDate(day)}: ${displayHours.toFixed(1)}h (${(displayHours - 8).toFixed(1)}h vs 8h target)`}
                         >
                           <span className="heatmap-hours">{displayHours.toFixed(1)}</span>
                           <span className="warning-indicator">⚠</span>
@@ -827,7 +814,7 @@ function CalendarModule() {
                       <div 
                         key={dayIdx} 
                         className={`day-col heatmap-cell ${getHoursColorClass(displayHours)} ${isWeekend ? 'weekend' : ''} ${isHoliday ? 'holiday' : ''}`}
-                        title={`${formatDisplayDate(day)}: ${displayHours.toFixed(1)}h ${productiveHours > 0 ? '(Productive)' : '(Time Spent)'}`}
+                        title={`${formatDisplayDate(day)}: ${displayHours.toFixed(1)}h ${isWorkingDay && displayHours !== 8 ? `(${displayHours >= 8 ? '+' : ''}${(displayHours - 8).toFixed(1)}h)` : ''}`}
                       >
                         {displayHours > 0 && <span className="heatmap-hours">{displayHours.toFixed(1)}</span>}
                       </div>
@@ -1070,25 +1057,17 @@ function CalendarModule() {
               </button>
             </div>
 
-            {/* Team Filter - options from API (ongoing employees) */}
-            {/* Admin/Manager can see all teams; Others see only their team */}
-            <select 
+            {/* Team Filter */}
+            <select
               className="team-select"
               value={team}
               onChange={(e) => setTeam(e.target.value)}
-              disabled={!canViewAllTeams}
-              title={!canViewAllTeams ? `You can only view ${userTeam || 'your'} team calendar` : 'Filter by team'}
+              title="Filter by team"
             >
-              {canViewAllTeams ? (
-                <>
-                  <option value="ALL">All Teams</option>
-                  {(filterOptions.teams || []).map((t) => (
-                    <option key={t} value={t}>{t}</option>
-                  ))}
-                </>
-              ) : (
-                <option value={userTeam || 'ALL'}>{userTeam || 'My Team'}</option>
-              )}
+              <option value="ALL">All Teams</option>
+              {(filterOptions.teams || []).map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
             </select>
 
             {/* Category Filter - options from API (Billed/Un-Billed etc.) */}
