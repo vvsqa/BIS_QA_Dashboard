@@ -232,69 +232,90 @@ function MemberStoryCard({ member, defaultExpanded }) {
     </th>
   );
 
+  const statusDefs = [
+    { key: 'in_progress', status: 'QC Testing in Progress', label: 'QC In Progress', color: 'var(--accent-green)' },
+    { key: 'qc_testing', status: 'QC Testing', label: 'QC Testing', color: 'var(--accent-blue)' },
+    { key: 'on_hold', status: 'QC Testing Hold', label: 'QC Hold', color: 'var(--accent-amber)' },
+    { key: 'qc_failed', status: 'QC Review Fail', label: 'QC Fail', color: 'var(--accent-red)' },
+    { key: 'bis_testing', status: 'BIS Testing', label: 'BIS Testing', color: 'var(--accent-purple, #8b5cf6)' },
+    { key: 'approved', status: 'Approved for Live', label: 'Approved', color: 'var(--accent-teal)' },
+  ];
+
+  // Group tickets by status
+  const grouped = {};
+  (member.tickets || []).filter(t => !CLOSED_STATUSES_SET.has(t.current_status)).forEach(t => {
+    const s = t.current_status || 'Other';
+    if (!grouped[s]) grouped[s] = [];
+    grouped[s].push(t);
+  });
+
   return (
-    <div className={`qas-member-card ${!hasActivity ? 'qas-member-idle' : ''}`}>
-      <div className="qas-member-header" onClick={() => setExpanded(!expanded)}>
-        <div className="qas-member-info">
-          <span className={`qas-member-dot ${hasActivity ? 'qas-dot-active' : ''}`} />
-          <div>
-            <span className="qas-member-name">{member.name}</span>
-            <span className="qas-member-role">{member.platform}</span>
-          </div>
+    <div style={{ background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)', marginBottom: '10px', overflow: 'hidden' }}>
+      {/* Header with name + clickable status badges */}
+      <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: '160px', cursor: 'pointer' }}
+          onClick={() => { setExpanded(!expanded); if (expanded) { setStatusFilter(''); setShowCompleted(false); } }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: hasActivity ? 'var(--accent-green)' : 'var(--text-muted)', flexShrink: 0 }} />
+          <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{member.name}</span>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>{member.platform}</span>
+          <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{expanded ? '\u25B2' : '\u25BC'}</span>
         </div>
-        <div className="qas-member-stats-row">
-          <span className="qas-stat"><strong>{stats.total || 0}</strong> total</span>
-          {stats.in_progress > 0 && <span className="qas-stat qas-stat-progress">{stats.in_progress} in progress</span>}
-          {stats.qc_testing > 0 && <span className="qas-stat" style={{color:'var(--accent-blue)'}}>{stats.qc_testing} waiting</span>}
-          {stats.on_hold > 0 && <span className="qas-stat qas-stat-hold">{stats.on_hold} hold</span>}
-          {stats.qc_failed > 0 && <span className="qas-stat qas-stat-fail">{stats.qc_failed} failed</span>}
-          {stats.bis_testing > 0 && <span className="qas-stat" style={{color:'var(--accent-purple)'}}>{stats.bis_testing} BIS</span>}
-          {stats.approved > 0 && <span className="qas-stat" style={{color:'var(--accent-teal)'}}>{stats.approved} approved</span>}
-          {stats.closed > 0 && <span className="qas-stat" style={{color:'var(--text-muted)'}}>{stats.closed} closed</span>}
+        <span style={{ fontWeight: 700, color: 'var(--text-secondary)' }}>{stats.total || 0} tickets</span>
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          {statusDefs.map(s => {
+            const count = (grouped[s.status] || []).length;
+            if (count === 0) return null;
+            const isActive = statusFilter === s.status;
+            return (
+              <span key={s.key}
+                onClick={() => { setStatusFilter(isActive ? '' : s.status); if (!expanded) setExpanded(true); }}
+                style={{ padding: '3px 10px', borderRadius: '4px', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer',
+                  background: isActive ? s.color : `${s.color}15`, color: isActive ? '#fff' : s.color,
+                  border: `1px solid ${s.color}` }}>
+                {s.label}: {count}
+              </span>
+            );
+          })}
+          {completedTickets.length > 0 && (
+            <span onClick={() => { setShowCompleted(!showCompleted); if (!expanded) setExpanded(true); setStatusFilter(''); }}
+              style={{ padding: '3px 10px', borderRadius: '4px', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer',
+                background: showCompleted ? 'var(--text-muted)' : 'rgba(100,116,139,0.1)', color: showCompleted ? '#fff' : 'var(--text-muted)',
+                border: '1px solid var(--text-muted)' }}>
+              Closed: {completedTickets.length}
+            </span>
+          )}
         </div>
-        <span className="qas-expand-icon">{expanded ? '\u25B2' : '\u25BC'}</span>
       </div>
 
-      {/* Summary description - always visible */}
-      {hasActivity && (
-        <div className="qas-story-summary">
-          {(member.summary_lines || []).map((line, i) => (
-            <div key={i} className="qas-story-line">{line}</div>
-          ))}
-        </div>
-      )}
-
-      {!hasActivity && (
-        <div className="qas-idle-msg">No active QC work.</div>
-      )}
-
-      {/* Expanded: Active + Completed tables */}
+      {/* Expanded ticket list */}
       {expanded && hasActivity && (
-        <div className="qas-member-tickets">
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' }}>
-            <select className="qcq-search-input" style={{ width: '180px' }} value={statusFilter} onChange={e => setStatusFilter(e.target.value)}>
-              <option value="">All Statuses ({member.tickets.length})</option>
-              {uniqueStatuses.map(s => <option key={s} value={s}>{s}</option>)}
-            </select>
-          </div>
-
-          {/* Active Work */}
-          <h4 style={{ fontSize: '0.85rem', color: 'var(--accent-green)', marginBottom: '8px' }}>
-            Active Work ({activeTickets.length})
-          </h4>
-          <TicketTable tickets={activeTickets} SortTh={SortTh} />
-
-          {/* Completed */}
-          {completedTickets.length > 0 && (
-            <div style={{ marginTop: '16px' }}>
-              <h4
-                style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginBottom: '8px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
-                onClick={() => setShowCompleted(!showCompleted)}
-              >
-                Completed ({completedTickets.length})
-                <span style={{ fontSize: '0.7rem' }}>{showCompleted ? '\u25B2' : '\u25BC'}</span>
-              </h4>
-              {showCompleted && <TicketTable tickets={completedTickets} SortTh={SortTh} />}
+        <div style={{ padding: '0 14px 12px', borderTop: '1px solid var(--border-color)' }}>
+          {statusFilter ? (
+            /* Show only filtered status */
+            <div style={{ marginTop: '8px' }}>
+              <TicketTable tickets={doSort(grouped[statusFilter] || [])} SortTh={SortTh} />
+            </div>
+          ) : showCompleted ? (
+            /* Show completed */
+            <div style={{ marginTop: '8px' }}>
+              <TicketTable tickets={completedTickets} SortTh={SortTh} />
+            </div>
+          ) : (
+            /* Show all active grouped by status */
+            <div style={{ marginTop: '8px' }}>
+              {statusDefs.map(s => {
+                const tix = grouped[s.status];
+                if (!tix || tix.length === 0) return null;
+                return (
+                  <div key={s.key} style={{ marginBottom: '10px' }}>
+                    <h4 style={{ fontSize: '0.8rem', color: s.color, marginBottom: '4px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color }} />
+                      {s.label} ({tix.length})
+                    </h4>
+                    <TicketTable tickets={doSort(tix)} SortTh={SortTh} />
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>
@@ -315,6 +336,11 @@ export default function QAActivitySummary() {
   const [bisData, setBisData] = useState(null);
   const [searchFilter, setSearchFilter] = useState('');
   const [showBIS, setShowBIS] = useState(false);
+  const [activeView, setActiveView] = useState('members'); // 'members' | 'modules' | 'bis'
+  const [moduleWorkload, setModuleWorkload] = useState([]);
+  const [expandedModStatus, setExpandedModStatus] = useState(null); // {module, status}
+  const [modTickets, setModTickets] = useState([]);
+  const [loadingModTickets, setLoadingModTickets] = useState(false);
   const [platformFilter, setPlatformFilter] = useState('all');
 
   const safeFetch = async (url) => {
@@ -330,12 +356,17 @@ export default function QAActivitySummary() {
       if (period === 'custom') {
         url += `&start_date=${customStart}&end_date=${customEnd}`;
       }
-      const [summaryRes, bisRes] = await Promise.all([
+      const [summaryRes, bisRes, qcRes] = await Promise.all([
         safeFetch(url),
         safeFetch('/live/bis-to-closed'),
+        safeFetch('/live/qc-queue'),
       ]);
       if (summaryRes?.ok) setData(await summaryRes.json());
       if (bisRes?.ok) setBisData(await bisRes.json());
+      if (qcRes?.ok) {
+        const qcData = await qcRes.json();
+        setModuleWorkload(qcData.module_workload || []);
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -347,6 +378,8 @@ export default function QAActivitySummary() {
 
   const forceRefresh = async () => {
     await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
+    setExpandedModStatus(null);
+    setModTickets([]);
     fetchData();
   };
 
@@ -461,12 +494,15 @@ export default function QAActivitySummary() {
           </div>
         </div>
 
-        {/* Search + BIS Toggle */}
+        {/* Tabs */}
         <div className="qcq-tabs">
-          <button className={`qcq-tab ${!showBIS ? 'active' : ''}`} onClick={() => setShowBIS(false)}>
+          <button className={`qcq-tab ${activeView === 'members' ? 'active' : ''}`} onClick={() => { setActiveView('members'); setShowBIS(false); }}>
             Member Stories ({members.length})
           </button>
-          <button className={`qcq-tab ${showBIS ? 'active' : ''}`} onClick={() => setShowBIS(true)}>
+          <button className={`qcq-tab ${activeView === 'modules' ? 'active' : ''}`} onClick={() => setActiveView('modules')}>
+            Module Activity ({moduleWorkload.length})
+          </button>
+          <button className={`qcq-tab ${activeView === 'bis' ? 'active' : ''}`} onClick={() => { setActiveView('bis'); setShowBIS(true); }}>
             BIS to Closed ({bisSummary.total_closed || 0})
           </button>
           <div className="qcq-search">
@@ -481,7 +517,103 @@ export default function QAActivitySummary() {
         </div>
 
         {/* Member Stories */}
-        {!showBIS && (
+        {/* Module Activity Tab */}
+        {activeView === 'modules' && (
+          <div className="qcq-section">
+            {moduleWorkload.map(m => {
+              const statuses = [
+                { key: 'qc_testing', label: 'QC Testing', color: 'var(--accent-blue)' },
+                { key: 'in_progress', label: 'QC In Progress', color: 'var(--accent-green)' },
+                { key: 'hold', label: 'QC Hold', color: 'var(--accent-amber)' },
+                { key: 'qc_failed', label: 'QC Review Fail', color: 'var(--accent-red)' },
+                { key: 'bis', label: 'BIS Testing', color: 'var(--accent-purple, #8b5cf6)' },
+                { key: 'approved', label: 'Approved for Live', color: 'var(--accent-teal)' },
+              ];
+              const statusToGroup = { qc_testing: 'qc_testing', in_progress: 'in_progress', hold: 'qc_hold', qc_failed: 'qc_failed', bis: 'bis', approved: 'approved' };
+              const isExpMod = expandedModStatus?.module === m.module;
+              return (
+                <div key={m.module} style={{ background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)', marginBottom: '10px', overflow: 'hidden' }}>
+                  <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', minWidth: '160px' }}>{m.module}</span>
+                    <span style={{ fontWeight: 700, color: 'var(--text-secondary)' }}>{m.total} tickets</span>
+                    {m.unassigned > 0 && (
+                      <span style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 700, background: 'rgba(239,68,68,0.15)', color: 'var(--accent-red)', border: '1px solid rgba(239,68,68,0.3)' }}>
+                        {m.unassigned} unassigned
+                      </span>
+                    )}
+                    <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+                      {statuses.map(s => {
+                        const count = m[s.key] || 0;
+                        if (count === 0) return null;
+                        const isActive = expandedModStatus?.module === m.module && expandedModStatus?.status === s.key;
+                        return (
+                          <span key={s.key}
+                            onClick={async () => {
+                              if (isActive) { setExpandedModStatus(null); setModTickets([]); return; }
+                              setExpandedModStatus({ module: m.module, status: s.key, label: s.label });
+                              setLoadingModTickets(true);
+                              try {
+                                const res = await fetch(`${API_BASE}/live/module-tickets/${encodeURIComponent(m.module)}?status_group=${statusToGroup[s.key] || s.key}`);
+                                if (res.ok) { const d = await res.json(); setModTickets(d.tickets || []); }
+                              } finally { setLoadingModTickets(false); }
+                            }}
+                            style={{ padding: '3px 10px', borderRadius: '4px', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer',
+                              background: isActive ? s.color : `${s.color}15`, color: isActive ? '#fff' : s.color,
+                              border: `1px solid ${s.color}` }}>
+                            {s.label}: {count}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  {/* Expanded ticket list for this module+status */}
+                  {isExpMod && expandedModStatus && (
+                    <div style={{ padding: '0 14px 12px', borderTop: '1px solid var(--border-color)' }}>
+                      <div style={{ fontSize: '0.8rem', fontWeight: 600, margin: '8px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {expandedModStatus.module} — {expandedModStatus.label} ({modTickets.length})
+                        <button className="btn btn-sm btn-secondary" onClick={() => { setExpandedModStatus(null); setModTickets([]); }} style={{ fontSize: '0.7rem' }}>Close</button>
+                      </div>
+                      {loadingModTickets ? <p style={{ color: 'var(--text-muted)' }}>Loading...</p> : (
+                        <table className="qcq-table" style={{ fontSize: '0.78rem' }}>
+                          <thead>
+                            <tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>QC Tester</th><th>Developer</th><th>Age</th><th>Est</th><th>Actual</th></tr>
+                          </thead>
+                          <tbody>
+                            {modTickets.map(t => (
+                              <tr key={t.ticket_id} className="qcq-row">
+                                <td><a href={`https://www.bissafety.app/pm/tickets#!/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
+                                <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.title}>{t.title}</td>
+                                <td><span className="qcq-status-badge">{t.status}</span></td>
+                                <td>{t.priority}</td>
+                                <td>
+                                  {t.qc_tester && t.qc_tester !== '-' ? t.qc_tester : (
+                                    t.suggested_assignee ? (
+                                      <span title="Suggested based on module ownership & workload" style={{ color: 'var(--accent-green)', fontStyle: 'italic', fontSize: '0.72rem' }}>
+                                        {t.suggested_assignee} ?
+                                      </span>
+                                    ) : <span style={{ color: 'var(--accent-red)' }}>Unassigned</span>
+                                  )}
+                                </td>
+                                <td style={{ fontSize: '0.72rem' }}>{t.developers_str || '-'}</td>
+                                <td style={{ textAlign: 'center', fontWeight: t.days_in_qc >= 7 ? 700 : 400, color: t.days_in_qc >= 15 ? 'var(--accent-red)' : t.days_in_qc >= 7 ? 'var(--accent-amber)' : 'var(--text-muted)' }}>
+                                  {t.days_in_qc > 0 ? `${t.days_in_qc}d` : '-'}
+                                </td>
+                                <td style={{ textAlign: 'center' }}>{t.qa_estimate_hours || '-'}</td>
+                                <td style={{ textAlign: 'center' }}>{t.qa_actual_hours || '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {activeView === 'members' && !showBIS && (
           <div className="qas-members-list">
             {teamStats.total_tickets_touched === 0 && (
               <div className="qcq-chart-panel" style={{ textAlign: 'center', padding: '30px' }}>
@@ -496,13 +628,13 @@ export default function QAActivitySummary() {
               </div>
             )}
             {members.map((m, i) => (
-              <MemberStoryCard key={m.employee_id} member={m} defaultExpanded={i < 3} />
+              <MemberStoryCard key={m.employee_id} member={m} defaultExpanded={false} />
             ))}
           </div>
         )}
 
         {/* BIS to Closed Tab */}
-        {showBIS && bisData && (
+        {activeView === 'bis' && bisData && (
           <div className="qcq-section">
             {/* Closed from BIS */}
             <h3 style={{ marginBottom: '10px' }}>Closed from BIS ({bisSummary.total_closed || 0}) — Avg {bisSummary.avg_days_bis_to_closed || 0} days</h3>

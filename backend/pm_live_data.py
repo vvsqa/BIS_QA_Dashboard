@@ -942,8 +942,10 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
     for t in all_qa_pipeline:
         mod = t.get('module') or 'Unassigned'
         if mod not in module_workload:
-            module_workload[mod] = {'module': mod, 'qc_testing': 0, 'in_progress': 0, 'hold': 0, 'qc_failed': 0, 'bis': 0, 'approved': 0, 'total': 0}
+            module_workload[mod] = {'module': mod, 'qc_testing': 0, 'in_progress': 0, 'hold': 0, 'qc_failed': 0, 'bis': 0, 'approved': 0, 'unassigned': 0, 'total': 0}
         module_workload[mod]['total'] += 1
+        if t['status'] == 'QC Testing' and not t.get('qc_tester'):
+            module_workload[mod]['unassigned'] += 1
         s = t['status']
         if s == 'QC Testing':
             module_workload[mod]['qc_testing'] += 1
@@ -962,10 +964,10 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
     # Dev pipeline module breakdown — tickets coming to QA
     DEV_PIPELINE_STATUSES = {'Ready For Development', 'In Progress', 'Hold/Pending',
         'Start Code Review', 'Code Review Failed', 'Code Review Passed',
-        'Express Lane Review', 'Testing In Progress'}
+        'Express Lane Review'}
     DEV_NEAR_QC_SET = {'Code Review Passed'}
     DEV_CODE_REVIEW_SET = {'Start Code Review', 'Code Review Failed', 'Express Lane Review'}
-    DEV_ACTIVE_SET = {'In Progress', 'Hold/Pending', 'Testing In Progress'}
+    DEV_ACTIVE_SET = {'In Progress', 'Hold/Pending'}
     dev_pipeline_tickets = [t for t in all_tickets if t['status'] in DEV_PIPELINE_STATUSES]
     module_pipeline: Dict[str, Dict] = {}
     for t in dev_pipeline_tickets:
@@ -1809,9 +1811,16 @@ def _compute_team_queue(today: Optional[date] = None) -> Dict:
     # Sort: busy first, then partial, then available; within same status by name
     members.sort(key=lambda m: ({'busy': 0, 'partially_available': 1, 'available': 2}.get(m['status'], 3), m['name']))
 
+    # Unassigned count per module
+    unassigned_by_module = {}
+    for t in unassigned:
+        mod = t.get('module') or 'Unassigned'
+        unassigned_by_module[mod] = unassigned_by_module.get(mod, 0) + 1
+
     return {
         'members': members,
         'unassigned_count': len(unassigned),
+        'unassigned_by_module': [{'module': m, 'count': c} for m, c in sorted(unassigned_by_module.items(), key=lambda x: -x[1])],
     }
 
 
@@ -2080,7 +2089,7 @@ def _compute_module_matrix(today: Optional[date] = None) -> Dict:
     DEV_CODE_REVIEW = {'Start Code Review', 'Code Review Failed'}  # In code review
     DEV_IN_PROGRESS = {'In Progress', 'Hold/Pending'}  # Dev working on it
     DEV_EARLY = {'Planning', 'Ready For Development', 'NEW', 'DRAFT', 'Ready for Design',
-                 'Technical Review', 'Design Review', 'Design In Progress', 'Testing In Progress'}
+                 'Technical Review', 'Design Review', 'Design In Progress'}
 
     # Count tickets per module by status
     module_counts: Dict[str, Dict[str, int]] = {}
@@ -2187,7 +2196,7 @@ def _compute_module_matrix(today: Optional[date] = None) -> Dict:
 DEV_RELEVANT_STATUSES = {
     'Ready For Development', 'In Progress', 'Hold/Pending',
     'Start Code Review', 'Code Review Failed', 'Code Review Passed',
-    'Express Lane Review', 'Testing In Progress',
+    'Express Lane Review',
 }
 QA_RELEVANT_STATUSES = {
     'QC Testing', 'QC Testing in Progress', 'QC Testing Hold',
@@ -2205,6 +2214,199 @@ def _get_stage(status: str) -> str:
         if status in statuses:
             return stage
     return 'other'
+
+
+def get_live_build_quality() -> Dict:
+    """Analyze dev build quality — fail rates, refix patterns, developer/module breakdown."""
+    return _cached_response('build_quality', _compute_build_quality)
+
+
+def _compute_build_quality() -> Dict:
+    success, all_tickets, _ = fetch_live_tickets()
+    if not success:
+        return {'error': 'Cannot fetch'}
+
+    redmine_data = _redmine_cache.get('data') or {}
+    cycle_tracker = _load_cycle_tracker()
+
+    # All tickets that went through QA (have qc_tester)
+    qa_tested = [t for t in all_tickets if t.get('qc_tester')]
+    qc_failed = [t for t in all_tickets if t['status'] == 'QC Review Fail']
+
+    # Refix tickets: in dev statuses with qc_tester (failed back from QA)
+    DEV_STATUSES = {'Ready For Development', 'In Progress', 'Hold/Pending',
+        'Start Code Review', 'Code Review Failed', 'Code Review Passed',
+        'Express Lane Review'}
+    refix_in_dev = [t for t in all_tickets if t['status'] in DEV_STATUSES and t.get('qc_tester')]
+
+    # Tickets that passed QA (BIS, Approved, Closed)
+    PASSED_STATUSES = {'BIS Testing', 'Approved for Live', 'Moved to Live', 'Closed'}
+    qa_passed = [t for t in qa_tested if t['status'] in PASSED_STATUSES]
+
+    # All tickets that ever failed (have cycle_count > 0 or currently in QC Review Fail or refix)
+    ever_failed_ids = set()
+    for tid_str, ct in cycle_tracker.items():
+        if ct.get('cycle_count', 0) > 0:
+            ever_failed_ids.add(int(tid_str) if tid_str.isdigit() else 0)
+    for t in qc_failed + refix_in_dev:
+        ever_failed_ids.add(t['ticket_id'])
+
+    total_qa_tested = len(set(t['ticket_id'] for t in qa_tested))
+    total_failed = len(ever_failed_ids)
+    fail_rate = round(total_failed / total_qa_tested * 100, 1) if total_qa_tested else 0
+
+    # Analyze failed tickets for quality indicators
+    from collections import defaultdict
+
+    # QA hours on failed tickets — low hours = obvious bug = bad build
+    failed_ticket_details = []
+    for t in qc_failed + refix_in_dev:
+        qa_hrs = t.get('qa_actual_hours') or 0
+        bugs = redmine_data.get(t['ticket_id']) or redmine_data.get(str(t['ticket_id']))
+        bug_count = bugs.get('total', 0) if bugs else 0
+        ct = cycle_tracker.get(str(t['ticket_id']), {})
+        # Quality verdict
+        if qa_hrs < 1 and bug_count > 0:
+            verdict = 'Critical — Failed with minimal QA effort (obvious bugs)'
+        elif qa_hrs < 2:
+            verdict = 'Poor — Basic scenario failure'
+        elif bug_count >= 3:
+            verdict = 'Poor — Multiple bugs found'
+        else:
+            verdict = 'Moderate — Found during thorough testing'
+
+        failed_ticket_details.append({
+            'ticket_id': t['ticket_id'], 'title': t['title'],
+            'module': t.get('module', ''), 'priority': t['priority'],
+            'developers_str': t.get('developers_str', ''),
+            'qc_tester': t.get('qc_tester', ''),
+            'qa_hours_before_fail': round(qa_hrs, 1),
+            'bugs_found': bug_count,
+            'cycle_count': ct.get('cycle_count', 0),
+            'verdict': verdict,
+            'status': t['status'],
+        })
+
+    # Quality scores
+    obvious_failures = len([f for f in failed_ticket_details if 'Critical' in f['verdict'] or 'Basic' in f['verdict']])
+    thorough_failures = len([f for f in failed_ticket_details if 'Moderate' in f['verdict']])
+
+    # Developer analysis — enhanced with quality metrics
+    dev_stats = defaultdict(lambda: {'total': 0, 'failed': 0, 'refix': 0, 'bugs': 0,
+        'dev_hours': 0, 'overrun': 0, 'obvious_fails': 0, 'modules': set()})
+    for t in qa_tested:
+        devs = t.get('developers_str', '') or ''
+        is_failed = t['ticket_id'] in ever_failed_ids
+        bugs = redmine_data.get(t['ticket_id']) or redmine_data.get(str(t['ticket_id']))
+        bug_count = bugs.get('total', 0) if bugs else 0
+        mod = t.get('module', '')
+        dev_est = t.get('dev_estimate_hours') or 0
+        dev_act = t.get('actual_dev_hours') or 0
+        qa_hrs = t.get('qa_actual_hours') or 0
+
+        for dev_name in (d.strip() for d in devs.split(',') if d.strip() and d.strip() != 'Not Assigned'):
+            dev_stats[dev_name]['total'] += 1
+            dev_stats[dev_name]['bugs'] += bug_count
+            dev_stats[dev_name]['dev_hours'] += dev_act
+            if dev_est > 0 and dev_act > dev_est:
+                dev_stats[dev_name]['overrun'] += 1
+            if mod: dev_stats[dev_name]['modules'].add(mod)
+            if is_failed:
+                dev_stats[dev_name]['failed'] += 1
+                if qa_hrs < 2 and bug_count > 0:
+                    dev_stats[dev_name]['obvious_fails'] += 1
+            if t['status'] in DEV_STATUSES and t.get('qc_tester'):
+                dev_stats[dev_name]['refix'] += 1
+
+    dev_list = []
+    for name, stats in sorted(dev_stats.items(), key=lambda x: -x[1]['failed']):
+        if stats['total'] < 1:
+            continue
+        bug_density = round(stats['bugs'] / stats['total'], 1) if stats['total'] else 0
+        quality_score = max(0, round(100 - stats.get('fail_rate', 0) * 2 - bug_density * 5 - stats['obvious_fails'] * 10))
+        fail_rate = round(stats['failed'] / stats['total'] * 100, 1) if stats['total'] else 0
+        quality_score = max(0, round(100 - fail_rate * 2 - bug_density * 5 - stats['obvious_fails'] * 10))
+        dev_list.append({
+            'developer': name,
+            'tickets_tested': stats['total'],
+            'failed': stats['failed'],
+            'refix_in_dev': stats['refix'],
+            'fail_rate': fail_rate,
+            'bugs_reported': stats['bugs'],
+            'bug_density': bug_density,
+            'obvious_fails': stats['obvious_fails'],
+            'overrun_count': stats['overrun'],
+            'quality_score': min(100, quality_score),
+            'modules': sorted(stats['modules']),
+        })
+
+    # Module analysis
+    mod_stats = defaultdict(lambda: {'total': 0, 'failed': 0, 'refix': 0, 'bugs': 0, 'developers': set()})
+    for t in qa_tested:
+        mod = t.get('module') or 'Unassigned'
+        is_failed = t['ticket_id'] in ever_failed_ids
+        bugs = redmine_data.get(t['ticket_id']) or redmine_data.get(str(t['ticket_id']))
+        bug_count = bugs.get('total', 0) if bugs else 0
+        devs = t.get('developers_str', '') or ''
+
+        mod_stats[mod]['total'] += 1
+        mod_stats[mod]['bugs'] += bug_count
+        if is_failed:
+            mod_stats[mod]['failed'] += 1
+        if t['status'] in DEV_STATUSES and t.get('qc_tester'):
+            mod_stats[mod]['refix'] += 1
+        for d in (x.strip() for x in devs.split(',') if x.strip() and x.strip() != 'Not Assigned'):
+            mod_stats[mod]['developers'].add(d)
+
+    mod_list = []
+    for mod, stats in sorted(mod_stats.items(), key=lambda x: -x[1]['failed']):
+        if stats['total'] < 1:
+            continue
+        mod_list.append({
+            'module': mod,
+            'tickets_tested': stats['total'],
+            'failed': stats['failed'],
+            'refix_in_dev': stats['refix'],
+            'fail_rate': round(stats['failed'] / stats['total'] * 100, 1) if stats['total'] else 0,
+            'bugs_reported': stats['bugs'],
+            'developers': sorted(stats['developers']),
+        })
+
+    # Add bug density + obvious fails to modules
+    for m in mod_list:
+        m['bug_density'] = round(m['bugs_reported'] / m['tickets_tested'], 1) if m['tickets_tested'] else 0
+
+    # Current QC Fail details
+    fail_details = []
+    for t in qc_failed:
+        bugs = redmine_data.get(t['ticket_id']) or redmine_data.get(str(t['ticket_id']))
+        ct = cycle_tracker.get(str(t['ticket_id']), {})
+        fail_details.append({
+            'ticket_id': t['ticket_id'], 'title': t['title'], 'priority': t['priority'],
+            'module': t.get('module', ''), 'developers_str': t.get('developers_str', ''),
+            'qc_tester': t.get('qc_tester', ''), 'cycle_count': ct.get('cycle_count', 0),
+            'bugs_total': bugs.get('total', 0) if bugs else 0,
+            'bugs_open': bugs.get('open', 0) if bugs else 0,
+        })
+
+    return {
+        'summary': {
+            'total_qa_tested': total_qa_tested,
+            'total_failed': total_failed,
+            'fail_rate': fail_rate,
+            'currently_in_qc_fail': len(qc_failed),
+            'refix_in_dev': len(refix_in_dev),
+            'total_qa_passed': len(qa_passed),
+            'pass_rate': round(len(qa_passed) / total_qa_tested * 100, 1) if total_qa_tested else 0,
+            'obvious_failures': obvious_failures,
+            'thorough_failures': thorough_failures,
+            'build_quality_score': max(0, round(100 - (obvious_failures / max(total_failed, 1)) * 100)),
+        },
+        'developers': dev_list[:30],
+        'modules': mod_list,
+        'current_failures': fail_details,
+        'failed_ticket_analysis': sorted(failed_ticket_details, key=lambda x: x.get('qa_hours_before_fail', 99)),
+    }
 
 
 def get_live_dev_dashboard(today: Optional[date] = None) -> Dict:

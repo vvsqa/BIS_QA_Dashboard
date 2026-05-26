@@ -125,17 +125,20 @@ export default function AutomationUtilization() {
         </div>
 
         {activeTab === 'overview' && (<>
-        {/* Summary Cards */}
+        {/* Summary Cards — auto/manual split */}
         <div className="qcq-status-cards">
           <div className="qcq-card qcq-card-total">
-            <div className="qcq-card-value" style={{ color: 'var(--accent-teal)' }}>{summary.total_test_executions || 0}</div>
-            <div className="qcq-card-label">Total Executions</div>
-            <div className="qcq-card-sub">Automated test re-runs (value add)</div>
+            <div style={{display:'flex',gap:'8px',justifyContent:'center',alignItems:'baseline'}}>
+              <span style={{fontSize:'1.6rem',fontWeight:700,color:'var(--accent-teal)'}}>{summary.total_auto_executions || 0}</span>
+              <span style={{fontSize:'1rem',color:'var(--accent-amber)'}}>{summary.total_manual_executions || 0}</span>
+            </div>
+            <div className="qcq-card-label">Automated + Manual Executions</div>
+            <div className="qcq-card-sub">{summary.total_test_executions || 0} total</div>
           </div>
           <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-teal)' }}>
             <div className="qcq-card-value">{summary.total_automated_cases || 0}</div>
             <div className="qcq-card-label">Automated Cases</div>
-            <div className="qcq-card-sub">{summary.automation_coverage || 0}% of {summary.total_test_cases || 0} total</div>
+            <div className="qcq-card-sub">{summary.automation_coverage || 0}% of {summary.total_test_cases || 0}</div>
           </div>
           <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-blue)' }}>
             <div className="qcq-card-value">{summary.total_plans || 0}</div>
@@ -144,34 +147,36 @@ export default function AutomationUtilization() {
           </div>
           <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-green)' }}>
             <div className="qcq-card-value">{summary.avg_reuse_ratio || 0}x</div>
-            <div className="qcq-card-label">Avg Reuse</div>
-            <div className="qcq-card-sub">Times each case re-executed</div>
+            <div className="qcq-card-label">Avg Auto Reuse</div>
+            <div className="qcq-card-sub">Times each automated case re-executed</div>
           </div>
-          <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-blue)' }}>
+          <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-green)' }}>
             <div className="qcq-card-value" style={{ color: 'var(--accent-green)' }}>{summary.qa_hours_saved || 0}h</div>
             <div className="qcq-card-label">QA Hours Saved</div>
-            <div className="qcq-card-sub">Manual effort replaced</div>
+            <div className="qcq-card-sub">Manual effort replaced by automation</div>
           </div>
         </div>
 
-        {/* Monthly Trend */}
+        {/* Monthly Trend — Auto vs Manual */}
         <div className="qcq-section">
-          <h2 className="qcq-section-title">Monthly Execution Trend</h2>
+          <h2 className="qcq-section-title">Monthly Execution Trend (Automated vs Manual)</h2>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '8px' }}>
             {monthly.map(m => {
-              const passedPct = m.total > 0 ? (m.passed / maxMonthlyTotal) * 100 : 0;
-              const failedPct = m.total > 0 ? (m.failed / maxMonthlyTotal) * 100 : 0;
-              const pr = m.passed + m.failed > 0 ? Math.round(m.passed / (m.passed + m.failed) * 100) : 0;
+              // Estimate auto/manual for monthly using the same ratio approach
+              const autoExec = Math.round((m.total || 0) * (summary.total_auto_executions / (summary.total_test_executions || 1)));
+              const manualExec = (m.total || 0) - autoExec;
+              const autoW = maxMonthlyTotal > 0 ? (autoExec / maxMonthlyTotal) * 100 : 0;
+              const manualW = maxMonthlyTotal > 0 ? (manualExec / maxMonthlyTotal) * 100 : 0;
               return (
                 <div key={m.month} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                   <div style={{ width: '70px', textAlign: 'right', fontSize: '0.82rem', fontWeight: 600 }}>{m.month}</div>
                   <div style={{ flex: 1, display: 'flex', height: '28px', borderRadius: '4px', overflow: 'hidden', background: 'var(--bg-tertiary, #1e293b)' }}>
-                    <div style={{ width: `${passedPct}%`, background: '#22c55e', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', color: '#fff', fontWeight: 600, minWidth: m.passed > 0 ? '20px' : 0 }}>{m.passed}</div>
-                    <div style={{ width: `${failedPct}%`, background: '#ef4444', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', color: '#fff', fontWeight: 600, minWidth: m.failed > 0 ? '20px' : 0 }}>{m.failed}</div>
+                    <div style={{ width: `${autoW}%`, background: '#14b8a6', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', color: '#fff', fontWeight: 600, minWidth: autoExec > 0 ? '24px' : 0 }}>{autoExec}</div>
+                    <div style={{ width: `${manualW}%`, background: '#f59e0b', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.7rem', color: '#fff', fontWeight: 600, minWidth: manualExec > 0 ? '24px' : 0 }}>{manualExec}</div>
                   </div>
-                  <div style={{ width: '120px', fontSize: '0.78rem', display: 'flex', gap: '8px' }}>
+                  <div style={{ width: '140px', fontSize: '0.78rem', display: 'flex', gap: '8px' }}>
                     <span>{m.plans} plans</span>
-                    <span style={{ color: pr >= 90 ? 'var(--accent-green)' : 'var(--accent-amber)', fontWeight: 600 }}>{pr}%</span>
+                    <span style={{ fontWeight: 600 }}>{m.total} total</span>
                   </div>
                   <div style={{ width: '80px', fontSize: '0.72rem', color: 'var(--accent-green)' }}>
                     {m.qa_hours_saved > 0 ? `${Math.round(m.qa_hours_saved)}h saved` : ''}
@@ -181,41 +186,53 @@ export default function AutomationUtilization() {
             })}
           </div>
           <div style={{ display: 'flex', gap: '16px', marginTop: '10px', fontSize: '0.72rem' }}>
-            <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: '#22c55e' }} /> Passed</span>
-            <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: '#ef4444' }} /> Failed</span>
+            <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: '#14b8a6' }} /> Automated</span>
+            <span><span style={{ display: 'inline-block', width: 10, height: 10, borderRadius: 2, background: '#f59e0b' }} /> Manual</span>
           </div>
         </div>
 
-        {/* Module-wise Re-execution (Value Add) */}
+        {/* Module-wise table with auto/manual */}
         <div className="qcq-section">
-          <h2 className="qcq-section-title">Module-wise Re-execution (Value Add)</h2>
+          <h2 className="qcq-section-title">Module-wise Execution Breakdown</h2>
           <div className="qcq-table-container">
             <table className="qcq-table">
               <thead>
                 <tr>
-                  <th>Module</th><th>Automated Cases</th><th>Test Plans</th>
-                  <th style={{background:'rgba(20,184,166,0.2)'}}>Total Executions</th>
-                  <th>Reuse Ratio</th><th>Tickets Covered</th>
-                  <th>Coverage</th><th style={{width:'160px'}}>Execution Bar</th>
+                  <th>Module</th>
+                  <th style={{textAlign:'center'}}>Automated<br/>Cases</th>
+                  <th style={{textAlign:'center'}}>Manual<br/>Cases</th>
+                  <th style={{textAlign:'center'}}>Plans</th>
+                  <th style={{textAlign:'center',background:'rgba(20,184,166,0.15)'}}>Auto<br/>Exec</th>
+                  <th style={{textAlign:'center',background:'rgba(245,158,11,0.15)'}}>Manual<br/>Exec</th>
+                  <th style={{textAlign:'center',fontWeight:700}}>Total<br/>Exec</th>
+                  <th style={{textAlign:'center'}}>Reuse</th>
+                  <th style={{textAlign:'center'}}>Coverage</th>
+                  <th style={{width:'140px'}}>Auto vs Manual</th>
                 </tr>
               </thead>
               <tbody>
-                {modules.filter(m => m.automated > 0 || m.total_executions > 0).map(m => {
+                {modules.filter(m => m.total_executions > 0).map(m => {
                   const maxExec = Math.max(...modules.map(x => x.total_executions || 0), 1);
+                  const autoEx = m.auto_executions || 0;
+                  const manualEx = m.manual_executions || 0;
+                  const manualCases = Math.max(0, (m.total_cases || 0) - (m.automated || 0));
                   return (
                     <tr key={m.module} className="qcq-row">
                       <td style={{ fontWeight: 600 }}>{m.module}</td>
                       <td style={{ textAlign: 'center', color: 'var(--accent-teal)', fontWeight: 600 }}>{m.automated}</td>
+                      <td style={{ textAlign: 'center', color: manualCases > 0 ? 'var(--accent-amber)' : 'var(--text-muted)' }}>{manualCases || '-'}</td>
                       <td style={{ textAlign: 'center' }}>{m.plans_count || 0}</td>
-                      <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--accent-teal)' }}>{m.total_executions || 0}</td>
-                      <td style={{ textAlign: 'center', fontWeight: 600, color: m.reuse_ratio >= 3 ? 'var(--accent-green)' : m.reuse_ratio >= 1 ? 'var(--accent-amber)' : 'var(--accent-red)' }}>
+                      <td style={{ textAlign: 'center', color: 'var(--accent-teal)', fontWeight: 600 }}>{autoEx}</td>
+                      <td style={{ textAlign: 'center', color: 'var(--accent-amber)' }}>{manualEx || '-'}</td>
+                      <td style={{ textAlign: 'center', fontWeight: 700 }}>{m.total_executions}</td>
+                      <td style={{ textAlign: 'center', fontWeight: 600, color: m.reuse_ratio >= 3 ? 'var(--accent-green)' : m.reuse_ratio >= 1 ? 'var(--accent-amber)' : 'var(--text-muted)' }}>
                         {m.reuse_ratio || 0}x
                       </td>
-                      <td style={{ textAlign: 'center' }}>{m.tickets_covered || 0}</td>
                       <td style={{ textAlign: 'center', fontWeight: 600, color: m.automation_pct >= 50 ? 'var(--accent-green)' : m.automation_pct >= 20 ? 'var(--accent-amber)' : 'var(--accent-red)' }}>{m.automation_pct}%</td>
                       <td>
-                        <div style={{ height: '10px', background: 'rgba(100,116,139,0.15)', borderRadius: '4px', overflow: 'hidden' }}>
-                          <div style={{ width: `${((m.total_executions || 0) / maxExec) * 100}%`, height: '100%', background: '#14b8a6', borderRadius: '4px' }} />
+                        <div style={{ height: '10px', background: 'rgba(100,116,139,0.15)', borderRadius: '4px', overflow: 'hidden', display: 'flex' }}>
+                          <div style={{ width: `${(autoEx / maxExec) * 100}%`, height: '100%', background: '#14b8a6' }} />
+                          <div style={{ width: `${(manualEx / maxExec) * 100}%`, height: '100%', background: '#f59e0b' }} />
                         </div>
                       </td>
                     </tr>
@@ -232,7 +249,7 @@ export default function AutomationUtilization() {
           <div className="qcq-table-container">
             <table className="qcq-table">
               <thead>
-                <tr><th>Plan</th><th>Ticket</th><th>Module</th><th>Date</th><th>Total</th><th>Passed</th><th>Failed</th><th>Pass Rate</th><th>QA Hrs Saved</th></tr>
+                <tr><th>Plan</th><th>Ticket</th><th>Module</th><th>Date</th><th>Total Exec</th><th>Auto Exec</th><th>Manual Exec</th><th>QA Hrs Saved</th></tr>
               </thead>
               <tbody>
                 {plans.map(p => (
@@ -241,10 +258,9 @@ export default function AutomationUtilization() {
                     <td>{p.ticket_id ? <a href={`${PM_TICKET_URL}${p.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{p.ticket_id}</a> : '-'}</td>
                     <td>{p.module || '-'}</td>
                     <td>{p.created_on}</td>
-                    <td style={{ textAlign: 'center' }}>{p.total}</td>
-                    <td style={{ textAlign: 'center', color: 'var(--accent-green)' }}>{p.passed}</td>
-                    <td style={{ textAlign: 'center', color: p.failed > 0 ? 'var(--accent-red)' : 'var(--text-muted)' }}>{p.failed || '-'}</td>
-                    <td style={{ textAlign: 'center', fontWeight: 600, color: p.pass_rate >= 90 ? 'var(--accent-green)' : p.pass_rate >= 70 ? 'var(--accent-amber)' : 'var(--accent-red)' }}>{p.pass_rate}%</td>
+                    <td style={{ textAlign: 'center', fontWeight: 700 }}>{p.total}</td>
+                    <td style={{ textAlign: 'center', color: 'var(--accent-teal)', fontWeight: 600 }}>{p.auto_exec || 0}</td>
+                    <td style={{ textAlign: 'center', color: 'var(--accent-amber)' }}>{p.manual_exec || 0}</td>
                     <td style={{ textAlign: 'center', color: p.qa_hours_saved > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}>{p.qa_hours_saved > 0 ? `${p.qa_hours_saved}h` : '-'}</td>
                   </tr>
                 ))}

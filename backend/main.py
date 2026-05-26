@@ -15289,7 +15289,7 @@ from pm_live_data import (
     fetch_live_tickets,
     load_module_ownership, save_module_ownership, auto_detect_modules_and_members,
     get_live_resource_occupancy, get_live_assignment_suggestions, get_live_module_ownership_matrix,
-    get_live_team_queue, get_live_automation_utilization, get_live_dev_dashboard,
+    get_live_team_queue, get_live_automation_utilization, get_live_build_quality, get_live_dev_dashboard,
 )
 
 
@@ -15590,6 +15590,11 @@ def export_tickets_to_excel(body: dict = Body(...)):
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
+@app.get("/live/build-quality")
+def live_build_quality():
+    return get_live_build_quality()
+
+
 @app.get("/live/automation-utilization")
 def live_automation_utilization():
     return get_live_automation_utilization()
@@ -15671,7 +15676,7 @@ def live_module_tickets(module_name: str, status_group: str = Query('all'), plat
     DEV_CODE_REVIEW = {'Start Code Review', 'Code Review Failed'}
     DEV_IN_PROGRESS = {'In Progress', 'Hold/Pending'}
     DEV_EARLY = {'Planning', 'Ready For Development', 'NEW', 'DRAFT', 'Ready for Design',
-                 'Technical Review', 'Design Review', 'Design In Progress', 'Testing In Progress'}
+                 'Technical Review', 'Design Review', 'Design In Progress'}
     QC_STATUSES_SET = {'QC Testing', 'QC Testing in Progress', 'QC Testing Hold'}
 
     filtered = [t for t in all_tickets if t.get('module') == module_name]
@@ -15683,11 +15688,15 @@ def live_module_tickets(module_name: str, status_group: str = Query('all'), plat
     DEV_CR = {'Start Code Review', 'Code Review Failed'}
     DEV_WIP = {'In Progress', 'Hold/Pending'}
     DEV_EARLY_SET = {'Planning', 'Ready For Development', 'NEW', 'DRAFT', 'Ready for Design',
-                     'Technical Review', 'Design Review', 'Design In Progress', 'Testing In Progress'}
+                     'Technical Review', 'Design Review', 'Design In Progress'}
     DEV_ALL = DEV_CR_PASSED | DEV_CR | DEV_WIP | DEV_EARLY_SET
 
     if status_group == 'qc_active':
         filtered = [t for t in filtered if t['status'] in QC_SET]
+    elif status_group == 'qc_testing':
+        filtered = [t for t in filtered if t['status'] == 'QC Testing']
+    elif status_group == 'qc_hold':
+        filtered = [t for t in filtered if t['status'] == 'QC Testing Hold']
     elif status_group == 'in_progress':
         filtered = [t for t in filtered if t['status'] == 'QC Testing in Progress']
     elif status_group == 'qc_failed':
@@ -15705,14 +15714,43 @@ def live_module_tickets(module_name: str, status_group: str = Query('all'), plat
     elif status_group == 'dev_refix':
         filtered = [t for t in filtered if t['status'] in DEV_ALL and t.get('qc_tester')]
 
-    result = [{
-        'ticket_id': t['ticket_id'], 'title': t['title'], 'status': t['status'],
-        'priority': t['priority'], 'qc_tester': t.get('qc_tester') or '-',
-        'developers_str': t.get('developers_str', '-'),
-        'qa_estimate_hours': t.get('qa_estimate_hours', 0),
-        'qa_actual_hours': t.get('qa_actual_hours', 0),
-        'eta': t.get('eta'), 'platform': t.get('platform', 'Web'),
-    } for t in filtered]
+    # Load ageing tracker for days-in-status
+    from pm_live_data import _load_ageing_tracker, load_module_ownership, _parse_date
+    ageing = _load_ageing_tracker()
+    today_date = date.today()
+
+    # For unassigned tickets: suggest assignee
+    ownership = load_module_ownership()
+    mod_config = ownership.get('modules', {}).get(module_name, {})
+    primary_owners = mod_config.get('primary_owners', [])
+    support_owners = mod_config.get('support_owners', [])
+
+    result = []
+    for t in filtered:
+        tid = str(t['ticket_id'])
+        age_entry = ageing.get(tid, {})
+        days_in_qc = 0
+        if age_entry.get('status') == t['status']:
+            first_seen = _parse_date(age_entry.get('first_seen'))
+            if first_seen:
+                days_in_qc = max(0, (today_date - first_seen).days)
+
+        item = {
+            'ticket_id': t['ticket_id'], 'title': t['title'], 'status': t['status'],
+            'priority': t['priority'], 'qc_tester': t.get('qc_tester') or '-',
+            'developers_str': t.get('developers_str', '-'),
+            'qa_estimate_hours': t.get('qa_estimate_hours', 0),
+            'qa_actual_hours': t.get('qa_actual_hours', 0),
+            'eta': t.get('eta'), 'platform': t.get('platform', 'Web'),
+            'days_in_qc': days_in_qc,
+        }
+
+        # Suggest assignee for unassigned tickets
+        if not t.get('qc_tester') and t['status'] in QC_SET:
+            suggested = primary_owners[0] if primary_owners else (support_owners[0] if support_owners else '')
+            item['suggested_assignee'] = suggested
+
+        result.append(item)
 
     return {'tickets': result, 'count': len(result), 'module': module_name, 'status_group': status_group}
 

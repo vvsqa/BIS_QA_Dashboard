@@ -64,6 +64,7 @@ export default function ResourcePlanner() {
   const [refreshing, setRefreshing] = useState(false);
   const forceRefresh = async () => {
     setRefreshing(true);
+    setExpandedMember(null); setExpandedModule(null); setSearchFilter('');
     try {
       await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
       await fetchAll();
@@ -314,6 +315,18 @@ export default function ResourcePlanner() {
             <div className="qcq-card-sub">QC tickets awaiting tester</div>
           </div>
         </div>
+
+        {/* Unassigned by module */}
+        {(teamQueue?.unassigned_by_module || []).length > 0 && (
+          <div style={{ display: 'flex', gap: '6px', marginBottom: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>Unassigned by module:</span>
+            {(teamQueue.unassigned_by_module || []).map(m => (
+              <span key={m.module} style={{ fontSize: '0.72rem', padding: '2px 8px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', borderRadius: '4px', color: 'var(--accent-red)' }}>
+                {m.module} <strong>{m.count}</strong>
+              </span>
+            ))}
+          </div>
+        )}
 
         {/* Filters */}
         <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', alignItems: 'center' }}>

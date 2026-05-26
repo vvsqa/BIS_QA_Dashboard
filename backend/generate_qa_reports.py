@@ -231,6 +231,199 @@ for name in sorted(qa_by_tester.keys()):
         mr += 1
     mr += 1
 
+# ===== RESOURCE PERFORMANCE ANALYSIS SHEET =====
+ws_rp = wb.create_sheet('Resource Performance')
+ws_rp.column_dimensions['A'].width = 25
+
+# Count per member: how many tickets in each status
+QA_STATUS_ORDER = ['QC Testing', 'QC Testing in Progress', 'QC Testing Hold', 'QC Review Fail',
+                   'BIS Testing', 'Approved for Live', 'Moved to Live', 'Closed']
+member_status = defaultdict(lambda: defaultdict(int))
+member_totals = defaultdict(int)
+member_hours = defaultdict(lambda: {'est': 0, 'act': 0})
+
+for t in tickets:
+    tester = (t.get('qc_tester') or '').strip()
+    if not tester:
+        continue
+    for name in (x.strip() for x in tester.split(',') if x.strip()):
+        s = t['status']
+        member_status[name][s] += 1
+        member_totals[name] += 1
+        member_hours[name]['est'] += t.get('qa_estimate_hours') or 0
+        member_hours[name]['act'] += t.get('qa_actual_hours') or 0
+
+ws_rp.cell(row=1, column=1, value='QA Resource Performance Analysis').font = Font(bold=True, size=14)
+ws_rp.cell(row=2, column=1, value=f'Tickets handled per member by current status — {today.strftime("%b %d, %Y")}').font = Font(size=9, color='666666')
+
+# Headers
+rp_headers = ['QA Member'] + QA_STATUS_ORDER + ['Total', 'Est Hours', 'Actual Hours', 'Efficiency %']
+rp_r = 4
+for c, h in enumerate(rp_headers, 1):
+    cell = ws_rp.cell(row=rp_r, column=c, value=h)
+    cell.font = hf; cell.fill = blue_fill; cell.alignment = ca; cell.border = tb
+    if c > 1: ws_rp.column_dimensions[chr(64 + c) if c <= 26 else 'A'].width = 14
+rp_r += 1
+
+# Status color fills
+rp_status_fills = {
+    'QC Testing in Progress': PatternFill(start_color='E8F5E9', end_color='E8F5E9', fill_type='solid'),
+    'QC Review Fail': PatternFill(start_color='FFEBEE', end_color='FFEBEE', fill_type='solid'),
+    'BIS Testing': PatternFill(start_color='EDE7F6', end_color='EDE7F6', fill_type='solid'),
+    'Approved for Live': PatternFill(start_color='E0F7FA', end_color='E0F7FA', fill_type='solid'),
+    'Moved to Live': PatternFill(start_color='E8F5E9', end_color='E8F5E9', fill_type='solid'),
+    'Closed': PatternFill(start_color='F5F5F5', end_color='F5F5F5', fill_type='solid'),
+}
+
+# Sort members by total tickets desc
+for name in sorted(member_status.keys(), key=lambda x: -member_totals[x]):
+    vals = [name]
+    for s in QA_STATUS_ORDER:
+        vals.append(member_status[name].get(s, 0) or '')
+    total = member_totals[name]
+    est = round(member_hours[name]['est'], 1)
+    act = round(member_hours[name]['act'], 1)
+    eff = round(act / est * 100, 1) if est > 0 else 0
+    vals += [total, est, act, f'{eff}%']
+    write_row(ws_rp, rp_r, vals)
+    # Bold total
+    ws_rp.cell(row=rp_r, column=len(QA_STATUS_ORDER) + 2).font = Font(bold=True, size=9)
+    # Color QC Fail column if > 0
+    fail_col = QA_STATUS_ORDER.index('QC Review Fail') + 2
+    if member_status[name].get('QC Review Fail', 0) > 0:
+        ws_rp.cell(row=rp_r, column=fail_col).fill = light_red
+    # Color efficiency
+    eff_col = len(rp_headers)
+    if eff > 120:
+        ws_rp.cell(row=rp_r, column=eff_col).fill = light_red
+    rp_r += 1
+
+# Totals row
+rp_r += 1
+total_vals = ['GRAND TOTAL']
+for s in QA_STATUS_ORDER:
+    total_vals.append(sum(member_status[n].get(s, 0) for n in member_status))
+total_vals += [sum(member_totals.values()),
+               round(sum(h['est'] for h in member_hours.values()), 1),
+               round(sum(h['act'] for h in member_hours.values()), 1), '']
+write_row(ws_rp, rp_r, total_vals)
+for c in range(1, len(total_vals) + 1):
+    ws_rp.cell(row=rp_r, column=c).font = Font(bold=True, size=9)
+
+ws_rp.freeze_panes = 'B5'
+
+# ===== BUILD QUALITY ANALYSIS SHEET =====
+ws_bq = wb.create_sheet('Build Quality Analysis')
+ws_bq.column_dimensions['A'].width = 30; ws_bq.column_dimensions['B'].width = 14
+ws_bq.column_dimensions['C'].width = 12; ws_bq.column_dimensions['D'].width = 12
+ws_bq.column_dimensions['E'].width = 14; ws_bq.column_dimensions['F'].width = 12
+ws_bq.column_dimensions['G'].width = 14; ws_bq.column_dimensions['H'].width = 12
+
+# Detect QC failures
+qc_fail_tickets = [t for t in tickets if t['status'] == 'QC Review Fail']
+DEV_STS = {'Ready For Development', 'In Progress', 'Hold/Pending', 'Start Code Review',
+           'Code Review Failed', 'Code Review Passed', 'Express Lane Review', 'Testing In Progress'}
+refix_tickets = [t for t in tickets if t['status'] in DEV_STS and t.get('qc_tester')]
+all_failed = qc_fail_tickets + refix_tickets
+total_tested = len([t for t in tickets if t.get('qc_tester')])
+fail_rate = round(len(all_failed) / total_tested * 100, 1) if total_tested else 0
+
+# Summary
+ws_bq.cell(row=1, column=1, value='Build Quality Analysis').font = Font(bold=True, size=14)
+ws_bq.cell(row=2, column=1, value=f'Generated: {today.strftime("%b %d, %Y")}').font = Font(size=9, color='666666')
+
+bq_r = 4
+write_header(ws_bq, bq_r, ['Metric', 'Value'], PatternFill(start_color='B71C1C', end_color='B71C1C', fill_type='solid'))
+bq_r += 1
+for label, val in [
+    ('Total Tickets Tested by QA', total_tested),
+    ('QC Review Fail (Current)', len(qc_fail_tickets)),
+    ('Refix in Dev Pipeline', len(refix_tickets)),
+    ('Total Failed Builds', len(all_failed)),
+    ('Fail Rate', f'{fail_rate}%'),
+    ('First-time Pass Rate', f'{round(100 - fail_rate, 1)}%'),
+]:
+    write_row(ws_bq, bq_r, [label, val]); bq_r += 1
+
+# Developer Quality Ranking
+bq_r += 1
+ws_bq.cell(row=bq_r, column=1, value='Developer Build Quality Ranking').font = Font(bold=True, size=12)
+bq_r += 1
+write_header(ws_bq, bq_r, ['Developer', 'Tested', 'Failed', 'Fail Rate', 'Bugs', 'Bugs/Ticket', 'Refix', 'Overrun'],
+             PatternFill(start_color='E65100', end_color='E65100', fill_type='solid'))
+bq_r += 1
+
+dev_quality = defaultdict(lambda: {'total': 0, 'failed': 0, 'bugs': 0, 'refix': 0, 'overrun': 0})
+for t in tickets:
+    if not t.get('qc_tester'):
+        continue
+    devs = t.get('developers_str') or t.get('backend_developer') or ''
+    is_fail = t['status'] == 'QC Review Fail' or (t['status'] in DEV_STS and t.get('qc_tester'))
+    for d in (x.strip() for x in str(devs).split(',') if x.strip() and x.strip() != 'Not Assigned'):
+        dev_quality[d]['total'] += 1
+        if is_fail: dev_quality[d]['failed'] += 1
+        if t['status'] in DEV_STS and t.get('qc_tester'): dev_quality[d]['refix'] += 1
+        dev_est = t.get('dev_estimate_hours') or 0
+        dev_act = t.get('actual_dev_hours') or 0
+        if dev_est > 0 and dev_act > dev_est: dev_quality[d]['overrun'] += 1
+
+for dev_name in sorted(dev_quality.keys(), key=lambda x: -dev_quality[x]['failed']):
+    ds = dev_quality[dev_name]
+    if ds['total'] < 3:
+        continue
+    fr = round(ds['failed'] / ds['total'] * 100, 1)
+    bd = round(ds['bugs'] / ds['total'], 1) if ds['total'] else 0
+    write_row(ws_bq, bq_r, [dev_name, ds['total'], ds['failed'], f'{fr}%', ds['bugs'], bd, ds['refix'], ds['overrun']])
+    if fr > 20:
+        ws_bq.cell(row=bq_r, column=4).fill = light_red
+    elif fr > 10:
+        ws_bq.cell(row=bq_r, column=4).fill = PatternFill(start_color='FFF3E0', end_color='FFF3E0', fill_type='solid')
+    bq_r += 1
+
+# Module Quality
+bq_r += 1
+ws_bq.cell(row=bq_r, column=1, value='Module-wise Build Quality').font = Font(bold=True, size=12)
+bq_r += 1
+write_header(ws_bq, bq_r, ['Module', 'Tested', 'Failed', 'Fail Rate', 'Bugs', 'Refix', '', ''],
+             PatternFill(start_color='6A1B9A', end_color='6A1B9A', fill_type='solid'))
+bq_r += 1
+
+mod_quality = defaultdict(lambda: {'total': 0, 'failed': 0, 'bugs': 0, 'refix': 0})
+for t in tickets:
+    if not t.get('qc_tester'):
+        continue
+    mod = t.get('module') or 'Unassigned'
+    is_fail = t['status'] == 'QC Review Fail' or (t['status'] in DEV_STS and t.get('qc_tester'))
+    mod_quality[mod]['total'] += 1
+    if is_fail: mod_quality[mod]['failed'] += 1
+    if t['status'] in DEV_STS and t.get('qc_tester'): mod_quality[mod]['refix'] += 1
+
+for mod_name in sorted(mod_quality.keys(), key=lambda x: -mod_quality[x]['failed']):
+    ms = mod_quality[mod_name]
+    if ms['total'] < 1: continue
+    fr = round(ms['failed'] / ms['total'] * 100, 1)
+    write_row(ws_bq, bq_r, [mod_name, ms['total'], ms['failed'], f'{fr}%', ms['bugs'], ms['refix'], '', ''])
+    if fr > 15: ws_bq.cell(row=bq_r, column=4).fill = light_red
+    bq_r += 1
+
+# Current Failures Detail
+bq_r += 1
+ws_bq.cell(row=bq_r, column=1, value='Current QC Review Failures').font = Font(bold=True, size=12)
+bq_r += 1
+write_header(ws_bq, bq_r, ['Ticket', 'Title', 'Module', 'Developer', 'QC Tester', 'Priority', 'QA Hrs', 'Verdict'],
+             PatternFill(start_color='B71C1C', end_color='B71C1C', fill_type='solid'))
+bq_r += 1
+for t in sorted(all_failed, key=lambda x: x.get('qa_actual_hours') or 99):
+    qa_hrs = t.get('qa_actual_hours') or 0
+    if qa_hrs < 1: verdict = 'Critical - Obvious bug'
+    elif qa_hrs < 2: verdict = 'Poor - Basic failure'
+    else: verdict = 'Moderate'
+    write_row(ws_bq, bq_r, [t['ticket_id'], t['title'][:50], t.get('module', ''),
+              (t.get('developers_str') or '')[:25], t.get('qc_tester', ''),
+              t['priority'], round(qa_hrs, 1), verdict])
+    if 'Critical' in verdict: ws_bq.cell(row=bq_r, column=8).fill = light_red
+    bq_r += 1
+
 os.makedirs(REPORTS_DIR, exist_ok=True)
 wk_path = os.path.join(REPORTS_DIR, f'QA_Report_{today.strftime("%Y%m%d")}.xlsx')
 wb.save(wk_path)

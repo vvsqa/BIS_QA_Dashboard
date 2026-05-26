@@ -30,6 +30,9 @@ function HoursCell({ est, actual }) {
 export default function DevDashboard() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
+  const [buildQuality, setBuildQuality] = useState(null);
+  const [bqFilter, setBqFilter] = useState(null); // {type: 'developer'|'module'|'status', value: string}
+  const bqListRef = useRef(null);
   const [activeTab, setActiveTab] = useState('resources');
   const [expandedDev, setExpandedDev] = useState(null);
   const [expandedModule, setExpandedModule] = useState(null);
@@ -51,8 +54,12 @@ export default function DevDashboard() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await safeFetch('/live/dev-dashboard');
+      const [res, bqRes] = await Promise.all([
+        safeFetch('/live/dev-dashboard'),
+        safeFetch('/live/build-quality'),
+      ]);
       if (res?.ok) setData(await res.json());
+      if (bqRes?.ok) setBuildQuality(await bqRes.json());
     } finally { setLoading(false); }
   }, []);
 
@@ -60,6 +67,8 @@ export default function DevDashboard() {
 
   const forceRefresh = async () => {
     await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
+    setCardFilter(null); setExpandedDev(null); setExpandedModule(null); setBqFilter(null);
+    setSearchFilter(''); setStageFilter(''); setAssigneeFilter(''); setModuleFilter(''); setDeveloperFilter('');
     fetchData();
   };
 
@@ -366,7 +375,7 @@ export default function DevDashboard() {
           <CardBtn value={(summary.dev_status_counts || {})['Ready For Development'] || 0} label="Ready For Development" filter="first_time_Ready For Development" color="var(--accent-blue)" />
           <CardBtn value={(summary.dev_status_counts || {})['In Progress'] || 0} label="In Progress" sub="Excl. failed refix tickets" filter="first_time_In Progress" color="var(--accent-green)" />
           <CardBtn value={summary.refix_count} label="Dev Refix" sub="Failed tickets being fixed" filter="refix" color="var(--accent-amber)" />
-          {['Hold/Pending','Start Code Review','Code Review Failed','Code Review Passed','Express Lane Review','Testing In Progress'].map(s => {
+          {['Hold/Pending','Start Code Review','Code Review Failed','Code Review Passed','Express Lane Review'].map(s => {
             const cnt = (summary.dev_status_counts || {})[s] || 0;
             const colors = {'Code Review Passed':'var(--accent-red)','Hold/Pending':'var(--accent-amber)','Start Code Review':'var(--accent-purple)','Code Review Failed':'var(--accent-red)'};
             return cnt > 0 ? <CardBtn key={s} value={cnt} label={s} filter={'first_time_' + s} color={colors[s] || 'var(--accent-blue)'} /> : null;
@@ -392,11 +401,253 @@ export default function DevDashboard() {
           <button className={`qcq-tab ${activeTab==='resources'?'active':''}`} onClick={()=>{setActiveTab('resources');setCardFilter(null);}}>Developers ({summary.total_developers})</button>
           <button className={`qcq-tab ${activeTab==='tickets'?'active':''}`} onClick={()=>setActiveTab('tickets')}>All Tickets ({allTickets.length})</button>
           <button className={`qcq-tab ${activeTab==='modules'?'active':''}`} onClick={()=>{setActiveTab('modules');setCardFilter(null);}}>Modules ({modules.length})</button>
+          <button className={`qcq-tab ${activeTab==='quality'?'active':''}`} onClick={()=>setActiveTab('quality')} style={{color: activeTab==='quality' ? 'var(--accent-red)' : ''}}>Build Quality</button>
         </div>
 
         {activeTab === 'resources' && renderResources()}
         {activeTab === 'tickets' && renderTickets()}
         {activeTab === 'modules' && renderModules()}
+
+        {/* Build Quality Analysis Tab */}
+        {activeTab === 'quality' && buildQuality && (() => {
+          const bq = buildQuality;
+          const s = bq.summary || {};
+          return (
+            <div>
+              {/* Summary cards — clickable to filter */}
+              {(() => {
+                const clickBq = (filter) => {
+                  setBqFilter(bqFilter?.type === filter.type && bqFilter?.value === filter.value ? null : filter);
+                  setTimeout(() => bqListRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+                };
+                return (
+              <div className="qcq-status-cards">
+                <div className="qcq-card qcq-card-total">
+                  <div className="qcq-card-value">{s.total_qa_tested || 0}</div>
+                  <div className="qcq-card-label">Tickets Tested by QA</div>
+                </div>
+                <div className="qcq-card" style={{borderTop:'3px solid var(--accent-green)'}}>
+                  <div className="qcq-card-value" style={{color:'var(--accent-green)'}}>{s.pass_rate || 0}%</div>
+                  <div className="qcq-card-label">First-time Pass Rate</div>
+                </div>
+                <div className="qcq-card qcq-card-clickable" style={{borderTop:'3px solid var(--accent-red)', cursor:'pointer'}} onClick={() => clickBq({type:'all',value:'all'})}>
+                  <div className="qcq-card-value" style={{color:'var(--accent-red)'}}>{s.total_failed || 0}</div>
+                  <div className="qcq-card-label">Total QC Failures</div>
+                  <div className="qcq-card-sub">{s.fail_rate}% fail rate</div>
+                </div>
+                <div className="qcq-card qcq-card-clickable" style={{borderTop:'3px solid var(--accent-red)', cursor:'pointer'}} onClick={() => clickBq({type:'verdict',value:'Critical'})}>
+                  <div className="qcq-card-value" style={{color:'var(--accent-red)'}}>{s.obvious_failures || 0}</div>
+                  <div className="qcq-card-label">Obvious / Basic Failures</div>
+                  <div className="qcq-card-sub">Click to see list</div>
+                </div>
+                <div className="qcq-card qcq-card-clickable" style={{borderTop:'3px solid var(--accent-amber)', cursor:'pointer'}} onClick={() => clickBq({type:'status',value:'QC Review Fail'})}>
+                  <div className="qcq-card-value">{s.currently_in_qc_fail || 0}</div>
+                  <div className="qcq-card-label">Currently in QC Fail</div>
+                  <div className="qcq-card-sub">Click to see list</div>
+                </div>
+                <div className="qcq-card qcq-card-clickable" style={{borderTop:'3px solid var(--accent-amber)', cursor:'pointer'}} onClick={() => clickBq({type:'status',value:'refix'})}>
+                  <div className="qcq-card-value">{s.refix_in_dev || 0}</div>
+                  <div className="qcq-card-label">Refix in Dev Pipeline</div>
+                  <div className="qcq-card-sub">Click to see list</div>
+                </div>
+              </div>);
+              })()}
+
+              {/* Build Quality Verdict */}
+              <div className="qcq-section" style={{padding:'12px',background: s.build_quality_score >= 70 ? 'rgba(34,197,94,0.08)' : s.build_quality_score >= 40 ? 'rgba(245,158,11,0.08)' : 'rgba(239,68,68,0.08)', borderRadius:'8px',border:`1px solid ${s.build_quality_score >= 70 ? 'rgba(34,197,94,0.3)' : s.build_quality_score >= 40 ? 'rgba(245,158,11,0.3)' : 'rgba(239,68,68,0.3)'}`,marginBottom:'12px'}}>
+                <div style={{display:'flex',alignItems:'center',gap:'12px'}}>
+                  <div style={{fontSize:'2rem',fontWeight:700,color: s.build_quality_score >= 70 ? 'var(--accent-green)' : s.build_quality_score >= 40 ? 'var(--accent-amber)' : 'var(--accent-red)'}}>{s.build_quality_score || 0}/100</div>
+                  <div>
+                    <div style={{fontWeight:700,fontSize:'0.95rem'}}>Build Quality Score</div>
+                    <div style={{fontSize:'0.78rem',color:'var(--text-secondary)'}}>
+                      {s.build_quality_score >= 70 ? 'Good — Most builds pass QA on first attempt' :
+                       s.build_quality_score >= 40 ? 'Needs Improvement — Significant failures on basic scenarios' :
+                       'Poor — Frequent obvious failures despite code review'}
+                    </div>
+                    <div style={{fontSize:'0.72rem',color:'var(--text-muted)',marginTop:'4px'}}>
+                      {s.obvious_failures || 0} obvious failures (basic scenario bugs found with minimal QA effort) |
+                      {s.thorough_failures || 0} thorough test failures (found during deep testing)
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Developer Fail Analysis */}
+              <div className="qcq-section">
+                <h2 className="qcq-section-title">Developer Build Quality Ranking</h2>
+                <div className="qcq-table-container">
+                  <table className="qcq-table">
+                    <thead>
+                      <tr>
+                        <th>Developer</th>
+                        <th style={{textAlign:'center'}}>Tested</th>
+                        <th style={{textAlign:'center',background:'rgba(239,68,68,0.12)'}}>Failed</th>
+                        <th style={{textAlign:'center'}}>Obvious</th>
+                        <th style={{textAlign:'center',background:'rgba(239,68,68,0.12)'}}>Fail %</th>
+                        <th style={{textAlign:'center'}}>Bugs</th>
+                        <th style={{textAlign:'center'}}>Bug/Ticket</th>
+                        <th style={{textAlign:'center'}}>Overrun</th>
+                        <th style={{textAlign:'center'}}>Score</th>
+                        <th style={{width:'100px'}}>Quality</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(bq.developers || []).filter(d => d.tickets_tested >= 3).map(d => (
+                          <tr key={d.developer} className="qcq-row" style={{cursor: d.failed > 0 ? 'pointer' : 'default', background: bqFilter?.type==='developer' && bqFilter?.value===d.developer ? 'rgba(239,68,68,0.08)' : ''}}
+                            onClick={() => { if(d.failed > 0) { setBqFilter(bqFilter?.value===d.developer ? null : {type:'developer',value:d.developer}); setTimeout(()=>bqListRef.current?.scrollIntoView({behavior:'smooth',block:'start'}),100); } }}>
+                            <td style={{fontWeight:600}}>{d.developer}</td>
+                            <td style={{textAlign:'center'}}>{d.tickets_tested}</td>
+                            <td style={{textAlign:'center',color: d.failed > 0 ? 'var(--accent-red)' : 'var(--text-muted)', fontWeight: d.failed > 0 ? 700 : 400}}>{d.failed || '-'}</td>
+                            <td style={{textAlign:'center',color: d.obvious_fails > 0 ? 'var(--accent-red)' : 'var(--text-muted)', fontWeight: d.obvious_fails > 0 ? 700 : 400}}>{d.obvious_fails || '-'}</td>
+                            <td style={{textAlign:'center',fontWeight:700,color: d.fail_rate > 20 ? 'var(--accent-red)' : d.fail_rate > 10 ? 'var(--accent-amber)' : 'var(--accent-green)'}}>{d.fail_rate}%</td>
+                            <td style={{textAlign:'center',color: d.bugs_reported > 0 ? 'var(--accent-red)' : 'var(--text-muted)'}}>{d.bugs_reported || '-'}</td>
+                            <td style={{textAlign:'center',color: d.bug_density > 2 ? 'var(--accent-red)' : d.bug_density > 1 ? 'var(--accent-amber)' : 'var(--text-muted)'}}>{d.bug_density}</td>
+                            <td style={{textAlign:'center',color: d.overrun_count > 0 ? 'var(--accent-amber)' : 'var(--text-muted)'}}>{d.overrun_count || '-'}</td>
+                            <td style={{textAlign:'center',fontWeight:700,color: d.quality_score >= 70 ? 'var(--accent-green)' : d.quality_score >= 40 ? 'var(--accent-amber)' : 'var(--accent-red)'}}>{d.quality_score}</td>
+                            <td>
+                              <div style={{height:'8px',background:'rgba(100,116,139,0.15)',borderRadius:'4px',overflow:'hidden'}}>
+                                <div style={{width:`${d.quality_score}%`,height:'100%',background: d.quality_score >= 70 ? '#22c55e' : d.quality_score >= 40 ? '#f59e0b' : '#ef4444',borderRadius:'4px'}} />
+                              </div>
+                            </td>
+                          </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Module Fail Analysis */}
+              <div className="qcq-section">
+                <h2 className="qcq-section-title">Module-wise Build Quality</h2>
+                <div className="qcq-table-container">
+                  <table className="qcq-table">
+                    <thead>
+                      <tr>
+                        <th>Module</th>
+                        <th style={{textAlign:'center'}}>Tickets Tested</th>
+                        <th style={{textAlign:'center',background:'rgba(239,68,68,0.12)'}}>QC Failed</th>
+                        <th style={{textAlign:'center'}}>Refix</th>
+                        <th style={{textAlign:'center',background:'rgba(239,68,68,0.12)'}}>Fail Rate</th>
+                        <th style={{textAlign:'center'}}>Bugs</th>
+                        <th style={{width:'120px'}}>Quality</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(bq.modules || []).map(m => (
+                        <tr key={m.module} className="qcq-row" style={{cursor: m.failed > 0 ? 'pointer' : 'default', background: bqFilter?.type==='module' && bqFilter?.value===m.module ? 'rgba(239,68,68,0.08)' : ''}}
+                          onClick={() => { if(m.failed > 0) { setBqFilter(bqFilter?.value===m.module ? null : {type:'module',value:m.module}); setTimeout(()=>bqListRef.current?.scrollIntoView({behavior:'smooth',block:'start'}),100); } }}>
+                          <td style={{fontWeight:600}}>{m.module}</td>
+                          <td style={{textAlign:'center'}}>{m.tickets_tested}</td>
+                          <td style={{textAlign:'center',color: m.failed > 0 ? 'var(--accent-red)' : 'var(--text-muted)', fontWeight: m.failed > 0 ? 700 : 400}}>{m.failed || '-'}</td>
+                          <td style={{textAlign:'center',color: m.refix_in_dev > 0 ? 'var(--accent-amber)' : 'var(--text-muted)'}}>{m.refix_in_dev || '-'}</td>
+                          <td style={{textAlign:'center',fontWeight:700,color: m.fail_rate > 30 ? 'var(--accent-red)' : m.fail_rate > 15 ? 'var(--accent-amber)' : 'var(--accent-green)'}}>{m.fail_rate}%</td>
+                          <td style={{textAlign:'center',color: m.bugs_reported > 0 ? 'var(--accent-red)' : 'var(--text-muted)'}}>{m.bugs_reported || '-'}</td>
+                          <td>
+                            <div style={{height:'8px',background:'rgba(100,116,139,0.15)',borderRadius:'4px',overflow:'hidden'}}>
+                              <div style={{width:`${100-m.fail_rate}%`,height:'100%',background: m.fail_rate > 30 ? '#ef4444' : m.fail_rate > 15 ? '#f59e0b' : '#22c55e',borderRadius:'4px'}} />
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Current QC Failures detail */}
+              <div className="qcq-section">
+                <h2 className="qcq-section-title">Current QC Review Failures ({(bq.current_failures||[]).length})</h2>
+                <div className="qcq-table-container">
+                  <table className="qcq-table" style={{fontSize:'0.8rem'}}>
+                    <thead>
+                      <tr><th>Ticket</th><th>Title</th><th>Module</th><th>Priority</th><th>Developer</th><th>QC Tester</th><th>Cycles</th><th>Bugs</th><th>Open Bugs</th></tr>
+                    </thead>
+                    <tbody>
+                      {(bq.current_failures||[]).map(t => (
+                        <tr key={t.ticket_id} className="qcq-row">
+                          <td><a href={`https://www.bissafety.app/pm/tickets#!/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
+                          <td style={{maxWidth:'200px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={t.title}>{t.title}</td>
+                          <td>{t.module}</td>
+                          <td>{t.priority}</td>
+                          <td>{t.developers_str || '-'}</td>
+                          <td>{t.qc_tester || '-'}</td>
+                          <td style={{textAlign:'center',color: t.cycle_count > 0 ? 'var(--accent-red)' : 'var(--text-muted)', fontWeight: t.cycle_count > 0 ? 700 : 400}}>{t.cycle_count || '-'}</td>
+                          <td style={{textAlign:'center',color:'var(--accent-red)',fontWeight:700}}>{t.bugs_total || '-'}</td>
+                          <td style={{textAlign:'center',color: t.bugs_open > 0 ? 'var(--accent-amber)' : 'var(--text-muted)'}}>{t.bugs_open || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {/* Failed Build Analysis — quality verdict per ticket */}
+              <div className="qcq-section" ref={bqListRef}>
+                <h2 className="qcq-section-title">
+                  Failed Build Analysis
+                  {bqFilter && (
+                    <span style={{fontSize:'0.8rem',marginLeft:'8px',color:'var(--accent-red)'}}>
+                      — {bqFilter.type === 'developer' ? `Developer: ${bqFilter.value}` :
+                         bqFilter.type === 'module' ? `Module: ${bqFilter.value}` :
+                         bqFilter.type === 'verdict' ? 'Obvious/Basic Failures' :
+                         bqFilter.type === 'status' ? (bqFilter.value === 'refix' ? 'Refix in Dev' : bqFilter.value) : 'All Failures'}
+                      <button className="btn btn-sm btn-secondary" onClick={() => setBqFilter(null)} style={{marginLeft:'8px',fontSize:'0.7rem'}}>Clear</button>
+                    </span>
+                  )}
+                </h2>
+                {(() => {
+                  let filtered = bq.failed_ticket_analysis || [];
+                  if (bqFilter) {
+                    if (bqFilter.type === 'developer') filtered = filtered.filter(t => (t.developers_str || '').includes(bqFilter.value));
+                    else if (bqFilter.type === 'module') filtered = filtered.filter(t => t.module === bqFilter.value);
+                    else if (bqFilter.type === 'verdict') filtered = filtered.filter(t => t.verdict.includes(bqFilter.value) || t.verdict.includes('Poor'));
+                    else if (bqFilter.type === 'status' && bqFilter.value === 'QC Review Fail') filtered = filtered.filter(t => t.status === 'QC Review Fail');
+                    else if (bqFilter.type === 'status' && bqFilter.value === 'refix') filtered = filtered.filter(t => t.status !== 'QC Review Fail');
+                  }
+                  return (<>
+                <p style={{fontSize:'0.78rem',color:'var(--text-muted)',marginBottom:'8px'}}>
+                  {filtered.length} tickets — sorted by QA hours before failure (lowest = obvious bugs)
+                </p>
+                <div className="qcq-table-container">
+                  <table className="qcq-table" style={{fontSize:'0.8rem'}}>
+                    <thead>
+                      <tr>
+                        <th>Ticket</th><th>Module</th><th>Developer</th>
+                        <th style={{textAlign:'center'}}>QA Hrs Before Fail</th>
+                        <th style={{textAlign:'center'}}>Bugs Found</th>
+                        <th style={{textAlign:'center'}}>Cycles</th>
+                        <th>Status</th>
+                        <th>Quality Verdict</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map(t => (
+                        <tr key={t.ticket_id} className="qcq-row" style={{background: t.verdict.includes('Critical') ? 'rgba(239,68,68,0.06)' : t.verdict.includes('Poor') ? 'rgba(245,158,11,0.04)' : ''}}>
+                          <td><a href={`https://www.bissafety.app/pm/tickets#!/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
+                          <td>{t.module}</td>
+                          <td style={{fontSize:'0.75rem'}}>{(t.developers_str || '').split(',')[0] || '-'}</td>
+                          <td style={{textAlign:'center',fontWeight:700,color: t.qa_hours_before_fail < 1 ? 'var(--accent-red)' : t.qa_hours_before_fail < 2 ? 'var(--accent-amber)' : 'var(--text-primary)'}}>{t.qa_hours_before_fail}h</td>
+                          <td style={{textAlign:'center',color: t.bugs_found > 0 ? 'var(--accent-red)' : 'var(--text-muted)', fontWeight: t.bugs_found > 0 ? 700 : 400}}>{t.bugs_found || '-'}</td>
+                          <td style={{textAlign:'center'}}>{t.cycle_count || '-'}</td>
+                          <td><span className="qcq-status-badge" style={{fontSize:'0.68rem'}}>{t.status}</span></td>
+                          <td>
+                            <span style={{fontSize:'0.72rem',padding:'2px 8px',borderRadius:'4px',
+                              background: t.verdict.includes('Critical') ? 'rgba(239,68,68,0.15)' : t.verdict.includes('Poor') ? 'rgba(245,158,11,0.12)' : 'rgba(100,116,139,0.1)',
+                              color: t.verdict.includes('Critical') ? 'var(--accent-red)' : t.verdict.includes('Poor') ? 'var(--accent-amber)' : 'var(--text-secondary)',
+                              fontWeight: 600}}>
+                              {t.verdict}
+                            </span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                </>); })()}
+              </div>
+            </div>
+          );
+        })()}
       </main>
     </div>
   );

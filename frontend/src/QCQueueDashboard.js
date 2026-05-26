@@ -134,6 +134,8 @@ export default function QCQueueDashboard() {
 
   const forceRefresh = async () => {
     await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
+    setCardFilter(null); setSelectedModuleBar(null); setSelectedPipelineBar(null);
+    setSearchFilter(''); setListPriorityFilter(''); setListModuleFilter(''); setListTesterFilter('');
     fetchAll();
   };
 
@@ -525,6 +527,61 @@ export default function QCQueueDashboard() {
               {cardFilterLabels[cardFilter]} ({applyFilters(cardFilteredList).length}{applyFilters(cardFilteredList).length !== cardFilteredList.length ? ` of ${cardFilteredList.length}` : ''})
               <button className="btn btn-sm btn-secondary" onClick={() => setCardFilter(null)} style={{ marginLeft: 'auto' }}>Clear Filter</button>
             </div>
+
+            {/* Module distribution donut */}
+            {(() => {
+              const modCounts = {};
+              cardFilteredList.forEach(t => { const m = t.module || 'Unassigned'; modCounts[m] = (modCounts[m] || 0) + 1; });
+              const mods = Object.entries(modCounts).sort((a, b) => b[1] - a[1]);
+              const total = cardFilteredList.length;
+              const colors = ['#3b82f6','#22c55e','#f59e0b','#ef4444','#8b5cf6','#14b8a6','#ec4899','#f97316','#06b6d4','#84cc16','#a855f7','#6366f1'];
+              // Build SVG donut
+              const R = 60, r = 38, cx = 70, cy = 70;
+              let angle = 0;
+              const arcs = mods.map(([mod, count], i) => {
+                const pct = count / total;
+                const startAngle = angle;
+                angle += pct * 360;
+                const endAngle = angle;
+                const start = startAngle * Math.PI / 180;
+                const end = endAngle * Math.PI / 180;
+                const largeArc = pct > 0.5 ? 1 : 0;
+                const x1 = cx + R * Math.sin(start), y1 = cy - R * Math.cos(start);
+                const x2 = cx + R * Math.sin(end), y2 = cy - R * Math.cos(end);
+                const ix1 = cx + r * Math.sin(start), iy1 = cy - r * Math.cos(start);
+                const ix2 = cx + r * Math.sin(end), iy2 = cy - r * Math.cos(end);
+                const d = `M${x1},${y1} A${R},${R} 0 ${largeArc} 1 ${x2},${y2} L${ix2},${iy2} A${r},${r} 0 ${largeArc} 0 ${ix1},${iy1} Z`;
+                return { mod, count, color: colors[i % colors.length], d, pct };
+              });
+              return (
+                <div style={{ display: 'flex', gap: '16px', marginBottom: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <svg width="140" height="140" viewBox="0 0 140 140">
+                    {arcs.map(a => (
+                      <path key={a.mod} d={a.d} fill={a.color} stroke="var(--bg-primary)" strokeWidth="1.5"
+                        style={{ cursor: 'pointer' }}
+                        onClick={() => setListModuleFilter(listModuleFilter === a.mod ? '' : a.mod)}>
+                        <title>{a.mod}: {a.count} ({Math.round(a.pct * 100)}%)</title>
+                      </path>
+                    ))}
+                    <text x={cx} y={cy - 4} textAnchor="middle" fill="var(--text-primary)" fontSize="16" fontWeight="bold">{total}</text>
+                    <text x={cx} y={cy + 10} textAnchor="middle" fill="var(--text-muted)" fontSize="8">tickets</text>
+                  </svg>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                    {mods.map(([mod, count], i) => (
+                      <div key={mod} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', cursor: 'pointer', opacity: listModuleFilter && listModuleFilter !== mod ? 0.4 : 1 }}
+                        onClick={() => setListModuleFilter(listModuleFilter === mod ? '' : mod)}>
+                        <span style={{ width: 10, height: 10, borderRadius: 2, background: colors[i % colors.length], flexShrink: 0 }} />
+                        <span style={{ fontWeight: 600 }}>{count}</span>
+                        <span style={{ color: 'var(--text-secondary)' }}>{mod}</span>
+                        <span style={{ color: 'var(--text-muted)', fontSize: '0.68rem' }}>({Math.round(count / total * 100)}%)</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+            <div className="qcq-section-title" style={{ fontSize: '0.85rem', marginBottom: '4px' }}>
+            </div>
             <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '8px' }}>
               <input type="text" placeholder="Search tickets..." value={searchFilter} onChange={e => setSearchFilter(e.target.value)}
                 className="qcq-search-input" style={{ width: '180px' }} />
@@ -736,7 +793,7 @@ export default function QCQueueDashboard() {
               const segmentDefs = [
                 { key: 'cr_passed', label: 'CR Passed (Imminent)', color: '#22c55e', filter: t => t.status === 'Code Review Passed' },
                 { key: 'code_review', label: 'Code Review', color: '#3b82f6', filter: t => ['Start Code Review','Code Review Failed','Express Lane Review'].includes(t.status) },
-                { key: 'in_progress', label: 'In Progress', color: '#f59e0b', filter: t => ['In Progress','Hold/Pending','Testing In Progress'].includes(t.status) },
+                { key: 'in_progress', label: 'In Progress', color: '#f59e0b', filter: t => ['In Progress','Hold/Pending'].includes(t.status) },
               ];
               return (
                 <div>

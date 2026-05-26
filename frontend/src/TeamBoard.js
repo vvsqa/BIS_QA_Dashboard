@@ -78,6 +78,7 @@ export default function TeamBoard() {
 
   const forceRefresh = async () => {
     await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
+    setExpandedMember(null); setSearchFilter('');
     fetchBoard();
   };
 
