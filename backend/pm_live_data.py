@@ -1064,6 +1064,14 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
             'in_progress': sum(1 for t in all_tickets if t['status'] in ('In Progress', 'Hold/Pending')),
             'code_review': sum(1 for t in all_tickets if t['status'] in ('Start Code Review', 'Code Review Failed', 'Express Lane Review')),
             'cr_passed': sum(1 for t in all_tickets if t['status'] == 'Code Review Passed'),
+            'detail': {
+                'In Progress': sum(1 for t in all_tickets if t['status'] == 'In Progress'),
+                'Hold/Pending': sum(1 for t in all_tickets if t['status'] == 'Hold/Pending'),
+                'Start Code Review': sum(1 for t in all_tickets if t['status'] == 'Start Code Review'),
+                'Code Review Failed': sum(1 for t in all_tickets if t['status'] == 'Code Review Failed'),
+                'Express Lane Review': sum(1 for t in all_tickets if t['status'] == 'Express Lane Review'),
+                'Code Review Passed': sum(1 for t in all_tickets if t['status'] == 'Code Review Passed'),
+            },
         },
         'movement_24h': _get_movement_24h(all_tickets, today),
     }

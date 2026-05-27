@@ -21,6 +21,7 @@ import QAActivitySummary from "./QAActivitySummary";
 import ResourcePlanner from "./ResourcePlanner";
 import DevDashboard from "./DevDashboard";
 import AutomationUtilization from "./AutomationUtilization";
+import TicketCalendar from "./TicketCalendar";
 import ClientProfiles from "./ClientProfiles";
 import ClientModuleAccess from "./ClientModuleAccess";
 import { isPathAllowedForClient } from "./clientModules";
@@ -166,6 +167,7 @@ function NewModuleRoutes() {
       <Route path="/resource-planner" element={<ResourcePlanner />} />
       <Route path="/dev-dashboard" element={<DevDashboard />} />
       <Route path="/automation" element={<AutomationUtilization />} />
+      <Route path="/ticket-calendar" element={<TicketCalendar />} />
       <Route path="/calendar" element={<CalendarModule />} />
     </Routes>
   );
@@ -178,7 +180,7 @@ function IsNewModulePath() {
 
 function AppRouter() {
   const location = useLocation();
-  const isNew = ['/', '/qc-queue', '/team-board', '/qa-summary', '/resource-planner', '/dev-dashboard', '/automation', '/calendar'].includes(location.pathname);
+  const isNew = ['/', '/qc-queue', '/team-board', '/qa-summary', '/resource-planner', '/dev-dashboard', '/automation', '/ticket-calendar', '/calendar'].includes(location.pathname);
 
   if (isNew) {
     return (

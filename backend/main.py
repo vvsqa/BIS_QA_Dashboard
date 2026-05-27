@@ -15653,6 +15653,46 @@ def live_assign_to_summary():
     return {'persons': person_list, 'total': len(person_list)}
 
 
+@app.get("/live/ticket-calendar")
+def live_ticket_calendar():
+    """Monthly calendar showing ticket movement per day per status."""
+    from pm_live_data import _load_ageing_tracker, fetch_live_tickets
+    from collections import defaultdict
+
+    ageing = _load_ageing_tracker()
+    success, all_tickets, _ = fetch_live_tickets()
+    ticket_map = {str(t['ticket_id']): t for t in all_tickets} if success else {}
+
+    # Group by first_seen date and status
+    daily = defaultdict(lambda: defaultdict(list))
+    for tid, entry in ageing.items():
+        fs = entry.get('first_seen', '')
+        status = entry.get('status', '')
+        if fs and status:
+            t = ticket_map.get(tid, {})
+            daily[fs][status].append({
+                'ticket_id': int(tid) if tid.isdigit() else tid,
+                'title': t.get('title', ''),
+                'status': status,
+                'priority': t.get('priority', ''),
+                'module': t.get('module', ''),
+                'developers_str': t.get('developers_str', ''),
+                'qc_tester': t.get('qc_tester', ''),
+            })
+
+    # Convert to list format
+    calendar = []
+    for day in sorted(daily.keys()):
+        statuses = {}
+        total = 0
+        for status, tickets in daily[day].items():
+            statuses[status] = {'count': len(tickets), 'tickets': tickets}
+            total += len(tickets)
+        calendar.append({'date': day, 'total': total, 'statuses': statuses})
+
+    return {'calendar': calendar}
+
+
 @app.get("/live/build-quality")
 def live_build_quality():
     return get_live_build_quality()

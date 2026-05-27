@@ -71,6 +71,7 @@ export default function QCQueueDashboard() {
   const [moduleWorkload, setModuleWorkload] = useState([]);
   const [modulePipeline, setModulePipeline] = useState([]);
   const [selectedModuleBar, setSelectedModuleBar] = useState(null); // {module, status} for clicked bar segment
+  const [pipelineDetail, setPipelineDetail] = useState(null); // stage id for expanded detail
   const [selectedPipelineBar, setSelectedPipelineBar] = useState(null); // {module, type} for clicked pipeline bar
   const moduleListRef = useRef(null);
   const pipelineListRef = useRef(null);
@@ -457,14 +458,22 @@ export default function QCQueueDashboard() {
           const qcFail = qcFailed?.tickets?.length || 0;
 
           const mv = queue.movement_24h || {};
+          const detail = devPipe.detail || {};
           const stages = [
-            { id: 'dev', label: 'Dev Work', count: (devPipe.in_progress || 0), color: '#f59e0b', sub: 'In Progress + Hold', moved: mv.dev || 0 },
-            { id: 'cr', label: 'Code Review', count: (devPipe.code_review || 0), color: '#60a5fa', sub: 'Start CR + CR Failed', moved: mv.cr || 0 },
-            { id: 'crp', label: 'CR Passed', count: (devPipe.cr_passed || 0), color: '#2dd4bf', sub: 'Coming to QA!', pulse: true, moved: mv.crp || 0 },
-            { id: 'qa', label: 'QA Queue', count: (sc['QC Testing'] || 0) + (sc['QC Testing Hold'] || 0), color: '#22c55e', sub: `${sc['QC Testing'] || 0} waiting, ${sc['QC Testing Hold'] || 0} hold`, moved: mv.qa || 0 },
-            { id: 'testing', label: 'QA Testing', count: (sc['QC Testing in Progress'] || 0), color: '#a78bfa', sub: 'In Progress', moved: mv.testing || 0 },
-            { id: 'bis', label: 'BIS Testing', count: bis, color: '#f472b6', sub: 'Client sign-off', moved: mv.bis || 0 },
-            { id: 'live', label: 'Live', count: approved, color: '#34d399', sub: 'Prod deploy', moved: mv.live || 0 },
+            { id: 'dev', label: 'Dev Work', count: (devPipe.in_progress || 0), color: '#f59e0b', sub: 'In Progress + Hold', moved: mv.dev || 0,
+              breakdown: [['In Progress', detail['In Progress']||0], ['Hold/Pending', detail['Hold/Pending']||0]].filter(x=>x[1]>0) },
+            { id: 'cr', label: 'Code Review', count: (devPipe.code_review || 0), color: '#60a5fa', sub: 'Start CR + CR Failed', moved: mv.cr || 0,
+              breakdown: [['Start Code Review', detail['Start Code Review']||0], ['Code Review Failed', detail['Code Review Failed']||0], ['Express Lane Review', detail['Express Lane Review']||0]].filter(x=>x[1]>0) },
+            { id: 'crp', label: 'CR Passed', count: (devPipe.cr_passed || 0), color: '#2dd4bf', sub: 'Coming to QA!', pulse: true, moved: mv.crp || 0,
+              breakdown: [['Code Review Passed', detail['Code Review Passed']||0]].filter(x=>x[1]>0) },
+            { id: 'qa', label: 'QA Queue', count: (sc['QC Testing'] || 0) + (sc['QC Testing Hold'] || 0), color: '#22c55e', sub: `${sc['QC Testing'] || 0} waiting, ${sc['QC Testing Hold'] || 0} hold`, moved: mv.qa || 0,
+              breakdown: [['QC Testing', sc['QC Testing']||0], ['QC Testing Hold', sc['QC Testing Hold']||0]].filter(x=>x[1]>0) },
+            { id: 'testing', label: 'QA Testing', count: (sc['QC Testing in Progress'] || 0), color: '#a78bfa', sub: 'In Progress', moved: mv.testing || 0,
+              breakdown: [['QC Testing in Progress', sc['QC Testing in Progress']||0]].filter(x=>x[1]>0) },
+            { id: 'bis', label: 'BIS Testing', count: bis, color: '#f472b6', sub: 'Client sign-off', moved: mv.bis || 0,
+              breakdown: [['BIS Testing', bis]].filter(x=>x[1]>0) },
+            { id: 'live', label: 'Live', count: approved, color: '#34d399', sub: 'Prod deploy', moved: mv.live || 0,
+              breakdown: [['Approved for Live', approved]].filter(x=>x[1]>0) },
           ];
 
           const totalFlow = stages.reduce((s, st) => s + st.count, 0);
@@ -479,11 +488,7 @@ export default function QCQueueDashboard() {
               {stages.map((s, i) => (
                 <React.Fragment key={s.id}>
                   <div className="pipeline-stage" onClick={() => {
-                    if (s.id === 'qa') handleCardClick('unassigned');
-                    else if (s.id === 'testing') handleCardClick('in_progress');
-                    else if (s.id === 'bis') handleCardClick('bis_testing');
-                    else if (s.id === 'live') handleCardClick('approved_for_live');
-                    else window.location.href = '/dev-dashboard';
+                    setPipelineDetail(pipelineDetail === s.id ? null : s.id);
                   }} style={{
                     background: `linear-gradient(135deg, ${s.color}18 0%, ${s.color}08 100%)`,
                     border: `2px solid ${s.color}60`, borderRadius: '14px',
@@ -542,14 +547,63 @@ export default function QCQueueDashboard() {
 
             {qcFail > 0 && (
               <div style={{ display: 'flex', justifyContent: 'center', marginTop: '8px' }}>
-                <span onClick={() => handleCardClick('qc_failed')}
+                <span onClick={() => setPipelineDetail(pipelineDetail === 'fail' ? null : 'fail')}
                   style={{ padding: '6px 16px', borderRadius: '8px', fontSize: '0.78rem', fontWeight: 700, cursor: 'pointer',
-                    background: 'rgba(239,68,68,0.12)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.4)',
+                    background: pipelineDetail === 'fail' ? '#ef4444' : 'rgba(239,68,68,0.12)',
+                    color: pipelineDetail === 'fail' ? '#fff' : '#ef4444', border: '1px solid rgba(239,68,68,0.4)',
                     animation: 'pipeline-fail-glow 3s ease-in-out infinite' }}>
-                  \u21A9 QC Fail: {qcFail} returned to dev
+                  {'\u21A9'} QC Fail: {qcFail} returned to dev
                 </span>
               </div>
             )}
+
+            {/* Pipeline detail — shows breakdown + ticket list when a stage card is clicked */}
+            {pipelineDetail && (() => {
+              const stage = stages.find(s => s.id === pipelineDetail) || (pipelineDetail === 'fail' ? { id: 'fail', label: 'QC Review Fail', color: '#ef4444', breakdown: [['QC Review Fail', qcFail]] } : null);
+              if (!stage) return null;
+              const statusList = (stage.breakdown || []).map(b => b[0]);
+              // Get tickets from available data
+              const allQ = [...(queue?.queue || []), ...(qcFailed?.tickets || []), ...(bisTesting?.tickets || []), ...(approvedForLive?.tickets || [])];
+              // For dev statuses, tickets aren't in QC queue — fetch from module_pipeline
+              const pipeTickets = (queue?.module_pipeline || []).flatMap(m => m.tickets || []);
+              const combined = [...allQ, ...pipeTickets];
+              const tickets = combined.filter(t => statusList.includes(t.status));
+              // Deduplicate
+              const seen = new Set();
+              const unique = tickets.filter(t => { if (seen.has(t.ticket_id)) return false; seen.add(t.ticket_id); return true; });
+
+              return (
+                <div style={{ marginTop: '12px', padding: '12px', background: 'var(--bg-secondary)', borderRadius: '8px', border: `1px solid ${stage.color}40` }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                    <span style={{ fontWeight: 700, fontSize: '0.9rem', color: stage.color }}>{stage.label} ({unique.length})</span>
+                    {stage.breakdown?.length > 1 && stage.breakdown.map(([s, c]) => (
+                      <span key={s} style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '4px', background: `${stage.color}15`, color: stage.color, fontWeight: 600 }}>{s}: {c}</span>
+                    ))}
+                    <button className="btn btn-sm btn-secondary" onClick={() => setPipelineDetail(null)} style={{ marginLeft: 'auto', fontSize: '0.7rem' }}>Close</button>
+                  </div>
+                  {unique.length > 0 ? (
+                    <div className="qcq-table-container">
+                      <table className="qcq-table" style={{ fontSize: '0.78rem' }}>
+                        <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Module</th><th>Developer</th><th>QC Tester</th></tr></thead>
+                        <tbody>
+                          {unique.map(t => (
+                            <tr key={t.ticket_id} className="qcq-row">
+                              <td style={{textAlign:'center'}}><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
+                              <td style={{ maxWidth: '250px', wordBreak: 'break-word', whiteSpace: 'normal', textAlign: 'left' }}>{t.title}</td>
+                              <td style={{textAlign:'center'}}><span className="qcq-status-badge">{t.status}</span></td>
+                              <td style={{textAlign:'center'}}>{t.priority}</td>
+                              <td style={{textAlign:'center'}}>{t.module || '-'}</td>
+                              <td style={{textAlign:'center', fontSize:'0.72rem'}}>{t.developers_str || '-'}</td>
+                              <td style={{textAlign:'center'}}>{t.qc_tester || '-'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : <p style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>Ticket details available in Dev Dashboard</p>}
+                </div>
+              );
+            })()}
           </div>);
         })()}
 
