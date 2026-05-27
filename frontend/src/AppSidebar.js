@@ -10,8 +10,20 @@ export default function AppSidebar() {
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   const path = location.pathname;
   const [generating, setGenerating] = useState(null);
+  const [syncing, setSyncing] = useState(false);
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
+
+  const globalRefresh = async () => {
+    setSyncing(true);
+    try {
+      await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
+      window.location.reload();
+    } catch (err) {
+      console.error('Refresh failed:', err);
+      setSyncing(false);
+    }
+  };
 
   const downloadReport = async (type) => {
     setGenerating(type);
@@ -61,6 +73,14 @@ export default function AppSidebar() {
           <span>{theme === 'dark' ? 'Light' : 'Dark'}</span>
         </button>
       </div>
+      <div style={{ padding: '0 12px 8px' }}>
+        <button onClick={globalRefresh} disabled={syncing}
+          style={{ width: '100%', padding: '8px', borderRadius: '6px', border: 'none', cursor: syncing ? 'wait' : 'pointer',
+            background: syncing ? 'var(--accent-amber)' : 'var(--accent-teal)', color: '#fff', fontWeight: 700, fontSize: '0.78rem',
+            opacity: syncing ? 0.8 : 1, transition: 'all 0.2s' }}>
+          {syncing ? 'Syncing All Data...' : 'Sync & Refresh All'}
+        </button>
+      </div>
       <nav className="nav-menu">
         <Link to="/" className={`nav-item ${path === '/' || path === '/qc-queue' ? 'active' : ''}`}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -86,7 +106,7 @@ export default function AppSidebar() {
             <path d="M12 18v-6" />
             <path d="M9 15l3 3 3-3" />
           </svg>
-          QA Activity Summary
+          Activity Summary
         </Link>
 
         <Link to="/resource-planner" className={`nav-item ${path === '/resource-planner' ? 'active' : ''}`}>

@@ -76,10 +76,14 @@ export default function TeamBoard() {
 
   useEffect(() => { fetchBoard(); }, [fetchBoard]);
 
+  const [syncing, setSyncing] = useState(false);
   const forceRefresh = async () => {
-    await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
-    setExpandedMember(null); setSearchFilter('');
-    fetchBoard();
+    setSyncing(true);
+    try {
+      await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
+      setExpandedMember(null); setSearchFilter('');
+      await fetchBoard();
+    } finally { setSyncing(false); }
   };
 
   const loadMemberDetail = (employeeId) => {
@@ -350,7 +354,6 @@ export default function TeamBoard() {
               <button className={`btn btn-sm ${platformFilter === 'Web' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setPlatformFilter('Web')}>Web ({webMemberCount})</button>
               <button className={`btn btn-sm ${platformFilter === 'Mobile' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setPlatformFilter('Mobile')}>Mobile ({mobileMemberCount})</button>
             </div>
-            <button onClick={forceRefresh} className="btn btn-secondary btn-sm" title="Force refresh from PM API">Sync & Refresh</button>
           </div>
         </header>
 

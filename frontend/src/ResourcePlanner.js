@@ -485,7 +485,6 @@ export default function ResourcePlanner() {
             <p className="header-subtitle">Team workload, module ownership & next ticket suggestions</p>
           </div>
           <div className="header-right">
-            <button onClick={forceRefresh} className="btn btn-secondary btn-sm" disabled={refreshing}>{refreshing ? 'Syncing...' : 'Sync & Refresh'}</button>
           </div>
         </header>
 

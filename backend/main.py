@@ -15590,6 +15590,69 @@ def export_tickets_to_excel(body: dict = Body(...)):
         media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 
+@app.get("/live/assign-to-summary")
+def live_assign_to_summary():
+    """All tickets grouped by Assign To field with dev/qa/bis status breakdown."""
+    from pm_live_data import fetch_live_tickets, load_module_ownership
+    success, all_tickets, _ = fetch_live_tickets()
+    if not success:
+        return {'persons': [], 'total': 0}
+
+    ownership = load_module_ownership()
+    qa_team = set(ownership.get('team_members', []))
+    # Dev team from Employee table
+    try:
+        from models import Employee
+        db = SessionLocal()
+        dev_employees = db.query(Employee).filter(Employee.is_active == True, Employee.team == 'DEVELOPMENT').all()
+        dev_team = set(e.name for e in dev_employees)
+        db.close()
+    except Exception:
+        dev_team = set()
+
+    DEV_STATUSES = {'Ready For Development', 'In Progress', 'Hold/Pending', 'Start Code Review',
+        'Code Review Failed', 'Code Review Passed', 'Express Lane Review'}
+    QA_STATUSES = {'QC Testing', 'QC Testing in Progress', 'QC Testing Hold', 'QC Review Fail'}
+    BIS_STATUSES = {'BIS Testing', 'Approved for Live', 'Moved to Live'}
+
+    CLOSED_STATUSES = {'Closed', 'Moved to Live', 'Cancelled', 'Rejected', 'Duplicate'}
+    persons = {}
+    for t in all_tickets:
+        if t['status'] in CLOSED_STATUSES:
+            continue
+        assignee = (t.get('current_assignee') or '').strip()
+        if not assignee:
+            continue
+        if assignee not in persons:
+            # Determine team
+            team = 'Dev' if assignee in dev_team or any(assignee.lower() in d.lower() for d in dev_team) else \
+                   'QA' if assignee in qa_team or any(assignee.lower() in q.lower() for q in qa_team) else 'BIS'
+            persons[assignee] = {'name': assignee, 'team': team, 'dev': 0, 'qa': 0, 'bis': 0, 'other': 0, 'total': 0, 'tickets': []}
+
+        s = t['status']
+        persons[assignee]['total'] += 1
+        if s in DEV_STATUSES:
+            persons[assignee]['dev'] += 1
+        elif s in QA_STATUSES:
+            persons[assignee]['qa'] += 1
+        elif s in BIS_STATUSES:
+            persons[assignee]['bis'] += 1
+        else:
+            persons[assignee]['other'] += 1
+
+        persons[assignee]['tickets'].append({
+            'ticket_id': t['ticket_id'], 'title': t['title'], 'status': s,
+            'priority': t['priority'], 'module': t.get('module', ''),
+            'platform': t.get('platform', ''), 'qc_tester': t.get('qc_tester', ''),
+            'developers_str': t.get('developers_str', ''),
+            'qa_estimate_hours': t.get('qa_estimate_hours', 0),
+            'dev_estimate_hours': t.get('dev_estimate_hours', 0),
+        })
+
+    person_list = sorted(persons.values(), key=lambda p: -p['total'])
+    return {'persons': person_list, 'total': len(person_list)}
+
+
 @app.get("/live/build-quality")
 def live_build_quality():
     return get_live_build_quality()

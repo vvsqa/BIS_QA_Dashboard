@@ -65,11 +65,15 @@ export default function DevDashboard() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  const [syncing, setSyncing] = useState(false);
   const forceRefresh = async () => {
-    await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
-    setCardFilter(null); setExpandedDev(null); setExpandedModule(null); setBqFilter(null);
-    setSearchFilter(''); setStageFilter(''); setAssigneeFilter(''); setModuleFilter(''); setDeveloperFilter('');
-    fetchData();
+    setSyncing(true);
+    try {
+      await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
+      setCardFilter(null); setExpandedDev(null); setExpandedModule(null); setBqFilter(null);
+      setSearchFilter(''); setStageFilter(''); setAssigneeFilter(''); setModuleFilter(''); setDeveloperFilter('');
+      await fetchData();
+    } finally { setSyncing(false); }
   };
 
   const handleSort = (field) => {
@@ -364,7 +368,6 @@ export default function DevDashboard() {
               <button className={`btn btn-sm ${platformFilter==='Web'?'btn-primary':'btn-secondary'}`} onClick={()=>setPlatformFilter('Web')}>Web ({allTickets.filter(t=>t.platform==='Web').length})</button>
               <button className={`btn btn-sm ${platformFilter==='Mobile'?'btn-primary':'btn-secondary'}`} onClick={()=>setPlatformFilter('Mobile')}>Mobile ({allTickets.filter(t=>t.platform==='Mobile').length})</button>
             </div>
-            <button onClick={forceRefresh} className="btn btn-secondary btn-sm">Sync & Refresh</button>
           </div>
         </header>
 

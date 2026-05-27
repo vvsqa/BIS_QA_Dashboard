@@ -132,11 +132,15 @@ export default function QCQueueDashboard() {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  const [syncing, setSyncing] = useState(false);
   const forceRefresh = async () => {
-    await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
-    setCardFilter(null); setSelectedModuleBar(null); setSelectedPipelineBar(null);
-    setSearchFilter(''); setListPriorityFilter(''); setListModuleFilter(''); setListTesterFilter('');
-    fetchAll();
+    setSyncing(true);
+    try {
+      await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
+      setCardFilter(null); setSelectedModuleBar(null); setSelectedPipelineBar(null);
+      setSearchFilter(''); setListPriorityFilter(''); setListModuleFilter(''); setListTesterFilter('');
+      await fetchAll();
+    } finally { setSyncing(false); }
   };
 
   const toggleExpand = (ticketId) => {
@@ -308,7 +312,7 @@ export default function QCQueueDashboard() {
     </th>
   );
 
-  const COL_COUNT = 20;
+  const COL_COUNT = 21;
 
   const renderQueueTable = (tickets, label) => {
     const sorted = sortTickets(tickets);
@@ -320,6 +324,7 @@ export default function QCQueueDashboard() {
             <SortHeader field="ticket_id">Ticket</SortHeader>
             <th>Title</th>
             <SortHeader field="status">Status</SortHeader>
+            <th>Type</th>
             <SortHeader field="priority">Priority</SortHeader>
             <SortHeader field="platform">Platform</SortHeader>
             <SortHeader field="qc_tester">QC Tester</SortHeader>
@@ -355,6 +360,7 @@ export default function QCQueueDashboard() {
                     {t.status}
                   </span>
                 </td>
+                <td style={{textAlign:'center'}}>{(t.qa_actual_hours > 0 || t.retest_cycle_count > 0) ? <span className="qcq-fail" style={{fontSize:'0.7rem'}}>Refix</span> : <span style={{color:'var(--accent-green)',fontSize:'0.7rem',fontWeight:600}}>New</span>}</td>
                 <td className="qcq-priority">{t.priority}</td>
                 <td><span className={`qcq-platform-badge qcq-platform-${(t.platform || 'Web').toLowerCase()}`}>{t.platform || 'Web'}</span></td>
                 <td>{t.qc_tester || <span className="qcq-unassigned">Unassigned</span>}</td>
@@ -439,37 +445,113 @@ export default function QCQueueDashboard() {
               <button className={`btn btn-sm ${platformFilter === 'Web' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setPlatformFilter('Web')}>Web ({webCount})</button>
               <button className={`btn btn-sm ${platformFilter === 'Mobile' ? 'btn-primary' : 'btn-secondary'}`} onClick={() => setPlatformFilter('Mobile')}>Mobile ({mobileCount})</button>
             </div>
-            <button onClick={forceRefresh} className="btn btn-secondary btn-sm" title="Force refresh from PM API">Sync & Refresh</button>
           </div>
         </header>
 
-        {/* 30-Day Summary Banner */}
-        {monthlySummary && (
-          <div className="qcq-summary-banner">
-            <div className="qcq-summary-title">QA Pipeline Overview ({monthlySummary.period})</div>
-            <table className="qcq-summary-table">
-              <tbody>
-                <tr className="qcq-summary-section-row"><td colSpan="2">QA Throughput (30 days)</td></tr>
-                <tr><td>Tickets closed by QA this month</td><td className="qcq-st-val">{monthlySummary.closed_by_qa}</td></tr>
-                <tr><td>Tickets closed previous month ({monthlySummary.previous_month?.period})</td><td className="qcq-st-val">{monthlySummary.previous_month?.closed_by_qa || 0}</td></tr>
-                <tr><td>Month-over-month trend</td><td className="qcq-st-val" style={{ color: monthlySummary.closed_by_qa >= (monthlySummary.previous_month?.closed_by_qa || 0) ? 'var(--accent-green)' : 'var(--accent-red)' }}>{monthlySummary.closed_by_qa >= (monthlySummary.previous_month?.closed_by_qa || 0) ? '\u25B2 +' : '\u25BC '}{Math.abs(monthlySummary.closed_by_qa - (monthlySummary.previous_month?.closed_by_qa || 0))}</td></tr>
+        {/* Animated Pipeline Visualization */}
+        {queue && (() => {
+          const devPipe = queue.dev_pipeline_summary || {};
+          const sc = queue.status_cards || {};
+          const bis = bisTesting?.tickets?.length || 0;
+          const approved = approvedForLive?.tickets?.length || 0;
+          const qcFail = qcFailed?.tickets?.length || 0;
 
-                <tr className="qcq-summary-section-row"><td colSpan="2">Current QC Pipeline — {monthlySummary.currently_in_qc} tickets</td></tr>
-                <tr><td>In Progress (being tested by QA)</td><td className="qcq-st-val">{monthlySummary.in_progress_count}</td></tr>
-                <tr><td>Assigned to QA, waiting to start</td><td className="qcq-st-val">{monthlySummary.assigned_waiting_count}</td></tr>
-                <tr><td>Unassigned — need QA resource allocation</td><td className="qcq-st-val" style={{ color: monthlySummary.unassigned_count > 0 ? 'var(--accent-red)' : undefined }}>{monthlySummary.unassigned_count}</td></tr>
-                <tr><td>On Hold (blocked / dependency)</td><td className="qcq-st-val">{monthlySummary.hold_count}</td></tr>
-                <tr><td>QC Review Failed — returned to dev</td><td className="qcq-st-val" style={{ color: monthlySummary.qc_failed > 0 ? 'var(--accent-red)' : undefined }}>{monthlySummary.qc_failed}</td></tr>
-                {monthlySummary.retesting_count > 0 && <tr><td>Retesting after QC fail (back in QC)</td><td className="qcq-st-val" style={{ color: 'var(--accent-amber)' }}>{monthlySummary.retesting_count}</td></tr>}
-                {monthlySummary.no_qa_estimate > 0 && <tr><td style={{color:'var(--accent-red)'}}>No QA Estimate — need planning</td><td className="qcq-st-val" style={{color:'var(--accent-red)'}}>{monthlySummary.no_qa_estimate}</td></tr>}
+          const mv = queue.movement_24h || {};
+          const stages = [
+            { id: 'dev', label: 'Dev Work', count: (devPipe.in_progress || 0), color: '#f59e0b', sub: 'In Progress + Hold', moved: mv.dev || 0 },
+            { id: 'cr', label: 'Code Review', count: (devPipe.code_review || 0), color: '#60a5fa', sub: 'Start CR + CR Failed', moved: mv.cr || 0 },
+            { id: 'crp', label: 'CR Passed', count: (devPipe.cr_passed || 0), color: '#2dd4bf', sub: 'Coming to QA!', pulse: true, moved: mv.crp || 0 },
+            { id: 'qa', label: 'QA Queue', count: (sc['QC Testing'] || 0) + (sc['QC Testing Hold'] || 0), color: '#22c55e', sub: `${sc['QC Testing'] || 0} waiting, ${sc['QC Testing Hold'] || 0} hold`, moved: mv.qa || 0 },
+            { id: 'testing', label: 'QA Testing', count: (sc['QC Testing in Progress'] || 0), color: '#a78bfa', sub: 'In Progress', moved: mv.testing || 0 },
+            { id: 'bis', label: 'BIS Testing', count: bis, color: '#f472b6', sub: 'Client sign-off', moved: mv.bis || 0 },
+            { id: 'live', label: 'Live', count: approved, color: '#34d399', sub: 'Prod deploy', moved: mv.live || 0 },
+          ];
 
-                <tr className="qcq-summary-section-row"><td colSpan="2">Post-QC Status</td></tr>
-                <tr><td>In BIS Testing (passed QC, awaiting client sign-off)</td><td className="qcq-st-val">{monthlySummary.in_bis}</td></tr>
-                <tr><td>Approved for Live (verified by BIS, pending prod deploy)</td><td className="qcq-st-val">{monthlySummary.approved}</td></tr>
-              </tbody>
-            </table>
-          </div>
-        )}
+          const totalFlow = stages.reduce((s, st) => s + st.count, 0);
+          return (
+          <div style={{ padding: '20px 12px', marginBottom: '8px', background: 'linear-gradient(180deg, var(--bg-secondary) 0%, var(--bg-primary) 100%)', borderRadius: '16px', border: '1px solid var(--border-color)' }}>
+            <div style={{ textAlign: 'center', marginBottom: '16px' }}>
+              <span style={{ fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)', letterSpacing: '1px', textTransform: 'uppercase' }}>Live Ticket Pipeline</span>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: '8px' }}>{totalFlow} tickets in flow</span>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0', justifyContent: 'center', padding: '0 8px' }}>
+              {stages.map((s, i) => (
+                <React.Fragment key={s.id}>
+                  <div className="pipeline-stage" onClick={() => {
+                    if (s.id === 'qa') handleCardClick('unassigned');
+                    else if (s.id === 'testing') handleCardClick('in_progress');
+                    else if (s.id === 'bis') handleCardClick('bis_testing');
+                    else if (s.id === 'live') handleCardClick('approved_for_live');
+                    else window.location.href = '/dev-dashboard';
+                  }} style={{
+                    background: `linear-gradient(135deg, ${s.color}18 0%, ${s.color}08 100%)`,
+                    border: `2px solid ${s.color}60`, borderRadius: '14px',
+                    padding: '12px 8px', width: '115px', height: '105px',
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    textAlign: 'center', cursor: 'pointer', position: 'relative',
+                    transition: 'all 0.3s ease',
+                    animation: s.pulse ? 'pipeline-pulse 2s ease-in-out infinite' : 'none',
+                  }}>
+                    <div style={{ fontSize: '2.2rem', fontWeight: 800, color: s.color, lineHeight: 1, textShadow: `0 0 20px ${s.color}30` }}>{s.count}</div>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 700, color: 'var(--text-primary)', marginTop: '4px' }}>{s.label}</div>
+                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: '3px', lineHeight: 1.2 }}>{s.sub}</div>
+                    {s.pulse && s.count > 0 && (
+                      <div style={{ position: 'absolute', top: '-4px', right: '-4px', width: '12px', height: '12px', borderRadius: '50%', background: s.color, animation: 'pipeline-dot-pulse 1.5s ease-in-out infinite' }} />
+                    )}
+                  </div>
+                  {i < stages.length - 1 && (
+                    <div style={{ width: '44px', height: '36px', flexShrink: 0 }}>
+                      <svg width="44" height="36" viewBox="0 0 44 36">
+                        <line x1="2" y1="18" x2="32" y2="18" stroke="#334155" strokeWidth="3" strokeLinecap="round" />
+                        <polygon points="30,12 42,18 30,24" fill={`${stages[i+1].color}80`} />
+                        {[0, 0.5, 1].map((d, pi) => (
+                          <circle key={pi} r="3.5" fill={stages[i+1].color}>
+                            <animate attributeName="cx" from="-2" to="36" dur={`${2 + i * 0.2}s`} begin={`${d}s`} repeatCount="indefinite" />
+                            <animate attributeName="opacity" values="0;0.9;0.9;0" dur={`${2 + i * 0.2}s`} begin={`${d}s`} repeatCount="indefinite" />
+                          </circle>
+                        ))}
+                        <circle r="6" fill={stages[i+1].color} opacity="0.15">
+                          <animate attributeName="cx" from="-2" to="36" dur={`${2 + i * 0.2}s`} repeatCount="indefinite" />
+                          <animate attributeName="opacity" values="0;0.2;0" dur={`${2 + i * 0.2}s`} repeatCount="indefinite" />
+                        </circle>
+                      </svg>
+                    </div>
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+
+            {/* 24h movement — common row */}
+            {stages.some(s => s.moved > 0) && (
+              <div style={{ display: 'flex', justifyContent: 'center', gap: '0', marginTop: '8px', padding: '0 8px' }}>
+                {stages.map((s, i) => (
+                  <React.Fragment key={s.id}>
+                    <div style={{ width: '115px', textAlign: 'center', fontSize: '0.62rem', fontWeight: 700,
+                      color: s.moved >= 5 ? s.color : 'var(--text-muted)' }}>
+                      {s.moved > 0 ? `${s.moved >= 5 ? '\u26A1' : '\u2191'}+${s.moved}` : ''}
+                    </div>
+                    {i < stages.length - 1 && <div style={{ width: '44px', flexShrink: 0 }} />}
+                  </React.Fragment>
+                ))}
+              </div>
+            )}
+            <div style={{ textAlign: 'center', fontSize: '0.58rem', color: 'var(--text-muted)', marginTop: '2px' }}>
+              {stages.some(s => s.moved > 0) ? 'tickets moved in last 24 hours' : ''}
+            </div>
+
+            {qcFail > 0 && (
+              <div style={{ display: 'flex', justifyContent: 'center', marginTop: '8px' }}>
+                <span onClick={() => handleCardClick('qc_failed')}
+                  style={{ padding: '6px 16px', borderRadius: '8px', fontSize: '0.78rem', fontWeight: 700, cursor: 'pointer',
+                    background: 'rgba(239,68,68,0.12)', color: '#ef4444', border: '1px solid rgba(239,68,68,0.4)',
+                    animation: 'pipeline-fail-glow 3s ease-in-out infinite' }}>
+                  \u21A9 QC Fail: {qcFail} returned to dev
+                </span>
+              </div>
+            )}
+          </div>);
+        })()}
 
         {/* Status Cards - Clickable */}
         <div className="qcq-status-cards">
@@ -525,6 +607,17 @@ export default function QCQueueDashboard() {
           <div className="qcq-section qcq-card-filter-section">
             <div className="qcq-section-title">
               {cardFilterLabels[cardFilter]} ({applyFilters(cardFilteredList).length}{applyFilters(cardFilteredList).length !== cardFilteredList.length ? ` of ${cardFilteredList.length}` : ''})
+              {(() => {
+                const filtered = applyFilters(cardFilteredList);
+                const firstTime = filtered.filter(t => !(t.qa_actual_hours > 0 || t.retest_cycle_count > 0)).length;
+                const refix = filtered.length - firstTime;
+                return (
+                  <span style={{ display: 'flex', gap: '6px', marginLeft: '10px' }}>
+                    {firstTime > 0 && <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(34,197,94,0.12)', color: 'var(--accent-green)', fontWeight: 600 }}>First Time: {firstTime}</span>}
+                    {refix > 0 && <span style={{ fontSize: '0.72rem', padding: '2px 8px', borderRadius: '4px', background: 'rgba(239,68,68,0.12)', color: 'var(--accent-red)', fontWeight: 600 }}>Refix: {refix}</span>}
+                  </span>
+                );
+              })()}
               <button className="btn btn-sm btn-secondary" onClick={() => setCardFilter(null)} style={{ marginLeft: 'auto' }}>Clear Filter</button>
             </div>
 
@@ -617,6 +710,9 @@ export default function QCQueueDashboard() {
           </button>
           <button className={`qcq-tab ${activeTab === 'dev_pipeline' ? 'active' : ''}`} onClick={() => { setActiveTab('dev_pipeline'); setCardFilter(null); setSelectedPipelineBar(null); }}>
             Incoming Pipeline ({modulePipeline.reduce((s, m) => s + m.total, 0)})
+          </button>
+          <button className={`qcq-tab ${activeTab === 'pipeline_stats' ? 'active' : ''}`} onClick={() => { setActiveTab('pipeline_stats'); setCardFilter(null); }}>
+            Pipeline Stats
           </button>
           {activeTab === 'queue' && (
             <div className="qcq-search" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
@@ -918,6 +1014,32 @@ export default function QCQueueDashboard() {
                 </div>
               );
             })()}
+          </div>
+        )}
+
+        {/* Pipeline Stats Tab — moved from banner */}
+        {activeTab === 'pipeline_stats' && monthlySummary && (
+          <div className="qcq-section">
+            <div className="qcq-summary-banner">
+              <div className="qcq-summary-title">QA Pipeline Overview ({monthlySummary.period})</div>
+              <table className="qcq-summary-table">
+                <tbody>
+                  <tr className="qcq-summary-section-row"><td colSpan="2">QA Throughput (30 days)</td></tr>
+                  <tr><td>Tickets closed by QA this month</td><td className="qcq-st-val">{monthlySummary.closed_by_qa}</td></tr>
+                  <tr><td>Tickets closed previous month ({monthlySummary.previous_month?.period})</td><td className="qcq-st-val">{monthlySummary.previous_month?.closed_by_qa || 0}</td></tr>
+                  <tr><td>Month-over-month trend</td><td className="qcq-st-val" style={{ color: monthlySummary.closed_by_qa >= (monthlySummary.previous_month?.closed_by_qa || 0) ? 'var(--accent-green)' : 'var(--accent-red)' }}>{monthlySummary.closed_by_qa >= (monthlySummary.previous_month?.closed_by_qa || 0) ? '\u25B2 +' : '\u25BC '}{Math.abs(monthlySummary.closed_by_qa - (monthlySummary.previous_month?.closed_by_qa || 0))}</td></tr>
+                  <tr className="qcq-summary-section-row"><td colSpan="2">Current QC Pipeline — {monthlySummary.currently_in_qc} tickets</td></tr>
+                  <tr><td>In Progress (being tested by QA)</td><td className="qcq-st-val">{monthlySummary.in_progress_count}</td></tr>
+                  <tr><td>Assigned to QA, waiting to start</td><td className="qcq-st-val">{monthlySummary.assigned_waiting_count}</td></tr>
+                  <tr><td>Unassigned — need QA resource allocation</td><td className="qcq-st-val" style={{ color: monthlySummary.unassigned_count > 0 ? 'var(--accent-red)' : undefined }}>{monthlySummary.unassigned_count}</td></tr>
+                  <tr><td>On Hold (blocked / dependency)</td><td className="qcq-st-val">{monthlySummary.hold_count}</td></tr>
+                  <tr><td>QC Review Failed — returned to dev</td><td className="qcq-st-val" style={{ color: monthlySummary.qc_failed > 0 ? 'var(--accent-red)' : undefined }}>{monthlySummary.qc_failed}</td></tr>
+                  <tr className="qcq-summary-section-row"><td colSpan="2">Post-QC Status</td></tr>
+                  <tr><td>In BIS Testing (passed QC, awaiting client sign-off)</td><td className="qcq-st-val">{monthlySummary.in_bis}</td></tr>
+                  <tr><td>Approved for Live (verified by BIS, pending prod deploy)</td><td className="qcq-st-val">{monthlySummary.approved}</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 

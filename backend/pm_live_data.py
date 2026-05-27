@@ -738,6 +738,56 @@ def fetch_live_tickets(force_refresh: bool = False) -> Tuple[bool, List[Dict], s
 def get_live_qc_queue(today: Optional[date] = None) -> Dict:
     return _cached_response('qc_queue', lambda: _compute_qc_queue(today))
 
+def _get_movement_24h(all_tickets: list, today: date) -> Dict:
+    """Count tickets that entered each pipeline stage in the last 24 hours.
+    Uses ageing tracker for QA statuses, and updates it for ALL statuses going forward."""
+    tracker = _load_ageing_tracker()
+    yesterday = (today - timedelta(days=1)).isoformat()
+    today_str = today.isoformat()
+
+    stage_map = {
+        'In Progress': 'dev', 'Hold/Pending': 'dev',
+        'Start Code Review': 'cr', 'Code Review Failed': 'cr', 'Express Lane Review': 'cr',
+        'Code Review Passed': 'crp',
+        'QC Testing': 'qa', 'QC Testing Hold': 'qa',
+        'QC Testing in Progress': 'testing',
+        'BIS Testing': 'bis', 'Approved for Live': 'live', 'Moved to Live': 'live',
+        'QC Review Fail': 'fail',
+    }
+
+    movement = {'dev': 0, 'cr': 0, 'crp': 0, 'qa': 0, 'testing': 0, 'bis': 0, 'live': 0, 'fail': 0}
+    updated = False
+
+    for t in all_tickets:
+        tid = str(t['ticket_id'])
+        status = t['status']
+        stage = stage_map.get(status)
+        if not stage:
+            continue
+
+        entry = tracker.get(tid)
+        if entry is None:
+            # First time seeing this ticket — record it
+            tracker[tid] = {'status': status, 'first_seen': today_str}
+            movement[stage] += 1  # New today
+            updated = True
+        elif entry.get('status') != status:
+            # Status changed — update tracker and count as movement
+            tracker[tid] = {'status': status, 'first_seen': today_str}
+            movement[stage] += 1
+            updated = True
+        else:
+            # Same status — check if entered within 24h
+            first_seen = entry.get('first_seen', '')
+            if first_seen and first_seen >= yesterday:
+                movement[stage] += 1
+
+    if updated:
+        _save_ageing_tracker(tracker)
+
+    return movement
+
+
 def _compute_qc_queue(today: Optional[date] = None) -> Dict:
     """Live QC queue with scoring, breakdowns, and counts."""
     today = today or date.today()
@@ -1010,6 +1060,12 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
         'monthly_summary': monthly_summary,
         'module_workload': module_workload_list,
         'module_pipeline': module_pipeline_list,
+        'dev_pipeline_summary': {
+            'in_progress': sum(1 for t in all_tickets if t['status'] in ('In Progress', 'Hold/Pending')),
+            'code_review': sum(1 for t in all_tickets if t['status'] in ('Start Code Review', 'Code Review Failed', 'Express Lane Review')),
+            'cr_passed': sum(1 for t in all_tickets if t['status'] == 'Code Review Passed'),
+        },
+        'movement_24h': _get_movement_24h(all_tickets, today),
     }
 
 
@@ -1145,6 +1201,8 @@ def get_live_activity_summary(period: str = 'past_5_days', start_override: Optio
     if not success:
         return {'error': msg, 'members': [], 'team_stats': {}, 'period': period, 'start_date': '', 'end_date': ''}
 
+    cycle_tracker = _load_cycle_tracker()
+
     # All QC + QC Failed + BIS tickets (active work)
     active_statuses = QC_STATUSES + QC_FAIL_STATUSES + [BIS_STATUS, APPROVED_STATUS]
     active_tickets = [t for t in all_tickets if t['status'] in active_statuses]
@@ -1265,6 +1323,7 @@ def get_live_activity_summary(period: str = 'past_5_days', start_override: Optio
                 'bugs_open': bugs['open'] if bugs else 0,
                 'bugs_closed': bugs['closed'] if bugs else 0,
                 'bugs_released_to_qa': bugs.get('released_to_qa', 0) if bugs else 0,
+                'is_refix': (t.get('qa_actual_hours') or 0) > 0 or cycle_tracker.get(str(tid), {}).get('cycle_count', 0) > 0,
             })
 
         ticket_items.sort(key=lambda t: (PRIORITY_ORDER.get(t['priority'], 99), t['ticket_id']))
@@ -2498,8 +2557,16 @@ def _compute_dev_dashboard(today: Optional[date] = None) -> Dict:
     dev_map = {}
     for t in all_relevant:
         # De-duplicate developers per ticket (backend_dev == frontend_dev)
+        # Split comma-separated names (PM sometimes has "Name1, Name2" as one entry)
         seen_devs = set()
+        raw_devs = []
         for d in t.get('developers', []):
+            if not d: continue
+            if ',' in d:
+                raw_devs.extend(part.strip() for part in d.split(',') if part.strip())
+            else:
+                raw_devs.append(d)
+        for d in raw_devs:
             if not d or d in seen_devs:
                 continue
             seen_devs.add(d)
@@ -2515,6 +2582,7 @@ def _compute_dev_dashboard(today: Optional[date] = None) -> Dict:
                 'stage': t['stage'], 'stage_label': t['stage_label'], 'priority': t['priority'],
                 'module': t.get('module', ''), 'platform': t.get('platform', 'Web'),
                 'qc_tester': t.get('qc_tester', ''), 'is_refix': t['is_refix'],
+                'cycle_count': t.get('cycle_count', 0),
                 'current_assignee': t.get('current_assignee', ''),
                 'dev_estimate_hours': t.get('dev_estimate_hours', 0),
                 'actual_dev_hours': t.get('actual_dev_hours', 0),
@@ -2611,7 +2679,86 @@ def _compute_dev_dashboard(today: Optional[date] = None) -> Dict:
         }
 
     ticket_list = [_ticket_item(t) for t in all_relevant]
-    all_devs = sorted(set(d for t in all_relevant for d in t.get('developers', []) if d))
+    # Filter to only our dev team employees (exclude client names)
+    try:
+        from database import SessionLocal as _SL
+        from models import Employee as _Emp
+        _db = _SL()
+        our_dev_names = set(e.name for e in _db.query(_Emp).filter(_Emp.is_active == True, _Emp.team == 'DEVELOPMENT').all())
+        _db.close()
+    except Exception:
+        our_dev_names = set()
+
+    all_devs_raw = sorted(set(d for t in all_relevant for d in t.get('developers', []) if d))
+    if our_dev_names:
+        import re as _re
+        # Build lookup with exact names + known PM aliases
+        our_lookup = set()
+        for n in our_dev_names:
+            normalized = _re.sub(r'\s+', ' ', n.lower().strip())
+            our_lookup.add(normalized)
+            parts = normalized.split()
+            if len(parts) >= 2:
+                our_lookup.add(f'{parts[0]} {parts[-1]}')
+                # Handle "X Y Z" -> "X Yz" (PM concatenates initials)
+                if len(parts) >= 3:
+                    concat = ''.join(p[0] for p in parts[1:])
+                    our_lookup.add(f'{parts[0]} {concat}')
+                    our_lookup.add(f'{parts[0]} {"".join(parts[1:])}')
+
+        # Explicit PM name aliases for known mismatches
+        pm_aliases = {
+            'abhijai kp': True, 'adarsh us': True, 'anoop ben': True,
+            'binoy dominic': True, 'gosal ram': True, 'ranimol kr': True,
+            'sabareesh rs': True, 'sam isaac': True, 'shyamsundar ps': True,
+            'vishnu pramod': True, 'vishnu cs': True, 'midhun gopi': True,
+        }
+        our_lookup.update(pm_aliases.keys())
+
+        def _is_our_dev(pm_name):
+            for part in pm_name.split(','):
+                clean = part.strip().split('(')[0].strip().lower()
+                clean = _re.sub(r'\s+', ' ', clean).strip()
+                if clean in our_lookup:
+                    return True
+                cparts = clean.split()
+                if len(cparts) >= 2 and f'{cparts[0]} {cparts[-1]}' in our_lookup:
+                    return True
+                # First name only match for single-word PM names
+                if len(cparts) >= 1 and any(clean.startswith(k.split()[0]) and len(clean) > 3 for k in our_lookup if ' ' in k):
+                    # Verify second part overlaps
+                    for k in our_lookup:
+                        kp = k.split()
+                        if len(kp) >= 2 and len(cparts) >= 2 and kp[0] == cparts[0] and cparts[1][:2] == kp[1][:2]:
+                            return True
+            return False
+        all_devs = [d for d in all_devs_raw if _is_our_dev(d)]
+        developers = [d for d in developers if _is_our_dev(d['name'])]
+        # Add team members with 0 tickets (skip only if their PM name is already in the list)
+        existing_pm_names = set()
+        for d in developers:
+            pm_clean = d['name'].split('(')[0].strip().lower()
+            existing_pm_names.add(pm_clean)
+
+        existing_first_names = set()
+        for pm in existing_pm_names:
+            parts = pm.split()
+            if parts:
+                existing_first_names.add(parts[0])
+        for our_name in sorted(our_dev_names):
+            our_parts = our_name.lower().strip().split()
+            # Use first significant name part (skip single-letter prefixes like "B")
+            our_first = our_parts[0] if len(our_parts[0]) > 1 else (our_parts[1] if len(our_parts) > 1 else our_parts[0])
+            if our_first in existing_first_names:
+                continue
+            developers.append({
+                'name': our_name, 'ticket_count': 0,
+                'in_progress': 0, 'code_review': 0, 'ready_for_qc': 0, 'ready_for_dev': 0,
+                'qc_testing': 0, 'qc_failed': 0, 'bis': 0, 'approved': 0, 'moved_to_live': 0,
+                'refix_count': 0, 'modules': [], 'total_dev_est': 0, 'total_dev_actual': 0, 'tickets': [],
+            })
+    else:
+        all_devs = all_devs_raw
 
     return {
         'summary': {

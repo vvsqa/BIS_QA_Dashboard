@@ -4675,13 +4675,17 @@ tbody tr:last-child td {
 }
 
 .ticket-link {
-  color: var(--accent-blue);
-  font-weight: 600;
+  color: #60a5fa;
+  font-family: 'Consolas', 'Source Code Pro', 'Menlo', monospace;
+  font-weight: 700;
+  font-size: 0.95rem;
+  letter-spacing: 0.5px;
   text-decoration: none;
 }
 
 .ticket-link:hover {
   text-decoration: underline;
+  color: #93c5fd;
 }
 
 .ticket-external-link {
@@ -16490,21 +16494,27 @@ td.emp-actions {
 }
 
 .qcq-ticket-id {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: 'Consolas', 'Source Code Pro', 'Menlo', monospace;
+  font-weight: 700;
+  font-size: 1rem;
+  white-space: nowrap;
+  letter-spacing: 0.5px;
+}
+
+.qcq-ticket-id a,
+a.qcq-ticket-link {
+  color: #60a5fa;
+  text-decoration: none;
+  font-family: 'Consolas', 'Source Code Pro', 'Menlo', monospace;
   font-weight: 700;
   font-size: 0.95rem;
-  white-space: nowrap;
+  letter-spacing: 0.5px;
 }
 
-.qcq-ticket-id a {
-  color: var(--accent-blue);
-  text-decoration: none;
-  font-size: 0.95rem;
-}
-
-.qcq-ticket-id a:hover {
+.qcq-ticket-id a:hover,
+a.qcq-ticket-link:hover {
   text-decoration: underline;
-  color: var(--accent-cyan);
+  color: #93c5fd;
 }
 
 .qcq-title {
@@ -17785,4 +17795,26 @@ td.emp-actions {
 .rp-suggest-meta {
   font-size: 0.7rem;
   color: var(--text-muted);
+}
+
+/* Pipeline Visualization Animations */
+@keyframes pipeline-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(20,184,166,0.3); transform: scale(1); border-color: rgba(20,184,166,0.6); }
+  50% { box-shadow: 0 0 25px rgba(20,184,166,0.6), 0 0 50px rgba(20,184,166,0.2); transform: scale(1.04); border-color: rgba(20,184,166,1); }
+}
+@keyframes pipeline-dot-pulse {
+  0%, 100% { transform: scale(1); opacity: 0.8; }
+  50% { transform: scale(1.8); opacity: 1; }
+}
+@keyframes pipeline-fail-glow {
+  0%, 100% { box-shadow: 0 0 5px rgba(239,68,68,0.1); }
+  50% { box-shadow: 0 0 15px rgba(239,68,68,0.3); }
+}
+.pipeline-stage {
+  transition: all 0.3s ease;
+}
+.pipeline-stage:hover {
+  transform: translateY(-3px) scale(1.02) !important;
+  box-shadow: 0 8px 20px rgba(0,0,0,0.3) !important;
+  z-index: 2;
 }
