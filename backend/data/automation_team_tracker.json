@@ -1,0 +1,375 @@
+{
+  "members": {
+    "Vishnu VS": {
+      "entries": [
+        {
+          "date": "2026-04-15",
+          "module": "Classroom Calendar",
+          "cases_scripted": 29,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Classroom Calendar \u2014 Cases"
+        },
+        {
+          "date": "2026-04-16",
+          "module": "Classroom Calendar",
+          "cases_scripted": 20,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Classroom Calendar \u2014 Cases"
+        },
+        {
+          "date": "2026-04-17",
+          "module": "Classroom Calendar",
+          "cases_scripted": 23,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Classroom Calendar \u2014 Cases"
+        },
+        {
+          "date": "2026-04-23",
+          "module": "Classroom Calendar",
+          "cases_scripted": 6,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Classroom Calendar \u2014 Cases"
+        },
+        {
+          "date": "2026-04-24",
+          "module": "Classroom Calendar",
+          "cases_scripted": 12,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Classroom Calendar \u2014 Cases"
+        },
+        {
+          "date": "2026-04-27",
+          "module": "Classroom Calendar",
+          "cases_scripted": 10,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Classroom Calendar \u2014 Cases"
+        },
+        {
+          "date": "2026-04-28",
+          "module": "Classroom Calendar",
+          "cases_scripted": 14,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Classroom Calendar \u2014 Cases"
+        },
+        {
+          "date": "2026-04-29",
+          "module": "Classroom Calendar",
+          "cases_scripted": 19,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Classroom Calendar \u2014 Cases"
+        },
+        {
+          "date": "2026-04-30",
+          "module": "Classroom Calendar",
+          "cases_scripted": 17,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Classroom Calendar \u2014 Cases"
+        },
+        {
+          "date": "2026-05-06",
+          "module": "Classroom Calendar",
+          "cases_scripted": 12,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Classroom Calendar \u2014 Cases"
+        },
+        {
+          "date": "2026-05-07",
+          "module": "Online Course",
+          "cases_scripted": 309,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from Online Course \u2014 Cases"
+        },
+        {
+          "date": "2026-05-08",
+          "module": "User Management",
+          "cases_scripted": 209,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from User Administration \u2014 Cases"
+        },
+        {
+          "date": "2026-05-22",
+          "module": "User Management",
+          "cases_scripted": 160,
+          "cases_executed": 0,
+          "activity": "scripting",
+          "source": "excel",
+          "notes": "Imported from User Administration \u2014 Cases"
+        },
+        {
+          "date": "2026-05-07",
+          "module": "Classroom Calendar",
+          "cases_scripted": 0,
+          "cases_executed": 4,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-14",
+          "module": "Classroom Calendar",
+          "cases_scripted": 0,
+          "cases_executed": 21,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-07",
+          "module": "Classroom Calendar",
+          "cases_scripted": 0,
+          "cases_executed": 16,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-13",
+          "module": "Classroom Calendar",
+          "cases_scripted": 0,
+          "cases_executed": 24,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-22",
+          "module": "Classroom Calendar",
+          "cases_scripted": 0,
+          "cases_executed": 42,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-01",
+          "module": "Classroom Calendar",
+          "cases_scripted": 0,
+          "cases_executed": 9,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-29",
+          "module": "Classroom Calendar",
+          "cases_scripted": 0,
+          "cases_executed": 6,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-05-14",
+          "module": "Online Course",
+          "cases_scripted": 0,
+          "cases_executed": 707,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-05-09",
+          "module": "Online Course",
+          "cases_scripted": 0,
+          "cases_executed": 35,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-05-11",
+          "module": "Online Course",
+          "cases_scripted": 0,
+          "cases_executed": 60,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-05-07",
+          "module": "Online Course",
+          "cases_scripted": 0,
+          "cases_executed": 14,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-05-13",
+          "module": "Online Course",
+          "cases_scripted": 0,
+          "cases_executed": 10,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-13",
+          "module": "Online Course",
+          "cases_scripted": 0,
+          "cases_executed": 33,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-03-31",
+          "module": "Online Course",
+          "cases_scripted": 0,
+          "cases_executed": 12,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-01",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 24,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-28",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 42,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-29",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 66,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-05-18",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 1,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-05-09",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 52,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-03-23",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 8,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-21",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 78,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-03-25",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 20,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-03-31",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 5,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-13",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 89,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-05-05",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 16,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-03-26",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 18,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        },
+        {
+          "date": "2026-04-08",
+          "module": "User Administration",
+          "cases_scripted": 0,
+          "cases_executed": 16,
+          "activity": "execution",
+          "source": "excel",
+          "notes": "Execution from tracker"
+        }
+      ]
+    },
+    "Vivek V Nair": {
+      "entries": []
+    },
+    "Varsha Dcruz P": {
+      "entries": []
+    }
+  },
+  "last_sync": "2026-05-25"
+}

@@ -34,6 +34,12 @@ const apiPaths = [
   '/login',
   '/eta-calendar',
   '/automation',
+  '/qc-queue',
+  '/qc-cycles',
+  '/ageing',
+  '/analytics',
+  '/team-board',
+  '/live',
 ];
 
 function isApiPath(pathname) {

@@ -166,6 +166,74 @@ class GoogleSheetsExporter:
             logger.error(f"Error clearing sheet {sheet_name}: {e}")
             return False
     
+    def _sheet_exists(self, sheet_name: str) -> bool:
+        """Check if a sheet exists."""
+        if not self.service:
+            return False
+        
+        try:
+            spreadsheet = self.service.spreadsheets().get(
+                spreadsheetId=self.spreadsheet_id
+            ).execute()
+            existing_sheets = [s['properties']['title'] for s in spreadsheet.get('sheets', [])]
+            return sheet_name in existing_sheets
+        except HttpError:
+            return False
+    
+    def _create_dashboard_instructions(self):
+        """Create dashboard setup instructions sheet if dashboard doesn't exist."""
+        # Check if QA_Metrics_Dashboard already exists
+        if self._sheet_exists('QA_Metrics_Dashboard'):
+            logger.info("Dashboard already exists, skipping instructions")
+            return
+        
+        # Check if instructions sheet already exists
+        if self._sheet_exists('_Dashboard_Setup'):
+            logger.info("Dashboard setup instructions already exist")
+            return
+        
+        instructions = [
+            ["QA Metrics Dashboard - Setup Instructions"],
+            [""],
+            ["Follow these steps to enable the interactive QA Metrics Dashboard:"],
+            [""],
+            ["STEP 1: Open Apps Script"],
+            ["  - Go to Extensions > Apps Script in the menu bar"],
+            [""],
+            ["STEP 2: Copy the Script"],
+            ["  - Delete any existing code in the script editor"],
+            ["  - Copy the entire contents from: backend/google_sheets_apps_script.js"],
+            ["  - Paste it into the Apps Script editor"],
+            [""],
+            ["STEP 3: Save and Run"],
+            ["  - Click the Save button (Ctrl+S)"],
+            ["  - Select 'setupDashboard' from the function dropdown"],
+            ["  - Click the Run button"],
+            ["  - Grant permissions when prompted"],
+            [""],
+            ["STEP 4: Use the Dashboard"],
+            ["  - A new 'QA_Metrics_Dashboard' tab will be created"],
+            ["  - Use the time period dropdown to filter data"],
+            ["  - The dashboard auto-updates when you change filters"],
+            [""],
+            ["FEATURES:"],
+            ["  - 4 Key QA Metrics: QC Cycle Time, Test Cycle Time, Testing Cycles, Waiting Time"],
+            ["  - Time Periods: Past Week, Month, Quarter, Year, All Time, or Custom Range"],
+            ["  - Ticket List: Shows all tickets in the selected period with individual metrics"],
+            ["  - Auto-refresh: Metrics update when data is synced or filters change"],
+            [""],
+            ["NOTE: After setup, you can delete this '_Dashboard_Setup' sheet."],
+            [""],
+            ["For the Apps Script code, see:"],
+            ["https://github.com/vvsqa/BIS_QA_Dashboard/blob/main/backend/google_sheets_apps_script.js"],
+        ]
+        
+        try:
+            self._write_data("_Dashboard_Setup", instructions)
+            logger.info("Created dashboard setup instructions sheet")
+        except Exception as e:
+            logger.warning(f"Could not create dashboard instructions: {e}")
+    
     def _write_data(self, sheet_name: str, data: List[List[Any]]) -> bool:
         """Write data to a sheet (first row = headers)."""
         if not self.service:
@@ -258,32 +326,75 @@ class GoogleSheetsExporter:
             return {"success": False, "error": str(e)}
     
     def export_pm_status_history(self, db: Session) -> Dict[str, Any]:
-        """Export ticket status history to sheet."""
+        """Export ticket status history to sheet.
+        
+        Uses PM Activity Export file (same source as web app QA Metrics dashboard)
+        for consistency. Falls back to database if file not found.
+        """
         try:
-            history = db.query(TicketStatusHistory).order_by(
-                TicketStatusHistory.changed_on.desc()
-            ).limit(15000).all()
+            from pathlib import Path
+            import json
             
-            headers = [
-                "Ticket ID", "Previous Status", "New Status", "Changed On",
-                "Current Assignee", "QC Tester", "Duration in Previous (hrs)", "Source"
-            ]
+            # Try to use PM Activity Export file first (same as web app)
+            reports_dir = Path("reports")
+            export_files = list(reports_dir.glob("PM_Activity_Export_*.csv"))
             
-            rows = [headers]
-            for h in history:
-                rows.append([
-                    h.ticket_id,
-                    h.previous_status or "",
-                    h.new_status or "",
-                    self._fmt_dt(h.changed_on),
-                    h.current_assignee or "",
-                    h.qc_tester or "",
-                    h.duration_in_previous_status or "",
-                    h.source or ""
-                ])
+            if export_files:
+                # Use the latest PM Activity Export file
+                latest_export = max(export_files, key=lambda f: f.stat().st_mtime)
+                logger.info(f"Using PM Activity Export file: {latest_export}")
+                
+                with open(latest_export, 'r', encoding='utf-8') as f:
+                    raw_data = json.load(f)
+                
+                headers = [
+                    "Ticket ID", "Previous Status", "New Status", "Changed On",
+                    "Current Assignee", "QC Tester", "Duration in Previous (hrs)", "Source"
+                ]
+                
+                rows = [headers]
+                for record in raw_data:
+                    rows.append([
+                        record.get('ticketId', ''),
+                        record.get('oldStatus', ''),
+                        record.get('newStatus', ''),
+                        record.get('statusChangeDate', ''),
+                        record.get('currentAssignee', ''),
+                        record.get('qcTester', ''),
+                        '',  # Duration not in this format
+                        'PM Activity Export'
+                    ])
+                
+                success = self._write_data("PM_Status_History", rows)
+                return {"success": success, "rows": len(raw_data), "source": "PM_Activity_Export"}
             
-            success = self._write_data("PM_Status_History", rows)
-            return {"success": success, "rows": len(history)}
+            else:
+                # Fallback to database
+                logger.warning("No PM Activity Export file found, using database")
+                history = db.query(TicketStatusHistory).order_by(
+                    TicketStatusHistory.changed_on.desc()
+                ).limit(50000).all()
+                
+                headers = [
+                    "Ticket ID", "Previous Status", "New Status", "Changed On",
+                    "Current Assignee", "QC Tester", "Duration in Previous (hrs)", "Source"
+                ]
+                
+                rows = [headers]
+                for h in history:
+                    rows.append([
+                        h.ticket_id,
+                        h.previous_status or "",
+                        h.new_status or "",
+                        self._fmt_dt(h.changed_on),
+                        h.current_assignee or "",
+                        h.qc_tester or "",
+                        h.duration_in_previous_status or "",
+                        h.source or ""
+                    ])
+                
+                success = self._write_data("PM_Status_History", rows)
+                return {"success": success, "rows": len(history), "source": "database"}
             
         except Exception as e:
             logger.error(f"Error exporting status history: {e}")
@@ -463,15 +574,19 @@ class GoogleSheetsExporter:
         
         # Write sync info
         try:
+            export_interval = int(os.getenv("SHEETS_EXPORT_INTERVAL_MINUTES", "30"))
             sync_info = [
                 ["QA Dashboard - Data Export"],
                 [""],
                 ["Last Sync", datetime.now().strftime("%Y-%m-%d %H:%M:%S")],
-                ["Sync Frequency", "Every 1 hour"],
+                ["Sync Frequency", f"Every {export_interval} minutes"],
+                ["Next Sync", f"~{datetime.now().strftime('%H:%M')} + {export_interval} min"],
                 [""],
                 ["Sheet", "Description", "Data Source"],
                 ["PM_Tickets", "All tickets from PM Tool", "PM Tracker API"],
                 ["PM_Status_History", "Ticket status change history", "PM Tracker API"],
+                ["QC_With_QA", "Tickets currently with QA team, by module", "PM Tracker API (live)"],
+                ["QC_With_Dev", "Tickets currently with Dev team (upcoming for QA), by module", "PM Tracker API (live)"],
                 ["TestRail_Runs", "Test runs", "TestRail Project 18"],
                 ["TestRail_Cases", "Test cases with automation status", "TestRail Project 18"],
                 ["TestRail_Bugs", "Bug tracking data", "Redmine"],
@@ -511,6 +626,25 @@ class GoogleSheetsExporter:
         results["sheets"]["TestRail_Bugs"] = bugs_result
         if not bugs_result.get("success"):
             results["errors"].append(f"TestRail_Bugs: {bugs_result.get('error', 'Unknown error')}")
+
+        # Export QC pipeline (live PM API view by module)
+        logger.info("Exporting QC Pipeline (with-QA / with-Dev) by module...")
+        try:
+            from push_qc_pipeline_to_sheets import export_qc_pipeline
+            qc_result = export_qc_pipeline(self)
+            for tab, info in (qc_result.get("tabs") or {}).items():
+                results["sheets"][tab] = info
+                if not info.get("success"):
+                    results["errors"].append(f"{tab}: failed to write")
+            if not qc_result.get("success") and qc_result.get("error"):
+                results["errors"].append(f"QC Pipeline: {qc_result['error']}")
+        except Exception as e:
+            logger.error(f"QC Pipeline export failed: {e}")
+            results["errors"].append(f"QC Pipeline: {e}")
+
+        # Create dashboard setup instructions (only if not exists)
+        logger.info("Checking dashboard setup...")
+        self._create_dashboard_instructions()
         
         results["success"] = len(results["errors"]) == 0
         
@@ -577,7 +711,7 @@ def _run_export_job():
 
 
 def start_sheets_export_scheduler() -> bool:
-    """Start hourly export scheduler."""
+    """Start periodic export scheduler (default: every 30 minutes)."""
     global _export_scheduler, _exporter_instance
     
     from apscheduler.schedulers.background import BackgroundScheduler
@@ -598,17 +732,21 @@ def start_sheets_export_scheduler() -> bool:
         logger.warning("[Sheets Export] Could not initialize exporter")
         return False
     
+    # Get export interval from env (default 30 minutes)
+    export_interval_minutes = int(os.getenv("SHEETS_EXPORT_INTERVAL_MINUTES", "30"))
+    export_interval_minutes = max(5, min(export_interval_minutes, 1440))  # Between 5 mins and 24 hours
+    
     _export_scheduler = BackgroundScheduler()
     _export_scheduler.add_job(
         _run_export_job,
-        trigger=IntervalTrigger(hours=1),
+        trigger=IntervalTrigger(minutes=export_interval_minutes),
         id="sheets_export",
         name="Google Sheets Export",
         replace_existing=True
     )
     _export_scheduler.start()
     
-    logger.info("[Sheets Export] Scheduler started (every 1 hour)")
+    logger.info(f"[Sheets Export] Scheduler started (every {export_interval_minutes} minutes)")
     
     # Run initial export
     logger.info("[Sheets Export] Running initial export...")

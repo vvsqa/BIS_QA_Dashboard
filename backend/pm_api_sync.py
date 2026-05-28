@@ -80,24 +80,34 @@ class PMApiClient:
 
         last_error = None
         for attempt in range(1, self.max_retries + 1):
+            # Exponential backoff: 0s, 5s, 15s (base_delay * 3^(attempt-2))
+            if attempt > 1:
+                backoff_delay = self.retry_delay * (3 ** (attempt - 2))
+                backoff_delay = min(backoff_delay, 60)  # cap at 60s
+                logger.info(f"Retrying in {backoff_delay} seconds (exponential backoff)...")
+                time.sleep(backoff_delay)
+
+            # Increase timeout on retries: 30s, 45s, 60s
+            attempt_timeout = self.timeout + ((attempt - 1) * 15)
+
             try:
                 logger.info(
-                    f"Fetching PM tickets from API (v{'2' if self.use_v2 else '1'}, attempt {attempt}/{self.max_retries})"
+                    f"Fetching PM tickets from API (v{'2' if self.use_v2 else '1'}, attempt {attempt}/{self.max_retries}, timeout={attempt_timeout}s)"
                     + (f" ticket_id={ticket_id}" if ticket_id else "")
                 )
                 response = requests.get(
                     self.api_url,
                     params=params,
-                    timeout=self.timeout,
+                    timeout=attempt_timeout,
                     headers=headers
                 )
-                
+
                 if response.status_code == 200:
                     data = response.json()
-                    
+
                     # Handle different response formats
                     tickets = self._parse_response(data)
-                    
+
                     if tickets is not None:
                         if ticket_id is not None:
                             # Keep only the requested ticket (API may still return all)
@@ -114,81 +124,68 @@ class PMApiClient:
                         error_msg = "API returned invalid format"
                         logger.error(error_msg)
                         last_error = error_msg
-                
-                elif response.status_code == 401:
+
+                elif response.status_code in (401, 403):
+                    # Auth failures: do NOT retry — fail immediately so health tracker
+                    # can escalate and prompt re-authentication
                     error_msg = (
-                        "API authentication failed (401: Unauthorized). Check PM_API_KEY_V2 Bearer token."
-                        if self.use_v2
-                        else "API authentication failed (401: Unauthorized). Check PM_API_KEY."
+                        f"API authentication failed ({response.status_code}). "
+                        + ("Check PM_API_KEY_V2 Bearer token." if self.use_v2 else "Check PM_API_KEY or re-run MFA login.")
+                        + " Re-authentication may be required."
                     )
                     logger.error(error_msg)
                     return False, None, error_msg
-                
-                elif response.status_code == 403:
-                    error_msg = "API access denied (403: Forbidden)"
-                    logger.error(error_msg)
-                    return False, None, error_msg
-                
+
                 elif response.status_code == 404:
                     error_msg = "API endpoint not found (404)"
                     logger.error(error_msg)
                     return False, None, error_msg
-                
+
                 elif response.status_code >= 500:
                     error_msg = f"API server error ({response.status_code})"
                     logger.warning(error_msg)
                     last_error = error_msg
-                    if attempt < self.max_retries:
-                        logger.info(f"Retrying in {self.retry_delay} seconds...")
-                        time.sleep(self.retry_delay)
-                        continue
-                    return False, None, error_msg
-                
+                    if attempt >= self.max_retries:
+                        return False, None, error_msg
+                    continue
+
                 else:
                     error_msg = f"API returned status {response.status_code}"
                     logger.error(error_msg)
                     last_error = error_msg
-                    
-            except requests.exceptions.Timeout as e:
-                error_msg = f"API request timeout ({self.timeout}s)"
+
+            except requests.exceptions.Timeout:
+                error_msg = f"API request timeout ({attempt_timeout}s)"
                 logger.warning(error_msg)
                 last_error = error_msg
-                if attempt < self.max_retries:
-                    logger.info(f"Retrying in {self.retry_delay} seconds...")
-                    time.sleep(self.retry_delay)
-                    continue
-                return False, None, error_msg
-                
+                if attempt >= self.max_retries:
+                    return False, None, error_msg
+                continue
+
             except requests.exceptions.ConnectionError as e:
                 error_msg = f"Connection error: {str(e)}"
                 logger.warning(error_msg)
                 last_error = error_msg
-                if attempt < self.max_retries:
-                    logger.info(f"Retrying in {self.retry_delay} seconds...")
-                    time.sleep(self.retry_delay)
-                    continue
-                return False, None, error_msg
-                
+                if attempt >= self.max_retries:
+                    return False, None, error_msg
+                continue
+
             except requests.exceptions.RequestException as e:
                 error_msg = f"Request error: {str(e)}"
                 logger.error(error_msg)
                 last_error = error_msg
-                if attempt < self.max_retries:
-                    logger.info(f"Retrying in {self.retry_delay} seconds...")
-                    time.sleep(self.retry_delay)
-                    continue
-                return False, None, error_msg
-                
+                if attempt >= self.max_retries:
+                    return False, None, error_msg
+                continue
+
             except Exception as e:
                 error_msg = f"Unexpected error: {str(e)}"
                 logger.error(error_msg)
                 last_error = error_msg
-                if attempt < self.max_retries:
-                    logger.info(f"Retrying in {self.retry_delay} seconds...")
-                    time.sleep(self.retry_delay)
-                    continue
-                return False, None, error_msg
-        
+                if attempt >= self.max_retries:
+                    return False, None, error_msg
+                continue
+
         return False, None, last_error or "Failed to fetch tickets after all retries"
     
     def _parse_response(self, data: Any) -> Optional[List[Dict]]:

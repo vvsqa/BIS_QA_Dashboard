@@ -8,7 +8,7 @@ import base64
 import os
 from sqlalchemy.orm import Session
 from database import SessionLocal
-from models import AutomationTestRun, AutomationTestCase
+from models import AutomationTestRun, AutomationTestCase, SyncLog
 from datetime import datetime
 import re
 import html
@@ -578,9 +578,12 @@ def map_case_fields_to_model(case_obj, case_source, section_name, functionality_
 
 def sync_automation_data():
     """Main sync function for automation coverage data"""
+    sync_start_time = datetime.now()
+    
     print("=" * 60)
     print("Starting Automation Coverage Sync (Project {})".format(TESTRAIL_AUTOMATION_PROJECT_ID))
     print("TestRail URL: {}".format(TESTRAIL_URL))
+    print("Started at: {}".format(sync_start_time.strftime("%Y-%m-%d %H:%M:%S")))
     print("=" * 60)
 
     if not TESTRAIL_EMAIL or not TESTRAIL_API_KEY:
@@ -811,12 +814,55 @@ def sync_automation_data():
         print("  New Test Cases stored: {}".format(total_cases))
         print("  New Project Case rows stored: {}".format(total_project_cases))
         print("=" * 60)
+        
+        # Log successful sync
+        sync_end_time = datetime.now()
+        duration = (sync_end_time - sync_start_time).total_seconds()
+        sync_log = SyncLog(
+            sync_source="testrail_automation",
+            success=True,
+            message="Synced {} runs, {} cases, {} project cases".format(
+                total_runs, total_cases, total_project_cases
+            ),
+            total_records=total_runs + total_cases + total_project_cases,
+            records_added=total_runs + total_cases + total_project_cases,
+            records_updated=0,
+            records_skipped=0,
+            errors=0,
+            duration_seconds=duration,
+            started_at=sync_start_time,
+            completed_at=sync_end_time
+        )
+        db.add(sync_log)
+        db.commit()
 
     except Exception as e:
         db.rollback()
         print("\nERROR during sync: {}".format(e))
         import traceback
         traceback.print_exc()
+        
+        # Log failed sync
+        try:
+            sync_end_time = datetime.now()
+            duration = (sync_end_time - sync_start_time).total_seconds() if 'sync_start_time' in dir() else 0
+            error_log = SyncLog(
+                sync_source="testrail_automation",
+                success=False,
+                message="Sync failed: {}".format(str(e)[:500]),
+                total_records=0,
+                records_added=0,
+                records_updated=0,
+                records_skipped=0,
+                errors=1,
+                duration_seconds=duration,
+                started_at=sync_start_time if 'sync_start_time' in dir() else datetime.now(),
+                completed_at=sync_end_time
+            )
+            db.add(error_log)
+            db.commit()
+        except:
+            pass
         raise
 
     finally:

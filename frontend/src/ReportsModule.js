@@ -21,6 +21,19 @@ function ReportsModule() {
   const [dateRangeType, setDateRangeType] = useState('last7days'); // 'last7days' or 'week'
   const [error, setError] = useState('');
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
+  
+  // Production Bugs Report state
+  const [prodBugsLoading, setProdBugsLoading] = useState(false);
+  const [prodBugsPreview, setProdBugsPreview] = useState(null);
+  const [prodBugsError, setProdBugsError] = useState('');
+
+  // Open Bugs Report state
+  const [openBugsLoading, setOpenBugsLoading] = useState(false);
+  const [openBugsPreview, setOpenBugsPreview] = useState(null);
+  const [openBugsError, setOpenBugsError] = useState('');
+  const [openBugsSortBy, setOpenBugsSortBy] = useState('ageing');
+  const [openBugsSortOrder, setOpenBugsSortOrder] = useState('desc');
+  const [openBugsDeveloper, setOpenBugsDeveloper] = useState('');
 
   // Get today's date
   const getToday = () => {
@@ -160,6 +173,149 @@ function ReportsModule() {
     previewData?.closed_tickets || [],
     { defaultSortKey: 'ticket_id', defaultSortDirection: 'desc' }
   );
+
+  // Fetch Production Bugs Report preview
+  const fetchProdBugsPreview = async () => {
+    setProdBugsLoading(true);
+    setProdBugsError('');
+    try {
+      const base = (BACKEND_URL || '').replace(/\/$/, '');
+      const requestUrl = `${base}/reports/production-bugs/preview`;
+      const headers = { 'Content-Type': 'application/json' };
+      const token = localStorage.getItem('qa_dashboard_token');
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      
+      const response = await fetch(requestUrl, { headers });
+      if (!response.ok) {
+        let msg = 'Failed to fetch report preview';
+        try {
+          const j = await response.json();
+          if (j?.detail) msg = typeof j.detail === 'string' ? j.detail : String(j.detail);
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      const data = await response.json();
+      setProdBugsPreview(data);
+    } catch (err) {
+      setProdBugsError(err?.message || 'Failed to fetch preview');
+    } finally {
+      setProdBugsLoading(false);
+    }
+  };
+
+  // Download Production Bugs Report
+  const downloadProdBugsReport = async (format = 'excel') => {
+    setProdBugsLoading(true);
+    setProdBugsError('');
+    try {
+      const base = (BACKEND_URL || '').replace(/\/$/, '');
+      const requestUrl = `${base}/reports/production-bugs/download?format=${format}`;
+      const headers = {};
+      const token = localStorage.getItem('qa_dashboard_token');
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      
+      const response = await fetch(requestUrl, { headers });
+      if (!response.ok) {
+        let msg = 'Failed to generate report';
+        try {
+          const j = await response.json();
+          if (j?.detail) msg = typeof j.detail === 'string' ? j.detail : String(j.detail);
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      const ext = format === 'pdf' ? 'pdf' : 'xlsx';
+      a.download = `Production_PreProd_Bugs_Report.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(downloadUrl);
+      a.remove();
+    } catch (err) {
+      setProdBugsError(err?.message || 'Failed to generate report');
+    } finally {
+      setProdBugsLoading(false);
+    }
+  };
+
+  // Fetch Open Bugs Report preview
+  const fetchOpenBugsPreview = async () => {
+    setOpenBugsLoading(true);
+    setOpenBugsError('');
+    try {
+      const base = (BACKEND_URL || '').replace(/\/$/, '');
+      const requestUrl = `${base}/reports/open-bugs/preview`;
+      const headers = { 'Content-Type': 'application/json' };
+      const token = localStorage.getItem('qa_dashboard_token');
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      
+      const response = await fetch(requestUrl, { headers });
+      if (!response.ok) {
+        let msg = 'Failed to fetch open bugs preview';
+        try {
+          const j = await response.json();
+          if (j?.detail) msg = typeof j.detail === 'string' ? j.detail : String(j.detail);
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      const data = await response.json();
+      setOpenBugsPreview(data);
+    } catch (err) {
+      setOpenBugsError(err?.message || 'Failed to fetch preview');
+    } finally {
+      setOpenBugsLoading(false);
+    }
+  };
+
+  // Download Open Bugs Report PDF
+  const downloadOpenBugsReport = async () => {
+    setOpenBugsLoading(true);
+    setOpenBugsError('');
+    try {
+      const base = (BACKEND_URL || '').replace(/\/$/, '');
+      let requestUrl = `${base}/reports/open-bugs?sort_by=${openBugsSortBy}&sort_order=${openBugsSortOrder}`;
+      if (openBugsDeveloper) {
+        requestUrl += `&developer=${encodeURIComponent(openBugsDeveloper)}`;
+      }
+      const headers = {};
+      const token = localStorage.getItem('qa_dashboard_token');
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+      
+      const response = await fetch(requestUrl, { headers });
+      if (!response.ok) {
+        let msg = 'Failed to generate report';
+        try {
+          const j = await response.json();
+          if (j?.detail) msg = typeof j.detail === 'string' ? j.detail : String(j.detail);
+        } catch (_) {}
+        throw new Error(msg);
+      }
+      
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      const devSuffix = openBugsDeveloper ? `_${openBugsDeveloper.replace(/\s+/g, '_')}` : '';
+      a.download = `Open_Bugs_Report${devSuffix}_${new Date().toISOString().split('T')[0]}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(downloadUrl);
+      a.remove();
+    } catch (err) {
+      setOpenBugsError(err?.message || 'Failed to generate report');
+    } finally {
+      setOpenBugsLoading(false);
+    }
+  };
+
+  // Load production bugs and open bugs preview on mount
+  useEffect(() => {
+    fetchProdBugsPreview();
+    fetchOpenBugsPreview();
+  }, []);
 
   return (
     <div className="dashboard-container">
@@ -638,6 +794,376 @@ function ReportsModule() {
           </div>
         )}
 
+        {/* Production Bugs Report Section */}
+        <section className="report-generator-section" style={{ marginTop: '2rem' }}>
+          <div className="section-header">
+            <h2>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+              </svg>
+              Production & Pre-Production Bugs Report
+            </h2>
+            <p className="section-subtitle">Detailed analysis of bugs found in Production and Pre-Production environments</p>
+          </div>
+
+          {/* Preview Stats */}
+          {prodBugsPreview && (
+            <div className="report-kpi-grid" style={{ marginBottom: '1.5rem' }}>
+              <div className="report-kpi-card" style={{ background: 'linear-gradient(135deg, #c62828 0%, #b71c1c 100%)' }}>
+                <span className="report-kpi-value">{prodBugsPreview.environment_breakdown?.Production?.total || 0}</span>
+                <span className="report-kpi-label">Production Bugs</span>
+                <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>
+                  {prodBugsPreview.environment_breakdown?.Production?.open || 0} open
+                </span>
+              </div>
+              <div className="report-kpi-card" style={{ background: 'linear-gradient(135deg, #f57c00 0%, #e65100 100%)' }}>
+                <span className="report-kpi-value">{prodBugsPreview.environment_breakdown?.['Pre-production']?.total || 0}</span>
+                <span className="report-kpi-label">Pre-Production Bugs</span>
+                <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>
+                  {prodBugsPreview.environment_breakdown?.['Pre-production']?.open || 0} open
+                </span>
+              </div>
+              <div className="report-kpi-card" style={{ background: 'linear-gradient(135deg, #ff8f00 0%, #ff6f00 100%)' }}>
+                <span className="report-kpi-value">{prodBugsPreview.environment_breakdown?.['BIS Testing (Pre)']?.total || 0}</span>
+                <span className="report-kpi-label">BIS Testing Bugs</span>
+                <span style={{ fontSize: '0.75rem', opacity: 0.8 }}>
+                  {prodBugsPreview.environment_breakdown?.['BIS Testing (Pre)']?.open || 0} open
+                </span>
+              </div>
+              <div className="report-kpi-card">
+                <span className="report-kpi-value">{prodBugsPreview.total_bugs || 0}</span>
+                <span className="report-kpi-label">Total Bugs</span>
+              </div>
+              <div className="report-kpi-card">
+                <span className="report-kpi-value">{prodBugsPreview.tickets_affected || 0}</span>
+                <span className="report-kpi-label">Tickets Affected</span>
+              </div>
+            </div>
+          )}
+
+          <div className="report-controls">
+            <div className="control-row">
+              <div className="control-actions" style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap' }}>
+                <button 
+                  className="btn-preview"
+                  onClick={fetchProdBugsPreview}
+                  disabled={prodBugsLoading}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                  </svg>
+                  {prodBugsLoading ? 'Loading...' : 'Refresh Stats'}
+                </button>
+
+                <button 
+                  className="btn-download"
+                  onClick={() => downloadProdBugsReport('excel')}
+                  disabled={prodBugsLoading}
+                  style={{ background: 'linear-gradient(135deg, #2e7d32 0%, #1b5e20 100%)' }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="7,10 12,15 17,10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  {prodBugsLoading ? 'Generating...' : 'Download Excel'}
+                </button>
+
+                <button 
+                  className="btn-download"
+                  onClick={() => downloadProdBugsReport('pdf')}
+                  disabled={prodBugsLoading}
+                  style={{ background: 'linear-gradient(135deg, #c62828 0%, #b71c1c 100%)' }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="7,10 12,15 17,10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  {prodBugsLoading ? 'Generating...' : 'Download PDF'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {prodBugsError && (
+            <div className="error-message">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+              {prodBugsError}
+            </div>
+          )}
+
+          {/* Report Info */}
+          <div className="info-card" style={{ marginTop: '1.5rem' }}>
+            <h3>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="16" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12.01" y2="8"/>
+              </svg>
+              Report Contents
+            </h3>
+            <div className="features-grid">
+              <div className="feature-item">
+                <span className="feature-icon">🎯</span>
+                <span>Ticket-wise bug breakdown</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">👨‍💻</span>
+                <span>Developer-wise analysis</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">🧪</span>
+                <span>Tester-wise analysis</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">⏱️</span>
+                <span>Dev & QA time tracking</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">📊</span>
+                <span>Environment breakdown</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">🔥</span>
+                <span>Severity analysis</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">📦</span>
+                <span>Module-wise statistics</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">🐛</span>
+                <span>Detailed bug lists</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* Open Bugs Report Section */}
+        <section className="report-generator-section" style={{ marginTop: '2rem' }}>
+          <div className="section-header">
+            <h2>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+              </svg>
+              Open Bugs Report
+            </h2>
+            <p className="section-subtitle">All currently open bugs from Redmine with ticket details, developers, testers, and ageing</p>
+          </div>
+
+          {/* Preview Stats */}
+          {openBugsPreview && openBugsPreview.summary && (
+            <div className="report-kpi-grid" style={{ marginBottom: '1.5rem', gridTemplateColumns: 'repeat(3, 1fr)' }}>
+              <div className="report-kpi-card" style={{ background: 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)' }}>
+                <span className="report-kpi-value">{openBugsPreview.summary.total_bugs || 0}</span>
+                <span className="report-kpi-label">Total Open Bugs</span>
+              </div>
+              <div className="report-kpi-card" style={{ background: 'linear-gradient(135deg, #f59e0b 0%, #d97706 100%)' }}>
+                <span className="report-kpi-value">{openBugsPreview.summary.unique_tickets || 0}</span>
+                <span className="report-kpi-label">Tickets Affected</span>
+              </div>
+              <div className="report-kpi-card" style={{ background: 'linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%)' }}>
+                <span className="report-kpi-value">{openBugsPreview.summary.avg_ageing || 0}</span>
+                <span className="report-kpi-label">Avg Ageing (Days)</span>
+              </div>
+            </div>
+          )}
+
+          {/* Developer Summary Table */}
+          {openBugsPreview && openBugsPreview.developer_summary && openBugsPreview.developer_summary.length > 0 && (
+            <div style={{ marginBottom: '1.5rem' }}>
+              <h4 style={{ marginBottom: '0.75rem', color: 'var(--text-primary)' }}>Developer-wise Bug Summary (Top 15)</h4>
+              <div style={{ overflowX: 'auto', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '0.85rem' }}>
+                  <thead>
+                    <tr style={{ background: 'var(--gradient-purple)', color: 'white' }}>
+                      <th style={{ padding: '0.75rem', textAlign: 'left' }}>#</th>
+                      <th style={{ padding: '0.75rem', textAlign: 'left' }}>Developer</th>
+                      <th style={{ padding: '0.75rem', textAlign: 'center' }}>Bug Count</th>
+                      <th style={{ padding: '0.75rem', textAlign: 'center' }}>Avg Ageing (Days)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {openBugsPreview.developer_summary.slice(0, 15).map((dev, idx) => (
+                      <tr key={dev.developer} style={{ background: idx % 2 === 0 ? 'var(--bg-secondary)' : 'var(--bg-card)' }}>
+                        <td style={{ padding: '0.5rem 0.75rem', color: 'var(--text-secondary)' }}>{idx + 1}</td>
+                        <td style={{ padding: '0.5rem 0.75rem', color: 'var(--text-primary)' }}>{dev.developer}</td>
+                        <td style={{ 
+                          padding: '0.5rem 0.75rem', 
+                          textAlign: 'center', 
+                          fontWeight: 'bold',
+                          color: dev.bug_count >= 20 ? '#dc2626' : dev.bug_count >= 10 ? '#ea580c' : dev.bug_count >= 5 ? '#ca8a04' : 'var(--text-primary)'
+                        }}>{dev.bug_count}</td>
+                        <td style={{ 
+                          padding: '0.5rem 0.75rem', 
+                          textAlign: 'center',
+                          color: dev.avg_ageing_days > 90 ? '#dc2626' : dev.avg_ageing_days > 30 ? '#ea580c' : 'var(--text-primary)'
+                        }}>{dev.avg_ageing_days}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="report-controls">
+            <div className="control-row">
+              <div className="control-actions" style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'center' }}>
+                <div className="control-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <label style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>Sort By:</label>
+                  <select 
+                    value={openBugsSortBy} 
+                    onChange={(e) => setOpenBugsSortBy(e.target.value)}
+                    style={{ 
+                      padding: '0.5rem 0.75rem', 
+                      borderRadius: '6px', 
+                      border: '1px solid var(--border-color)', 
+                      background: 'var(--bg-card)', 
+                      color: 'var(--text-primary)',
+                      fontSize: '0.9rem'
+                    }}
+                  >
+                    <option value="ageing">Ageing (Days)</option>
+                    <option value="bug_id">Bug ID</option>
+                    <option value="ticket_id">Ticket ID</option>
+                    <option value="developer">Developer</option>
+                    <option value="severity">Severity</option>
+                  </select>
+                </div>
+
+                <div className="control-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <label style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>Order:</label>
+                  <select 
+                    value={openBugsSortOrder} 
+                    onChange={(e) => setOpenBugsSortOrder(e.target.value)}
+                    style={{ 
+                      padding: '0.5rem 0.75rem', 
+                      borderRadius: '6px', 
+                      border: '1px solid var(--border-color)', 
+                      background: 'var(--bg-card)', 
+                      color: 'var(--text-primary)',
+                      fontSize: '0.9rem'
+                    }}
+                  >
+                    <option value="desc">Descending (High to Low)</option>
+                    <option value="asc">Ascending (Low to High)</option>
+                  </select>
+                </div>
+
+                <div className="control-group" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <label style={{ color: 'var(--text-secondary)', fontSize: '0.9rem', whiteSpace: 'nowrap' }}>Developer:</label>
+                  <select 
+                    value={openBugsDeveloper} 
+                    onChange={(e) => setOpenBugsDeveloper(e.target.value)}
+                    style={{ 
+                      padding: '0.5rem 0.75rem', 
+                      borderRadius: '6px', 
+                      border: '1px solid var(--border-color)', 
+                      background: 'var(--bg-card)', 
+                      color: 'var(--text-primary)',
+                      fontSize: '0.9rem',
+                      minWidth: '180px'
+                    }}
+                  >
+                    <option value="">All Developers</option>
+                    {openBugsPreview?.developers_list?.map(dev => (
+                      <option key={dev} value={dev}>{dev}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <button 
+                  className="btn-preview"
+                  onClick={fetchOpenBugsPreview}
+                  disabled={openBugsLoading}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                  </svg>
+                  {openBugsLoading ? 'Loading...' : 'Refresh Stats'}
+                </button>
+
+                <button 
+                  className="btn-download"
+                  onClick={downloadOpenBugsReport}
+                  disabled={openBugsLoading}
+                  style={{ background: 'linear-gradient(135deg, #dc2626 0%, #b91c1c 100%)' }}
+                >
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="7,10 12,15 17,10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  {openBugsLoading ? 'Generating...' : (openBugsDeveloper ? `Download ${openBugsDeveloper}'s Bugs PDF` : 'Download Open Bugs PDF')}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {openBugsError && (
+            <div className="error-message">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="8" x2="12" y2="12"/>
+                <line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+              {openBugsError}
+            </div>
+          )}
+
+          {/* Report Info */}
+          <div className="info-card" style={{ marginTop: '1.5rem' }}>
+            <h3>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="12" y1="16" x2="12" y2="12"/>
+                <line x1="12" y1="8" x2="12.01" y2="8"/>
+              </svg>
+              Report Contents
+            </h3>
+            <div className="features-grid">
+              <div className="feature-item">
+                <span className="feature-icon">🐛</span>
+                <span>Bug ID & Subject</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">🎫</span>
+                <span>Linked Ticket ID</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">👨‍💻</span>
+                <span>Developer(s) Assigned</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">🧪</span>
+                <span>QA Tester</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">📊</span>
+                <span>Bug Status</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">⏳</span>
+                <span>Ageing (Days)</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">🔖</span>
+                <span>Ticket Status</span>
+              </div>
+              <div className="feature-item">
+                <span className="feature-icon">🔥</span>
+                <span>Severity Breakdown</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
         {/* Report Features Section */}
         <section className="report-info-section">
           <div className="info-card featured">
@@ -645,7 +1171,7 @@ function ReportsModule() {
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <path d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
               </svg>
-              Comprehensive Report Features
+              Weekly QA Report Features
             </h3>
             <div className="features-grid">
               <div className="feature-item">

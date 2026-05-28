@@ -1024,3 +1024,853 @@ def create_qa_allocations_for_task(
             f"Cannot fit all hours: {remaining:.1f}h could not be allocated."
         )
     return allocations
+
+
+# ===== QC QUEUE PRIORITY SCORING =====
+
+# Score weights for QC queue prioritization
+PRIORITY_SCORES = {
+    'URGENT': 30,
+    'High (Bugs)': 25,
+    'High (Billable)': 24,
+    'EPIC!': 22,
+    'Medium (Bugs)': 18,
+    'High Level 1': 20,
+    'High Level 2': 18,
+    'High Level 3': 16,
+    'High Level 4': 14,
+    'Medium': 12,
+    'Low': 6,
+    'Quote': 4,
+    'Suggestion': 2,
+}
+
+
+def calculate_qc_priority_score(ticket: Dict, today: Optional[date] = None) -> Dict:
+    """
+    Calculate a 0-100 priority score for a QC queue ticket.
+    Higher score = should be picked up first.
+
+    Returns dict with total score and per-factor breakdown for tooltip.
+    """
+    today = today or date.today()
+    breakdown = {}
+
+    # 1. BASE PRIORITY (0-30)
+    priority = ticket.get('priority', '')
+    base = PRIORITY_SCORES.get(priority, 10)
+    breakdown['priority'] = {'points': base, 'max': 30, 'detail': priority or 'Default'}
+
+    # 2. AGEING IN QC (0-25)
+    days_in_qc = ticket.get('days_in_qc', 0) or 0
+    if days_in_qc >= 15:
+        ageing_pts = 25
+    elif days_in_qc >= 10:
+        ageing_pts = 20
+    elif days_in_qc >= 7:
+        ageing_pts = 15
+    elif days_in_qc >= 5:
+        ageing_pts = 10
+    elif days_in_qc >= 3:
+        ageing_pts = 7
+    elif days_in_qc >= 1:
+        ageing_pts = 3
+    else:
+        ageing_pts = 0
+    breakdown['ageing'] = {'points': ageing_pts, 'max': 25, 'detail': f'{days_in_qc} days in QC'}
+
+    # 3. RE-ENTRY BONUS (0-20)
+    retest_cycles = ticket.get('retest_cycle_count', 0) or 0
+    if retest_cycles > 0:
+        reentry_pts = min(20, 10 + (retest_cycles * 5))
+    else:
+        reentry_pts = 0
+    breakdown['reentry'] = {'points': reentry_pts, 'max': 20, 'detail': f'{retest_cycles} cycle(s)' if retest_cycles else 'First pass'}
+
+    # 4. ETA URGENCY (0-15)
+    eta_pts = 0
+    eta_str = ticket.get('eta')
+    eta_detail = 'No ETA'
+    if eta_str:
+        try:
+            if isinstance(eta_str, str):
+                eta_date = datetime.fromisoformat(eta_str).date()
+            elif isinstance(eta_str, datetime):
+                eta_date = eta_str.date()
+            elif isinstance(eta_str, date):
+                eta_date = eta_str
+            else:
+                eta_date = None
+            if eta_date:
+                days_to_eta = (eta_date - today).days
+                if days_to_eta < 0:
+                    eta_pts = 15
+                    eta_detail = f'Overdue by {abs(days_to_eta)} days'
+                elif days_to_eta <= 2:
+                    eta_pts = 12
+                    eta_detail = f'Due in {days_to_eta} days'
+                elif days_to_eta <= 5:
+                    eta_pts = 8
+                    eta_detail = f'Due in {days_to_eta} days'
+                elif days_to_eta <= 7:
+                    eta_pts = 4
+                    eta_detail = f'Due in {days_to_eta} days'
+                else:
+                    eta_detail = f'Due in {days_to_eta} days'
+        except (ValueError, TypeError):
+            pass
+    breakdown['eta'] = {'points': eta_pts, 'max': 15, 'detail': eta_detail}
+
+    # 5. TICKET TYPE (0-5)
+    type_pts = 0
+    priority_lower = (priority or '').lower()
+    if 'bug' in priority_lower:
+        type_pts = 5
+        type_detail = 'Bug fix (quick turnaround)'
+    elif 'epic' in priority_lower:
+        type_pts = 3
+        type_detail = 'Epic (large scope)'
+    else:
+        type_detail = 'Standard'
+    breakdown['type'] = {'points': type_pts, 'max': 5, 'detail': type_detail}
+
+    total = min(100, base + ageing_pts + reentry_pts + eta_pts + type_pts)
+
+    return {
+        'score': round(total, 1),
+        'breakdown': breakdown,
+    }
+
+
+# ===== STATUS DURATION TRACKING =====
+
+
+def get_status_durations(db: Session, ticket_id: int, today: Optional[date] = None) -> Dict:
+    """
+    Compute business days spent in each status for a ticket.
+    Uses TicketStatusHistory to walk through transitions chronologically.
+    """
+    today = today or date.today()
+    history = (
+        db.query(TicketStatusHistory)
+        .filter(TicketStatusHistory.ticket_id == ticket_id)
+        .order_by(TicketStatusHistory.changed_on.asc())
+        .all()
+    )
+
+    if not history:
+        # No history — check if ticket exists with a current status
+        ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+        if ticket and ticket.status and ticket.created_on:
+            created = ticket.created_on.date() if isinstance(ticket.created_on, datetime) else ticket.created_on
+            days = max(0, (today - created).days)
+            return {
+                'ticket_id': ticket_id,
+                'durations': {ticket.status: days},
+                'total_qc_days': days if ticket.status in QA_QC_STATUSES else 0,
+                'total_hold_days': days if ticket.status == 'QC Testing Hold' else 0,
+                'current_status': ticket.status,
+                'transitions': 0,
+            }
+        return {'ticket_id': ticket_id, 'durations': {}, 'total_qc_days': 0, 'total_hold_days': 0, 'current_status': None, 'transitions': 0}
+
+    durations = {}
+    total_qc_days = 0
+    total_hold_days = 0
+
+    # Walk through history: for each transition, compute days in previous status
+    for i, h in enumerate(history):
+        status = h.previous_status or 'Unknown'
+        entered = history[i - 1].changed_on if i > 0 else h.changed_on
+        exited = h.changed_on
+
+        if i == 0 and h.previous_status:
+            # First record: estimate time in initial status from ticket creation
+            ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+            if ticket and ticket.created_on:
+                entered = ticket.created_on
+
+        if entered and exited and entered < exited:
+            entered_d = entered.date() if isinstance(entered, datetime) else entered
+            exited_d = exited.date() if isinstance(exited, datetime) else exited
+            days = max(0, (exited_d - entered_d).days)
+            durations[status] = durations.get(status, 0) + days
+            if status in QA_QC_STATUSES:
+                total_qc_days += days
+            if status == 'QC Testing Hold':
+                total_hold_days += days
+
+    # Time in current (last) status up to today
+    last = history[-1]
+    current_status = last.new_status
+    if last.changed_on:
+        last_d = last.changed_on.date() if isinstance(last.changed_on, datetime) else last.changed_on
+        current_days = max(0, (today - last_d).days)
+        durations[current_status] = durations.get(current_status, 0) + current_days
+        if current_status in QA_QC_STATUSES:
+            total_qc_days += current_days
+        if current_status == 'QC Testing Hold':
+            total_hold_days += current_days
+
+    return {
+        'ticket_id': ticket_id,
+        'durations': durations,
+        'total_qc_days': total_qc_days,
+        'total_hold_days': total_hold_days,
+        'current_status': current_status,
+        'transitions': len(history),
+    }
+
+
+# ===== QC CYCLE DETAIL =====
+
+
+def get_qc_cycle_details(db: Session, ticket_id: int, today: Optional[date] = None) -> Dict:
+    """
+    Return cycle-by-cycle breakdown of QC testing.
+    Each cycle: entered QC → testing → result (pass/fail) → exit.
+    """
+    today = today or date.today()
+    history = (
+        db.query(TicketStatusHistory)
+        .filter(TicketStatusHistory.ticket_id == ticket_id)
+        .order_by(TicketStatusHistory.changed_on.asc())
+        .all()
+    )
+
+    cycles = []
+    current_cycle = None
+
+    for h in history:
+        if h.new_status in QA_QC_STATUSES and current_cycle is None:
+            current_cycle = {
+                'cycle_number': len(cycles) + 1,
+                'entered_qc_on': h.changed_on.isoformat() if h.changed_on else None,
+                'started_testing_on': None,
+                'result': None,
+                'exited_qc_on': None,
+                'duration_days': None,
+                'tester': h.qc_tester,
+            }
+        elif h.new_status == 'QC Testing in Progress' and current_cycle:
+            current_cycle['started_testing_on'] = h.changed_on.isoformat() if h.changed_on else None
+        elif h.new_status in QC_FAIL_STATUSES and current_cycle:
+            current_cycle['result'] = 'fail'
+            current_cycle['exited_qc_on'] = h.changed_on.isoformat() if h.changed_on else None
+            if current_cycle.get('entered_qc_on') and h.changed_on:
+                entered = datetime.fromisoformat(current_cycle['entered_qc_on'])
+                current_cycle['duration_days'] = max(0, (h.changed_on.date() - entered.date()).days)
+            cycles.append(current_cycle)
+            current_cycle = None
+        elif h.new_status == 'BIS Testing' and current_cycle:
+            current_cycle['result'] = 'pass'
+            current_cycle['exited_qc_on'] = h.changed_on.isoformat() if h.changed_on else None
+            if current_cycle.get('entered_qc_on') and h.changed_on:
+                entered = datetime.fromisoformat(current_cycle['entered_qc_on'])
+                current_cycle['duration_days'] = max(0, (h.changed_on.date() - entered.date()).days)
+            cycles.append(current_cycle)
+            current_cycle = None
+
+    # Open cycle (still in QC)
+    if current_cycle:
+        current_cycle['result'] = 'in_progress'
+        if current_cycle.get('entered_qc_on'):
+            entered = datetime.fromisoformat(current_cycle['entered_qc_on'])
+            current_cycle['duration_days'] = max(0, (today - entered.date()).days)
+        cycles.append(current_cycle)
+
+    total = len(cycles)
+    passed = sum(1 for c in cycles if c['result'] == 'pass')
+
+    return {
+        'ticket_id': ticket_id,
+        'total_cycles': total,
+        'passed_cycles': passed,
+        'failed_cycles': sum(1 for c in cycles if c['result'] == 'fail'),
+        'in_progress_cycles': sum(1 for c in cycles if c['result'] == 'in_progress'),
+        'first_pass': total == 1 and cycles[0]['result'] == 'pass' if cycles else False,
+        'cycles': cycles,
+    }
+
+
+def get_qc_cycles_summary(db: Session, today: Optional[date] = None) -> Dict:
+    """
+    Aggregate QC cycle stats across all tickets.
+    Returns avg cycles, first-pass rate, top cyclers, cycle distribution.
+    """
+    today = today or date.today()
+
+    # Get all tickets that have been in QC at least once
+    ticket_ids = (
+        db.query(TicketStatusHistory.ticket_id)
+        .filter(TicketStatusHistory.new_status.in_(QA_QC_STATUSES))
+        .distinct()
+        .all()
+    )
+    ticket_ids = [row[0] for row in ticket_ids]
+
+    if not ticket_ids:
+        return {
+            'total_tickets': 0, 'avg_cycles': 0, 'first_pass_rate': 0,
+            'cycle_distribution': {}, 'top_cyclers': [],
+        }
+
+    all_details = []
+    for tid in ticket_ids:
+        details = get_qc_cycle_details(db, tid, today)
+        if details['total_cycles'] > 0:
+            all_details.append(details)
+
+    if not all_details:
+        return {
+            'total_tickets': 0, 'avg_cycles': 0, 'first_pass_rate': 0,
+            'cycle_distribution': {}, 'top_cyclers': [],
+        }
+
+    total_tickets = len(all_details)
+    total_cycles = sum(d['total_cycles'] for d in all_details)
+    first_pass_count = sum(1 for d in all_details if d['first_pass'])
+
+    # Cycle distribution: how many tickets had 1 cycle, 2 cycles, 3+ cycles
+    dist = {}
+    for d in all_details:
+        bucket = str(d['total_cycles']) if d['total_cycles'] <= 3 else '4+'
+        dist[bucket] = dist.get(bucket, 0) + 1
+
+    # Top cyclers (tickets with most cycles)
+    top = sorted(all_details, key=lambda d: -d['total_cycles'])[:10]
+    top_cyclers = [
+        {'ticket_id': d['ticket_id'], 'total_cycles': d['total_cycles'],
+         'failed_cycles': d['failed_cycles'], 'first_pass': d['first_pass']}
+        for d in top
+    ]
+
+    return {
+        'total_tickets': total_tickets,
+        'total_cycles': total_cycles,
+        'avg_cycles': round(total_cycles / total_tickets, 2) if total_tickets else 0,
+        'first_pass_rate': round((first_pass_count / total_tickets) * 100, 1) if total_tickets else 0,
+        'first_pass_count': first_pass_count,
+        'cycle_distribution': dist,
+        'top_cyclers': top_cyclers,
+    }
+
+
+# ===== AGEING ANALYTICS =====
+
+
+def get_ageing_overview(db: Session, today: Optional[date] = None) -> Dict:
+    """
+    Team-wide ageing: tickets by age bucket, avg ageing, bottleneck tickets.
+    Only includes tickets currently in QC statuses.
+    """
+    today = today or date.today()
+    overview = get_qa_overview_data(db, today)
+    queue = overview.get('queue', [])
+
+    buckets = {'0-3 days': [], '3-7 days': [], '7-15 days': [], '15+ days': []}
+    total_days = 0
+
+    for t in queue:
+        days = t.get('days_in_qc', 0)
+        total_days += days
+        if days >= 15:
+            buckets['15+ days'].append(t)
+        elif days >= 7:
+            buckets['7-15 days'].append(t)
+        elif days >= 3:
+            buckets['3-7 days'].append(t)
+        else:
+            buckets['0-3 days'].append(t)
+
+    return {
+        'total_tickets': len(queue),
+        'avg_ageing_days': round(total_days / len(queue), 1) if queue else 0,
+        'buckets': {k: {'count': len(v), 'ticket_ids': [t['ticket_id'] for t in v]} for k, v in buckets.items()},
+        'bucket_counts': {k: len(v) for k, v in buckets.items()},
+        'status_cards': overview.get('status_cards', {}),
+    }
+
+
+def get_ageing_bottlenecks(db: Session, today: Optional[date] = None, limit: int = 20) -> List[Dict]:
+    """
+    Tickets with longest total QC wait time, with per-status duration breakdown.
+    """
+    today = today or date.today()
+    overview = get_qa_overview_data(db, today)
+    queue = overview.get('queue', [])
+
+    # Sort by days_in_qc descending
+    sorted_tickets = sorted(queue, key=lambda t: -(t.get('days_in_qc', 0)))[:limit]
+
+    result = []
+    for t in sorted_tickets:
+        durations = get_status_durations(db, t['ticket_id'], today)
+        result.append({
+            'ticket_id': t['ticket_id'],
+            'title': t.get('title', ''),
+            'status': t.get('status', ''),
+            'priority': t.get('priority', ''),
+            'qc_tester': t.get('qc_tester'),
+            'module': t.get('module', ''),
+            'days_in_qc': t.get('days_in_qc', 0),
+            'retest_cycle_count': t.get('retest_cycle_count', 0),
+            'status_durations': durations.get('durations', {}),
+            'total_hold_days': durations.get('total_hold_days', 0),
+        })
+
+    return result
+
+
+def get_ticket_flow_rate(db: Session, weeks: int = 8) -> Dict:
+    """
+    Track rate of tickets entering and exiting QA per week.
+    Uses TicketStatusHistory to count transitions into/out of QC statuses.
+    """
+    today = date.today()
+    start_date = today - timedelta(weeks=weeks)
+
+    # Tickets entering QC (new_status is a QC status, previous was not)
+    entering = (
+        db.query(TicketStatusHistory)
+        .filter(
+            TicketStatusHistory.new_status.in_(QA_QC_STATUSES),
+            ~TicketStatusHistory.previous_status.in_(QA_QC_STATUSES),
+            TicketStatusHistory.changed_on >= datetime.combine(start_date, datetime.min.time()),
+        )
+        .all()
+    )
+
+    # Tickets exiting QC (previous_status was QC, new is not QC — e.g., BIS Testing, QC Review Fail)
+    exiting = (
+        db.query(TicketStatusHistory)
+        .filter(
+            TicketStatusHistory.previous_status.in_(QA_QC_STATUSES),
+            ~TicketStatusHistory.new_status.in_(QA_QC_STATUSES),
+            TicketStatusHistory.changed_on >= datetime.combine(start_date, datetime.min.time()),
+        )
+        .all()
+    )
+
+    def _week_key(dt):
+        if isinstance(dt, datetime):
+            dt = dt.date()
+        # Monday of that week
+        monday = dt - timedelta(days=dt.weekday())
+        return monday.isoformat()
+
+    weekly_in = {}
+    weekly_out = {}
+
+    for h in entering:
+        wk = _week_key(h.changed_on)
+        weekly_in[wk] = weekly_in.get(wk, 0) + 1
+
+    for h in exiting:
+        wk = _week_key(h.changed_on)
+        weekly_out[wk] = weekly_out.get(wk, 0) + 1
+
+    # Build sorted weekly data
+    all_weeks = sorted(set(list(weekly_in.keys()) + list(weekly_out.keys())))
+    weekly_data = []
+    for wk in all_weeks:
+        entering_count = weekly_in.get(wk, 0)
+        exiting_count = weekly_out.get(wk, 0)
+        weekly_data.append({
+            'week_start': wk,
+            'entering_qc': entering_count,
+            'exiting_qc': exiting_count,
+            'net_change': entering_count - exiting_count,
+        })
+
+    return {
+        'weeks': weeks,
+        'total_entering': sum(weekly_in.values()),
+        'total_exiting': sum(weekly_out.values()),
+        'weekly_data': weekly_data,
+    }
+
+
+# ===== BIS TESTING → CLOSED DURATION TRACKING =====
+
+BIS_STATUS = 'BIS Testing'
+BIS_EXIT_STATUSES = ['Closed', 'Moved to Live', 'Completed']
+
+
+def get_bis_to_closed_tracking(db: Session, today: Optional[date] = None) -> Dict:
+    """
+    Track tickets from BIS Testing through every subsequent status until Closed.
+    Each status leg (BIS Testing → Approved for Live → Moved to Live → Closed) is
+    tracked separately with its own duration, giving full visibility into the
+    post-QC journey.
+    """
+    today = today or date.today()
+
+    # Find all entries into BIS Testing
+    bis_entries = (
+        db.query(TicketStatusHistory)
+        .filter(TicketStatusHistory.new_status == BIS_STATUS)
+        .order_by(TicketStatusHistory.ticket_id, TicketStatusHistory.changed_on.asc())
+        .all()
+    )
+
+    # De-duplicate: keep the LATEST entry into BIS per ticket (the final QC pass)
+    latest_bis: Dict[int, TicketStatusHistory] = {}
+    for h in bis_entries:
+        latest_bis[h.ticket_id] = h
+
+    closed_tickets = []
+    pending_tickets = []
+    total_days = 0
+    closed_count = 0
+
+    for ticket_id, bis_entry in latest_bis.items():
+        bis_date = bis_entry.changed_on
+        if not bis_date:
+            continue
+
+        ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+        title = (ticket.title or '').strip() if ticket else f'Ticket #{ticket_id}'
+        priority = (ticket.priority or '').strip() if ticket else ''
+        qc_tester = (ticket.qc_tester or '').strip() if ticket else ''
+
+        bis_d = bis_date.date() if isinstance(bis_date, datetime) else bis_date
+
+        # Get all history AFTER entering BIS Testing for this ticket
+        post_bis_history = (
+            db.query(TicketStatusHistory)
+            .filter(
+                TicketStatusHistory.ticket_id == ticket_id,
+                TicketStatusHistory.changed_on >= bis_date,
+            )
+            .order_by(TicketStatusHistory.changed_on.asc())
+            .all()
+        )
+
+        # Build per-status-leg breakdown: each transition is one leg
+        status_legs = []
+        is_closed = False
+        final_status = BIS_STATUS
+
+        for i, h in enumerate(post_bis_history):
+            entered_dt = bis_date if i == 0 else post_bis_history[i - 1].changed_on
+            exited_dt = h.changed_on
+
+            if entered_dt and exited_dt and entered_dt <= exited_dt:
+                entered_d = entered_dt.date() if isinstance(entered_dt, datetime) else entered_dt
+                exited_d = exited_dt.date() if isinstance(exited_dt, datetime) else exited_dt
+                leg_days = max(0, (exited_d - entered_d).days)
+
+                leg_status = h.previous_status or BIS_STATUS
+                status_legs.append({
+                    'status': leg_status,
+                    'entered_on': entered_dt.isoformat(),
+                    'exited_on': exited_dt.isoformat(),
+                    'days': leg_days,
+                    'next_status': h.new_status,
+                })
+
+            final_status = h.new_status
+            if h.new_status in BIS_EXIT_STATUSES:
+                is_closed = True
+
+        # If still in a status (not closed), add current leg up to today
+        if not is_closed:
+            last_change = post_bis_history[-1].changed_on if post_bis_history else bis_date
+            last_d = last_change.date() if isinstance(last_change, datetime) else last_change
+            current_leg_days = max(0, (today - last_d).days)
+            current_status = ticket.status if ticket else final_status
+            status_legs.append({
+                'status': current_status,
+                'entered_on': last_change.isoformat() if last_change else bis_date.isoformat(),
+                'exited_on': None,
+                'days': current_leg_days,
+                'next_status': None,
+            })
+
+        # Total days from BIS entry to close (or to today if pending)
+        close_event_dt = None
+        for h in reversed(post_bis_history):
+            if h.new_status in BIS_EXIT_STATUSES:
+                close_event_dt = h.changed_on
+                break
+
+        if is_closed and close_event_dt:
+            close_d = close_event_dt.date() if isinstance(close_event_dt, datetime) else close_event_dt
+            total_leg_days = max(0, (close_d - bis_d).days)
+            total_days += total_leg_days
+            closed_count += 1
+            closed_tickets.append({
+                'ticket_id': ticket_id,
+                'title': title,
+                'priority': priority,
+                'qc_tester': qc_tester,
+                'entered_bis_on': bis_date.isoformat(),
+                'closed_on': close_event_dt.isoformat(),
+                'closed_status': final_status,
+                'days_bis_to_closed': total_leg_days,
+                'status_legs': status_legs,
+            })
+        else:
+            current_status = ticket.status if ticket else final_status
+            days_pending = max(0, (today - bis_d).days)
+            pending_tickets.append({
+                'ticket_id': ticket_id,
+                'title': title,
+                'priority': priority,
+                'qc_tester': qc_tester,
+                'entered_bis_on': bis_date.isoformat(),
+                'current_status': current_status,
+                'days_since_bis': days_pending,
+                'status_legs': status_legs,
+            })
+
+    closed_tickets.sort(key=lambda t: -t['days_bis_to_closed'])
+    pending_tickets.sort(key=lambda t: -t['days_since_bis'])
+
+    still_in_bis = [t for t in pending_tickets if (t.get('current_status') or '') == BIS_STATUS]
+
+    avg_days = round(total_days / closed_count, 1) if closed_count else 0
+
+    return {
+        'summary': {
+            'total_closed': closed_count,
+            'avg_days_bis_to_closed': avg_days,
+            'still_in_bis': len(still_in_bis),
+            'total_pending': len(pending_tickets),
+        },
+        'closed_tickets': closed_tickets,
+        'pending_tickets': pending_tickets,
+    }
+
+
+# ===== QA TEAM ACTIVITY SUMMARY / STORY =====
+
+
+def _get_working_days_range(period: str, db: Session, today: Optional[date] = None) -> Tuple[date, date]:
+    """
+    Resolve period string to (start_date, end_date).
+    - 'past_5_days': last 5 working days (may span > 5 calendar days due to weekends/holidays)
+    - 'current_month': 1st of current month to today
+    """
+    today = today or date.today()
+    if period == 'current_month':
+        return date(today.year, today.month, 1), today
+
+    # past_5_days: walk back to find 5 working days
+    working_found = 0
+    check = today
+    while working_found < 5:
+        check = check - timedelta(days=1)
+        if is_working_day(check, db):
+            working_found += 1
+    return check, today
+
+
+def get_qa_activity_summary(
+    db: Session,
+    period: str = 'past_5_days',
+    today: Optional[date] = None,
+    start_date_override: Optional[date] = None,
+    end_date_override: Optional[date] = None,
+) -> Dict:
+    """
+    Build per-member activity story for the given period.
+    For each QA team member, shows:
+    - Tickets they touched (status changed while they were qc_tester)
+    - Full status transition timeline for each ticket
+    - Hold events, priority switches, current status
+    - Summary stats: tickets tested, passed, failed, on hold, avg cycle time
+    Supports custom date range via start_date_override/end_date_override.
+    """
+    today = today or date.today()
+    if start_date_override and end_date_override:
+        start_date, end_date = start_date_override, end_date_override
+    else:
+        start_date, end_date = _get_working_days_range(period, db, today)
+
+    start_dt = datetime.combine(start_date, datetime.min.time())
+    end_dt = datetime.combine(end_date, datetime.max.time())
+
+    # Get all status changes in the period
+    changes = (
+        db.query(TicketStatusHistory)
+        .filter(
+            TicketStatusHistory.changed_on >= start_dt,
+            TicketStatusHistory.changed_on <= end_dt,
+        )
+        .order_by(TicketStatusHistory.changed_on.asc())
+        .all()
+    )
+
+    # Collect ticket IDs that had changes
+    ticket_ids_in_period = set(h.ticket_id for h in changes)
+
+    # Load ticket metadata
+    tickets_map: Dict[int, TicketTracking] = {}
+    if ticket_ids_in_period:
+        for t in db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(ticket_ids_in_period)).all():
+            tickets_map[t.ticket_id] = t
+
+    # Map: tester_name_lower -> { ticket_id -> list of events }
+    tester_activity: Dict[str, Dict[int, List[Dict]]] = {}
+
+    for h in changes:
+        ticket = tickets_map.get(h.ticket_id)
+        # Use qc_tester from the history record first, fallback to ticket record
+        qc_tester = (h.qc_tester or '').strip()
+        if not qc_tester and ticket:
+            qc_tester = (ticket.qc_tester or '').strip()
+        if not qc_tester:
+            continue
+
+        # Split multiple testers
+        for name in (n.strip() for n in qc_tester.split(',') if n.strip()):
+            name_lower = name.lower()
+            if name_lower not in tester_activity:
+                tester_activity[name_lower] = {}
+            if h.ticket_id not in tester_activity[name_lower]:
+                tester_activity[name_lower][h.ticket_id] = []
+
+            tester_activity[name_lower][h.ticket_id].append({
+                'timestamp': h.changed_on.isoformat() if h.changed_on else None,
+                'from_status': h.previous_status,
+                'to_status': h.new_status,
+            })
+
+    # Build per-member stories
+    qa_employees = get_qa_employees(db)
+    emp_map = {(e.name or '').strip().lower(): e for e in qa_employees}
+
+    member_stories = []
+
+    for emp in qa_employees:
+        emp_name = (emp.name or '').strip()
+        emp_lower = emp_name.lower()
+        activity = tester_activity.get(emp_lower, {})
+
+        if not activity:
+            member_stories.append({
+                'employee_id': emp.employee_id,
+                'name': emp_name,
+                'designation': emp.designation,
+                'platform': getattr(emp, 'platform', None) or 'Web',
+                'ticket_count': 0,
+                'tickets': [],
+                'stats': {'tested': 0, 'passed': 0, 'failed': 0, 'on_hold': 0, 'in_progress': 0},
+                'story_lines': ['No QC activity recorded in this period.'],
+            })
+            continue
+
+        ticket_stories = []
+        stats = {'tested': 0, 'passed': 0, 'failed': 0, 'on_hold': 0, 'in_progress': 0}
+        story_lines = []
+
+        for ticket_id, events in activity.items():
+            ticket = tickets_map.get(ticket_id)
+            title = (ticket.title or '').strip() if ticket else f'Ticket #{ticket_id}'
+            priority = (ticket.priority or '').strip() if ticket else 'Unspecified'
+            current_status = ticket.status if ticket else events[-1]['to_status']
+            module = None
+            if ticket:
+                bug = db.query(Bug).filter(Bug.ticket_id == ticket_id).first()
+                module = (bug.module or '').strip() if bug and bug.module else None
+
+            # Full history for this ticket (not just period) for complete context
+            full_history = (
+                db.query(TicketStatusHistory)
+                .filter(TicketStatusHistory.ticket_id == ticket_id)
+                .order_by(TicketStatusHistory.changed_on.asc())
+                .all()
+            )
+
+            timeline = []
+            for fh in full_history:
+                in_period = start_dt <= fh.changed_on <= end_dt if fh.changed_on else False
+                timeline.append({
+                    'timestamp': fh.changed_on.isoformat() if fh.changed_on else None,
+                    'from_status': fh.previous_status,
+                    'to_status': fh.new_status,
+                    'in_period': in_period,
+                })
+
+            # Compute stats from period events
+            had_hold = any(e['to_status'] == 'QC Testing Hold' for e in events)
+            had_fail = any(e['to_status'] in QC_FAIL_STATUSES for e in events)
+            had_pass = any(e['to_status'] == 'BIS Testing' for e in events)
+            was_in_progress = any(e['to_status'] == 'QC Testing in Progress' for e in events)
+
+            stats['tested'] += 1
+            if had_pass:
+                stats['passed'] += 1
+            if had_fail:
+                stats['failed'] += 1
+            if had_hold:
+                stats['on_hold'] += 1
+            if was_in_progress and not had_pass and not had_fail:
+                stats['in_progress'] += 1
+
+            # Build narrative line for this ticket
+            narrative = f'#{ticket_id} ({priority})'
+            if had_hold:
+                narrative += ' — was put on hold'
+            if had_fail:
+                narrative += ' — failed QC review'
+            if had_pass:
+                narrative += ' — passed to BIS Testing'
+            elif current_status:
+                narrative += f' — currently in {current_status}'
+
+            story_lines.append(narrative)
+
+            ticket_stories.append({
+                'ticket_id': ticket_id,
+                'title': title,
+                'priority': priority,
+                'module': module,
+                'current_status': current_status,
+                'qa_estimate_hours': ticket.qa_estimate_hours if ticket else None,
+                'qa_actual_hours': ticket.actual_qa_hours if ticket else None,
+                'period_events': events,
+                'full_timeline': timeline,
+                'had_hold': had_hold,
+                'had_fail': had_fail,
+                'had_pass': had_pass,
+            })
+
+        # Sort tickets: highest priority first
+        ticket_stories.sort(key=lambda t: (_priority_sort_key(t['priority']), t['ticket_id']))
+
+        member_stories.append({
+            'employee_id': emp.employee_id,
+            'name': emp_name,
+            'designation': emp.designation,
+            'platform': getattr(emp, 'platform', None) or 'Web',
+            'ticket_count': len(ticket_stories),
+            'tickets': ticket_stories,
+            'stats': stats,
+            'story_lines': story_lines,
+        })
+
+    # Sort: members with activity first (desc by ticket count), then idle
+    member_stories.sort(key=lambda m: (-m['ticket_count'], m['name']))
+
+    # Team-level stats
+    total_tested = sum(m['stats']['tested'] for m in member_stories)
+    total_passed = sum(m['stats']['passed'] for m in member_stories)
+    total_failed = sum(m['stats']['failed'] for m in member_stories)
+    active_members = sum(1 for m in member_stories if m['ticket_count'] > 0)
+
+    return {
+        'period': period,
+        'start_date': start_date.isoformat(),
+        'end_date': end_date.isoformat(),
+        'team_stats': {
+            'total_tickets_touched': total_tested,
+            'total_passed': total_passed,
+            'total_failed': total_failed,
+            'active_members': active_members,
+            'total_members': len(member_stories),
+        },
+        'members': member_stories,
+    }

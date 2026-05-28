@@ -4,8 +4,9 @@ PM Tracker API auto-sync scheduler.
 - On application startup: runs one full sync in the background so all PM Tracker data
   is synced into the app as soon as the app is up.
 - Then runs periodic sync from the PM API (interval configurable via
-  PM_SYNC_INTERVAL_MINUTES, default 10). Closed tickets (already closed in DB and
+  PM_SYNC_INTERVAL_MINUTES, default 2). Closed tickets (already closed in DB and
   in API) are not updated; reopened tickets are still updated.
+- Tracks consecutive failures via sync_health and auto-pauses if threshold is reached.
 """
 
 import os
@@ -19,6 +20,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from database import SessionLocal
 from pm_sync_runner import run_pm_api_sync
+from sync_health import sync_health
 
 logger = logging.getLogger(__name__)
 
@@ -31,11 +33,23 @@ _scheduler: Optional[BackgroundScheduler] = None
 
 def _scheduled_sync_job() -> None:
     """Job that runs on schedule: sync PM API data to DB (by ticket_id)."""
+    health = sync_health.get_source("pm_tracker")
+
+    # Skip if paused due to consecutive failures
+    if health.is_paused:
+        logger.warning(
+            "PM sync skipped — paused after %d consecutive failures. "
+            "Unpause via /sync/health/pm_tracker/unpause or fix the auth issue.",
+            health.consecutive_failures,
+        )
+        return
+
     db = SessionLocal()
     try:
         run_pm_api_sync(db, start_time=time.time())
     except Exception as e:
         logger.exception("PM scheduled sync failed: %s", e)
+        health.record_failure(str(e))
     finally:
         db.close()
 
@@ -68,7 +82,7 @@ def start_pm_auto_sync(interval_minutes: Optional[int] = None) -> bool:
         max_instances=1,
     )
     logger.info("PM Tracker auto-sync started (every %s minutes)", interval)
-    # Run first sync in background so application startup is not blocked; all PM data syncs once app is up
+    # Run first sync in background so application startup is not blocked
     def _run_initial_sync():
         try:
             logger.info("Running initial PM Tracker sync (all data from PM Tracker will be synced into the application)")
@@ -90,13 +104,29 @@ def stop_pm_auto_sync() -> None:
         logger.info("PM Tracker auto-sync stopped")
 
 
+def unpause_pm_sync() -> dict:
+    """Unpause PM sync after consecutive failures have been resolved."""
+    health = sync_health.get_source("pm_tracker")
+    was_paused = health.is_paused
+    health.unpause()
+    return {
+        "was_paused": was_paused,
+        "is_paused": health.is_paused,
+        "message": "PM sync unpaused — next scheduled run will attempt sync." if was_paused else "PM sync was not paused.",
+    }
+
+
 def get_pm_scheduler_status() -> dict:
-    """Return status of the PM sync scheduler."""
+    """Return status of the PM sync scheduler including health info."""
+    health = sync_health.get_source("pm_tracker")
+    health_status = health.get_status()
+
     if _scheduler is None:
         return {
             "running": False,
             "interval_minutes": PM_SYNC_INTERVAL_MINUTES,
             "enabled": PM_AUTO_SYNC_ENABLED,
+            "health": health_status,
         }
     job = _scheduler.get_job("pm_tracker_sync")
     interval_minutes = None
@@ -106,4 +136,5 @@ def get_pm_scheduler_status() -> dict:
         "running": True,
         "interval_minutes": interval_minutes or PM_SYNC_INTERVAL_MINUTES,
         "enabled": PM_AUTO_SYNC_ENABLED,
+        "health": health_status,
     }

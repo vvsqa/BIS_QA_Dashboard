@@ -124,6 +124,11 @@ function TicketsDashboard() {
   const [analysisPeriod, setAnalysisPeriod] = useState('last_week');
   const [expandedAnalysisSections, setExpandedAnalysisSections] = useState({}); // All collapsed by default
   
+  // Automation Planning state
+  const [automationPlanning, setAutomationPlanning] = useState(null);
+  const [loadingAutomationPlanning, setLoadingAutomationPlanning] = useState(false);
+  const [expandedSubdeptSection, setExpandedSubdeptSection] = useState(null);
+  
   // Ref for timesheet section scrolling
   const timesheetSectionRef = useRef(null);
   // Ref for PDF export
@@ -474,6 +479,8 @@ function TicketsDashboard() {
     setFilteredTickets([]);
     setTimeAnalysis(null);
     setNewlyReleasedData(null);
+    setAutomationPlanning(null);
+    setExpandedSubdeptSection(null);
   };
 
   const loadNewlyReleasedToQA = async (days = newlyReleasedDays) => {
@@ -519,6 +526,22 @@ function TicketsDashboard() {
     setAnalysisPeriod(newPeriod);
     // Always load when period changes
     loadTimeAnalysis(newPeriod);
+  };
+
+  const loadAutomationPlanning = async () => {
+    setLoadingAutomationPlanning(true);
+    try {
+      const res = await fetch(`${BACKEND_URL}/tickets-dashboard/automation-planning`);
+      if (res.ok) {
+        const data = await res.json();
+        setAutomationPlanning(data);
+        setActiveView('automationPlanning');
+      }
+    } catch (err) {
+      console.error('Error loading automation planning:', err);
+    } finally {
+      setLoadingAutomationPlanning(false);
+    }
   };
 
   const showTicketList = (filter) => {
@@ -837,6 +860,17 @@ function TicketsDashboard() {
                 </svg>
                 Time Analysis
               </button>
+              <button 
+                className={`view-tab ${activeView === 'automationPlanning' ? 'active' : ''}`}
+                onClick={() => loadAutomationPlanning()}
+              >
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                  <path d="M2 17l10 5 10-5"/>
+                  <path d="M2 12l10 5 10-5"/>
+                </svg>
+                Automation Planning
+              </button>
             </div>
 
             {/* Export PDF Button */}
@@ -870,7 +904,8 @@ function TicketsDashboard() {
                activeView === 'assignee' ? `Assignee: ${selectedAssignee}` :
                activeView === 'ticket-list' ? ticketListFilter?.label :
                activeView === 'newlyReleased' ? 'Newly Released to QA' :
-               activeView === 'analysis' ? 'Time Analysis' : ''}
+               activeView === 'analysis' ? 'Time Analysis' : 
+               activeView === 'automationPlanning' ? 'Automation Planning' : ''}
             </span>
           </div>
         )}
@@ -2371,6 +2406,351 @@ function TicketsDashboard() {
               </div>
             )}
               </>
+            )}
+          </div>
+        )}
+
+        {/* Automation Planning View */}
+        {activeView === 'automationPlanning' && (
+          <div className="automation-planning-view">
+            {loadingAutomationPlanning ? (
+              <div className="loading-spinner">
+                <div className="spinner"></div>
+                <p>Loading automation planning data...</p>
+              </div>
+            ) : automationPlanning ? (
+              <>
+                {/* Summary Cards */}
+                <div className="planning-summary">
+                  <div className="summary-card total-card">
+                    <div className="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                        <path d="M2 17l10 5 10-5"/>
+                        <path d="M2 12l10 5 10-5"/>
+                      </svg>
+                    </div>
+                    <div className="card-content">
+                      <span className="card-value">{automationPlanning.total_dev_tickets}</span>
+                      <span className="card-label">Tickets in Dev</span>
+                    </div>
+                  </div>
+                  <div className="summary-card subdept-card">
+                    <div className="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <rect x="3" y="3" width="7" height="7"/>
+                        <rect x="14" y="3" width="7" height="7"/>
+                        <rect x="14" y="14" width="7" height="7"/>
+                        <rect x="3" y="14" width="7" height="7"/>
+                      </svg>
+                    </div>
+                    <div className="card-content">
+                      <span className="card-value">{automationPlanning.by_subdepartment?.length || 0}</span>
+                      <span className="card-label">Subdepartments</span>
+                    </div>
+                  </div>
+                  <div className="summary-card keywords-card">
+                    <div className="card-icon">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/>
+                        <line x1="7" y1="7" x2="7.01" y2="7"/>
+                      </svg>
+                    </div>
+                    <div className="card-content">
+                      <span className="card-value">{automationPlanning.by_module_keyword?.length || 0}</span>
+                      <span className="card-label">Module Keywords</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Recommendations */}
+                {automationPlanning.recommendations?.length > 0 && (
+                  <div className="recommendations-section">
+                    <h3 className="section-title">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                      </svg>
+                      Recommendations
+                    </h3>
+                    <div className="recommendations-list">
+                      {automationPlanning.recommendations.map((rec, idx) => (
+                        <div key={idx} className={`recommendation-item priority-${rec.priority}`}>
+                          <span className="rec-icon">
+                            {rec.priority === 'high' ? '🔴' : rec.priority === 'medium' ? '🟡' : '🟢'}
+                          </span>
+                          <span className="rec-message">{rec.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Charts Section */}
+                <div className="planning-charts">
+                  {/* Subdepartment Distribution */}
+                  <div className="chart-card">
+                    <h3 className="chart-title">Tickets by Subdepartment</h3>
+                    {automationPlanning.by_subdepartment?.length > 0 ? (
+                      <div className="subdept-chart">
+                        <Bar
+                          data={{
+                            labels: automationPlanning.by_subdepartment.map(s => s.subdepartment),
+                            datasets: [{
+                              label: 'Tickets',
+                              data: automationPlanning.by_subdepartment.map(s => s.count),
+                              backgroundColor: [
+                                'rgba(59, 130, 246, 0.8)',
+                                'rgba(139, 92, 246, 0.8)',
+                                'rgba(16, 185, 129, 0.8)',
+                                'rgba(245, 158, 11, 0.8)',
+                                'rgba(239, 68, 68, 0.8)',
+                                'rgba(236, 72, 153, 0.8)',
+                              ],
+                              borderColor: [
+                                '#3b82f6',
+                                '#8b5cf6',
+                                '#10b981',
+                                '#f59e0b',
+                                '#ef4444',
+                                '#ec4899',
+                              ],
+                              borderWidth: 1,
+                              borderRadius: 4
+                            }]
+                          }}
+                          options={{
+                            indexAxis: 'y',
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                              legend: { display: false },
+                              tooltip: {
+                                callbacks: {
+                                  label: (ctx) => {
+                                    const subdept = automationPlanning.by_subdepartment[ctx.dataIndex];
+                                    return `${ctx.raw} tickets (${subdept.percentage}%)`;
+                                  }
+                                }
+                              }
+                            },
+                            scales: {
+                              x: {
+                                grid: { color: 'rgba(255,255,255,0.1)' },
+                                ticks: { color: '#9ca3af' }
+                              },
+                              y: {
+                                grid: { display: false },
+                                ticks: { color: '#e5e7eb' }
+                              }
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <p className="no-data">No subdepartment data available</p>
+                    )}
+                  </div>
+
+                  {/* Priority Distribution */}
+                  <div className="chart-card">
+                    <h3 className="chart-title">Tickets by Priority</h3>
+                    {automationPlanning.by_priority?.length > 0 ? (
+                      <div className="priority-chart">
+                        <Doughnut
+                          data={{
+                            labels: automationPlanning.by_priority.map(p => p.priority),
+                            datasets: [{
+                              data: automationPlanning.by_priority.map(p => p.count),
+                              backgroundColor: [
+                                'rgba(239, 68, 68, 0.8)',
+                                'rgba(245, 158, 11, 0.8)',
+                                'rgba(59, 130, 246, 0.8)',
+                                'rgba(34, 197, 94, 0.8)',
+                                'rgba(139, 92, 246, 0.8)',
+                                'rgba(107, 114, 128, 0.8)',
+                              ],
+                              borderWidth: 0
+                            }]
+                          }}
+                          options={{
+                            responsive: true,
+                            maintainAspectRatio: false,
+                            plugins: {
+                              legend: {
+                                position: 'right',
+                                labels: { color: '#e5e7eb', padding: 10, font: { size: 11 } }
+                              },
+                              tooltip: {
+                                callbacks: {
+                                  label: (ctx) => {
+                                    const priority = automationPlanning.by_priority[ctx.dataIndex];
+                                    return `${ctx.raw} tickets (${priority.percentage}%)`;
+                                  }
+                                }
+                              }
+                            }
+                          }}
+                        />
+                      </div>
+                    ) : (
+                      <p className="no-data">No priority data available</p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Module Keywords */}
+                {automationPlanning.by_module_keyword?.length > 0 && (
+                  <div className="module-keywords-section">
+                    <h3 className="section-title">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M20.59 13.41l-7.17 7.17a2 2 0 01-2.83 0L2 12V2h10l8.59 8.59a2 2 0 010 2.82z"/>
+                        <line x1="7" y1="7" x2="7.01" y2="7"/>
+                      </svg>
+                      Common Module Keywords (from Titles)
+                    </h3>
+                    <div className="keywords-grid">
+                      {automationPlanning.by_module_keyword.map((kw, idx) => (
+                        <div key={idx} className="keyword-card" onClick={() => {
+                          const tickets = automationPlanning.tickets.filter(t => 
+                            kw.ticket_ids.includes(t.ticket_id)
+                          );
+                          setFilteredTickets(tickets);
+                          setTicketListFilter({ label: `Module: ${kw.keyword}` });
+                          setActiveView('ticket-list');
+                        }}>
+                          <span className="keyword-name">{kw.keyword}</span>
+                          <span className="keyword-count">{kw.count}</span>
+                          <span className="keyword-percentage">{kw.percentage}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Subdepartment Details */}
+                <div className="subdept-details-section">
+                  <h3 className="section-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <rect x="3" y="3" width="7" height="7"/>
+                      <rect x="14" y="3" width="7" height="7"/>
+                      <rect x="14" y="14" width="7" height="7"/>
+                      <rect x="3" y="14" width="7" height="7"/>
+                    </svg>
+                    Subdepartment Breakdown
+                  </h3>
+                  <div className="subdept-cards">
+                    {automationPlanning.by_subdepartment?.map((subdept, idx) => (
+                      <div key={idx} className="subdept-detail-card">
+                        <div className="subdept-header" onClick={() => {
+                          setExpandedSubdeptSection(expandedSubdeptSection === subdept.subdepartment ? null : subdept.subdepartment);
+                        }}>
+                          <div className="subdept-info">
+                            <span className="subdept-name">{subdept.subdepartment}</span>
+                            <span className="subdept-count">{subdept.count} tickets ({subdept.percentage}%)</span>
+                          </div>
+                          <svg className={`expand-icon ${expandedSubdeptSection === subdept.subdepartment ? 'expanded' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M6 9l6 6 6-6"/>
+                          </svg>
+                        </div>
+                        {expandedSubdeptSection === subdept.subdepartment && (
+                          <div className="subdept-body">
+                            <div className="priority-breakdown">
+                              <span className="breakdown-label">By Priority:</span>
+                              <div className="priority-tags">
+                                {Object.entries(subdept.priorities || {}).map(([priority, count], pIdx) => (
+                                  <span key={pIdx} className="priority-tag">
+                                    {priority}: {count}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                            <button className="view-tickets-btn" onClick={() => {
+                              const tickets = automationPlanning.tickets.filter(t => 
+                                subdept.ticket_ids.includes(t.ticket_id)
+                              );
+                              setFilteredTickets(tickets);
+                              setTicketListFilter({ label: `Subdepartment: ${subdept.subdepartment}` });
+                              setActiveView('ticket-list');
+                            }}>
+                              View {subdept.count} Tickets →
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* All Tickets Table */}
+                <div className="all-tickets-section">
+                  <h3 className="section-title">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                      <polyline points="14,2 14,8 20,8"/>
+                      <line x1="16" y1="13" x2="8" y2="13"/>
+                      <line x1="16" y1="17" x2="8" y2="17"/>
+                    </svg>
+                    All Dev Tickets ({automationPlanning.total_dev_tickets})
+                  </h3>
+                  <div className="tickets-table-wrapper">
+                    <table className="tickets-table">
+                      <thead>
+                        <tr>
+                          <th>Ticket ID</th>
+                          <th>Title</th>
+                          <th>Status</th>
+                          <th>Priority</th>
+                          <th>Subdepartment</th>
+                          <th>Assignee</th>
+                          <th>Age</th>
+                          <th>ETA</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {automationPlanning.tickets?.map((ticket, idx) => (
+                          <tr key={idx}>
+                            <td>
+                              <TicketExternalLink ticketId={ticket.ticket_id} />
+                            </td>
+                            <td className="title-cell" title={ticket.title}>
+                              {ticket.title?.length > 50 ? ticket.title.substring(0, 50) + '...' : ticket.title}
+                            </td>
+                            <td>
+                              <span className="status-badge">{ticket.status}</span>
+                            </td>
+                            <td>
+                              <span className={`priority-badge priority-${(ticket.priority || '').toLowerCase().replace(/[^a-z]/g, '-')}`}>
+                                {ticket.priority || '-'}
+                              </span>
+                            </td>
+                            <td>{ticket.subdepartment}</td>
+                            <td>
+                              <span 
+                                className={employeeMap[ticket.assignee?.toLowerCase()] ? 'clickable-name' : ''}
+                                onClick={() => handleNameClick(ticket.assignee)}
+                              >
+                                {ticket.assignee}
+                              </span>
+                            </td>
+                            <td>{ticket.age_days != null ? `${ticket.age_days}d` : '-'}</td>
+                            <td>{ticket.eta ? formatDisplayDate(ticket.eta) : '-'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="no-data-message">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M12 16v-4M12 8h.01"/>
+                </svg>
+                <p>No automation planning data available</p>
+              </div>
             )}
           </div>
         )}

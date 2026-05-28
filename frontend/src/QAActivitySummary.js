@@ -522,7 +522,10 @@ export default function QAActivitySummary() {
             Dev Team ({devData?.developers?.length || 0})
           </button>
           <button className={`qcq-tab ${activeView === 'modules' ? 'active' : ''}`} onClick={() => setActiveView('modules')}>
-            Module Activity ({moduleWorkload.length})
+            QA Module ({moduleWorkload.length})
+          </button>
+          <button className={`qcq-tab ${activeView === 'dev_modules' ? 'active' : ''}`} onClick={() => setActiveView('dev_modules')}>
+            Dev Module ({devData?.modules?.length || 0})
           </button>
           <button className={`qcq-tab ${activeView === 'assigned_to' ? 'active' : ''}`} onClick={() => setActiveView('assigned_to')}>
             Assign To ({assignData?.total || 0})
@@ -659,6 +662,103 @@ export default function QAActivitySummary() {
         )}
 
         {/* BIS to Closed Tab */}
+        {/* Dev Module Activity Tab */}
+        {activeView === 'dev_modules' && devData && (() => {
+          const devModules = (devData.modules || []).filter(m => m.total > 0);
+          const devModStatuses = [
+            { key: 'in_progress', label: 'In Progress', color: 'var(--accent-green)' },
+            { key: 'code_review', label: 'Code Review', color: 'var(--accent-blue)' },
+            { key: 'ready_for_qc', label: 'CR Passed', color: 'var(--accent-teal)' },
+            { key: 'ready_for_dev', label: 'Ready For Dev', color: 'var(--text-muted)' },
+            { key: 'refix', label: 'Refix', color: 'var(--accent-red)' },
+            { key: 'qc_testing', label: 'QC Testing', color: 'var(--accent-purple, #8b5cf6)' },
+            { key: 'qc_failed', label: 'QC Failed', color: 'var(--accent-red)' },
+            { key: 'bis', label: 'BIS', color: 'var(--accent-amber)' },
+            { key: 'approved', label: 'Approved', color: '#06b6d4' },
+            { key: 'moved_to_live', label: 'Moved to Live', color: 'var(--accent-green)' },
+          ];
+          const devModStatusToGroup = {
+            in_progress: 'dev_in_progress', code_review: 'dev_pipeline', ready_for_qc: 'cr_passed',
+            ready_for_dev: 'dev_pipeline', refix: 'dev_refix',
+            qc_testing: 'qc_active', qc_failed: 'qc_failed', bis: 'bis', approved: 'approved',
+          };
+          return (
+          <div className="qcq-section">
+            {devModules.map(m => {
+              const isExp = expandedModStatus?.module === `dev_${m.module}`;
+              return (
+                <div key={m.module} style={{ background: 'var(--bg-secondary)', borderRadius: '8px', border: '1px solid var(--border-color)', marginBottom: '10px', overflow: 'hidden' }}>
+                  <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                    <span style={{ fontWeight: 700, fontSize: '0.92rem', minWidth: '160px' }}>{m.module}</span>
+                    <span style={{ fontWeight: 700, color: 'var(--text-secondary)' }}>{m.total} tickets</span>
+                    <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
+                      {devModStatuses.map(s => {
+                        const count = m[s.key] || 0;
+                        if (count === 0) return null;
+                        const isActive = expandedModStatus?.module === `dev_${m.module}` && expandedModStatus?.status === s.key;
+                        return (
+                          <span key={s.key}
+                            onClick={async () => {
+                              if (isActive) { setExpandedModStatus(null); setModTickets([]); return; }
+                              setExpandedModStatus({ module: `dev_${m.module}`, status: s.key, label: s.label });
+                              setLoadingModTickets(true);
+                              try {
+                                const group = devModStatusToGroup[s.key] || s.key;
+                                const res = await fetch(`${API_BASE}/live/module-tickets/${encodeURIComponent(m.module)}?status_group=${group}`);
+                                if (res.ok) { const d = await res.json(); setModTickets(d.tickets || []); }
+                              } finally { setLoadingModTickets(false); }
+                            }}
+                            style={{ padding: '3px 10px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer',
+                              background: isActive ? s.color : `${s.color}15`, color: isActive ? '#fff' : s.color,
+                              border: `1px solid ${s.color}` }}>
+                            {s.label}: {count}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    {/* Developers list */}
+                    <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                      {(m.developers || []).slice(0, 3).map(d => <span key={d} className="rp-tag rp-tag-support" style={{ fontSize: '0.63rem' }}>{d}</span>)}
+                      {(m.developers || []).length > 3 && <span style={{ fontSize: '0.63rem', color: 'var(--text-muted)' }}>+{m.developers.length - 3}</span>}
+                    </div>
+                  </div>
+                  {/* Expanded ticket list */}
+                  {isExp && (
+                    <div style={{ padding: '0 14px 12px', borderTop: '1px solid var(--border-color)' }}>
+                      <div style={{ fontSize: '0.8rem', fontWeight: 600, margin: '8px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        {m.module} — {expandedModStatus.label} ({modTickets.length})
+                        <button className="btn btn-sm btn-secondary" onClick={() => { setExpandedModStatus(null); setModTickets([]); }} style={{ fontSize: '0.7rem' }}>Close</button>
+                      </div>
+                      {loadingModTickets ? <p style={{ color: 'var(--text-muted)' }}>Loading...</p> : (
+                        <table className="qcq-table" style={{ fontSize: '0.78rem' }}>
+                          <thead>
+                            <tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Developer</th><th>QC Tester</th><th>Est Hrs</th><th>Actual Hrs</th><th>ETA</th></tr>
+                          </thead>
+                          <tbody>
+                            {modTickets.map(t => (
+                              <tr key={t.ticket_id} className="qcq-row">
+                                <td style={{textAlign:'center'}}><a href={`https://www.bissafety.app/pm/tickets#!/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
+                                <td style={{ maxWidth: '220px', wordBreak: 'break-word', whiteSpace: 'normal', textAlign: 'left' }}>{t.title}</td>
+                                <td style={{textAlign:'center'}}><span className="qcq-status-badge">{t.status}</span></td>
+                                <td style={{textAlign:'center'}}>{t.priority}</td>
+                                <td style={{textAlign:'center', fontSize:'0.72rem'}}>{t.developers_str || '-'}</td>
+                                <td style={{textAlign:'center'}}>{t.qc_tester || '-'}</td>
+                                <td style={{textAlign:'center'}}>{t.qa_estimate_hours || '-'}</td>
+                                <td style={{textAlign:'center'}}>{t.qa_actual_hours || '-'}</td>
+                                <td style={{textAlign:'center'}}>{t.eta ? new Date(t.eta).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '-'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>);
+        })()}
+
         {/* Assigned To Tab */}
         {activeView === 'assigned_to' && assignData && (() => {
           const teamColors = { Dev: 'var(--accent-blue)', QA: 'var(--accent-green)', BIS: 'var(--accent-purple, #8b5cf6)' };

@@ -928,6 +928,37 @@ function EmployeeProfile() {
     }
   };
 
+  const handleDownloadPerformanceReport = async () => {
+    try {
+      const response = await apiFetch(`/reports/developer/${encodeURIComponent(employeeId)}`);
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Failed to generate developer report');
+      }
+
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = `Developer_Report_${employeeId}_${new Date().toISOString().split('T')[0]}.pdf`;
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename="?(.+?)"?$/i);
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1];
+        }
+      }
+
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+    } catch (error) {
+      alert('Error downloading developer report: ' + error.message);
+    }
+  };
+
   const handleAddGoal = async (e) => {
     e.preventDefault();
     try {
@@ -1632,6 +1663,17 @@ function EmployeeProfile() {
             </svg>
             Export Excel
           </button>
+          {isDevelopmentTeam(employee) && (
+            <button className="btn-action" onClick={handleDownloadPerformanceReport}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="3" x2="12" y2="15"/>
+                <path d="M8 21h8"/>
+              </svg>
+              Export Dev Report PDF
+            </button>
+          )}
           <button className="btn-action" onClick={() => {
             if (employee) {
               setEditForm({

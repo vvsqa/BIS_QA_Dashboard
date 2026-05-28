@@ -20,11 +20,16 @@ function StatusBadge({ status }) {
 }
 
 function HoursCell({ est, actual }) {
-  if (!est && !actual) return <span>-</span>;
-  const overrun = est > 0 && actual > est;
-  return <span style={overrun ? { color: 'var(--accent-red)', fontWeight: 700 } : {}}>
-    {actual || 0}/{est || 0}h {overrun && <span title={`Overrun: +${(actual - est).toFixed(1)}h`}>!</span>}
-  </span>;
+  if (!est && !actual) return <><td className="qcq-hours">-</td><td className="qcq-hours">-</td><td className="qcq-hours">-</td></>;
+  // Deviation = estimate - actual (negative means overrun/exceeded)
+  const deviation = est > 0 && actual > 0 ? est - actual : null;
+  return <>
+    <td className="qcq-hours">{est || '-'}</td>
+    <td className="qcq-hours">{actual || '-'}</td>
+    <td className="qcq-hours" style={{ fontWeight: 700, color: deviation !== null ? (deviation < 0 ? 'var(--accent-red)' : deviation > 0 ? 'var(--accent-green)' : 'var(--text-muted)') : 'var(--text-muted)' }}>
+      {deviation !== null ? `${deviation > 0 ? '+' : ''}${deviation.toFixed(1)}h` : '-'}
+    </td>
+  </>;
 }
 
 export default function DevDashboard() {
@@ -166,7 +171,7 @@ export default function DevDashboard() {
       <td className="qcq-secondary">{t.developers_str || '-'}</td>
       <td>{t.current_assignee || '-'}</td>
       <td>{t.qc_tester || '-'}</td>
-      <td><HoursCell est={t.dev_estimate_hours} actual={t.actual_dev_hours} /></td>
+      <HoursCell est={t.dev_estimate_hours} actual={t.actual_dev_hours} />
       <td style={{textAlign:'center'}}>{t.cycle_count > 0 ? <span className="qcq-fail">{t.cycle_count}</span> : '-'}</td>
       <td style={{textAlign:'center'}}>{t.bugs_total > 0 ? t.bugs_total : '-'}</td>
       <td style={{textAlign:'center'}}>{t.bugs_open > 0 ? <span className="qcq-fail">{t.bugs_open}</span> : '-'}</td>
@@ -186,13 +191,20 @@ export default function DevDashboard() {
       <div className="qcq-table-container">
         <table className="qcq-table">
           <thead><tr>
-            <SortTh field="name">Developer</SortTh><SortTh field="ticket_count">Total</SortTh>
-            <SortTh field="in_progress">In Progress</SortTh><SortTh field="code_review">Code Review</SortTh>
-            <SortTh field="ready_for_qc">CR Passed</SortTh><SortTh field="ready_for_dev">Ready for Dev</SortTh>
-            <SortTh field="qc_testing">QC Testing</SortTh><SortTh field="qc_failed">QC Failed</SortTh>
-            <SortTh field="bis">BIS</SortTh><SortTh field="moved_to_live">Moved to Live</SortTh>
+            <SortTh field="name">Developer</SortTh>
+            <SortTh field="ticket_count">Total</SortTh>
+            <SortTh field="in_progress">In Progress</SortTh>
+            <SortTh field="code_review">Code Review</SortTh>
+            <SortTh field="ready_for_qc">CR Passed</SortTh>
+            <SortTh field="ready_for_dev">Ready For Dev</SortTh>
+            <SortTh field="qc_testing">QC Testing</SortTh>
+            <SortTh field="qc_failed">QC Failed</SortTh>
+            <SortTh field="bis">BIS</SortTh>
+            <SortTh field="moved_to_live">Moved To Live</SortTh>
             <SortTh field="refix_count">Refix</SortTh>
-            <SortTh field="total_dev_est">Est Hrs</SortTh><SortTh field="total_dev_actual">Actual Hrs</SortTh>
+            <SortTh field="total_dev_est">Estimated Hours</SortTh>
+            <SortTh field="total_dev_actual">Actual Hours</SortTh>
+            <th>Deviation</th>
             <th>Modules</th>
           </tr></thead>
           <tbody>
@@ -210,7 +222,7 @@ export default function DevDashboard() {
                   <td style={{textAlign:'center',color:d.bis>0?'var(--accent-purple)':undefined}}>{d.bis||'-'}</td>
                   <td style={{textAlign:'center',color:d.moved_to_live>0?'var(--accent-green)':undefined}}>{d.moved_to_live||'-'}</td>
                   <td style={{textAlign:'center',color:d.refix_count>0?'var(--accent-red)':undefined,fontWeight:d.refix_count>0?700:400}}>{d.refix_count||'-'}</td>
-                  <td className="qcq-hours"><HoursCell est={d.total_dev_est} actual={d.total_dev_actual} /></td>
+                  <HoursCell est={d.total_dev_est} actual={d.total_dev_actual} />
                   <td className="qcq-hours">{d.total_dev_actual||'-'}</td>
                   <td>{(d.modules||[]).slice(0,3).map(m=><span key={m} className="rp-tag rp-tag-expert">{m}</span>)}{d.modules.length>3&&<span className="rp-tag rp-tag-expert">+{d.modules.length-3}</span>}</td>
                 </tr>
@@ -218,7 +230,7 @@ export default function DevDashboard() {
                   <tr className="qcq-expand-row"><td colSpan="15" style={{padding:0}}>
                     <div style={{padding:'12px',background:'var(--bg-secondary)',borderTop:'2px solid var(--accent-teal)'}}>
                       <table className="qcq-table" style={{fontSize:'0.82rem'}}>
-                        <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Module</th><th>Assign To</th><th>Dev Hrs</th><th>Bugs</th><th>Open</th><th>Rel. to QA</th><th>Closed</th><th>ETA</th></tr></thead>
+                        <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Module</th><th>Assign To</th><th>Est Hrs</th><th>Actual Hrs</th><th>Deviation</th><th>Bugs</th><th>Open</th><th>Rel. to QA</th><th>Closed</th><th>ETA</th></tr></thead>
                         <tbody>{(d.tickets||[]).map(t=>{
                           const bug = allTickets.find(x=>x.ticket_id===t.ticket_id)||{};
                           return (
@@ -228,7 +240,7 @@ export default function DevDashboard() {
                             <td><span className={`qcq-status qcq-status-${(t.status||'').toLowerCase().replace(/\s+/g,'-')}`}>{t.status}</span></td>
                             <td className="qcq-priority">{t.priority}</td><td>{t.module||'-'}</td>
                             <td>{bug.current_assignee||t.current_assignee||'-'}</td>
-                            <td><HoursCell est={t.dev_estimate_hours} actual={t.actual_dev_hours} /></td>
+                            <HoursCell est={t.dev_estimate_hours} actual={t.actual_dev_hours} />
                             <td style={{textAlign:'center'}}>{bug.bugs_total>0?bug.bugs_total:'-'}</td>
                             <td style={{textAlign:'center'}}>{bug.bugs_open>0?<span className="qcq-fail">{bug.bugs_open}</span>:'-'}</td>
                             <td style={{textAlign:'center'}}>{bug.bugs_released_to_qa>0?<span className="qcq-pass">{bug.bugs_released_to_qa}</span>:'-'}</td>
@@ -280,7 +292,7 @@ export default function DevDashboard() {
           <thead><tr>
             <SortTh field="ticket_id">Ticket</SortTh><th>Title</th><SortTh field="status">Status</SortTh>
             <SortTh field="priority_order">Priority</SortTh><th>Platform</th><SortTh field="module">Module</SortTh>
-            <th>Developer</th><th>Assign To</th><th>QC Tester</th><th>Dev Hrs (Act/Est)</th>
+            <th>Developer</th><th>Assign To</th><th>QC Tester</th><th>Est Hrs</th><th>Actual Hrs</th><th>Deviation</th>
             <th>Cycles</th><th>Bugs</th><th>Open</th><th>Released to QA</th><th>Closed</th>
             <th>Age</th><SortTh field="eta">ETA</SortTh>
           </tr></thead>
@@ -326,7 +338,7 @@ export default function DevDashboard() {
                 <tr className="qcq-expand-row"><td colSpan="13" style={{padding:0}}>
                   <div style={{padding:'12px',background:'var(--bg-secondary)',borderTop:'2px solid var(--accent-teal)'}}>
                     <table className="qcq-table" style={{fontSize:'0.82rem'}}>
-                      <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Developer</th><th>Assign To</th><th>Dev Hrs</th><th>Bugs</th><th>Open</th><th>Rel. to QA</th><th>Closed</th><th>ETA</th></tr></thead>
+                      <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Developer</th><th>Assign To</th><th>Est Hrs</th><th>Actual Hrs</th><th>Deviation</th><th>Bugs</th><th>Open</th><th>Rel. to QA</th><th>Closed</th><th>ETA</th></tr></thead>
                       <tbody>{allTickets.filter(t=>t.module===m.module&&t.category==='dev').map(t=>(
                         <tr key={t.ticket_id} className={`qcq-row ${t.is_refix?'rp-overrun-row':''}`}>
                           <td className="qcq-ticket-id"><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noopener noreferrer">#{t.ticket_id}</a></td>
@@ -335,7 +347,7 @@ export default function DevDashboard() {
                           <td className="qcq-priority">{t.priority}</td>
                           <td className="qcq-secondary">{t.developers_str||'-'}</td>
                           <td>{t.current_assignee||'-'}</td>
-                          <td><HoursCell est={t.dev_estimate_hours} actual={t.actual_dev_hours} /></td>
+                          <HoursCell est={t.dev_estimate_hours} actual={t.actual_dev_hours} />
                           <td style={{textAlign:'center'}}>{t.bugs_total>0?t.bugs_total:'-'}</td>
                           <td style={{textAlign:'center'}}>{t.bugs_open>0?<span className="qcq-fail">{t.bugs_open}</span>:'-'}</td>
                           <td style={{textAlign:'center'}}>{t.bugs_released_to_qa>0?<span className="qcq-pass">{t.bugs_released_to_qa}</span>:'-'}</td>
