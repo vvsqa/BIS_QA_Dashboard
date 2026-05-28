@@ -35,7 +35,7 @@ class SyncSourceHealth:
 
     def __init__(self, source_name: str):
         self.source_name = source_name
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.last_sync_time: Optional[datetime] = None
         self.last_sync_success: bool = False
         self.last_sync_message: str = ""
