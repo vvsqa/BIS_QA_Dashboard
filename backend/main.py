@@ -37,6 +37,7 @@ from models import (
     QAPlanningWeek, QAPlannedTask, QAPlannedAllocation, QATaskHoldHistory,
     User, AdminConfig, ClientProfile,
     AutomationTestRun, AutomationTestCase,
+    PerformanceSnapshot,
 )
 from auth import (
     authenticate_user, hash_password, create_access_token,
@@ -7111,7 +7112,15 @@ def get_employee_performance(
 
 
 # Balanced leaderboard weights (sum = 100). Tune here.
-LEADERBOARD_WEIGHTS = {"throughput": 30, "output": 20, "quality": 30, "efficiency": 20}
+# Volume (throughput) is intentionally NOT dominant: quality is weighted highest, and throughput
+# credits work handed off and awaiting external (BIS) review so closure count alone doesn't decide.
+LEADERBOARD_WEIGHTS = {"throughput": 25, "output": 20, "quality": 35, "efficiency": 20}
+
+# Statuses where the person's work is done but the ticket is held for EXTERNAL review/deploy
+# (waiting in BIS, or approved and awaiting go-live). Not the person's delay — credited so they
+# aren't penalized for a low closed-count caused by tickets sitting in review.
+AWAITING_REVIEW_STATUSES = ("BIS Testing", "Approved for Live")
+AWAITING_CREDIT = 0.7  # partial credit vs a fully shipped ticket
 
 
 def _ticket_complexity(t, is_dev):
@@ -7155,6 +7164,15 @@ def get_performance_leaderboard(
     db: Session = SessionLocal()
     try:
         start_date, end_date, label = get_period_range(period, offset)
+
+        # Once a period has ended its leaderboard is frozen: computed once, then served unchanged
+        # so history never shifts as ticket/bug data drifts afterwards.
+        period_ended = end_date.date() < datetime.now().date()
+        period_key = f"{period}:{label}:{team}"
+        if period_ended:
+            snap = db.query(PerformanceSnapshot).filter_by(period_key=period_key).first()
+            if snap and snap.frozen and snap.payload:
+                return snap.payload
 
         # Delivered-in-period tickets: real close/ship date in the window.
         # (TicketTracking.updated_on is only the last sync time, so it cannot define a period.)
@@ -7272,6 +7290,29 @@ def get_performance_leaderboard(
                 if d_eid in dev_ids:
                     _add_ticket(d_eid, t)
 
+        # Tickets the person handed off that are now awaiting external review (BIS) / go-live.
+        # Current-status based, so only meaningful for the live (current) period.
+        awaiting_by_emp = defaultdict(list)
+        if end_date.date() >= datetime.now().date():
+            seen_await = set()
+
+            def _add_await(eid, t):
+                key = (eid, t.id)
+                if eid and key not in seen_await:
+                    seen_await.add(key)
+                    awaiting_by_emp[eid].append(t)
+
+            for t in db.query(TicketTracking).filter(
+                TicketTracking.status.in_(AWAITING_REVIEW_STATUSES)
+            ).all():
+                qa_eid = _resolve(t.qc_tester)
+                if qa_eid in qa_ids:
+                    _add_await(qa_eid, t)
+                for nm in (t.backend_developer, t.frontend_developer):
+                    d_eid = _resolve(nm)
+                    if d_eid in dev_ids:
+                        _add_await(d_eid, t)
+
         bugs_by_emp = defaultdict(list)
         for b in db.query(Bug).filter(
             Bug.created_on >= start_date,
@@ -7314,27 +7355,37 @@ def get_performance_leaderboard(
                     _employee_mode_of_work(emp),
                     tickets=etickets, bugs=ebugs, tests=etests, timesheet_entries=ets,
                 )
+                eawait = awaiting_by_emp.get(emp.employee_id, [])
                 tcount = metrics["tickets"]["count"]
                 bcount = metrics["bugs"].get("total", 0)
                 testcount = metrics.get("tests", {}).get("total_executed", 0)
-                if tcount == 0 and bcount == 0 and testcount == 0:
+                awaiting_n = len(eawait)
+                if tcount == 0 and bcount == 0 and testcount == 0 and awaiting_n == 0:
                     continue  # no activity this period → off the board
-                cwv = sum(_ticket_complexity(t, is_dev) for t in etickets)
+                delivered_cwv = sum(_ticket_complexity(t, is_dev) for t in etickets)
+                awaiting_cwv = sum(_ticket_complexity(t, is_dev) for t in eawait)
+                # Throughput credits shipped work fully and handed-off/awaiting-review work partially,
+                # so a low closed-count caused by tickets sitting in BIS review isn't penalized.
+                throughput_base = delivered_cwv + AWAITING_CREDIT * awaiting_cwv
                 if is_dev:
                     output_raw = metrics["bugs"].get("closed", 0) + 0.5 * bcount
                 else:
                     output_raw = bcount + testcount
                 rag = calculate_rag_score(metrics, is_dev, planning_timesheet=None,
                                           role_context={"is_manager": False})
-                rows.append({"emp": emp, "metrics": metrics, "cwv": cwv,
+                rows.append({"emp": emp, "metrics": metrics,
+                             "delivered_cwv": round(delivered_cwv, 1),
+                             "awaiting_cwv": round(awaiting_cwv, 1),
+                             "throughput_base": throughput_base,
+                             "awaiting_n": awaiting_n,
                              "output_raw": output_raw, "rag": rag})
 
-            max_cwv = max((r["cwv"] for r in rows), default=0) or 0
+            max_cwv = max((r["throughput_base"] for r in rows), default=0) or 0
             max_out = max((r["output_raw"] for r in rows), default=0) or 0
             scored = []
             for r in rows:
                 m = r["metrics"]
-                throughput = 100 * (r["cwv"] / max_cwv) ** 0.5 if max_cwv > 0 else 0
+                throughput = 100 * (r["throughput_base"] / max_cwv) ** 0.5 if max_cwv > 0 else 0
                 output = 100 * (r["output_raw"] / max_out) ** 0.5 if max_out > 0 else 0
                 quality = r["rag"]
                 est_acc = m["tickets"].get("estimate_accuracy")
@@ -7345,6 +7396,24 @@ def get_performance_leaderboard(
                        "quality": round(quality, 1), "efficiency": round(efficiency, 1)}
                 contrib = {k: round(sub[k] * LEADERBOARD_WEIGHTS[k] / 100, 1) for k in sub}
                 composite = round(sum(contrib.values()), 1)
+                delivered = m["tickets"]["count"]
+                bugs = m["bugs"].get("total", 0)
+                tests = m.get("tests", {}).get("total_executed", 0)
+                hours = m["timesheet"]["total_hours"]
+
+                # Human-readable "how they earned this" summary.
+                summary_lines = [f"Delivered {delivered} ticket(s) to live "
+                                 f"({r['delivered_cwv']} complexity pts)"]
+                if r["awaiting_n"]:
+                    summary_lines.append(f"{r['awaiting_n']} ticket(s) handed off, awaiting BIS "
+                                         f"review/go-live (credited)")
+                if bugs:
+                    summary_lines.append(f"{'Found' if not is_dev else 'Handled'} {bugs} bug(s)")
+                if tests:
+                    summary_lines.append(f"{tests} test result(s) executed")
+                summary_lines.append(f"{round(quality, 1)}% quality · {est_acc}% estimate accuracy")
+                summary_lines.append(f"{hours}h logged · {util}% utilization")
+
                 scored.append({
                     "employee_id": r["emp"].employee_id,
                     "name": r["emp"].name,
@@ -7353,24 +7422,27 @@ def get_performance_leaderboard(
                     "composite_score": composite,
                     "sub_scores": sub,
                     "weighted_contributions": contrib,
+                    "summary_lines": summary_lines,
                     "raw_metrics": {
-                        "tickets": m["tickets"]["count"],
-                        "delivered_to_live": m["tickets"]["count"],  # all bucketed tickets shipped in-period
-                        "complexity_weighted_volume": round(r["cwv"], 1),
-                        "bugs": m["bugs"].get("total", 0),
-                        "test_results_executed": m.get("tests", {}).get("total_executed", 0),
-                        "hours": m["timesheet"]["total_hours"],
+                        "tickets": delivered,
+                        "delivered_to_live": delivered,            # shipped (closed) in-period
+                        "awaiting_review": r["awaiting_n"],        # handed off, awaiting BIS/go-live
+                        "complexity_weighted_volume": r["delivered_cwv"],
+                        "awaiting_complexity": r["awaiting_cwv"],
+                        "bugs": bugs,
+                        "test_results_executed": tests,
+                        "hours": hours,
                         "quality_percent": round(quality, 1),
                         "estimate_accuracy": est_acc,
                         "utilization_percent": util,
                         "rag_score": round(r["rag"], 1),
                     },
-                    "_cwv": r["cwv"],
+                    "_tb": r["throughput_base"],
                 })
-            scored.sort(key=lambda x: (x["composite_score"], x["_cwv"]), reverse=True)
+            scored.sort(key=lambda x: (x["composite_score"], x["_tb"]), reverse=True)
             for i, s in enumerate(scored, 1):
                 s["rank"] = i
-                s.pop("_cwv", None)
+                s.pop("_tb", None)
             return scored
 
         def _team_summary(lst):
@@ -7384,13 +7456,25 @@ def get_performance_leaderboard(
             }
 
         resp = {"period": {"kind": period, "offset": offset, "label": label,
-                           "start": start_date.isoformat(), "end": end_date.isoformat()}}
+                           "start": start_date.isoformat(), "end": end_date.isoformat(),
+                           "ended": period_ended, "frozen": period_ended}}
         if team in ("qa", "all"):
             resp["qa"] = _build_team(qa_emps, False)
         if team in ("dev", "all"):
             resp["dev"] = _build_team(dev_emps, True)
         resp["summary"] = {"qa": _team_summary(resp.get("qa", [])),
                            "dev": _team_summary(resp.get("dev", []))}
+
+        # Freeze ended periods on first computation (immutable thereafter).
+        if period_ended:
+            try:
+                db.add(PerformanceSnapshot(
+                    period_key=period_key, period_kind=period, period_label=label,
+                    team=team, payload=resp, frozen=True,
+                ))
+                db.commit()
+            except Exception:
+                db.rollback()
         return resp
     finally:
         db.close()
