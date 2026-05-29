@@ -49,6 +49,14 @@ function PodiumCard({ entry, isQA }) {
         <span className="emp-score">{entry.composite_score}</span>
       </div>
       <div className="emp-podium-chips">
+        <span className="emp-chip emp-chip-presence" title="Days present / working days (attendance — billing)">
+          📅 {rm.present_days}/{rm.working_days} present
+        </span>
+        {rm.leave_days > 0 && (
+          <span className="emp-chip emp-chip-leave" title="Leave days taken (billing loss)">
+            🔻 {rm.leave_days} leave (−{entry.leave_penalty})
+          </span>
+        )}
         <span className="emp-chip emp-chip-deliver" title="Tickets delivered to live in this period">
           🚀 {rm.delivered_to_live} delivered
         </span>
@@ -84,17 +92,25 @@ function FullRow({ entry, isQA }) {
         <td style={{ textAlign: 'center' }}>{rm.awaiting_review ?? 0}</td>
         <td style={{ textAlign: 'center' }}>{rm.complexity_weighted_volume}</td>
         <td style={{ textAlign: 'center' }}>{rm.bugs}</td>
-        {isQA && <td style={{ textAlign: 'center' }}>{rm.test_results_executed}</td>}
+        <td style={{ textAlign: 'center' }} title="Days present / working days">{rm.present_days}/{rm.working_days}</td>
+        <td style={{ textAlign: 'center', color: rm.leave_days > 0 ? 'var(--accent-red)' : 'var(--text-muted)' }}>
+          {rm.leave_days > 0 ? `${rm.leave_days} (−${entry.leave_penalty})` : '–'}
+        </td>
         <td style={{ textAlign: 'center' }}>{rm.hours}</td>
         <td style={{ textAlign: 'center' }}>{rm.quality_percent}%</td>
         <td style={{ textAlign: 'center' }}>{rm.estimate_accuracy}%</td>
+        <td style={{ textAlign: 'center', color: rm.overrun_tickets > 0 ? 'var(--accent-amber)' : 'var(--text-muted)' }}
+            title={rm.overrun_tickets > 0 ? `+${rm.overrun_hours}h over estimate · on-time ${rm.on_time_rate}%` : 'No overruns'}>
+          {rm.overrun_tickets > 0 ? `${rm.overrun_tickets} (+${rm.overrun_hours}h)` : '–'}
+        </td>
         <td style={{ textAlign: 'center' }}>{rm.utilization_percent}%</td>
       </tr>
       {open && (
         <tr className="qcq-expand-row">
-          <td colSpan={isQA ? 12 : 11} style={{ padding: '10px 16px' }}>
+          <td colSpan={14} style={{ padding: '10px 16px' }}>
             <div className="emp-breakdown">
-              <h5>Score breakdown (weighted: throughput 25 · output 20 · quality 35 · efficiency 20)</h5>
+              <h5>Score breakdown (weighted: presence 25 · throughput 20 · output 12 · quality 30 · efficiency 13{rm.leave_days > 0 ? `  ·  −${entry.leave_penalty} leave penalty` : ''})</h5>
+              <ScoreBar label="Presence" value={num(ss.presence)} color="var(--accent-purple, #8b5cf6)" />
               <ScoreBar label="Throughput" value={num(ss.throughput)} color="var(--accent-teal)" />
               <ScoreBar label="Output" value={num(ss.output)} color="var(--accent-blue)" />
               <ScoreBar label="Quality" value={num(ss.quality)} color="var(--accent-green)" />
@@ -159,10 +175,12 @@ function TeamSection({ title, isQA, entries, summary, periodLabel }) {
                   <th title="Handed off, awaiting BIS review / go-live (credited)">In Review</th>
                   <th title="Complexity-weighted volume (priority × estimate)">Complexity</th>
                   <th>{isQA ? 'Bugs found' : 'Bugs handled'}</th>
-                  {isQA && <th title="Test results executed (TestRail)">Tests</th>}
+                  <th title="Days present / working days (attendance)">Present</th>
+                  <th title="Leave days taken (billing loss penalty)">Leave</th>
                   <th>Hours</th>
                   <th>Quality</th>
                   <th title="Estimate accuracy">Est. Acc</th>
+                  <th title="Tickets that overran their estimate (+overrun hours)">Overrun</th>
                   <th title="Timesheet utilization">Util</th>
                 </tr>
               </thead>
@@ -182,7 +200,121 @@ function TeamSection({ title, isQA, entries, summary, periodLabel }) {
   );
 }
 
+function FlowTable({ title, rows, keyField, label }) {
+  return (
+    <div className="qcq-section" style={{ marginBottom: '20px' }}>
+      <h2 className="qcq-section-title">{title}</h2>
+      <div className="qcq-table-container">
+        <table className="qcq-table">
+          <thead><tr>
+            <th style={{ textAlign: 'left' }}>{label}</th>
+            <th title="Fresh tickets received into QA">Fresh</th>
+            <th title="Handed over to BIS">To BIS</th>
+            <th>Closed</th>
+          </tr></thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r[keyField]} className="qcq-row">
+                <td style={{ textAlign: 'left' }}>{r[keyField]}</td>
+                <td style={{ textAlign: 'center', color: 'var(--accent-teal)' }}>{r.fresh || '–'}</td>
+                <td style={{ textAlign: 'center', color: 'var(--accent-amber)' }}>{r.bis || '–'}</td>
+                <td style={{ textAlign: 'center', color: 'var(--accent-green)', fontWeight: 600 }}>{r.closed || '–'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function QAFlowTab() {
+  const [offset, setOffset] = useState(0);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState(null);
+
+  const fetchFlow = useCallback(async () => {
+    setLoading(true); setErr(null);
+    try {
+      const res = await fetch(`${API_BASE}/qa-flow?offset=${offset}&trend=6`);
+      if (!res.ok) throw new Error(`Request failed (${res.status})`);
+      setData(await res.json());
+    } catch (e) { setErr(e.message); } finally { setLoading(false); }
+  }, [offset]);
+  useEffect(() => { fetchFlow(); }, [fetchFlow]);
+
+  if (loading) return <div className="loading-container"><div className="loading-spinner"></div><p>Loading QA flow…</p></div>;
+  if (err) return <div className="error-container"><p>{err}</p><button onClick={fetchFlow} className="btn btn-primary">Retry</button></div>;
+
+  const trend = data?.trend || [];
+  const maxF = Math.max(1, ...trend.map(t => t.fresh_received));
+  const maxB = Math.max(1, ...trend.map(t => t.handed_to_bis));
+  const maxC = Math.max(1, ...trend.map(t => t.closed));
+
+  return (
+    <>
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap' }}>
+        <div className="qcq-platform-toggle">
+          {OFFSETS.map(o => (
+            <button key={o.value} className={`btn btn-sm ${offset === o.value ? 'btn-primary' : 'btn-secondary'}`}
+              onClick={() => setOffset(o.value)}>{o.label}</button>
+          ))}
+        </div>
+        <span style={{ fontWeight: 700 }}>{data?.period?.label}</span>
+        <span className={`emp-period-badge ${data?.period?.frozen ? 'emp-final' : 'emp-live'}`}>
+          {data?.period?.frozen ? 'Final' : 'Live'}
+        </span>
+      </div>
+
+      <div className="qcq-status-cards">
+        <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-teal)' }}>
+          <div className="qcq-card-value">{data.fresh_received}</div>
+          <div className="qcq-card-label">Fresh received in QA</div>
+        </div>
+        <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-amber)' }}>
+          <div className="qcq-card-value">{data.handed_to_bis}</div>
+          <div className="qcq-card-label">Handed to BIS</div>
+        </div>
+        <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-green)' }}>
+          <div className="qcq-card-value">{data.closed}</div>
+          <div className="qcq-card-label">Closed</div>
+        </div>
+      </div>
+
+      <div className="qcq-section">
+        <h2 className="qcq-section-title">Monthly comparison (last {trend.length} months)</h2>
+        <div className="emp-flow-chart">
+          {trend.map(t => (
+            <div key={t.label} className="emp-flow-col">
+              <div className="emp-flow-bars">
+                <div className="emp-flow-bar" style={{ height: `${(t.fresh_received / maxF) * 100}%`, background: 'var(--accent-teal)' }} title={`Fresh: ${t.fresh_received}`} />
+                <div className="emp-flow-bar" style={{ height: `${(t.handed_to_bis / maxB) * 100}%`, background: 'var(--accent-amber)' }} title={`To BIS: ${t.handed_to_bis}`} />
+                <div className="emp-flow-bar" style={{ height: `${(t.closed / maxC) * 100}%`, background: 'var(--accent-green)' }} title={`Closed: ${t.closed}`} />
+              </div>
+              <div className="emp-flow-xlabel">{t.label.replace(' 20', " '")}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: '16px', marginTop: '8px', fontSize: '0.72rem' }}>
+          <span><span className="emp-dot" style={{ background: 'var(--accent-teal)' }} /> Fresh received</span>
+          <span><span className="emp-dot" style={{ background: 'var(--accent-amber)' }} /> Handed to BIS</span>
+          <span><span className="emp-dot" style={{ background: 'var(--accent-green)' }} /> Closed</span>
+        </div>
+        <p style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '6px' }}>
+          Each series is scaled to its own max for readability. Closed has full history; Fresh-received &amp;
+          Handed-to-BIS are tracked from May 2026 onward (when status-history capture began) and fill in each month.
+        </p>
+      </div>
+
+      <FlowTable title="By module" rows={data.by_module || []} keyField="module" label="Module" />
+      <FlowTable title="By QC tester" rows={data.by_qc_tester || []} keyField="qc_tester" label="QC Tester" />
+    </>
+  );
+}
+
 export default function EmployeePerformance() {
+  const [view, setView] = useState('performance');
   const [kind, setKind] = useState('month');
   const [offset, setOffset] = useState(0);
   const [data, setData] = useState(null);
@@ -221,23 +353,32 @@ export default function EmployeePerformance() {
               )}
             </p>
           </div>
-          <div className="header-right" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-            <div className="qcq-platform-toggle">
-              {PERIOD_KINDS.map(k => (
-                <button key={k.value} className={`btn btn-sm ${kind === k.value ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => setKind(k.value)}>{k.label}</button>
-              ))}
+          {view === 'performance' && (
+            <div className="header-right" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+              <div className="qcq-platform-toggle">
+                {PERIOD_KINDS.map(k => (
+                  <button key={k.value} className={`btn btn-sm ${kind === k.value ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setKind(k.value)}>{k.label}</button>
+                ))}
+              </div>
+              <div className="qcq-platform-toggle">
+                {OFFSETS.map(o => (
+                  <button key={o.value} className={`btn btn-sm ${offset === o.value ? 'btn-primary' : 'btn-secondary'}`}
+                    onClick={() => setOffset(o.value)}>{o.label}</button>
+                ))}
+              </div>
             </div>
-            <div className="qcq-platform-toggle">
-              {OFFSETS.map(o => (
-                <button key={o.value} className={`btn btn-sm ${offset === o.value ? 'btn-primary' : 'btn-secondary'}`}
-                  onClick={() => setOffset(o.value)}>{o.label}</button>
-              ))}
-            </div>
-          </div>
+          )}
         </header>
 
-        {loading ? (
+        <div className="qcq-tabs">
+          <button className={`qcq-tab ${view === 'performance' ? 'active' : ''}`} onClick={() => setView('performance')}>Performance</button>
+          <button className={`qcq-tab ${view === 'qaflow' ? 'active' : ''}`} onClick={() => setView('qaflow')}>QA Flow</button>
+        </div>
+
+        {view === 'qaflow' ? (
+          <QAFlowTab />
+        ) : loading ? (
           <div className="loading-container"><div className="loading-spinner"></div><p>Loading performance…</p></div>
         ) : error ? (
           <div className="error-container"><p>{error}</p><button onClick={fetchData} className="btn btn-primary">Retry</button></div>
@@ -248,8 +389,8 @@ export default function EmployeePerformance() {
             <TeamSection title="Dev Team" isQA={false} entries={data?.dev || []}
               summary={data?.summary?.dev} periodLabel={data?.period?.label} />
             <p style={{ color: 'var(--text-muted)', fontSize: '0.72rem', marginTop: '4px' }}>
-              Score = throughput (volume × ticket complexity) + output (bugs/tests) + quality + efficiency,
-              over tickets delivered to live in the selected period. "Tests" reflects executed TestRail results.
+              Score = presence (attendance) + throughput (delivered + awaiting-review, depth-weighted) +
+              output (bugs) + quality + efficiency (on-time/estimate + utilization), minus a leave penalty.
             </p>
           </>
         )}
