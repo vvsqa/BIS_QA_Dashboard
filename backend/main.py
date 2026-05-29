@@ -37,7 +37,7 @@ from models import (
     QAPlanningWeek, QAPlannedTask, QAPlannedAllocation, QATaskHoldHistory,
     User, AdminConfig, ClientProfile,
     AutomationTestRun, AutomationTestCase,
-    PerformanceSnapshot,
+    PerformanceSnapshot, QAFlowSnapshot,
 )
 from auth import (
     authenticate_user, hash_password, create_access_token,
@@ -7111,10 +7111,16 @@ def get_employee_performance(
         db.close()
 
 
-# Balanced leaderboard weights (sum = 100). Tune here.
-# Volume (throughput) is intentionally NOT dominant: quality is weighted highest, and throughput
-# credits work handed off and awaiting external (BIS) review so closure count alone doesn't decide.
-LEADERBOARD_WEIGHTS = {"throughput": 25, "output": 20, "quality": 35, "efficiency": 20}
+# Leaderboard weights (sum = 100). Tune here.
+# Presence (attendance) is a major billing criterion; quality stays high; throughput credits
+# work awaiting external review so raw closure count is not the deciding factor.
+LEADERBOARD_WEIGHTS = {"presence": 25, "throughput": 20, "output": 12, "quality": 30, "efficiency": 13}
+
+# Leave is a billing loss: deduct this many composite points per leave day taken, capped.
+LEAVE_PENALTY_PER_DAY = 1.5
+LEAVE_PENALTY_CAP = 15
+# Leave types that count as a billing-loss absence (WFH = still working; Holiday = company-wide).
+ABSENCE_LEAVE_TYPES = ("leave", "sick leave", "casual leave", "half day", "earned leave", "lop")
 
 # Statuses where the person's work is done but the ticket is held for EXTERNAL review/deploy
 # (waiting in BIS, or approved and awaiting go-live). Not the person's delay — credited so they
@@ -7122,13 +7128,25 @@ LEADERBOARD_WEIGHTS = {"throughput": 25, "output": 20, "quality": 35, "efficienc
 AWAITING_REVIEW_STATUSES = ("BIS Testing", "Approved for Live")
 AWAITING_CREDIT = 0.7  # partial credit vs a fully shipped ticket
 
+# QA testers on the mobile/sprint model — excluded from the QA performance leaderboard.
+MOBILE_QA_EXCLUDE = ("anjaly", "arya")
+
+# Specific people excluded from the leaderboard entirely, matched by COMPACT name so other
+# similarly-named people are unaffected (e.g. exclude "Vishnu V S" but keep "Vishnu CS").
+PERFORMANCE_EXCLUDE_COMPACT = ("vishnuvs",)
+
 
 def _ticket_complexity(t, is_dev):
-    """Per-ticket complexity ('vastness and depth'): priority weight (1.0-3.0) scaled by estimate hours."""
+    """Per-ticket complexity by DEPTH of work done: priority weight (1.0-3.0) scaled by the
+    ACTUAL hours worked on the ticket (effort/depth), falling back to the estimate when actuals
+    are missing. Deeper, harder tickets (more hours on a higher-priority item) score more than
+    shallow ones, so volume alone doesn't dominate."""
     rank = PRIORITY_ORDER.get((t.priority or "").strip(), 13)
     priority_weight = 1.0 + (13 - rank) / 12 * 2.0  # URGENT≈3.0 … Suggestion≈1.0
+    actual = (t.actual_dev_hours if is_dev else t.actual_qa_hours) or 0
     est = (t.dev_estimate_hours if is_dev else t.qa_estimate_hours) or 0
-    return priority_weight * (1 + min(est, 40) / 40)
+    depth_hours = actual or est  # prefer real effort; fall back to estimate
+    return priority_weight * (1 + min(depth_hours, 40) / 40)
 
 
 def _strip_paren(name):
@@ -7204,6 +7222,15 @@ def get_performance_leaderboard(
         qa_by_id, dev_by_id = {}, {}
         name_to_employee_id = {}
 
+        def _excluded_qa(name):
+            # Mobile/sprint-model QA testers are not ranked on this delivery board.
+            toks = _normalize_person_name(name).split()
+            return any(x in toks for x in MOBILE_QA_EXCLUDE)
+
+        def _excluded(name):
+            # Specific people excluded from both boards (exact compact-name match).
+            return _compact_person_name(name) in PERFORMANCE_EXCLUDE_COMPACT
+
         def _register(person, team_ids):
             team_ids[person.employee_id] = person
             if person.name:
@@ -7217,12 +7244,12 @@ def get_performance_leaderboard(
         for emp in db.query(Employee).filter(
             Employee.is_active == True, Employee.archived == False,
         ).all():
-            if _is_manager(emp):
+            if _is_manager(emp) or _excluded(emp.name):
                 continue
             tu = (emp.team or "").upper()
             if "DEV" in tu:
                 _register(emp, dev_by_id)
-            elif "QA" in tu:
+            elif "QA" in tu and not _excluded_qa(emp.name):
                 _register(emp, qa_by_id)
 
         # EmployeeNameMapping aliases (only for already-registered employees).
@@ -7237,6 +7264,16 @@ def get_performance_leaderboard(
         except Exception:
             pass
 
+        # First+last-name index over EMPLOYEES only, kept only when unambiguous. Lets a short PM
+        # name ("Gautham Krishna") resolve to the fuller employee record ("Gautham Krishna KP")
+        # instead of spawning a duplicate, without merging distinct people (e.g. the various Vishnus).
+        _f2_sets = defaultdict(set)
+        for _eid, _p in list(qa_by_id.items()) + list(dev_by_id.items()):
+            _tk = _normalize_person_name(_p.name).split()
+            if len(_tk) >= 2:
+                _f2_sets[(_tk[0], _tk[1])].add(_eid)
+        first2_to_eid = {k: next(iter(v)) for k, v in _f2_sets.items() if len(v) == 1}
+
         def _resolve(raw):
             if not raw:
                 return None
@@ -7246,6 +7283,9 @@ def get_performance_leaderboard(
                        or name_to_employee_id.get(_compact_person_name(variant)))
                 if eid:
                     return eid
+            toks = _normalize_person_name(_strip_paren(raw)).split()
+            if len(toks) >= 2:
+                return first2_to_eid.get((toks[0], toks[1]))
             return None
 
         # Add ticket-derived persons for any names not already mapped to a real employee.
@@ -7260,10 +7300,10 @@ def get_performance_leaderboard(
                     dev_name_counts[nm] += 1
         # Overlaps go to the role where the name appears more often (tie => QA).
         for nm, qc in qa_name_counts.items():
-            if not _resolve(nm) and qc >= dev_name_counts.get(nm, 0):
+            if not _resolve(nm) and not _excluded_qa(nm) and not _excluded(nm) and qc >= dev_name_counts.get(nm, 0):
                 _register(_LbPerson(nm, "QA"), qa_by_id)
         for nm in dev_name_counts:
-            if not _resolve(nm):
+            if not _resolve(nm) and not _excluded(nm):
                 _register(_LbPerson(nm, "DEV"), dev_by_id)
 
         qa_emps = list(qa_by_id.values())
@@ -7343,6 +7383,25 @@ def get_performance_leaderboard(
             if eid:
                 ts_by_emp[eid].append(e)
 
+        # Leave days taken in the period (billing loss). WFH/Holiday are not personal absences.
+        leave_days_by_emp = defaultdict(float)
+        for lv in db.query(LeaveEntry).filter(
+            LeaveEntry.date >= start_date.date(),
+            LeaveEntry.date <= end_date.date(),
+        ).all():
+            lt = (lv.leave_type or "").strip().lower()
+            if lt not in ABSENCE_LEAVE_TYPES:
+                continue
+            eid = _resolve(lv.employee_name)
+            if eid:
+                leave_days_by_emp[eid] += 0.5 if "half" in lt else 1.0
+
+        # Working days in the period (Mon–Fri) for attendance/presence.
+        period_working_days = sum(
+            1 for i in range((end_date.date() - start_date.date()).days + 1)
+            if (start_date.date() + timedelta(days=i)).weekday() < 5
+        ) or 1
+
         def _build_team(emps, is_dev):
             rows = []
             for emp in emps:
@@ -7373,12 +7432,38 @@ def get_performance_leaderboard(
                     output_raw = bcount + testcount
                 rag = calculate_rag_score(metrics, is_dev, planning_timesheet=None,
                                           role_context={"is_manager": False})
+                # Presence / attendance (billing): days physically logged + productive hours.
+                present_days = len({e.date for e in ets if (e.hours_logged or 0) > 0})
+                productive_hours = round(sum((e.productive_hours or e.hours_logged or 0) for e in ets), 1)
+                expected_hours = period_working_days * 8
+                attendance_ratio = present_days / period_working_days
+                prod_ratio = (productive_hours / expected_hours) if expected_hours else 0
+                presence = round(100 * min(1.0, 0.6 * attendance_ratio + 0.4 * min(1.0, prod_ratio)), 1)
+                leave_days = round(leave_days_by_emp.get(emp.employee_id, 0), 1)
+                # Time overruns: tickets where ACTUAL exceeded ESTIMATE (genuine overrun — scope
+                # changes get re-estimated so actual≈estimate and don't count). Per-ticket so an
+                # underrun elsewhere can't mask it.
+                estd = overrun_tickets = 0
+                overrun_hours = 0.0
+                for t in etickets:
+                    est = (t.dev_estimate_hours if is_dev else t.qa_estimate_hours) or 0
+                    act = (t.actual_dev_hours if is_dev else t.actual_qa_hours) or 0
+                    if est > 0:
+                        estd += 1
+                        if act > est:
+                            overrun_tickets += 1
+                            overrun_hours += (act - est)
+                on_time_rate = round(100 * (estd - overrun_tickets) / estd, 1) if estd else 100.0
                 rows.append({"emp": emp, "metrics": metrics,
                              "delivered_cwv": round(delivered_cwv, 1),
                              "awaiting_cwv": round(awaiting_cwv, 1),
                              "throughput_base": throughput_base,
                              "awaiting_n": awaiting_n,
-                             "output_raw": output_raw, "rag": rag})
+                             "output_raw": output_raw, "rag": rag,
+                             "presence": presence, "present_days": present_days,
+                             "productive_hours": productive_hours, "leave_days": leave_days,
+                             "on_time_rate": on_time_rate, "overrun_tickets": overrun_tickets,
+                             "overrun_hours": round(overrun_hours, 1), "estimated_tickets": estd})
 
             max_cwv = max((r["throughput_base"] for r in rows), default=0) or 0
             max_out = max((r["output_raw"] for r in rows), default=0) or 0
@@ -7391,19 +7476,33 @@ def get_performance_leaderboard(
                 est_acc = m["tickets"].get("estimate_accuracy")
                 est_acc = 100 if est_acc is None else est_acc
                 util = m["timesheet"].get("utilization_percent", 0)
-                efficiency = 0.5 * max(0, 100 - abs(100 - est_acc)) + 0.5 * min(100, util)
-                sub = {"throughput": round(throughput, 1), "output": round(output, 1),
-                       "quality": round(quality, 1), "efficiency": round(efficiency, 1)}
+                # Efficiency blends on-time delivery (per-ticket: did actual stay within estimate —
+                # genuine overruns lower this; re-estimated scope changes stay on-time) with how close
+                # the aggregate estimate matched actual, plus utilization (real logged effort).
+                on_time = r["on_time_rate"]
+                est_close = max(0, 100 - abs(100 - est_acc))
+                efficiency = round(0.45 * on_time + 0.25 * est_close + 0.30 * min(100, util), 1)
+                presence = r["presence"]
+                sub = {"presence": presence, "throughput": round(throughput, 1),
+                       "output": round(output, 1), "quality": round(quality, 1),
+                       "efficiency": round(efficiency, 1)}
                 contrib = {k: round(sub[k] * LEADERBOARD_WEIGHTS[k] / 100, 1) for k in sub}
-                composite = round(sum(contrib.values()), 1)
+                # Leave is a billing loss — deduct from the composite.
+                leave_penalty = round(min(LEAVE_PENALTY_CAP, r["leave_days"] * LEAVE_PENALTY_PER_DAY), 1)
+                composite = round(max(0, sum(contrib.values()) - leave_penalty), 1)
                 delivered = m["tickets"]["count"]
                 bugs = m["bugs"].get("total", 0)
                 tests = m.get("tests", {}).get("total_executed", 0)
                 hours = m["timesheet"]["total_hours"]
 
                 # Human-readable "how they earned this" summary.
-                summary_lines = [f"Delivered {delivered} ticket(s) to live "
-                                 f"({r['delivered_cwv']} complexity pts)"]
+                summary_lines = [f"{r['present_days']}/{period_working_days} days present · "
+                                 f"{r['productive_hours']}h productive (attendance {presence})"]
+                if r["leave_days"]:
+                    summary_lines.append(f"{r['leave_days']} leave day(s) taken "
+                                         f"(−{leave_penalty} billing-loss penalty)")
+                summary_lines.append(f"Delivered {delivered} ticket(s) to live "
+                                     f"({r['delivered_cwv']} depth pts)")
                 if r["awaiting_n"]:
                     summary_lines.append(f"{r['awaiting_n']} ticket(s) handed off, awaiting BIS "
                                          f"review/go-live (credited)")
@@ -7412,7 +7511,9 @@ def get_performance_leaderboard(
                 if tests:
                     summary_lines.append(f"{tests} test result(s) executed")
                 summary_lines.append(f"{round(quality, 1)}% quality · {est_acc}% estimate accuracy")
-                summary_lines.append(f"{hours}h logged · {util}% utilization")
+                if r["overrun_tickets"]:
+                    summary_lines.append(f"{r['overrun_tickets']} ticket(s) over estimate "
+                                         f"(+{r['overrun_hours']}h overrun) · on-time {on_time}%")
 
                 scored.append({
                     "employee_id": r["emp"].employee_id,
@@ -7422,6 +7523,7 @@ def get_performance_leaderboard(
                     "composite_score": composite,
                     "sub_scores": sub,
                     "weighted_contributions": contrib,
+                    "leave_penalty": leave_penalty,
                     "summary_lines": summary_lines,
                     "raw_metrics": {
                         "tickets": delivered,
@@ -7432,8 +7534,15 @@ def get_performance_leaderboard(
                         "bugs": bugs,
                         "test_results_executed": tests,
                         "hours": hours,
+                        "present_days": r["present_days"],
+                        "working_days": period_working_days,
+                        "productive_hours": r["productive_hours"],
+                        "leave_days": r["leave_days"],
                         "quality_percent": round(quality, 1),
                         "estimate_accuracy": est_acc,
+                        "on_time_rate": r["on_time_rate"],
+                        "overrun_tickets": r["overrun_tickets"],
+                        "overrun_hours": r["overrun_hours"],
                         "utilization_percent": util,
                         "rag_score": round(r["rag"], 1),
                     },
@@ -7476,6 +7585,106 @@ def get_performance_leaderboard(
             except Exception:
                 db.rollback()
         return resp
+    finally:
+        db.close()
+
+
+# QA testing statuses — a ticket "enters QA" when it moves into one of these from a non-QA status.
+QA_TESTING_STATUSES = ("QC Testing", "QC Testing in Progress", "QC Testing Hold", "Testing In Progress")
+
+
+def _compute_qa_flow_month(db, start_date, end_date):
+    """QA flow for one month: fresh received into QA, handed to BIS, and closed — with module &
+    QC-tester breakdowns. Closed comes from ticket_tracking.closed_on (full history); fresh/BIS come
+    from TicketStatusHistory transitions (only available from when history capture began)."""
+    closed = db.query(TicketTracking).filter(
+        TicketTracking.closed_on >= start_date, TicketTracking.closed_on <= end_date,
+    ).all()
+    trans = db.query(TicketStatusHistory).filter(
+        TicketStatusHistory.changed_on >= start_date, TicketStatusHistory.changed_on <= end_date,
+    ).order_by(TicketStatusHistory.changed_on).all()
+
+    tids = {t.ticket_id for t in closed} | {h.ticket_id for h in trans}
+    mod_map = {}
+    if tids:
+        for tid, sub in db.query(TicketTracking.ticket_id, TicketTracking.subdepartment).filter(
+            TicketTracking.ticket_id.in_(tids)
+        ).all():
+            mod_map[tid] = (sub or "").strip() or "Unassigned"
+
+    def modname(tid):
+        return mod_map.get(tid, "Unassigned")
+
+    # per-module / per-tester {fresh, bis, closed}
+    by_module = defaultdict(lambda: {"fresh": 0, "bis": 0, "closed": 0})
+    by_tester = defaultdict(lambda: {"fresh": 0, "bis": 0, "closed": 0})
+
+    fresh_tids, bis_tids = set(), set()
+    for h in trans:
+        ns, ps = h.new_status, h.previous_status
+        if ns in QA_TESTING_STATUSES and ps not in QA_TESTING_STATUSES and h.ticket_id not in fresh_tids:
+            fresh_tids.add(h.ticket_id)
+            by_module[modname(h.ticket_id)]["fresh"] += 1
+            by_tester[(h.qc_tester or "Unassigned")]["fresh"] += 1
+        if ns == "BIS Testing" and h.ticket_id not in bis_tids:
+            bis_tids.add(h.ticket_id)
+            by_module[modname(h.ticket_id)]["bis"] += 1
+            by_tester[(h.qc_tester or "Unassigned")]["bis"] += 1
+    for t in closed:
+        by_module[modname(t.ticket_id)]["closed"] += 1
+        by_tester[(t.qc_tester or "Unassigned")]["closed"] += 1
+
+    def _rows(d, key):
+        rows = [{key: k, **v} for k, v in d.items()]
+        rows.sort(key=lambda x: (x["fresh"] + x["bis"] + x["closed"]), reverse=True)
+        return rows
+
+    return {
+        "fresh_received": len(fresh_tids),
+        "handed_to_bis": len(bis_tids),
+        "closed": len(closed),
+        "by_module": _rows(by_module, "module"),
+        "by_qc_tester": _rows(by_tester, "qc_tester"),
+    }
+
+
+@app.get("/qa-flow")
+def get_qa_flow(offset: int = Query(0, ge=0, le=24), trend: int = Query(6, ge=1, le=24)):
+    """Monthly QA flow (fresh received / handed to BIS / closed) with module + QC-tester detail for
+    the selected month, plus a trailing trend series for the comparison graph. Ended months are
+    frozen (snapshot) so history is preserved as it accumulates."""
+    db: Session = SessionLocal()
+    try:
+        today = datetime.now().date()
+
+        def _month(off):
+            s, e, lbl = get_period_range("month", off)
+            ended = e.date() < today
+            if ended:
+                snap = db.query(QAFlowSnapshot).filter_by(period_label=lbl).first()
+                if snap and snap.frozen and snap.payload:
+                    return lbl, s, e, ended, snap.payload
+            data = _compute_qa_flow_month(db, s, e)
+            if ended:
+                try:
+                    db.add(QAFlowSnapshot(period_label=lbl, payload=data, frozen=True))
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            return lbl, s, e, ended, data
+
+        label, start, end, ended, detail = _month(offset)
+        result = dict(detail)
+        result["period"] = {"label": label, "start": start.isoformat(),
+                            "end": end.isoformat(), "frozen": ended}
+
+        trend_series = []
+        for k in range(trend - 1, -1, -1):
+            lbl, _s, _e, _ed, d = _month(offset + k)
+            trend_series.append({"label": lbl, "fresh_received": d["fresh_received"],
+                                 "handed_to_bis": d["handed_to_bis"], "closed": d["closed"]})
+        result["trend"] = trend_series
+        return result
     finally:
         db.close()
 

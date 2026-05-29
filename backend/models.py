@@ -1072,3 +1072,15 @@ class PerformanceSnapshot(Base):
     payload = Column(JSONB)                                   # full leaderboard response
     frozen = Column(Boolean, default=True)
     created_on = Column(DateTime, default=datetime.utcnow)
+
+
+class QAFlowSnapshot(Base):
+    """Frozen monthly QA flow (fresh received / handed to BIS / closed) for an ended month."""
+    __tablename__ = "qa_flow_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    period_label = Column(String(40), unique=True, index=True)  # "May 2026"
+    period_kind = Column(String(20), default="month")
+    payload = Column(JSONB)
+    frozen = Column(Boolean, default=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
