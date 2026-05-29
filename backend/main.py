@@ -9,6 +9,7 @@ from typing import Optional, List, Dict, Any, Tuple
 from collections import defaultdict
 from pydantic import BaseModel, Field
 import re
+import calendar
 import tempfile
 import os
 import shutil
@@ -5299,6 +5300,34 @@ def get_date_range(period: str):
         return None, today
 
 
+def get_period_range(kind: str, offset: int = 0):
+    """Calendar-aligned date range for a month/quarter, offset periods back from now.
+
+    offset=0 is the current period, 1 the previous one, etc. Returns
+    (start_datetime, end_datetime, label) where end is the last day at 23:59:59.
+    """
+    now = datetime.now()
+    if kind == "quarter":
+        # Index quarters globally so subtracting offset rolls across years cleanly.
+        q_index = (now.year * 4 + (now.month - 1) // 3) - offset
+        year, q = divmod(q_index, 4)
+        start_month = q * 3 + 1
+        end_month = start_month + 2
+        start = datetime(year, start_month, 1)
+        last_day = calendar.monthrange(year, end_month)[1]
+        end = datetime(year, end_month, last_day, 23, 59, 59)
+        label = f"Q{q + 1} {year}"
+    else:  # month
+        m_index = (now.year * 12 + (now.month - 1)) - offset
+        year, m0 = divmod(m_index, 12)
+        month = m0 + 1
+        start = datetime(year, month, 1)
+        last_day = calendar.monthrange(year, month)[1]
+        end = datetime(year, month, last_day, 23, 59, 59)
+        label = start.strftime("%B %Y")
+    return start, end, label
+
+
 def calculate_experience_years(date_of_joining):
     """Calculate years of experience from joining date"""
     if not date_of_joining:
@@ -6764,6 +6793,240 @@ async def import_employees(
 
 # ===== EMPLOYEE PERFORMANCE ENDPOINTS =====
 
+def _build_employee_metrics(db, employee, start_date, end_date, is_dev, is_manager_role,
+                            mode_of_work=None, *, tickets=None, bugs=None, tests=None,
+                            timesheet_entries=None):
+    """Build the per-employee `metrics` dict (tickets/bugs/tests/timesheet).
+
+    When pre-fetched, pre-bucketed lists are passed (tickets/bugs/tests/timesheet_entries)
+    they are used directly instead of querying — this lets the leaderboard avoid per-employee
+    queries. With all list args left as None the behavior matches the original inline logic in
+    get_employee_performance exactly.
+    """
+    employee_name = employee.name
+    metrics = {}
+
+    # ===== TICKET METRICS (from ticket_tracking) =====
+    ticket_ids = []
+    if not is_manager_role:
+        if tickets is None:
+            ticket_query = db.query(TicketTracking)
+            if is_dev:
+                ticket_query = ticket_query.filter(
+                    or_(
+                        TicketTracking.backend_developer.ilike(f"%{employee_name}%"),
+                        TicketTracking.frontend_developer.ilike(f"%{employee_name}%")
+                    )
+                )
+            else:  # QA
+                ticket_query = ticket_query.filter(
+                    TicketTracking.qc_tester.ilike(f"%{employee_name}%")
+                )
+            if start_date:
+                ticket_query = ticket_query.filter(TicketTracking.updated_on >= start_date)
+            tickets = ticket_query.all()
+        ticket_ids = [t.ticket_id for t in tickets]
+
+        # Calculate estimate vs actual
+        total_estimate = sum(t.dev_estimate_hours or 0 for t in tickets) if is_dev else sum(t.qa_estimate_hours or 0 for t in tickets)
+        total_actual = sum(t.actual_dev_hours or 0 for t in tickets) if is_dev else sum(t.actual_qa_hours or 0 for t in tickets)
+
+        metrics["tickets"] = {
+            "count": len(tickets),
+            "ticket_ids": ticket_ids[:50],  # Limit to 50
+            "estimate_hours": round(total_estimate, 1),
+            "actual_hours": round(total_actual, 1),
+            "estimate_accuracy": round((total_estimate / total_actual * 100), 1) if total_actual > 0 else 100
+        }
+    else:
+        metrics["tickets"] = {
+            "count": 0,
+            "ticket_ids": [],
+            "estimate_hours": 0,
+            "actual_hours": 0,
+            "estimate_accuracy": None,
+        }
+
+    # ===== BUG METRICS (from bugs) =====
+    total_bugs = 0
+    if not is_manager_role:
+        if bugs is None:
+            bug_query = db.query(Bug)
+            if is_dev:
+                bug_query = bug_query.filter(Bug.assignee.ilike(f"%{employee_name}%"))
+            else:  # QA - bugs reported by this person
+                bug_query = bug_query.filter(Bug.author.ilike(f"%{employee_name}%"))
+            if start_date:
+                bug_query = bug_query.filter(Bug.created_on >= start_date)
+            bugs = bug_query.all()
+        total_bugs = len(bugs)
+
+        if total_bugs > 0:
+            # Status breakdown
+            closed_bugs = len([b for b in bugs if b.status == "Closed"])
+            reopened_bugs = len([b for b in bugs if b.status == "Reopened"])
+            rejected_bugs = len([b for b in bugs if b.status == "Rejected"])
+
+            # Severity breakdown
+            critical_bugs = len([b for b in bugs if b.severity == "Critical"])
+            major_bugs = len([b for b in bugs if b.severity == "Major"])
+            minor_bugs = len([b for b in bugs if b.severity == "Minor"])
+
+            # Environment breakdown
+            live_bugs = len([b for b in bugs if b.environment == "Live"])
+            pre_bugs = len([b for b in bugs if b.environment == "Pre"])
+            staging_bugs = len([b for b in bugs if b.environment == "Staging"])
+
+            # Bug ageing (for open bugs)
+            open_bugs = [b for b in bugs if b.status not in ["Closed", "Rejected"]]
+            ages = []
+            for bug in open_bugs:
+                if bug.created_on:
+                    age = (datetime.now() - bug.created_on).days
+                    ages.append(age)
+            avg_ageing = round(sum(ages) / len(ages), 1) if ages else 0
+
+            # Resolution time (for closed bugs)
+            resolution_times = []
+            for bug in bugs:
+                if bug.status == "Closed" and bug.created_on and bug.closed_on:
+                    days = (bug.closed_on - bug.created_on).days
+                    resolution_times.append(days)
+            avg_resolution = round(sum(resolution_times) / len(resolution_times), 1) if resolution_times else 0
+
+            # Modules expertise
+            modules = list(set(b.module for b in bugs if b.module))
+
+            # Bug types
+            bug_types = defaultdict(int)
+            for bug in bugs:
+                tracker = bug.tracker or "Unknown"
+                bug_types[tracker] += 1
+
+            metrics["bugs"] = {
+                "total": total_bugs,
+                "closed": closed_bugs,
+                "reopened": reopened_bugs,
+                "rejected": rejected_bugs,
+                "closure_rate": round((closed_bugs / total_bugs * 100), 1),
+                "reopened_percent": round((reopened_bugs / total_bugs * 100), 1),
+                "rejected_percent": round((rejected_bugs / total_bugs * 100), 1),
+                "severity": {
+                    "critical": critical_bugs,
+                    "critical_percent": round((critical_bugs / total_bugs * 100), 1),
+                    "major": major_bugs,
+                    "minor": minor_bugs
+                },
+                "environment": {
+                    "live": live_bugs,
+                    "live_percent": round((live_bugs / total_bugs * 100), 1),
+                    "pre": pre_bugs,
+                    "pre_percent": round((pre_bugs / total_bugs * 100), 1),
+                    "staging": staging_bugs,
+                    "staging_percent": round((staging_bugs / total_bugs * 100), 1)
+                },
+                "avg_ageing_days": avg_ageing,
+                "avg_resolution_days": avg_resolution,
+                "modules_expertise": modules[:15],
+                "bug_types": dict(bug_types)
+            }
+        else:
+            metrics["bugs"] = {"total": 0}
+    else:
+        metrics["bugs"] = {"total": 0, "disabled": True}
+
+    # ===== TESTRAIL METRICS (QA only) =====
+    if not is_dev and not is_manager_role:
+        if tests is None:
+            test_query = db.query(TestResult).filter(
+                TestResult.assigned_to.ilike(f"%{employee_name}%")
+            )
+            if start_date:
+                test_query = test_query.filter(TestResult.created_on >= start_date)
+            tests = test_query.all()
+        test_results = tests
+        total_tests = len(test_results)
+
+        if total_tests > 0:
+            passed = len([t for t in test_results if t.status_name == "Passed"])
+            failed = len([t for t in test_results if t.status_name == "Failed"])
+            blocked = len([t for t in test_results if t.status_name == "Blocked"])
+
+            # Unique test runs
+            unique_runs = len(set(t.run_id for t in test_results if t.run_id))
+
+            metrics["tests"] = {
+                "total_executed": total_tests,
+                "passed": passed,
+                "failed": failed,
+                "blocked": blocked,
+                "pass_rate": round((passed / total_tests * 100), 1),
+                "fail_rate": round((failed / total_tests * 100), 1),
+                "blocked_percent": round((blocked / total_tests * 100), 1),
+                "test_runs_participated": unique_runs
+            }
+
+            # Bugs per ticket
+            if len(ticket_ids) > 0:
+                metrics["bugs_per_ticket"] = round(total_bugs / len(ticket_ids), 1)
+        else:
+            metrics["tests"] = {"total_executed": 0}
+    elif is_manager_role:
+        metrics["tests"] = {"total_executed": 0, "disabled": True}
+
+    # ===== TIMESHEET METRICS =====
+    timesheet_team = "DEV" if is_dev else "QA"
+    if timesheet_entries is None:
+        enhanced_query = db.query(EnhancedTimesheet).filter(
+            EnhancedTimesheet.employee_name.ilike(f"%{employee_name}%"),
+            EnhancedTimesheet.team == timesheet_team
+        )
+        if start_date:
+            enhanced_query = enhanced_query.filter(EnhancedTimesheet.date >= start_date.date())
+        enhanced_entries = enhanced_query.all()
+        if enhanced_entries:
+            total_hours = round(sum(e.hours_logged or 0 for e in enhanced_entries), 1)
+            timesheet_entries_count = len(enhanced_entries)
+        else:
+            timesheet_query = db.query(Timesheet).filter(
+                Timesheet.employee_name.ilike(f"%{employee_name}%")
+            )
+            if start_date:
+                timesheet_query = timesheet_query.filter(Timesheet.date >= start_date.date())
+            timesheets = timesheet_query.all()
+            total_minutes = sum(t.time_logged_minutes or 0 for t in timesheets)
+            total_hours = round(total_minutes / 60, 1)
+            timesheet_entries_count = len(timesheets)
+    else:
+        total_hours = round(sum(e.hours_logged or 0 for e in timesheet_entries), 1)
+        timesheet_entries_count = len(timesheet_entries)
+
+    # Calculate working days in period
+    if start_date:
+        working_days = sum(1 for i in range((end_date - start_date).days + 1)
+                         if (start_date + timedelta(days=i)).weekday() < 5)
+    else:
+        working_days = 250  # Approximate yearly working days
+
+    expected_hours_per_day = 8
+    mode_lower = (mode_of_work or "").lower()
+    if "part" in mode_lower or "half" in mode_lower:
+        expected_hours_per_day = 4
+    elif "intern" in mode_lower:
+        expected_hours_per_day = 6
+    expected_hours = working_days * expected_hours_per_day
+
+    metrics["timesheet"] = {
+        "total_hours": total_hours,
+        "expected_hours": expected_hours,
+        "utilization_percent": round((total_hours / expected_hours * 100), 1) if expected_hours > 0 else 0,
+        "avg_daily_hours": round(total_hours / working_days, 1) if working_days > 0 else 0,
+        "entries_count": timesheet_entries_count
+    }
+
+    return metrics
+
+
 @app.get("/employees/{employee_id}/performance")
 def get_employee_performance(
     employee_id: str,
@@ -6825,224 +7088,11 @@ def get_employee_performance(
             "period": period,
             "metrics": {}
         }
-        
-        # ===== TICKET METRICS (from ticket_tracking) =====
-        ticket_ids = []
-        if not is_manager_role:
-            ticket_query = db.query(TicketTracking)
-            
-            if is_dev:
-                ticket_query = ticket_query.filter(
-                    or_(
-                        TicketTracking.backend_developer.ilike(f"%{employee_name}%"),
-                        TicketTracking.frontend_developer.ilike(f"%{employee_name}%")
-                    )
-                )
-            else:  # QA
-                ticket_query = ticket_query.filter(
-                    TicketTracking.qc_tester.ilike(f"%{employee_name}%")
-                )
-            
-            if start_date:
-                ticket_query = ticket_query.filter(TicketTracking.updated_on >= start_date)
-            
-            tickets = ticket_query.all()
-            ticket_ids = [t.ticket_id for t in tickets]
-            
-            # Calculate estimate vs actual
-            total_estimate = sum(t.dev_estimate_hours or 0 for t in tickets) if is_dev else sum(t.qa_estimate_hours or 0 for t in tickets)
-            total_actual = sum(t.actual_dev_hours or 0 for t in tickets) if is_dev else sum(t.actual_qa_hours or 0 for t in tickets)
-            
-            result["metrics"]["tickets"] = {
-                "count": len(tickets),
-                "ticket_ids": ticket_ids[:50],  # Limit to 50
-                "estimate_hours": round(total_estimate, 1),
-                "actual_hours": round(total_actual, 1),
-                "estimate_accuracy": round((total_estimate / total_actual * 100), 1) if total_actual > 0 else 100
-            }
-        else:
-            result["metrics"]["tickets"] = {
-                "count": 0,
-                "ticket_ids": [],
-                "estimate_hours": 0,
-                "actual_hours": 0,
-                "estimate_accuracy": None,
-            }
-        
-        # ===== BUG METRICS (from bugs) =====
-        if not is_manager_role:
-            bug_query = db.query(Bug)
-            
-            if is_dev:
-                bug_query = bug_query.filter(Bug.assignee.ilike(f"%{employee_name}%"))
-            else:  # QA - bugs reported by this person
-                bug_query = bug_query.filter(Bug.author.ilike(f"%{employee_name}%"))
-            
-            if start_date:
-                bug_query = bug_query.filter(Bug.created_on >= start_date)
-            
-            bugs = bug_query.all()
-            total_bugs = len(bugs)
-            
-            if total_bugs > 0:
-                # Status breakdown
-                closed_bugs = len([b for b in bugs if b.status == "Closed"])
-                reopened_bugs = len([b for b in bugs if b.status == "Reopened"])
-                rejected_bugs = len([b for b in bugs if b.status == "Rejected"])
-                
-                # Severity breakdown
-                critical_bugs = len([b for b in bugs if b.severity == "Critical"])
-                major_bugs = len([b for b in bugs if b.severity == "Major"])
-                minor_bugs = len([b for b in bugs if b.severity == "Minor"])
-                
-                # Environment breakdown
-                live_bugs = len([b for b in bugs if b.environment == "Live"])
-                pre_bugs = len([b for b in bugs if b.environment == "Pre"])
-                staging_bugs = len([b for b in bugs if b.environment == "Staging"])
-                
-                # Bug ageing (for open bugs)
-                open_bugs = [b for b in bugs if b.status not in ["Closed", "Rejected"]]
-                ages = []
-                for bug in open_bugs:
-                    if bug.created_on:
-                        age = (datetime.now() - bug.created_on).days
-                        ages.append(age)
-                avg_ageing = round(sum(ages) / len(ages), 1) if ages else 0
-                
-                # Resolution time (for closed bugs)
-                resolution_times = []
-                for bug in bugs:
-                    if bug.status == "Closed" and bug.created_on and bug.closed_on:
-                        days = (bug.closed_on - bug.created_on).days
-                        resolution_times.append(days)
-                avg_resolution = round(sum(resolution_times) / len(resolution_times), 1) if resolution_times else 0
-                
-                # Modules expertise
-                modules = list(set(b.module for b in bugs if b.module))
-                
-                # Bug types
-                bug_types = defaultdict(int)
-                for bug in bugs:
-                    tracker = bug.tracker or "Unknown"
-                    bug_types[tracker] += 1
-                
-                result["metrics"]["bugs"] = {
-                    "total": total_bugs,
-                    "closed": closed_bugs,
-                    "reopened": reopened_bugs,
-                    "rejected": rejected_bugs,
-                    "closure_rate": round((closed_bugs / total_bugs * 100), 1),
-                    "reopened_percent": round((reopened_bugs / total_bugs * 100), 1),
-                    "rejected_percent": round((rejected_bugs / total_bugs * 100), 1),
-                    "severity": {
-                        "critical": critical_bugs,
-                        "critical_percent": round((critical_bugs / total_bugs * 100), 1),
-                        "major": major_bugs,
-                        "minor": minor_bugs
-                    },
-                    "environment": {
-                        "live": live_bugs,
-                        "live_percent": round((live_bugs / total_bugs * 100), 1),
-                        "pre": pre_bugs,
-                        "pre_percent": round((pre_bugs / total_bugs * 100), 1),
-                        "staging": staging_bugs,
-                        "staging_percent": round((staging_bugs / total_bugs * 100), 1)
-                    },
-                    "avg_ageing_days": avg_ageing,
-                    "avg_resolution_days": avg_resolution,
-                    "modules_expertise": modules[:15],
-                    "bug_types": dict(bug_types)
-                }
-            else:
-                result["metrics"]["bugs"] = {"total": 0}
-        else:
-            result["metrics"]["bugs"] = {"total": 0, "disabled": True}
-        
-        # ===== TESTRAIL METRICS (QA only) =====
-        if not is_dev and not is_manager_role:
-            test_query = db.query(TestResult).filter(
-                TestResult.assigned_to.ilike(f"%{employee_name}%")
-            )
-            
-            if start_date:
-                test_query = test_query.filter(TestResult.created_on >= start_date)
-            
-            test_results = test_query.all()
-            total_tests = len(test_results)
-            
-            if total_tests > 0:
-                passed = len([t for t in test_results if t.status_name == "Passed"])
-                failed = len([t for t in test_results if t.status_name == "Failed"])
-                blocked = len([t for t in test_results if t.status_name == "Blocked"])
-                
-                # Unique test runs
-                unique_runs = len(set(t.run_id for t in test_results if t.run_id))
-                
-                result["metrics"]["tests"] = {
-                    "total_executed": total_tests,
-                    "passed": passed,
-                    "failed": failed,
-                    "blocked": blocked,
-                    "pass_rate": round((passed / total_tests * 100), 1),
-                    "fail_rate": round((failed / total_tests * 100), 1),
-                    "blocked_percent": round((blocked / total_tests * 100), 1),
-                    "test_runs_participated": unique_runs
-                }
-                
-                # Bugs per ticket
-                if len(ticket_ids) > 0:
-                    result["metrics"]["bugs_per_ticket"] = round(total_bugs / len(ticket_ids), 1)
-            else:
-                result["metrics"]["tests"] = {"total_executed": 0}
-        elif is_manager_role:
-            result["metrics"]["tests"] = {"total_executed": 0, "disabled": True}
-        
-        # ===== TIMESHEET METRICS =====
-        timesheet_team = "DEV" if is_dev else "QA"
-        enhanced_query = db.query(EnhancedTimesheet).filter(
-            EnhancedTimesheet.employee_name.ilike(f"%{employee_name}%"),
-            EnhancedTimesheet.team == timesheet_team
+
+        result["metrics"] = _build_employee_metrics(
+            db, employee, start_date, end_date, is_dev, is_manager_role, mode_of_work
         )
-        if start_date:
-            enhanced_query = enhanced_query.filter(EnhancedTimesheet.date >= start_date.date())
-        enhanced_entries = enhanced_query.all()
-        if enhanced_entries:
-            total_hours = round(sum(e.hours_logged or 0 for e in enhanced_entries), 1)
-            timesheet_entries_count = len(enhanced_entries)
-        else:
-            timesheet_query = db.query(Timesheet).filter(
-                Timesheet.employee_name.ilike(f"%{employee_name}%")
-            )
-            if start_date:
-                timesheet_query = timesheet_query.filter(Timesheet.date >= start_date.date())
-            timesheets = timesheet_query.all()
-            total_minutes = sum(t.time_logged_minutes or 0 for t in timesheets)
-            total_hours = round(total_minutes / 60, 1)
-            timesheet_entries_count = len(timesheets)
-        
-        # Calculate working days in period
-        if start_date:
-            working_days = sum(1 for i in range((end_date - start_date).days + 1) 
-                             if (start_date + timedelta(days=i)).weekday() < 5)
-        else:
-            working_days = 250  # Approximate yearly working days
-        
-        expected_hours_per_day = 8
-        mode_lower = (mode_of_work or "").lower()
-        if "part" in mode_lower or "half" in mode_lower:
-            expected_hours_per_day = 4
-        elif "intern" in mode_lower:
-            expected_hours_per_day = 6
-        expected_hours = working_days * expected_hours_per_day
-        
-        result["metrics"]["timesheet"] = {
-            "total_hours": total_hours,
-            "expected_hours": expected_hours,
-            "utilization_percent": round((total_hours / expected_hours * 100), 1) if expected_hours > 0 else 0,
-            "avg_daily_hours": round(total_hours / working_days, 1) if working_days > 0 else 0,
-            "entries_count": timesheet_entries_count
-        }
-        
+
         # ===== PLANNING TIMESHEET SUMMARY (for rating context) =====
         plan_ts_summary = _get_planning_timesheet_summary(db, employee, weeks=5)
         if plan_ts_summary:
@@ -7056,6 +7106,292 @@ def get_employee_performance(
         }
         
         return result
+    finally:
+        db.close()
+
+
+# Balanced leaderboard weights (sum = 100). Tune here.
+LEADERBOARD_WEIGHTS = {"throughput": 30, "output": 20, "quality": 30, "efficiency": 20}
+
+
+def _ticket_complexity(t, is_dev):
+    """Per-ticket complexity ('vastness and depth'): priority weight (1.0-3.0) scaled by estimate hours."""
+    rank = PRIORITY_ORDER.get((t.priority or "").strip(), 13)
+    priority_weight = 1.0 + (13 - rank) / 12 * 2.0  # URGENT≈3.0 … Suggestion≈1.0
+    est = (t.dev_estimate_hours if is_dev else t.qa_estimate_hours) or 0
+    return priority_weight * (1 + min(est, 40) / 40)
+
+
+def _strip_paren(name):
+    """Drop a trailing '(login)' so PM names match bug/timesheet names.
+
+    PM ticket developer names look like 'Abhijai Kp (AKP916)' while bugs/timesheets store
+    plain 'Abhijai K P'. Removing the parenthetical lets the compacted-name match succeed.
+    """
+    return re.sub(r"\([^)]*\)", " ", name or "")
+
+
+def _employee_mode_of_work(emp):
+    mp = emp.mapping_data or {}
+    for k in ("mode_of_work", "work_mode", "Mode of Work", "Work Mode", "Mode", "ModeOfWork"):
+        if mp.get(k):
+            return mp.get(k)
+    return None
+
+
+@app.get("/employees/performance/leaderboard")
+def get_performance_leaderboard(
+    period: str = Query("month", regex="^(month|quarter)$"),
+    offset: int = Query(0, ge=0, le=12),
+    team: str = Query("all", regex="^(qa|dev|all)$"),
+):
+    """Per-team performance leaderboards (balanced composite score) for a calendar month/quarter.
+
+    Combines throughput (ticket volume × complexity), output (bugs/test execution), quality
+    (reused RAG score), and efficiency (estimate accuracy + utilization). Volume sub-scores are
+    normalized against the team max so higher output genuinely ranks higher at equal quality.
+    Returns the full ranked list per team (frontend shows top 3 + expandable rest).
+    """
+    db: Session = SessionLocal()
+    try:
+        start_date, end_date, label = get_period_range(period, offset)
+
+        # Delivered-in-period tickets: real close/ship date in the window.
+        # (TicketTracking.updated_on is only the last sync time, so it cannot define a period.)
+        closed_tickets = db.query(TicketTracking).filter(
+            TicketTracking.closed_on >= start_date,
+            TicketTracking.closed_on <= end_date,
+        ).all()
+
+        # ---- Build the roster ----
+        # Prefer the employees table; where it is empty/partial (some deployments do not sync it),
+        # fall back to the people who actually appear on delivered tickets: QC testers => QA,
+        # backend/frontend developers => Dev. Lightweight shim objects stand in for missing rows.
+        user_roles = {u.employee_id: (u.role or "") for u in db.query(User).all()}
+
+        def _is_manager(emp):
+            return ("MANAGER" in (emp.role or "").upper()) or \
+                   ("MANAGER" in user_roles.get(emp.employee_id, "").upper())
+
+        class _LbPerson:
+            __slots__ = ("name", "employee_id", "team", "role", "mapping_data")
+
+            def __init__(self, name, team):
+                self.name = name
+                self.employee_id = "name:" + _compact_person_name(name)
+                self.team = team
+                self.role = team
+                self.mapping_data = {}
+
+        qa_by_id, dev_by_id = {}, {}
+        name_to_employee_id = {}
+
+        def _register(person, team_ids):
+            team_ids[person.employee_id] = person
+            if person.name:
+                for variant in (person.name.strip(), _strip_paren(person.name).strip()):
+                    if not variant:
+                        continue
+                    name_to_employee_id.setdefault(variant, person.employee_id)
+                    name_to_employee_id.setdefault(_normalize_person_name(variant), person.employee_id)
+                    name_to_employee_id.setdefault(_compact_person_name(variant), person.employee_id)
+
+        for emp in db.query(Employee).filter(
+            Employee.is_active == True, Employee.archived == False,
+        ).all():
+            if _is_manager(emp):
+                continue
+            tu = (emp.team or "").upper()
+            if "DEV" in tu:
+                _register(emp, dev_by_id)
+            elif "QA" in tu:
+                _register(emp, qa_by_id)
+
+        # EmployeeNameMapping aliases (only for already-registered employees).
+        known_ids = set(qa_by_id) | set(dev_by_id)
+        try:
+            for m in db.query(EmployeeNameMapping).filter(EmployeeNameMapping.is_active == True).all():
+                if m.employee_id and m.employee_id in known_ids and m.alternate_name:
+                    alt = m.alternate_name.strip()
+                    name_to_employee_id.setdefault(alt, m.employee_id)
+                    name_to_employee_id.setdefault(_normalize_person_name(alt), m.employee_id)
+                    name_to_employee_id.setdefault(_compact_person_name(alt), m.employee_id)
+        except Exception:
+            pass
+
+        def _resolve(raw):
+            if not raw:
+                return None
+            for variant in (raw.strip(), _strip_paren(raw).strip()):
+                eid = (name_to_employee_id.get(variant)
+                       or name_to_employee_id.get(_normalize_person_name(variant))
+                       or name_to_employee_id.get(_compact_person_name(variant)))
+                if eid:
+                    return eid
+            return None
+
+        # Add ticket-derived persons for any names not already mapped to a real employee.
+        qa_name_counts, dev_name_counts = defaultdict(int), defaultdict(int)
+        for t in closed_tickets:
+            qc = _strip_paren(t.qc_tester or "").strip()
+            if qc:
+                qa_name_counts[qc] += 1
+            for nm in (t.backend_developer, t.frontend_developer):
+                nm = _strip_paren(nm or "").strip()
+                if nm:
+                    dev_name_counts[nm] += 1
+        # Overlaps go to the role where the name appears more often (tie => QA).
+        for nm, qc in qa_name_counts.items():
+            if not _resolve(nm) and qc >= dev_name_counts.get(nm, 0):
+                _register(_LbPerson(nm, "QA"), qa_by_id)
+        for nm in dev_name_counts:
+            if not _resolve(nm):
+                _register(_LbPerson(nm, "DEV"), dev_by_id)
+
+        qa_emps = list(qa_by_id.values())
+        dev_emps = list(dev_by_id.values())
+        qa_ids = set(qa_by_id)
+        dev_ids = set(dev_by_id)
+
+        # ---- Bucket delivered tickets by person ----
+        tickets_by_emp = defaultdict(list)
+        seen_ticket_pairs = set()
+
+        def _add_ticket(eid, t):
+            key = (eid, t.id)
+            if eid and key not in seen_ticket_pairs:
+                seen_ticket_pairs.add(key)
+                tickets_by_emp[eid].append(t)
+
+        for t in closed_tickets:
+            qa_eid = _resolve(t.qc_tester)
+            if qa_eid in qa_ids:
+                _add_ticket(qa_eid, t)
+            for nm in (t.backend_developer, t.frontend_developer):
+                d_eid = _resolve(nm)
+                if d_eid in dev_ids:
+                    _add_ticket(d_eid, t)
+
+        bugs_by_emp = defaultdict(list)
+        for b in db.query(Bug).filter(
+            Bug.created_on >= start_date,
+            Bug.created_on <= end_date,
+        ).all():
+            qa_eid = _resolve(b.author)        # QA reported the bug
+            if qa_eid in qa_ids:
+                bugs_by_emp[qa_eid].append(b)
+            dev_eid = _resolve(b.assignee)     # Dev assigned to fix it
+            if dev_eid in dev_ids:
+                bugs_by_emp[dev_eid].append(b)
+
+        tests_by_emp = defaultdict(list)
+        for r in db.query(TestResult).filter(
+            TestResult.created_on >= start_date,
+            TestResult.created_on <= end_date,
+        ).all():
+            eid = _resolve(r.assigned_to)
+            if eid in qa_ids:
+                tests_by_emp[eid].append(r)
+
+        ts_by_emp = defaultdict(list)
+        for e in db.query(EnhancedTimesheet).filter(
+            EnhancedTimesheet.date >= start_date.date(),
+            EnhancedTimesheet.date <= end_date.date(),
+        ).all():
+            eid = _resolve(e.employee_name)
+            if eid:
+                ts_by_emp[eid].append(e)
+
+        def _build_team(emps, is_dev):
+            rows = []
+            for emp in emps:
+                etickets = tickets_by_emp.get(emp.employee_id, [])
+                ebugs = bugs_by_emp.get(emp.employee_id, [])
+                etests = None if is_dev else tests_by_emp.get(emp.employee_id, [])
+                ets = ts_by_emp.get(emp.employee_id, [])
+                metrics = _build_employee_metrics(
+                    db, emp, start_date, end_date, is_dev, False,
+                    _employee_mode_of_work(emp),
+                    tickets=etickets, bugs=ebugs, tests=etests, timesheet_entries=ets,
+                )
+                tcount = metrics["tickets"]["count"]
+                bcount = metrics["bugs"].get("total", 0)
+                testcount = metrics.get("tests", {}).get("total_executed", 0)
+                if tcount == 0 and bcount == 0 and testcount == 0:
+                    continue  # no activity this period → off the board
+                cwv = sum(_ticket_complexity(t, is_dev) for t in etickets)
+                if is_dev:
+                    output_raw = metrics["bugs"].get("closed", 0) + 0.5 * bcount
+                else:
+                    output_raw = bcount + testcount
+                rag = calculate_rag_score(metrics, is_dev, planning_timesheet=None,
+                                          role_context={"is_manager": False})
+                rows.append({"emp": emp, "metrics": metrics, "cwv": cwv,
+                             "output_raw": output_raw, "rag": rag})
+
+            max_cwv = max((r["cwv"] for r in rows), default=0) or 0
+            max_out = max((r["output_raw"] for r in rows), default=0) or 0
+            scored = []
+            for r in rows:
+                m = r["metrics"]
+                throughput = 100 * (r["cwv"] / max_cwv) ** 0.5 if max_cwv > 0 else 0
+                output = 100 * (r["output_raw"] / max_out) ** 0.5 if max_out > 0 else 0
+                quality = r["rag"]
+                est_acc = m["tickets"].get("estimate_accuracy")
+                est_acc = 100 if est_acc is None else est_acc
+                util = m["timesheet"].get("utilization_percent", 0)
+                efficiency = 0.5 * max(0, 100 - abs(100 - est_acc)) + 0.5 * min(100, util)
+                sub = {"throughput": round(throughput, 1), "output": round(output, 1),
+                       "quality": round(quality, 1), "efficiency": round(efficiency, 1)}
+                contrib = {k: round(sub[k] * LEADERBOARD_WEIGHTS[k] / 100, 1) for k in sub}
+                composite = round(sum(contrib.values()), 1)
+                scored.append({
+                    "employee_id": r["emp"].employee_id,
+                    "name": r["emp"].name,
+                    "team": r["emp"].team,
+                    "role": r["emp"].role,
+                    "composite_score": composite,
+                    "sub_scores": sub,
+                    "weighted_contributions": contrib,
+                    "raw_metrics": {
+                        "tickets": m["tickets"]["count"],
+                        "delivered_to_live": m["tickets"]["count"],  # all bucketed tickets shipped in-period
+                        "complexity_weighted_volume": round(r["cwv"], 1),
+                        "bugs": m["bugs"].get("total", 0),
+                        "test_results_executed": m.get("tests", {}).get("total_executed", 0),
+                        "hours": m["timesheet"]["total_hours"],
+                        "quality_percent": round(quality, 1),
+                        "estimate_accuracy": est_acc,
+                        "utilization_percent": util,
+                        "rag_score": round(r["rag"], 1),
+                    },
+                    "_cwv": r["cwv"],
+                })
+            scored.sort(key=lambda x: (x["composite_score"], x["_cwv"]), reverse=True)
+            for i, s in enumerate(scored, 1):
+                s["rank"] = i
+                s.pop("_cwv", None)
+            return scored
+
+        def _team_summary(lst):
+            if not lst:
+                return {"delivered_total": 0, "bugs_total": 0, "avg_quality": 0, "members": 0}
+            return {
+                "delivered_total": sum(s["raw_metrics"]["delivered_to_live"] for s in lst),
+                "bugs_total": sum(s["raw_metrics"]["bugs"] for s in lst),
+                "avg_quality": round(sum(s["raw_metrics"]["quality_percent"] for s in lst) / len(lst), 1),
+                "members": len(lst),
+            }
+
+        resp = {"period": {"kind": period, "offset": offset, "label": label,
+                           "start": start_date.isoformat(), "end": end_date.isoformat()}}
+        if team in ("qa", "all"):
+            resp["qa"] = _build_team(qa_emps, False)
+        if team in ("dev", "all"):
+            resp["dev"] = _build_team(dev_emps, True)
+        resp["summary"] = {"qa": _team_summary(resp.get("qa", [])),
+                           "dev": _team_summary(resp.get("dev", []))}
+        return resp
     finally:
         db.close()
 
