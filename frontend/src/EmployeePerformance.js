@@ -52,10 +52,20 @@ function PodiumCard({ entry, isQA }) {
         <span className="emp-chip emp-chip-deliver" title="Tickets delivered to live in this period">
           🚀 {rm.delivered_to_live} delivered
         </span>
+        {rm.awaiting_review > 0 && (
+          <span className="emp-chip emp-chip-await" title="Handed off, awaiting BIS review / go-live (credited)">
+            ⏳ {rm.awaiting_review} in review
+          </span>
+        )}
         <span className="emp-chip emp-chip-quality" title="Quality score">✓ {rm.quality_percent}% quality</span>
         <span className="emp-chip">{rm.bugs} bugs</span>
         <span className="emp-chip">{rm.hours}h</span>
       </div>
+      {Array.isArray(entry.summary_lines) && entry.summary_lines.length > 0 && (
+        <ul className="emp-summary-lines">
+          {entry.summary_lines.map((ln, i) => <li key={i}>{ln}</li>)}
+        </ul>
+      )}
     </div>
   );
 }
@@ -71,6 +81,7 @@ function FullRow({ entry, isQA }) {
         <td style={{ textAlign: 'left' }}>{entry.name} <span className="emp-expand">{open ? '▲' : '▼'}</span></td>
         <td style={{ textAlign: 'center', fontWeight: 700 }}>{entry.composite_score}</td>
         <td style={{ textAlign: 'center' }}>{rm.delivered_to_live}</td>
+        <td style={{ textAlign: 'center' }}>{rm.awaiting_review ?? 0}</td>
         <td style={{ textAlign: 'center' }}>{rm.complexity_weighted_volume}</td>
         <td style={{ textAlign: 'center' }}>{rm.bugs}</td>
         {isQA && <td style={{ textAlign: 'center' }}>{rm.test_results_executed}</td>}
@@ -81,13 +92,18 @@ function FullRow({ entry, isQA }) {
       </tr>
       {open && (
         <tr className="qcq-expand-row">
-          <td colSpan={isQA ? 11 : 10} style={{ padding: '10px 16px' }}>
+          <td colSpan={isQA ? 12 : 11} style={{ padding: '10px 16px' }}>
             <div className="emp-breakdown">
-              <h5>Score breakdown (weighted: throughput 30 · output 20 · quality 30 · efficiency 20)</h5>
+              <h5>Score breakdown (weighted: throughput 25 · output 20 · quality 35 · efficiency 20)</h5>
               <ScoreBar label="Throughput" value={num(ss.throughput)} color="var(--accent-teal)" />
               <ScoreBar label="Output" value={num(ss.output)} color="var(--accent-blue)" />
               <ScoreBar label="Quality" value={num(ss.quality)} color="var(--accent-green)" />
               <ScoreBar label="Efficiency" value={num(ss.efficiency)} color="var(--accent-amber)" />
+              {Array.isArray(entry.summary_lines) && (
+                <ul className="emp-summary-lines" style={{ marginTop: 8 }}>
+                  {entry.summary_lines.map((ln, i) => <li key={i}>{ln}</li>)}
+                </ul>
+              )}
             </div>
           </td>
         </tr>
@@ -140,6 +156,7 @@ function TeamSection({ title, isQA, entries, summary, periodLabel }) {
                   <th style={{ textAlign: 'left' }}>Name</th>
                   <th>Score</th>
                   <th title="Tickets delivered to live in period">Delivered</th>
+                  <th title="Handed off, awaiting BIS review / go-live (credited)">In Review</th>
                   <th title="Complexity-weighted volume (priority × estimate)">Complexity</th>
                   <th>{isQA ? 'Bugs found' : 'Bugs handled'}</th>
                   {isQA && <th title="Test results executed (TestRail)">Tests</th>}
@@ -197,6 +214,11 @@ export default function EmployeePerformance() {
             <h1>Employee Performance</h1>
             <p className="header-subtitle">
               Top performers by delivery &amp; quality{data?.period?.label ? ` — ${data.period.label}` : ''}
+              {data?.period && (
+                <span className={`emp-period-badge ${data.period.frozen ? 'emp-final' : 'emp-live'}`}>
+                  {data.period.frozen ? 'Final' : 'Live'}
+                </span>
+              )}
             </p>
           </div>
           <div className="header-right" style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>

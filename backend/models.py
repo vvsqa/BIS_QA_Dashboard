@@ -1054,3 +1054,21 @@ class AutomationTestCase(Base):
     
     created_on = Column(DateTime, default=datetime.utcnow)
     updated_on = Column(DateTime, onupdate=datetime.utcnow)
+
+
+class PerformanceSnapshot(Base):
+    """Frozen Employee Performance leaderboard for an ended period (immutable history).
+
+    Once a month/quarter is over, its leaderboard is computed once and stored here; subsequent
+    requests return this payload unchanged so historical results never shift as data drifts.
+    """
+    __tablename__ = "performance_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    period_key = Column(String(80), unique=True, index=True)  # e.g. "month:May 2026:all"
+    period_kind = Column(String(20))                          # month | quarter
+    period_label = Column(String(40))                         # "May 2026", "Q2 2026"
+    team = Column(String(10))                                 # qa | dev | all
+    payload = Column(JSONB)                                   # full leaderboard response
+    frozen = Column(Boolean, default=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
