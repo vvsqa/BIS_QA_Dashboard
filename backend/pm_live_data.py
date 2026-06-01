@@ -402,10 +402,11 @@ def _fetch_testrail_plans() -> Dict[int, Dict]:
             if len(plans) < 250:
                 break
 
-        # Map ticket_id -> plan summary (from list view - has counts)
+        # Map ticket_id -> plan summary (from list view - has counts).
+        # Plan names come in two forms: "20468 ..." and "#20270 — Title" — handle both.
         result = {}
         for p in all_plans:
-            name = str(p.get('name', '')).strip()
+            name = str(p.get('name', '')).strip().lstrip('#').strip()
             match = re.match(r'^(\d+)', name)
             if match:
                 tid = int(match.group(1))
@@ -816,12 +817,16 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
         tr = testrail_data.get(tid) or testrail_data.get(str(tid))
         if tr:
             t['test_cases'] = tr['cases']
+            t['test_plan_cases'] = tr['cases']
+            t['has_test_plan'] = True
             t['test_passed'] = tr['passed']
             t['test_failed'] = tr['failed']
             t['test_untested'] = tr['untested']
             t['testrail_plan_url'] = f'{testrail_url}/index.php?/plans/view/{tr["plan_id"]}'
         else:
             t['test_cases'] = 0
+            t['test_plan_cases'] = 0
+            t['has_test_plan'] = False
             t['test_passed'] = 0
             t['test_failed'] = 0
             t['test_untested'] = 0

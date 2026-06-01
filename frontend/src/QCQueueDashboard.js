@@ -208,8 +208,10 @@ export default function QCQueueDashboard() {
   const webCount = rawQueue.filter(t => (t.platform || 'Web') === 'Web').length;
   const mobileCount = rawQueue.filter(t => (t.platform || 'Web') === 'Mobile').length;
 
-  // Computed breakdowns from queue
+  // Computed breakdowns from queue — split no-tester QC Testing tickets into truly Unplanned vs Plan Initiated.
   const unassignedTickets = allQueue.filter(t => t.status === 'QC Testing' && !t.qc_tester);
+  const planInitiatedTickets = unassignedTickets.filter(t => t.planning_status === 'in_planning');
+  const unplannedTickets = unassignedTickets.filter(t => t.planning_status !== 'in_planning');
   const assignedNotStarted = allQueue.filter(t => t.status === 'QC Testing' && t.qc_tester);
   const inProgressTickets = allQueue.filter(t => t.status === 'QC Testing in Progress');
   const onHoldTickets = allQueue.filter(t => t.status === 'QC Testing Hold');
@@ -219,6 +221,8 @@ export default function QCQueueDashboard() {
     if (!cardFilter) return null;
     switch (cardFilter) {
       case 'unassigned': return unassignedTickets;
+      case 'unplanned': return unplannedTickets;
+      case 'plan_initiated': return planInitiatedTickets;
       case 'assigned_not_started': return assignedNotStarted;
       case 'in_progress': return inProgressTickets;
       case 'on_hold': return onHoldTickets;
@@ -233,6 +237,8 @@ export default function QCQueueDashboard() {
   const cardFilteredList = getCardFilteredList();
   const cardFilterLabels = {
     unassigned: 'QA Unassigned',
+    unplanned: 'Unplanned (Needs Planning)',
+    plan_initiated: 'Plan Initiated (Owner Assigned)',
     assigned_not_started: 'Assigned - Not Started',
     in_progress: 'QC Testing in Progress',
     on_hold: 'QC Testing Hold',
@@ -315,9 +321,38 @@ export default function QCQueueDashboard() {
 
   const COL_COUNT = 21;
 
+  const exportQueueCSV = (rows, label) => {
+    const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const headers = ['Ticket', 'Title', 'Status', 'Priority', 'Platform', 'QC Tester', 'Planning', 'Planner',
+      'Module', 'Days in QC', 'Activity', 'Retest Cycles', 'QA Est', 'QA Actual', 'Test Plan', 'Test Cases',
+      'Bugs Total', 'Bugs Open', 'Bugs Closed', 'Released to QA', 'Current Assignee', 'ETA'];
+    const lines = [headers.join(',')];
+    rows.forEach(t => {
+      const planning = t.qc_tester ? 'Assigned' : (t.planning_status === 'in_planning' ? 'Plan Initiated' : 'Unplanned');
+      lines.push([t.ticket_id, t.title, t.status, t.priority, t.platform || 'Web', t.qc_tester || '', planning,
+        t.planner || '', t.module, t.days_in_qc, t.activity_label, t.retest_cycle_count || 0,
+        t.qa_estimate_hours || 0, t.qa_actual_hours || 0, t.has_test_plan ? 'Created' : 'No plan', t.test_cases || 0,
+        t.bugs_total || 0, t.bugs_open || 0, t.bugs_closed || 0, t.bugs_released_to_qa || 0, t.current_assignee || '',
+        t.eta ? new Date(t.eta).toLocaleDateString('en-US') : ''].map(esc).join(','));
+    });
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `qc-queue_${(label || 'list').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const renderQueueTable = (tickets, label) => {
     const sorted = sortTickets(tickets);
     return (
+    <>
+    <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '6px' }}>
+      <button className="btn btn-sm btn-primary" onClick={() => exportQueueCSV(sorted, label)} disabled={!sorted.length}>
+        Export to Excel ({sorted.length})
+      </button>
+    </div>
     <div className="qcq-table-container">
       <table className="qcq-table">
         <thead>
@@ -337,7 +372,7 @@ export default function QCQueueDashboard() {
             <SortHeader field="retest_cycle_count">Cycles</SortHeader>
             <SortHeader field="qa_estimate_hours">Est Hrs</SortHeader>
             <SortHeader field="qa_actual_hours">Actual Hrs</SortHeader>
-            <SortHeader field="test_cases">TC</SortHeader>
+            <SortHeader field="test_cases">Test Plan</SortHeader>
             <th>Pass/Fail</th>
             <SortHeader field="bugs_total">Bugs</SortHeader>
             <th>Open/Closed</th>
@@ -364,7 +399,11 @@ export default function QCQueueDashboard() {
                 <td style={{textAlign:'center'}}>{(t.qa_actual_hours > 0 || t.retest_cycle_count > 0) ? <span className="qcq-fail" style={{fontSize:'0.7rem'}}>Refix</span> : <span style={{color:'var(--accent-green)',fontSize:'0.7rem',fontWeight:600}}>New</span>}</td>
                 <td className="qcq-priority">{t.priority}</td>
                 <td><span className={`qcq-platform-badge qcq-platform-${(t.platform || 'Web').toLowerCase()}`}>{t.platform || 'Web'}</span></td>
-                <td>{t.qc_tester || <span className="qcq-unassigned">Unassigned</span>}</td>
+                <td>{t.qc_tester
+                  ? t.qc_tester
+                  : (t.planning_status === 'in_planning'
+                      ? <span className="qcq-planning" title={`Plan initiated — owner ${t.planner} set in Assign-To`}>🟡 Plan Initiated — {t.planner}</span>
+                      : <span className="qcq-unassigned">🔴 Needs planning</span>)}</td>
                 <td className="qcq-secondary">{t.qa_lead || '-'}</td>
                 <td className="qcq-secondary">{t.developers_str || '-'}</td>
                 <td>{t.module}</td>
@@ -373,7 +412,13 @@ export default function QCQueueDashboard() {
                 <td>{t.retest_cycle_count > 0 ? <span className="qcq-cycle-count">{t.retest_cycle_count}</span> : '-'}</td>
                 <td className="qcq-hours">{t.qa_estimate_hours || '-'}</td>
                 <td className="qcq-hours">{t.qa_actual_hours || '-'}</td>
-                <td>{t.test_cases > 0 ? (t.testrail_plan_url ? <a href={t.testrail_plan_url} target="_blank" rel="noopener noreferrer" className="qcq-tc-link" onClick={e => e.stopPropagation()}>{t.test_cases}</a> : t.test_cases) : '-'}</td>
+                <td style={{ textAlign: 'center' }}>{t.has_test_plan
+                  ? (t.testrail_plan_url
+                      ? <a href={t.testrail_plan_url} target="_blank" rel="noopener noreferrer" className="qcq-tc-link" title={`${t.test_cases} cases in TestRail plan`} onClick={e => e.stopPropagation()}>✓ {t.test_cases}</a>
+                      : <span title="TestRail plan created">✓ {t.test_cases}</span>)
+                  : ((t.status || '').startsWith('QC Testing')
+                      ? <span className="qcq-plan-pending" title="No TestRail plan yet">Plan pending</span>
+                      : '-')}</td>
                 <td>{t.test_cases > 0 ? <span><span className="qcq-pass">{t.test_passed}</span>/<span className="qcq-fail">{t.test_failed}</span></span> : '-'}</td>
                 <td>{t.bugs_total > 0 ? <span className={t.bugs_open > 0 ? 'qcq-bugs-count' : ''}>{t.bugs_total}</span> : '-'}</td>
                 <td>{t.bugs_total > 0 ? <span><span className={t.bugs_open > 0 ? 'qcq-fail' : ''}>{t.bugs_open}</span>/<span className="qcq-pass">{t.bugs_closed}</span></span> : '-'}</td>
@@ -395,6 +440,8 @@ export default function QCQueueDashboard() {
                           <div><span className="qcq-detail-label">Ticket Created</span> {t.created_on ? new Date(t.created_on).toLocaleDateString() : '-'}</div>
                           <div><span className="qcq-detail-label">First Seen in Status</span> {t.moved_to_qc_on ? new Date(t.moved_to_qc_on).toLocaleDateString() : '-'}</div>
                           <div><span className="qcq-detail-label">Current Assignee</span> {t.current_assignee || '-'}</div>
+                          <div><span className="qcq-detail-label">Planning</span> {t.planning_status === 'in_planning' ? `In planning — ${t.planner}` : t.planning_status === 'assigned' ? 'Assigned to tester' : t.planning_status === 'unassigned' ? 'Needs planner' : '-'}</div>
+                          <div><span className="qcq-detail-label">QA Test Plan</span> {t.has_test_plan ? (t.testrail_plan_url ? <a href={t.testrail_plan_url} target="_blank" rel="noopener noreferrer" className="qcq-tc-link">Created — {t.test_cases} cases</a> : `Created — ${t.test_cases} cases`) : 'Not created'}</div>
                         </div>
                       </div>
                       <div className="qcq-expand-section">
@@ -428,6 +475,7 @@ export default function QCQueueDashboard() {
         </tbody>
       </table>
     </div>
+    </>
     );
   };
 
@@ -484,7 +532,7 @@ export default function QCQueueDashboard() {
               <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginLeft: '8px' }}>{totalFlow} tickets in flow</span>
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0', justifyContent: 'center', padding: '0 8px' }}>
+            <div style={{ display: 'flex', alignItems: 'stretch', gap: '0', justifyContent: 'safe center', padding: '0 8px', flexWrap: 'nowrap' }}>
               {stages.map((s, i) => (
                 <React.Fragment key={s.id}>
                   <div className="pipeline-stage" onClick={() => {
@@ -492,7 +540,7 @@ export default function QCQueueDashboard() {
                   }} style={{
                     background: `linear-gradient(135deg, ${s.color}18 0%, ${s.color}08 100%)`,
                     border: `2px solid ${s.color}60`, borderRadius: '14px',
-                    padding: '12px 8px', width: '115px', height: '105px',
+                    padding: '12px 6px', flex: '1 1 0', minWidth: '92px', maxWidth: '150px', minHeight: '112px', boxSizing: 'border-box',
                     display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
                     textAlign: 'center', cursor: 'pointer', position: 'relative',
                     transition: 'all 0.3s ease',
@@ -506,8 +554,8 @@ export default function QCQueueDashboard() {
                     )}
                   </div>
                   {i < stages.length - 1 && (
-                    <div style={{ width: '44px', height: '36px', flexShrink: 0 }}>
-                      <svg width="44" height="36" viewBox="0 0 44 36">
+                    <div style={{ width: '30px', height: '36px', flexShrink: 0, alignSelf: 'center' }}>
+                      <svg width="30" height="36" viewBox="0 0 44 36">
                         <line x1="2" y1="18" x2="32" y2="18" stroke="#334155" strokeWidth="3" strokeLinecap="round" />
                         <polygon points="30,12 42,18 30,24" fill={`${stages[i+1].color}80`} />
                         {[0, 0.5, 1].map((d, pi) => (
@@ -529,14 +577,14 @@ export default function QCQueueDashboard() {
 
             {/* 24h movement — common row */}
             {stages.some(s => s.moved > 0) && (
-              <div style={{ display: 'flex', justifyContent: 'center', gap: '0', marginTop: '8px', padding: '0 8px' }}>
+              <div style={{ display: 'flex', justifyContent: 'safe center', gap: '0', marginTop: '8px', padding: '0 8px' }}>
                 {stages.map((s, i) => (
                   <React.Fragment key={s.id}>
-                    <div style={{ width: '115px', textAlign: 'center', fontSize: '0.62rem', fontWeight: 700,
+                    <div style={{ flex: '1 1 0', minWidth: '92px', maxWidth: '150px', textAlign: 'center', fontSize: '0.62rem', fontWeight: 700,
                       color: s.moved >= 5 ? s.color : 'var(--text-muted)' }}>
                       {s.moved > 0 ? `${s.moved >= 5 ? '\u26A1' : '\u2191'}+${s.moved}` : ''}
                     </div>
-                    {i < stages.length - 1 && <div style={{ width: '44px', flexShrink: 0 }} />}
+                    {i < stages.length - 1 && <div style={{ width: '30px', flexShrink: 0 }} />}
                   </React.Fragment>
                 ))}
               </div>
@@ -609,10 +657,15 @@ export default function QCQueueDashboard() {
 
         {/* Status Cards - Clickable */}
         <div className="qcq-status-cards">
-          <div className={`qcq-card qcq-card-clickable qcq-card-unassigned ${cardFilter === 'unassigned' ? 'qcq-card-active' : ''}`} onClick={() => handleCardClick('unassigned')}>
-            <div className="qcq-card-value">{unassignedTickets.length}</div>
-            <div className="qcq-card-label">QA Unassigned</div>
-            <div className="qcq-card-sub">QC Testing, no tester</div>
+          <div className={`qcq-card qcq-card-clickable qcq-card-unassigned ${cardFilter === 'unplanned' ? 'qcq-card-active' : ''}`} onClick={() => handleCardClick('unplanned')}>
+            <div className="qcq-card-value">{unplannedTickets.length}</div>
+            <div className="qcq-card-label">Unplanned</div>
+            <div className="qcq-card-sub">No tester, no owner assigned</div>
+          </div>
+          <div className={`qcq-card qcq-card-clickable qcq-card-hold ${cardFilter === 'plan_initiated' ? 'qcq-card-active' : ''}`} onClick={() => handleCardClick('plan_initiated')}>
+            <div className="qcq-card-value">{planInitiatedTickets.length}</div>
+            <div className="qcq-card-label">Plan Initiated</div>
+            <div className="qcq-card-sub">Owner set in Assign-To, planning</div>
           </div>
           <div className={`qcq-card qcq-card-clickable qcq-card-testing ${cardFilter === 'assigned_not_started' ? 'qcq-card-active' : ''}`} onClick={() => handleCardClick('assigned_not_started')}>
             <div className="qcq-card-value">{assignedNotStarted.length}</div>
