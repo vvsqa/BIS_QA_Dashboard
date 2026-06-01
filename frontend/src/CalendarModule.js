@@ -592,7 +592,7 @@ function CalendarModule() {
 
     const dayColWidth = 52;
     const dayColGap = 6;
-    const rowTemplate = `180px 50px 55px 45px 45px repeat(${calendarDays.length}, ${dayColWidth}px)`;
+    const rowTemplate = `180px 56px 56px 55px 45px 45px repeat(${calendarDays.length}, ${dayColWidth}px)`;
 
     return (
       <div className="calendar-monthly">
@@ -647,7 +647,8 @@ function CalendarModule() {
                 style={{ gridTemplateColumns: rowTemplate, columnGap: `${dayColGap}px` }}
               >
                 <div className="employee-col header-cell">Employee</div>
-                <div className="stats-col header-cell">Total</div>
+                <div className="stats-col header-cell" title="Actual hours logged this month">Logged</div>
+                <div className="stats-col header-cell" title="Expected hours = working days × 8 − leave hours">Expected</div>
                 <div className="stats-col header-cell">T/NT</div>
                 <div className="stats-col header-cell">Days</div>
                 <div className="stats-col header-cell">Leave</div>
@@ -687,9 +688,14 @@ function CalendarModule() {
                     </span>
                     <span className="employee-team">{emp.team}</span>
                   </div>
-                  <div className="stats-col">
-                    <span className="stat-value" style={{color: (emp.total_hours || 0) < (emp.working_days || 0) * 8 ? 'var(--accent-red,#f44336)' : 'var(--accent-green,#4caf50)'}}>
-                      {(emp.total_hours || 0).toFixed(0)}h
+                  <div className="stats-col" title="Actual hours logged this month (green only when ≥ expected; a 0.5h shortfall stays red)">
+                    <span className="stat-value" style={{color: (emp.total_hours_logged || 0) >= (emp.expected_hours || 0) ? 'var(--accent-green,#4caf50)' : 'var(--accent-red,#f44336)'}}>
+                      {Number.isInteger(emp.total_hours_logged || 0) ? (emp.total_hours_logged || 0) : (emp.total_hours_logged || 0).toFixed(1)}h
+                    </span>
+                  </div>
+                  <div className="stats-col" title={`Expected this month: ${calendarData.working_days || 0} working days × 8 − ${(emp.total_leave_hours || 0).toFixed(0)}h leave`}>
+                    <span className="stat-value" style={{color: 'var(--text-secondary,#888)'}}>
+                      {(emp.expected_hours || 0).toFixed(0)}h
                     </span>
                   </div>
                   <div className="stats-col" title="Ticket / Non-ticket hours">
@@ -742,11 +748,11 @@ function CalendarModule() {
                       !dayData.leave_type
                     );
                     
-                    // Get productive hours (preferred if > 0) or hours_logged (fallback)
+                    // Use ACTUAL HOURS LOGGED for the monthly heatmap so a day with >8h logged
+                    // shows strong green (billing/attendance view). Fall back to productive only if nothing logged.
                     const productiveHours = dayData?.productive_hours || 0;
                     const hoursLogged = dayData?.hours_logged || 0;
-                    // Use productive_hours only if it has a positive value, otherwise use hours_logged
-                    const displayHours = productiveHours > 0 ? productiveHours : hoursLogged;
+                    const displayHours = hoursLogged > 0 ? hoursLogged : productiveHours;
                     
                     // Leave detection
                     const leaveType = dayData?.leave_type || '';
@@ -833,16 +839,12 @@ function CalendarModule() {
             <span className="legend-title">Hours</span>
             <div className="legend-items">
               <div className="legend-item">
-                <span className="legend-color hours-full"></span>
-                <span>8+ hrs</span>
+                <span className="legend-color hours-over"></span>
+                <span>Above 8 hrs logged</span>
               </div>
               <div className="legend-item">
-                <span className="legend-color hours-half"></span>
-                <span>4-8 hrs</span>
-              </div>
-              <div className="legend-item">
-                <span className="legend-color hours-low"></span>
-                <span>1-4 hrs</span>
+                <span className="legend-color" style={{background:'var(--bg-secondary)', border:'1px solid var(--border-color)'}}></span>
+                <span>8 hrs or less</span>
               </div>
             </div>
           </div>

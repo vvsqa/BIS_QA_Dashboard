@@ -38,7 +38,6 @@ const apiPaths = [
   '/qc-cycles',
   '/ageing',
   '/analytics',
-  '/team-board',
   '/live',
   '/qa-flow',
   '/ticket-movement',

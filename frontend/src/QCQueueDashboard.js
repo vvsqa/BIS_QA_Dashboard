@@ -64,6 +64,7 @@ export default function QCQueueDashboard() {
   const [listPriorityFilter, setListPriorityFilter] = useState('');
   const [listModuleFilter, setListModuleFilter] = useState('');
   const [listTesterFilter, setListTesterFilter] = useState('');
+  const [listPlanFilter, setListPlanFilter] = useState(''); // '', 'created', 'pending'
   const [platformFilter, setPlatformFilter] = useState('all'); // 'all', 'Web', 'Mobile'
   const [sortField, setSortField] = useState('priority_score');
   const [sortDir, setSortDir] = useState('desc');
@@ -270,6 +271,11 @@ export default function QCQueueDashboard() {
     if (listTesterFilter) {
       result = result.filter(t => (t.qc_tester || '') === listTesterFilter);
     }
+    if (listPlanFilter === 'created') {
+      result = result.filter(t => t.has_test_plan);
+    } else if (listPlanFilter === 'pending') {
+      result = result.filter(t => !t.has_test_plan);
+    }
     return result;
   };
 
@@ -402,7 +408,14 @@ export default function QCQueueDashboard() {
                 <td>{t.qc_tester
                   ? t.qc_tester
                   : (t.planning_status === 'in_planning'
-                      ? <span className="qcq-planning" title={`Plan initiated — owner ${t.planner} set in Assign-To`}>🟡 Plan Initiated — {t.planner}</span>
+                      ? <span className="qcq-planning" title={`Plan initiated — owner ${t.planner} set in Assign-To`}>
+                          🟡 Plan Initiated — {t.planner}
+                          {t.has_test_plan
+                            ? (t.testrail_plan_url
+                                ? <a href={t.testrail_plan_url} target="_blank" rel="noopener noreferrer" className="qcq-plan-tag qcq-plan-tag-ok" title={`${t.test_cases} cases in TestRail plan (project BIS)`} onClick={e => e.stopPropagation()}>✓ Plan created · {t.test_cases} cases</a>
+                                : <span className="qcq-plan-tag qcq-plan-tag-ok" title="TestRail plan created">✓ Plan created · {t.test_cases} cases</span>)
+                            : <span className="qcq-plan-tag qcq-plan-tag-pending" title="No TestRail plan found in project BIS">✗ No plan yet</span>}
+                        </span>
                       : <span className="qcq-unassigned">🔴 Needs planning</span>)}</td>
                 <td className="qcq-secondary">{t.qa_lead || '-'}</td>
                 <td className="qcq-secondary">{t.developers_str || '-'}</td>
@@ -797,8 +810,13 @@ export default function QCQueueDashboard() {
                 <option value="">All Testers</option>
                 {[...new Set(cardFilteredList.map(t => t.qc_tester).filter(Boolean))].sort().map(t => <option key={t} value={t}>{t}</option>)}
               </select>
-              {(searchFilter || listPriorityFilter || listModuleFilter || listTesterFilter) && (
-                <button className="btn btn-sm btn-secondary" onClick={() => { setSearchFilter(''); setListPriorityFilter(''); setListModuleFilter(''); setListTesterFilter(''); }}>
+              <select className="qcq-search-input" value={listPlanFilter} onChange={e => setListPlanFilter(e.target.value)} style={{ width: '150px' }} title="TestRail plan (project BIS)">
+                <option value="">All Test Plans</option>
+                <option value="created">✓ Plan created</option>
+                <option value="pending">✗ No plan yet</option>
+              </select>
+              {(searchFilter || listPriorityFilter || listModuleFilter || listTesterFilter || listPlanFilter) && (
+                <button className="btn btn-sm btn-secondary" onClick={() => { setSearchFilter(''); setListPriorityFilter(''); setListModuleFilter(''); setListTesterFilter(''); setListPlanFilter(''); }}>
                   Clear Filters
                 </button>
               )}
@@ -817,9 +835,6 @@ export default function QCQueueDashboard() {
           </button>
           <button className={`qcq-tab ${activeTab === 'dev_pipeline' ? 'active' : ''}`} onClick={() => { setActiveTab('dev_pipeline'); setCardFilter(null); setSelectedPipelineBar(null); }}>
             Incoming Pipeline ({modulePipeline.reduce((s, m) => s + m.total, 0)})
-          </button>
-          <button className={`qcq-tab ${activeTab === 'pipeline_stats' ? 'active' : ''}`} onClick={() => { setActiveTab('pipeline_stats'); setCardFilter(null); }}>
-            Pipeline Stats
           </button>
           {activeTab === 'queue' && (
             <div className="qcq-search" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
@@ -841,6 +856,11 @@ export default function QCQueueDashboard() {
               <select className="qcq-search-input" value={listTesterFilter} onChange={e => setListTesterFilter(e.target.value)} style={{ width: '140px' }}>
                 <option value="">All Testers</option>
                 {uniqueTesters.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <select className="qcq-search-input" value={listPlanFilter} onChange={e => setListPlanFilter(e.target.value)} style={{ width: '150px' }} title="TestRail plan (project BIS)">
+                <option value="">All Test Plans</option>
+                <option value="created">✓ Plan created</option>
+                <option value="pending">✗ No plan yet</option>
               </select>
             </div>
           )}
@@ -1124,33 +1144,7 @@ export default function QCQueueDashboard() {
           </div>
         )}
 
-        {/* Pipeline Stats Tab — moved from banner */}
-        {activeTab === 'pipeline_stats' && monthlySummary && (
-          <div className="qcq-section">
-            <div className="qcq-summary-banner">
-              <div className="qcq-summary-title">QA Pipeline Overview ({monthlySummary.period})</div>
-              <table className="qcq-summary-table">
-                <tbody>
-                  <tr className="qcq-summary-section-row"><td colSpan="2">QA Throughput (30 days)</td></tr>
-                  <tr><td>Tickets closed by QA this month</td><td className="qcq-st-val">{monthlySummary.closed_by_qa}</td></tr>
-                  <tr><td>Tickets closed previous month ({monthlySummary.previous_month?.period})</td><td className="qcq-st-val">{monthlySummary.previous_month?.closed_by_qa || 0}</td></tr>
-                  <tr><td>Month-over-month trend</td><td className="qcq-st-val" style={{ color: monthlySummary.closed_by_qa >= (monthlySummary.previous_month?.closed_by_qa || 0) ? 'var(--accent-green)' : 'var(--accent-red)' }}>{monthlySummary.closed_by_qa >= (monthlySummary.previous_month?.closed_by_qa || 0) ? '\u25B2 +' : '\u25BC '}{Math.abs(monthlySummary.closed_by_qa - (monthlySummary.previous_month?.closed_by_qa || 0))}</td></tr>
-                  <tr className="qcq-summary-section-row"><td colSpan="2">Current QC Pipeline — {monthlySummary.currently_in_qc} tickets</td></tr>
-                  <tr><td>In Progress (being tested by QA)</td><td className="qcq-st-val">{monthlySummary.in_progress_count}</td></tr>
-                  <tr><td>Assigned to QA, waiting to start</td><td className="qcq-st-val">{monthlySummary.assigned_waiting_count}</td></tr>
-                  <tr><td>Unassigned — need QA resource allocation</td><td className="qcq-st-val" style={{ color: monthlySummary.unassigned_count > 0 ? 'var(--accent-red)' : undefined }}>{monthlySummary.unassigned_count}</td></tr>
-                  <tr><td>On Hold (blocked / dependency)</td><td className="qcq-st-val">{monthlySummary.hold_count}</td></tr>
-                  <tr><td>QC Review Failed — returned to dev</td><td className="qcq-st-val" style={{ color: monthlySummary.qc_failed > 0 ? 'var(--accent-red)' : undefined }}>{monthlySummary.qc_failed}</td></tr>
-                  <tr className="qcq-summary-section-row"><td colSpan="2">Post-QC Status</td></tr>
-                  <tr><td>In BIS Testing (passed QC, awaiting client sign-off)</td><td className="qcq-st-val">{monthlySummary.in_bis}</td></tr>
-                  <tr><td>Approved for Live (verified by BIS, pending prod deploy)</td><td className="qcq-st-val">{monthlySummary.approved}</td></tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-
-      </main>
+        </main>
     </div>
   );
 }

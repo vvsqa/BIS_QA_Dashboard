@@ -259,6 +259,27 @@ export default function DevDashboard() {
     </div>
   );
 
+  // Export the currently filtered + sorted ticket list (respects the active card and all filters)
+  const exportTicketsCSV = () => {
+    const rows = doSort(filteredTickets);
+    const headers = ['Ticket', 'Title', 'Status', 'Priority', 'Platform', 'Module', 'Developer', 'Assign To', 'QC Tester', 'Est Hrs', 'Actual Hrs', 'Deviation', 'Cycles', 'Bugs', 'Open', 'Released to QA', 'Closed', 'Age (days)', 'ETA'];
+    const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
+    const lines = rows.map(t => [
+      t.ticket_id, t.title, t.status, t.priority, t.platform || 'Web', t.module || '', t.developers_str || '', t.current_assignee || '', t.qc_tester || '',
+      t.dev_estimate_hours ?? '', t.actual_dev_hours ?? '',
+      (t.dev_estimate_hours != null && t.actual_dev_hours != null) ? (Number(t.actual_dev_hours) - Number(t.dev_estimate_hours)).toFixed(1) : '',
+      t.cycle_count || 0, t.bugs_total || 0, t.bugs_open || 0, t.bugs_released_to_qa || 0, t.bugs_closed || 0, t.ageing_days || 0,
+      t.eta ? new Date(t.eta).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : ''
+    ].map(esc).join(','));
+    const csv = [headers.join(','), ...lines].join('\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const tag = (cardFilter ? String(cardFilter) : (stageFilter || 'all')).replace(/[^a-z0-9._-]/gi, '_');
+    a.href = url; a.download = `dev-dashboard_${tag}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
+
   // Tab 2: Tickets
   const renderTickets = () => (
     <div ref={cardListRef}>
@@ -285,7 +306,10 @@ export default function DevDashboard() {
             setCardFilter(null); setStageFilter(''); setSearchFilter(''); setAssigneeFilter(''); setModuleFilter(''); setDeveloperFilter('');
           }}>Clear All Filters</button>
         )}
-        <span style={{marginLeft:'auto',fontSize:'0.8rem',color:'var(--text-muted)'}}>{filteredTickets.length} tickets</span>
+        <button className="btn btn-sm btn-primary" onClick={exportTicketsCSV} disabled={filteredTickets.length === 0} style={{marginLeft:'auto'}}>
+          Export to Excel ({filteredTickets.length})
+        </button>
+        <span style={{fontSize:'0.8rem',color:'var(--text-muted)'}}>{filteredTickets.length} tickets</span>
       </div>
       <div className="qcq-table-container">
         <table className="qcq-table">
@@ -620,9 +644,24 @@ export default function DevDashboard() {
                     else if (bqFilter.type === 'status' && bqFilter.value === 'refix') filtered = filtered.filter(t => t.status !== 'QC Review Fail');
                   }
                   return (<>
-                <p style={{fontSize:'0.78rem',color:'var(--text-muted)',marginBottom:'8px'}}>
-                  {filtered.length} tickets — sorted by QA hours before failure (lowest = obvious bugs)
-                </p>
+                <div style={{display:'flex',alignItems:'center',gap:'10px',marginBottom:'8px',flexWrap:'wrap'}}>
+                  <p style={{fontSize:'0.78rem',color:'var(--text-muted)',margin:0}}>
+                    {filtered.length} tickets — sorted by QA hours before failure (lowest = obvious bugs)
+                  </p>
+                  <button className="btn btn-sm btn-primary" disabled={filtered.length === 0} style={{marginLeft:'auto'}}
+                    onClick={() => {
+                      const esc = (v) => { const x = v == null ? '' : String(v); return /[",\n]/.test(x) ? '"' + x.replace(/"/g, '""') + '"' : x; };
+                      const headers = ['Ticket', 'Module', 'Developer', 'QA Hrs Before Fail', 'Bugs Found', 'Cycles', 'Status', 'Quality Verdict'];
+                      const lines = filtered.map(t => [t.ticket_id, t.module || '', (t.developers_str || '').split(',')[0] || '', t.qa_hours_before_fail, t.bugs_found || 0, t.cycle_count || 0, t.status, t.verdict].map(esc).join(','));
+                      const csv = [headers.join(','), ...lines].join('\n');
+                      const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+                      const url = URL.createObjectURL(blob); const a = document.createElement('a');
+                      const tag = (bqFilter ? `${bqFilter.type}_${bqFilter.value}` : 'all').replace(/[^a-z0-9._-]/gi, '_');
+                      a.href = url; a.download = `build-quality_${tag}.csv`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+                    }}>
+                    Export to Excel ({filtered.length})
+                  </button>
+                </div>
                 <div className="qcq-table-container">
                   <table className="qcq-table" style={{fontSize:'0.8rem'}}>
                     <thead>

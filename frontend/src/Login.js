@@ -24,7 +24,7 @@ function Login() {
         <div className="login-left">
           <div className="login-card">
             <img src="/techversant-logo.png" alt="Techversant" className="login-logo" />
-            <h1 className="login-title">AURA360</h1>
+            <h1 className="login-title">BIS 360</h1>
             <span style={{ color: 'var(--text-muted)' }}>{loading ? 'Loading...' : 'Redirecting...'}</span>
           </div>
         </div>
@@ -59,7 +59,7 @@ function Login() {
         <div className="login-card">
         <div className="login-brand">
           <img src="/techversant-logo.png" alt="Techversant" className="login-logo" />
-          <h1 className="login-title">AURA360</h1>
+          <h1 className="login-title">BIS 360</h1>
           <p className="login-subtitle">Sign in to continue</p>
         </div>
         <form onSubmit={handleSubmit} className="login-form">

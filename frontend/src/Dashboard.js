@@ -1833,7 +1833,7 @@ function Dashboard() {
               className="company-logo"
             />
             <div className="header-divider"></div>
-            <h1 className="page-title">AURA360</h1>
+            <h1 className="page-title">BIS 360</h1>
             {summary.total_bugs > 0 && (
               <div className="bugs-count-header">
                 <span className="bugs-count-value">{summary.total_bugs}</span>
