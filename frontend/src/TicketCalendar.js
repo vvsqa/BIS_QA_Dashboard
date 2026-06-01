@@ -121,31 +121,29 @@ function TicketMovementSection({ year, month }) {
           { key: 'approved_for_live', label: 'Approved for Live', color: 'var(--accent-teal)' },
           { key: 'closed', label: 'Closed', color: 'var(--accent-green)' },
         ];
-        const trend = mv.trend || [];
-        const maxBy = {};
-        SERIES.forEach(s => { maxBy[s.key] = Math.max(1, ...trend.map(m => m[s.key] || 0)); });
+        const months = (mv.trend || []).slice(-3);  // last 3 months, oldest → newest
         return (
           <div className="qcq-section" style={{ marginBottom: '14px' }}>
-            <h3 className="qcq-section-title" style={{ marginTop: 0 }}>12-Month Comparison — all status changes</h3>
-            <div className="emp-flow-chart" style={{ height: '170px' }}>
-              {trend.map(m => (
-                <div key={m.label} className="emp-flow-col">
-                  <div className="emp-flow-bars">
-                    {SERIES.map(s => (
-                      <div key={s.key} className="emp-flow-bar" style={{ height: `${(m[s.key] / maxBy[s.key]) * 100}%`, background: s.color, width: '7px' }}
-                        title={`${m.label} — ${s.label}: ${m[s.key]}`} />
-                    ))}
-                  </div>
-                  <div className="emp-flow-xlabel">{m.label.replace(' 20', " '")}</div>
-                </div>
-              ))}
+            <h3 className="qcq-section-title" style={{ marginTop: 0 }}>3-Month Comparison</h3>
+            <div className="tm-compare">
+              <div className="tm-h" />
+              {months.map(m => <div key={m.label} className="tm-h tm-month">{m.label}</div>)}
+              {SERIES.flatMap(s => {
+                const rowMax = Math.max(1, ...months.map(m => m[s.key] || 0));
+                return [
+                  <div key={`${s.key}-c`} className="tm-cat"><span className="emp-dot" style={{ background: s.color }} /> {s.label}</div>,
+                  ...months.map(m => (
+                    <div key={`${s.key}-${m.label}`} className="tm-cell">
+                      <div className="tm-track"><div className="tm-fill" style={{ width: `${((m[s.key] || 0) / rowMax) * 100}%`, background: s.color }} /></div>
+                      <span className="tm-val">{m[s.key] || 0}</span>
+                    </div>
+                  )),
+                ];
+              })}
             </div>
-            <div style={{ display: 'flex', gap: '14px', marginTop: '8px', fontSize: '0.7rem', flexWrap: 'wrap' }}>
-              {SERIES.map(s => <span key={s.key}><span className="emp-dot" style={{ background: s.color }} /> {s.label}</span>)}
-            </div>
-            <p style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '6px' }}>
-              Each series scaled to its own max for readability. Released-to-QC / retest / BIS / approved fill in from
-              May 2026 (when status-history capture began); Closed has full history.
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '8px' }}>
+              Bars are scaled per row (each metric to its own max). Released-to-QC / retest / BIS / approved fill in
+              from May 2026 (status-history start); Closed has full history.
             </p>
           </div>
         );
