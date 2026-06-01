@@ -759,6 +759,14 @@
   color: var(--accent-green);
 }
 
+/* More than 8 hours/day — overtime, highlighted in strong green */
+.hours-over {
+  background: rgba(34, 197, 94, 0.5);
+  color: #fff;
+  font-weight: 700;
+}
+.heatmap-cell.hours-over { background: rgba(34, 197, 94, 0.55); color: #fff; font-weight: 700; }
+
 .hours-half {
   background: rgba(245, 158, 11, 0.2);
   color: var(--accent-amber);

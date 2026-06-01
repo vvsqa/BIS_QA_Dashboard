@@ -20,6 +20,121 @@ const RELEVANT_STATUSES = [
   'QC Review Fail', 'BIS Testing', 'Approved for Live', 'Moved to Live', 'Closed',
 ];
 
+const MOVE_CARDS = [
+  { key: 'new_to_qc', label: 'New to QC Testing', color: 'var(--accent-blue)' },
+  { key: 'refix_to_qc', label: 'Refix to QC Testing', color: 'var(--accent-red)' },
+  { key: 'to_bis', label: 'Delivered to BIS', color: 'var(--accent-purple, #8b5cf6)' },
+  { key: 'approved_for_live', label: 'Approved for Live', color: 'var(--accent-teal)' },
+  { key: 'closed', label: 'Closed', color: 'var(--accent-green)' },
+];
+
+function TicketMovementSection({ year, month }) {
+  const [mv, setMv] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [sel, setSel] = useState('closed');
+  const [modFilter, setModFilter] = useState('');
+  const [qcFilter, setQcFilter] = useState('');
+  const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState('date');
+  const [sortDir, setSortDir] = useState('desc');
+
+  useEffect(() => {
+    const now = new Date();
+    const offset = (now.getFullYear() * 12 + now.getMonth()) - (year * 12 + (month - 1));
+    if (offset < 0) { setMv(null); setLoading(false); return; }
+    setLoading(true);
+    fetch(`${API_BASE}/ticket-movement?offset=${offset}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => setMv(d))
+      .finally(() => setLoading(false));
+  }, [year, month]);
+
+  if (loading) return <div style={{ padding: '12px', color: 'var(--text-muted)' }}>Loading ticket movement…</div>;
+  if (!mv) return null;
+
+  const card = mv[sel] || { count: 0, tickets: [] };
+  const modules = [...new Set((card.tickets || []).map(t => t.module))].sort();
+  const testers = [...new Set((card.tickets || []).map(t => t.qc_tester))].sort();
+  let rows = (card.tickets || []).filter(t =>
+    (!modFilter || t.module === modFilter) &&
+    (!qcFilter || t.qc_tester === qcFilter) &&
+    (!search || String(t.ticket_id).includes(search) || (t.title || '').toLowerCase().includes(search.toLowerCase()))
+  );
+  rows = [...rows].sort((a, b) => {
+    let av = a[sortKey], bv = b[sortKey];
+    if (sortKey === 'ticket_id' || sortKey === 'refix_count') { av = Number(av) || 0; bv = Number(bv) || 0; }
+    else { av = String(av || '').toLowerCase(); bv = String(bv || '').toLowerCase(); }
+    if (av < bv) return sortDir === 'asc' ? -1 : 1;
+    if (av > bv) return sortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+  const toggleSort = (k) => { if (sortKey === k) setSortDir(d => (d === 'asc' ? 'desc' : 'asc')); else { setSortKey(k); setSortDir('asc'); } };
+  const Th = ({ k, children, left }) => (
+    <th onClick={() => toggleSort(k)} style={{ cursor: 'pointer', textAlign: left ? 'left' : 'center' }}>
+      {children}{sortKey === k ? (sortDir === 'asc' ? ' ▲' : ' ▼') : ''}
+    </th>
+  );
+  const isRefix = sel === 'refix_to_qc';
+
+  return (
+    <div className="qcq-section" style={{ marginTop: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
+        <h2 className="qcq-section-title" style={{ margin: 0 }}>Monthly Ticket Movement — {mv.period?.label}</h2>
+        <span className={`emp-period-badge ${mv.period?.frozen ? 'emp-final' : 'emp-live'}`}>{mv.period?.frozen ? 'Final' : 'Live'}</span>
+      </div>
+
+      <div className="qcq-status-cards" style={{ marginBottom: '14px' }}>
+        {MOVE_CARDS.map(c => (
+          <div key={c.key} onClick={() => { setSel(c.key); setModFilter(''); setQcFilter(''); setSearch(''); setSortKey('date'); setSortDir('desc'); }}
+            className="qcq-card" style={{ cursor: 'pointer', borderTop: `3px solid ${c.color}`, outline: sel === c.key ? `2px solid ${c.color}` : 'none' }}>
+            <div className="qcq-card-value" style={{ color: c.color }}>{(mv[c.key] || {}).count || 0}</div>
+            <div className="qcq-card-label">{c.label}</div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <input className="qcq-search-input" placeholder="Search ticket / title…" value={search} onChange={e => setSearch(e.target.value)} style={{ minWidth: '180px' }} />
+        <select className="qcq-search-input" value={modFilter} onChange={e => setModFilter(e.target.value)}>
+          <option value="">All modules</option>{modules.map(m => <option key={m} value={m}>{m}</option>)}
+        </select>
+        <select className="qcq-search-input" value={qcFilter} onChange={e => setQcFilter(e.target.value)}>
+          <option value="">All QC testers</option>{testers.map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+        <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{rows.length} of {card.count}</span>
+      </div>
+
+      <div className="qcq-table-container">
+        <table className="qcq-table" style={{ fontSize: '0.78rem' }}>
+          <thead><tr>
+            <Th k="ticket_id">Ticket</Th>
+            <th style={{ textAlign: 'left' }}>Title</th>
+            <Th k="module">Module</Th>
+            <Th k="priority">Priority</Th>
+            <Th k="qc_tester">QC Tester</Th>
+            {isRefix && <Th k="refix_count">Refix #</Th>}
+            <Th k="date">Date</Th>
+          </tr></thead>
+          <tbody>
+            {rows.map(t => (
+              <tr key={`${t.ticket_id}-${t.date}`} className="qcq-row">
+                <td style={{ textAlign: 'center' }}><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
+                <td style={{ maxWidth: '280px', whiteSpace: 'normal', textAlign: 'left' }}>{t.title}</td>
+                <td style={{ textAlign: 'center' }}>{t.module}</td>
+                <td style={{ textAlign: 'center' }}>{t.priority}</td>
+                <td style={{ textAlign: 'center' }}>{t.qc_tester}</td>
+                {isRefix && <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--accent-red)' }}>{t.refix_count}x</td>}
+                <td style={{ textAlign: 'center' }}>{(t.date || '').slice(0, 10)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rows.length === 0 && <p style={{ color: 'var(--text-muted)', padding: '8px' }}>No tickets.</p>}
+    </div>
+  );
+}
+
 export default function TicketCalendar() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
@@ -183,6 +298,9 @@ export default function TicketCalendar() {
             </span>
           ))}
         </div>
+
+        {/* Monthly ticket movement cards + lists (below the calendar) */}
+        <TicketMovementSection year={year} month={month} />
 
         {/* Selected day detail */}
         {selectedDay && (
