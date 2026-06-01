@@ -122,28 +122,27 @@ function TicketMovementSection({ year, month }) {
           { key: 'closed', label: 'Closed', color: '#22c55e' },                           // green
         ];
         const months = (mv.trend || []).slice(-3);  // last 3 months, oldest → newest
+        // Single shared scale across the whole chart so bars are comparable and not all "full".
+        const chartMax = Math.max(1, ...months.flatMap(m => SERIES.map(s => m[s.key] || 0)));
         return (
           <div className="qcq-section" style={{ marginBottom: '14px' }}>
             <h3 className="qcq-section-title" style={{ marginTop: 0 }}>3-Month Comparison</h3>
             <div className="tm-compare">
               <div className="tm-h" />
               {months.map(m => <div key={m.label} className="tm-h tm-month">{m.label}</div>)}
-              {SERIES.flatMap(s => {
-                const rowMax = Math.max(1, ...months.map(m => m[s.key] || 0));
-                return [
-                  <div key={`${s.key}-c`} className="tm-cat"><span className="emp-dot" style={{ background: s.color }} /> {s.label}</div>,
-                  ...months.map(m => (
-                    <div key={`${s.key}-${m.label}`} className="tm-cell">
-                      <div className="tm-track"><div className="tm-fill" style={{ width: `${((m[s.key] || 0) / rowMax) * 100}%`, background: s.color }} /></div>
-                      <span className="tm-val">{m[s.key] || 0}</span>
-                    </div>
-                  )),
-                ];
-              })}
+              {SERIES.flatMap(s => [
+                <div key={`${s.key}-c`} className="tm-cat"><span className="emp-dot" style={{ background: s.color }} /> {s.label}</div>,
+                ...months.map(m => (
+                  <div key={`${s.key}-${m.label}`} className="tm-cell">
+                    <div className="tm-track"><div className="tm-fill" style={{ width: `${((m[s.key] || 0) / chartMax) * 100}%`, background: s.color }} /></div>
+                    <span className="tm-val">{m[s.key] || 0}</span>
+                  </div>
+                )),
+              ])}
             </div>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '8px' }}>
-              Bars are scaled per row (each metric to its own max). Released-to-QC / retest / BIS / approved fill in
-              from May 2026 (status-history start); Closed has full history.
+              All bars share one scale (max = {chartMax}). Released-to-QC / retest / BIS / approved are tracked from
+              May 2026 (status-history start) and grow monthly; Closed has full history.
             </p>
           </div>
         );
