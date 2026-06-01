@@ -7721,21 +7721,50 @@ def _compute_ticket_movement(db, start_date, end_date):
         TicketTracking.closed_on >= start_date, TicketTracking.closed_on <= end_date,
     ).all()
 
+    # Authoritative fail-loop (QC cycle) count per ticket, from the cycle tracker.
+    cycle_count = {}
+    try:
+        import json as _json
+        _p = os.path.join(os.path.dirname(__file__), "data", "qc_cycle_tracker.json")
+        if os.path.exists(_p):
+            with open(_p, encoding="utf-8") as _f:
+                for k, v in _json.load(_f).items():
+                    try:
+                        cycle_count[int(k)] = (v or {}).get("cycle_count", 0) or 0
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+
     tids = {h.ticket_id for h in trans} | {t.ticket_id for t in closed}
     meta = {}
     if tids:
-        for tid, title, sub, prio, qc in db.query(
+        for (tid, title, sub, prio, qc, bd, fd, st, cr, eta, qae, qaa) in db.query(
             TicketTracking.ticket_id, TicketTracking.title, TicketTracking.subdepartment,
-            TicketTracking.priority, TicketTracking.qc_tester,
+            TicketTracking.priority, TicketTracking.qc_tester, TicketTracking.backend_developer,
+            TicketTracking.frontend_developer, TicketTracking.status, TicketTracking.created_on,
+            TicketTracking.eta, TicketTracking.qa_estimate_hours, TicketTracking.actual_qa_hours,
         ).filter(TicketTracking.ticket_id.in_(tids)).all():
-            meta[tid] = {"title": title, "module": (sub or "").strip() or "Unassigned",
-                         "priority": prio, "qc_tester": qc}
+            meta[tid] = {
+                "title": title, "module": (sub or "").strip() or "Unassigned",
+                "priority": prio, "qc_tester": qc,
+                "developer": _strip_paren(bd or fd or "").strip() or "Unassigned",
+                "current_status": st or "",
+                "created_on": cr.isoformat() if cr else None,
+                "eta": eta.isoformat() if eta else None,
+                "qa_estimate_hours": qae, "qa_actual_hours": qaa,
+            }
 
     def item(tid, when, qc=None, extra=None):
         m = meta.get(tid, {})
-        d = {"ticket_id": tid, "title": m.get("title") or "", "module": m.get("module", "Unassigned"),
-             "priority": m.get("priority") or "", "qc_tester": qc or m.get("qc_tester") or "Unassigned",
-             "date": when.isoformat() if when else None}
+        d = {
+            "ticket_id": tid, "title": m.get("title") or "", "module": m.get("module", "Unassigned"),
+            "priority": m.get("priority") or "", "qc_tester": qc or m.get("qc_tester") or "Unassigned",
+            "developer": m.get("developer", "Unassigned"), "current_status": m.get("current_status", ""),
+            "created_on": m.get("created_on"), "eta": m.get("eta"),
+            "qa_estimate_hours": m.get("qa_estimate_hours"), "qa_actual_hours": m.get("qa_actual_hours"),
+            "fail_loops": cycle_count.get(tid, 0), "date": when.isoformat() if when else None,
+        }
         if extra:
             d.update(extra)
         return d
@@ -7743,9 +7772,12 @@ def _compute_ticket_movement(db, start_date, end_date):
     def in_month(d):
         return d and start_date <= d <= end_date
 
+    # A QC entry is a RETEST if it re-enters QC after a prior entry, OR comes back from a rework/fail
+    # stage (works immediately from `previous_status`, even before deep history accumulates).
+    REWORK = {"QC Review Fail", "Code Review Failed", "Tested - Awaiting Fixes", "BIS Testing"}
     new_list, refix_list, bis_list, appr_list = [], [], [], []
     seen_bis, seen_appr = set(), set()
-    qc_entries = defaultdict(int)  # prior QC entries per ticket (in available history)
+    qc_entries = defaultdict(int)
 
     for h in trans:
         ns, ps, tid = h.new_status, h.previous_status, h.ticket_id
@@ -7753,10 +7785,12 @@ def _compute_ticket_movement(db, start_date, end_date):
             prior = qc_entries[tid]
             qc_entries[tid] += 1
             if in_month(h.changed_on):
-                if prior == 0:
-                    new_list.append(item(tid, h.changed_on, h.qc_tester))
+                if prior > 0 or ps in REWORK:
+                    loops = max(prior, cycle_count.get(tid, 0), 1)
+                    refix_list.append(item(tid, h.changed_on, h.qc_tester,
+                                           {"refix_count": loops, "from_status": ps or ""}))
                 else:
-                    refix_list.append(item(tid, h.changed_on, h.qc_tester, {"refix_count": prior}))
+                    new_list.append(item(tid, h.changed_on, h.qc_tester))
         if ns == "BIS Testing" and tid not in seen_bis and in_month(h.changed_on):
             seen_bis.add(tid)
             bis_list.append(item(tid, h.changed_on, h.qc_tester))
@@ -7775,26 +7809,43 @@ def _compute_ticket_movement(db, start_date, end_date):
 
 
 @app.get("/ticket-movement")
-def get_ticket_movement(offset: int = Query(0, ge=0, le=240)):
+def get_ticket_movement(offset: int = Query(0, ge=0, le=240), trend: int = Query(12, ge=1, le=24)):
     """Monthly ticket movement for the Ticket Movement Calendar. Ended months are frozen so the
-    lists don't change after the month closes (tickets counted up to 23:59 of the last day)."""
+    lists don't change after the month closes (tickets counted up to 23:59 of the last day).
+    Also returns a trailing `trend` series (default 12 months) of per-category counts for the
+    month-to-month comparison chart."""
     db: Session = SessionLocal()
     try:
-        start, end, label = get_period_range("month", offset)
-        ended = end.date() < datetime.now().date()
-        if ended:
-            snap = db.query(TicketMovementSnapshot).filter_by(period_label=label).first()
-            if snap and snap.frozen and snap.payload:
-                return snap.payload
-        data = _compute_ticket_movement(db, start, end)
-        data["period"] = {"label": label, "start": start.isoformat(),
-                          "end": end.isoformat(), "frozen": ended}
-        if ended:
-            try:
-                db.add(TicketMovementSnapshot(period_label=label, payload=data, frozen=True))
-                db.commit()
-            except Exception:
-                db.rollback()
+        today = datetime.now().date()
+        CATS = ("new_to_qc", "refix_to_qc", "to_bis", "approved_for_live", "closed")
+
+        def _month(off):
+            s, e, lbl = get_period_range("month", off)
+            ended = e.date() < today
+            if ended:
+                snap = db.query(TicketMovementSnapshot).filter_by(period_label=lbl).first()
+                if snap and snap.frozen and snap.payload:
+                    return lbl, s, e, ended, snap.payload
+            d = _compute_ticket_movement(db, s, e)
+            d["period"] = {"label": lbl, "start": s.isoformat(), "end": e.isoformat(), "frozen": ended}
+            if ended:
+                try:
+                    db.add(TicketMovementSnapshot(period_label=lbl, payload=d, frozen=True))
+                    db.commit()
+                except Exception:
+                    db.rollback()
+            return lbl, s, e, ended, d
+
+        _, _, _, _, data = _month(offset)
+        series = []
+        for k in range(trend - 1, -1, -1):
+            lbl, _s, _e, _ended, d = _month(offset + k)
+            row = {"label": lbl}
+            for c in CATS:
+                row[c] = (d.get(c) or {}).get("count", 0)
+            series.append(row)
+        data = dict(data)
+        data["trend"] = series
         return data
     finally:
         db.close()
