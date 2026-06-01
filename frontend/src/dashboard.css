@@ -17981,6 +17981,7 @@ a.qcq-ticket-link:hover {
 .tm-track { flex: 1; height: 16px; background: rgba(148,163,184,0.16); border-radius: 4px; overflow: hidden; }
 .tm-fill { height: 100%; border-radius: 4px; min-width: 3px; transition: width 0.3s; box-shadow: 0 0 0 1px rgba(0,0,0,0.05) inset; }
 .tm-val { width: 36px; text-align: right; font-weight: 700; font-size: 0.8rem; color: var(--text-primary); }
+.tm-cat.tm-sep, .tm-cell.tm-sep { border-top: 1px dashed var(--border-color); padding-top: 8px; margin-top: 2px; }
 .emp-summary-lines { list-style: none; margin: 10px 0 0; padding: 0; }
 .emp-summary-lines li { font-size: 0.72rem; color: var(--text-secondary); padding: 2px 0 2px 14px; position: relative; }
 .emp-summary-lines li::before { content: '•'; position: absolute; left: 2px; color: var(--accent-teal); }

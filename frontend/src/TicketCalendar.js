@@ -122,27 +122,35 @@ function TicketMovementSection({ year, month }) {
           { key: 'closed', label: 'Closed', color: '#22c55e' },                           // green
         ];
         const months = (mv.trend || []).slice(-3);  // last 3 months, oldest → newest
-        // Single shared scale across the whole chart so bars are comparable and not all "full".
-        const chartMax = Math.max(1, ...months.flatMap(m => SERIES.map(s => m[s.key] || 0)));
+        // Two scales: Closed (hundreds) on its own; the four small metrics share a scale among
+        // themselves so small differences (e.g. 1 vs 0) stay visible instead of being dwarfed.
+        const smallKeys = SERIES.filter(s => s.key !== 'closed').map(s => s.key);
+        const smallMax = Math.max(1, ...months.flatMap(m => smallKeys.map(k => m[k] || 0)));
+        const closedMax = Math.max(1, ...months.map(m => m.closed || 0));
         return (
           <div className="qcq-section" style={{ marginBottom: '14px' }}>
             <h3 className="qcq-section-title" style={{ marginTop: 0 }}>3-Month Comparison</h3>
             <div className="tm-compare">
               <div className="tm-h" />
               {months.map(m => <div key={m.label} className="tm-h tm-month">{m.label}</div>)}
-              {SERIES.flatMap(s => [
-                <div key={`${s.key}-c`} className="tm-cat"><span className="emp-dot" style={{ background: s.color }} /> {s.label}</div>,
-                ...months.map(m => (
-                  <div key={`${s.key}-${m.label}`} className="tm-cell">
-                    <div className="tm-track"><div className="tm-fill" style={{ width: `${((m[s.key] || 0) / chartMax) * 100}%`, background: s.color }} /></div>
-                    <span className="tm-val">{m[s.key] || 0}</span>
-                  </div>
-                )),
-              ])}
+              {SERIES.flatMap(s => {
+                const rowMax = s.key === 'closed' ? closedMax : smallMax;
+                return [
+                  <div key={`${s.key}-c`} className={`tm-cat ${s.key === 'closed' ? 'tm-sep' : ''}`}>
+                    <span className="emp-dot" style={{ background: s.color }} /> {s.label}
+                  </div>,
+                  ...months.map(m => (
+                    <div key={`${s.key}-${m.label}`} className={`tm-cell ${s.key === 'closed' ? 'tm-sep' : ''}`}>
+                      <div className="tm-track"><div className="tm-fill" style={{ width: `${((m[s.key] || 0) / rowMax) * 100}%`, background: s.color }} /></div>
+                      <span className="tm-val">{m[s.key] || 0}</span>
+                    </div>
+                  )),
+                ];
+              })}
             </div>
             <p style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '8px' }}>
-              All bars share one scale (max = {chartMax}). Released-to-QC / retest / BIS / approved are tracked from
-              May 2026 (status-history start) and grow monthly; Closed has full history.
+              The four QC/BIS/approval metrics share one scale (max {smallMax}); Closed has its own scale
+              (max {closedMax}) since it is far larger. Transition metrics are tracked from May 2026 and grow monthly.
             </p>
           </div>
         );
