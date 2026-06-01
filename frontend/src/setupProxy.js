@@ -40,6 +40,8 @@ const apiPaths = [
   '/analytics',
   '/team-board',
   '/live',
+  '/qa-flow',
+  '/ticket-movement',
 ];
 
 function isApiPath(pathname) {
