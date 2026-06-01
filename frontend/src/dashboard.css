@@ -17982,6 +17982,23 @@ a.qcq-ticket-link:hover {
 .tm-fill { height: 100%; border-radius: 4px; min-width: 3px; transition: width 0.3s; box-shadow: 0 0 0 1px rgba(0,0,0,0.05) inset; }
 .tm-val { width: 36px; text-align: right; font-weight: 700; font-size: 0.8rem; color: var(--text-primary); }
 .tm-cat.tm-sep, .tm-cell.tm-sep { border-top: 1px dashed var(--border-color); padding-top: 8px; margin-top: 2px; }
+/* Ticket Speed — per-ticket journey */
+.tspd-journey { background: var(--bg-primary, rgba(100,116,139,0.06)); border-radius: 8px; padding: 12px 14px; }
+.tspd-metrics { display: flex; flex-wrap: wrap; gap: 16px; font-size: 0.76rem; color: var(--text-secondary); margin-bottom: 10px; }
+.tspd-metrics b { color: var(--text-primary); }
+.tspd-phases { display: flex; flex-direction: column; gap: 5px; margin-bottom: 10px; max-width: 520px; }
+.tspd-phase-row { display: flex; align-items: center; gap: 10px; }
+.tspd-phase-label { width: 92px; font-size: 0.72rem; color: var(--text-muted); }
+.tspd-phase-track { flex: 1; height: 12px; background: rgba(148,163,184,0.16); border-radius: 3px; overflow: hidden; }
+.tspd-phase-fill { height: 100%; border-radius: 3px; min-width: 2px; }
+.tspd-phase-val { width: 40px; text-align: right; font-size: 0.72rem; font-weight: 700; }
+.tspd-timeline { display: flex; flex-direction: column; gap: 4px; }
+.tspd-leg { display: flex; align-items: center; gap: 10px; font-size: 0.74rem; padding: 3px 0; }
+.tspd-leg-current { font-weight: 700; }
+.tspd-leg-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.tspd-leg-status { min-width: 170px; }
+.tspd-leg-days { min-width: 70px; font-weight: 700; }
+.tspd-leg-dates { color: var(--text-muted); font-size: 0.7rem; }
 .emp-summary-lines { list-style: none; margin: 10px 0 0; padding: 0; }
 .emp-summary-lines li { font-size: 0.72rem; color: var(--text-secondary); padding: 2px 0 2px 14px; position: relative; }
 .emp-summary-lines li::before { content: '•'; position: absolute; left: 2px; color: var(--accent-teal); }

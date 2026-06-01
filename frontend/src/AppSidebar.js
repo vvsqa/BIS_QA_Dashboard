@@ -142,6 +142,13 @@ export default function AppSidebar() {
           <span className="nav-label">Employee Performance</span>
         </Link>
 
+        <Link to="/ticket-speed" className={`nav-item ${path === '/ticket-speed' ? 'active' : ''}`} title="Ticket Speed">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
+          </svg>
+          <span className="nav-label">Ticket Speed</span>
+        </Link>
+
         <Link to="/ticket-calendar" className={`nav-item ${path === '/ticket-calendar' ? 'active' : ''}`} title="Ticket Calendar">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" />

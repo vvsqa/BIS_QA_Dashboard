@@ -16736,6 +16736,225 @@ def get_ticket_qc_cycles(ticket_id: int):
         db.close()
 
 
+# Pipeline phase grouping for movement/speed analysis.
+TICKET_PHASES = [
+    ("Dev", {"Ready For Development", "In Progress", "Hold/Pending", "NEW", "DRAFT"}),
+    ("Code Review", {"Start Code Review", "Code Review Failed", "Code Review Passed", "Express Lane Review"}),
+    ("QC", {"QC Testing", "QC Testing in Progress", "QC Testing Hold", "QC Review Fail",
+            "Tested - Awaiting Fixes", "Testing In Progress"}),
+    ("BIS", {"BIS Testing"}),
+    ("Approved", {"Approved for Live"}),
+    ("Closed", {"Moved to Live", "Closed"}),
+]
+_QC_ENTRY_STATUSES = ("QC Testing", "QC Testing in Progress", "QC Testing Hold", "Testing In Progress")
+
+
+def _phase_of(status):
+    for name, sset in TICKET_PHASES:
+        if status in sset:
+            return name
+    return "Other"
+
+
+def _build_ticket_journey(history, ticket, today):
+    """Ordered status legs for a ticket: each {status, phase, entered/exited, days, hours, current}."""
+    legs = []
+
+    def _leg(status, entered, exited, assignee, tester, current=False):
+        if not entered:
+            return
+        end = exited or datetime.combine(today, datetime.min.time())
+        ed = entered.date() if isinstance(entered, datetime) else entered
+        xd = end.date() if isinstance(end, datetime) else end
+        days = max(0, (xd - ed).days)
+        hours = None
+        if isinstance(entered, datetime) and isinstance(end, datetime) and end > entered:
+            hours = round((end - entered).total_seconds() / 3600, 1)
+        legs.append({
+            "status": status, "phase": _phase_of(status),
+            "entered_on": entered.isoformat() if hasattr(entered, "isoformat") else None,
+            "exited_on": exited.isoformat() if exited and hasattr(exited, "isoformat") else None,
+            "days": days, "hours": hours, "assignee": assignee, "qc_tester": tester,
+            "is_current": current,
+        })
+
+    if history:
+        for i, h in enumerate(history):
+            status = h.previous_status or "Created"
+            entered = history[i - 1].changed_on if i > 0 else ticket.created_on
+            _leg(status, entered, h.changed_on, h.current_assignee, h.qc_tester)
+        last = history[-1]
+        _leg(last.new_status, last.changed_on, None, last.current_assignee, last.qc_tester,
+             current=(ticket.closed_on is None))
+    elif ticket.created_on:
+        _leg(ticket.status, ticket.created_on, ticket.closed_on, ticket.current_assignee,
+             ticket.qc_tester, current=(ticket.closed_on is None))
+    return legs
+
+
+def _ticket_speed_summary(db, ticket, history, today):
+    """Speed metrics for one ticket from its (pre-fetched) status history."""
+    durations = get_status_durations(db, ticket.ticket_id, today, history=history, created_on=ticket.created_on)
+    cycles = get_qc_cycle_details(db, ticket.ticket_id, today, history=history)
+    created = ticket.created_on
+    end_dt = ticket.closed_on or datetime.combine(today, datetime.min.time())
+    lead_time_days = max(0, (end_dt.date() - created.date()).days) if created else None
+    first_qc = next((h.changed_on for h in history if h.new_status in _QC_ENTRY_STATUSES), None)
+    first_bis = next((h.changed_on for h in history if h.new_status == "BIS Testing"), None)
+    dev_to_qc_days = max(0, (first_qc.date() - created.date()).days) if (first_qc and created) else None
+    qc_to_bis_days = max(0, (first_bis.date() - first_qc.date()).days) if (first_qc and first_bis) else None
+    last_change = history[-1].changed_on if history else ticket.created_on
+    current_stage_age = max(0, (today - last_change.date()).days) if last_change else 0
+    phase_days = {}
+    for st, d in (durations.get("durations") or {}).items():
+        phase_days[_phase_of(st)] = phase_days.get(_phase_of(st), 0) + d
+    return {
+        "ticket_id": ticket.ticket_id, "title": ticket.title or "",
+        "module": (ticket.subdepartment or "").strip() or "Unassigned",
+        "qc_tester": ticket.qc_tester or "Unassigned",
+        "developer": _strip_paren(ticket.backend_developer or ticket.frontend_developer or "").strip() or "Unassigned",
+        "priority": ticket.priority or "",
+        "current_status": durations.get("current_status") or ticket.status,
+        "created_on": created.isoformat() if created else None,
+        "closed_on": ticket.closed_on.isoformat() if ticket.closed_on else None,
+        "lead_time_days": lead_time_days,
+        "qc_days": durations.get("total_qc_days", 0),
+        "hold_days": durations.get("total_hold_days", 0),
+        "transitions": durations.get("transitions", 0),
+        "cycles": cycles.get("total_cycles", 0),
+        "first_pass": cycles.get("first_pass", False),
+        "dev_to_qc_days": dev_to_qc_days, "qc_to_bis_days": qc_to_bis_days,
+        "current_stage_age": current_stage_age,
+        "phase_days": phase_days,
+    }, durations, cycles
+
+
+@app.get("/tickets/{ticket_id}/movement")
+def get_ticket_movement_detail(ticket_id: int):
+    """Full movement & speed for one ticket: status journey, per-status durations, QC cycles,
+    phase times, and summary speed metrics."""
+    db: Session = SessionLocal()
+    try:
+        ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+        today = date.today()
+        history = (
+            db.query(TicketStatusHistory)
+            .filter(TicketStatusHistory.ticket_id == ticket_id)
+            .order_by(TicketStatusHistory.changed_on.asc())
+            .all()
+        )
+        summary, durations, cycles = _ticket_speed_summary(db, ticket, history, today)
+        summary["eta"] = ticket.eta.isoformat() if ticket.eta else None
+        summary["qa_estimate_hours"] = ticket.qa_estimate_hours
+        summary["qa_actual_hours"] = ticket.actual_qa_hours
+        return {
+            "summary": summary,
+            "journey": _build_ticket_journey(history, ticket, today),
+            "durations": durations.get("durations", {}),
+            "phase_days": summary["phase_days"],
+            "cycles": cycles,
+        }
+    finally:
+        db.close()
+
+
+@app.get("/ticket-speed")
+def get_ticket_speed(
+    period: str = Query("month", regex="^(month|quarter|all)$"),
+    offset: int = Query(0, ge=0, le=240),
+    scope: str = Query("closed", regex="^(closed|active|all)$"),
+):
+    """Per-ticket movement speed across a scope of tickets, with summary and per-module / per-QC-tester
+    breakdowns. scope=closed → tickets closed in the period; active → currently open; all → both."""
+    db: Session = SessionLocal()
+    try:
+        today = date.today()
+        start = end = None
+        label = "All time"
+        if period != "all":
+            start, end, label = get_period_range(period, offset)
+
+        tickets, seen = [], set()
+
+        def _add(rows):
+            for t in rows:
+                if t.ticket_id not in seen:
+                    seen.add(t.ticket_id)
+                    tickets.append(t)
+
+        if scope in ("closed", "all"):
+            cq = db.query(TicketTracking).filter(TicketTracking.closed_on.isnot(None))
+            if start:
+                cq = cq.filter(TicketTracking.closed_on >= start, TicketTracking.closed_on <= end)
+            _add(cq.all())
+        if scope in ("active", "all"):
+            _add(db.query(TicketTracking).filter(TicketTracking.closed_on.is_(None)).all())
+        truncated = len(tickets) > 2000
+        tickets = tickets[:2000]
+
+        # Bulk-load all status history for these tickets (avoids N+1).
+        hist_by_tid = defaultdict(list)
+        tids = [t.ticket_id for t in tickets]
+        if tids:
+            for h in (
+                db.query(TicketStatusHistory)
+                .filter(TicketStatusHistory.ticket_id.in_(tids))
+                .order_by(TicketStatusHistory.changed_on.asc())
+                .all()
+            ):
+                hist_by_tid[h.ticket_id].append(h)
+
+        rows = []
+        for t in tickets:
+            row, _, _ = _ticket_speed_summary(db, t, hist_by_tid.get(t.ticket_id, []), today)
+            row.pop("phase_days", None)
+            rows.append(row)
+
+        def _avg(vals):
+            vals = [v for v in vals if v is not None]
+            return round(sum(vals) / len(vals), 1) if vals else 0
+
+        def _median(vals):
+            vals = sorted(v for v in vals if v is not None)
+            if not vals:
+                return 0
+            n = len(vals)
+            return vals[n // 2] if n % 2 else round((vals[n // 2 - 1] + vals[n // 2]) / 2, 1)
+
+        lead = [r["lead_time_days"] for r in rows]
+        cycle_rows = [r for r in rows if r["cycles"] > 0]
+        summary = {
+            "period": {"kind": period, "offset": offset, "label": label},
+            "scope": scope, "tickets": len(rows), "truncated": truncated,
+            "avg_lead_time_days": _avg(lead), "median_lead_time_days": _median(lead),
+            "avg_qc_days": _avg([r["qc_days"] for r in rows]),
+            "avg_cycles": _avg([r["cycles"] for r in cycle_rows]),
+            "first_pass_rate": round(100 * sum(1 for r in cycle_rows if r["first_pass"]) / len(cycle_rows), 1) if cycle_rows else 0,
+        }
+
+        def _group(key):
+            g = defaultdict(list)
+            for r in rows:
+                g[r[key]].append(r)
+            out = []
+            for k, rs in g.items():
+                out.append({
+                    key: k, "tickets": len(rs),
+                    "avg_lead_time_days": _avg([r["lead_time_days"] for r in rs]),
+                    "avg_qc_days": _avg([r["qc_days"] for r in rs]),
+                    "avg_cycles": _avg([r["cycles"] for r in rs if r["cycles"] > 0]),
+                })
+            out.sort(key=lambda x: x["tickets"], reverse=True)
+            return out
+
+        return {"summary": summary, "rows": rows,
+                "by_module": _group("module"), "by_qc_tester": _group("qc_tester")}
+    finally:
+        db.close()
+
+
 @app.get("/qc-cycles/summary")
 def qc_cycles_summary():
     """

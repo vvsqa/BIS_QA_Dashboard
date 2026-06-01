@@ -21,6 +21,7 @@ import QAActivitySummary from "./QAActivitySummary";
 import ResourcePlanner from "./ResourcePlanner";
 import DevDashboard from "./DevDashboard";
 import EmployeePerformance from "./EmployeePerformance";
+import TicketSpeed from "./TicketSpeed";
 import AutomationUtilization from "./AutomationUtilization";
 import TicketCalendar from "./TicketCalendar";
 import ClientProfiles from "./ClientProfiles";
@@ -168,6 +169,7 @@ function NewModuleRoutes() {
       <Route path="/resource-planner" element={<ResourcePlanner />} />
       <Route path="/dev-dashboard" element={<DevDashboard />} />
       <Route path="/employee-performance" element={<EmployeePerformance />} />
+      <Route path="/ticket-speed" element={<TicketSpeed />} />
       <Route path="/automation" element={<AutomationUtilization />} />
       <Route path="/ticket-calendar" element={<TicketCalendar />} />
       <Route path="/calendar" element={<CalendarModule />} />
@@ -182,7 +184,7 @@ function IsNewModulePath() {
 
 function AppRouter() {
   const location = useLocation();
-  const isNew = ['/', '/qc-queue', '/team-board', '/qa-summary', '/resource-planner', '/dev-dashboard', '/employee-performance', '/automation', '/ticket-calendar', '/calendar'].includes(location.pathname);
+  const isNew = ['/', '/qc-queue', '/team-board', '/qa-summary', '/resource-planner', '/dev-dashboard', '/employee-performance', '/ticket-speed', '/automation', '/ticket-calendar', '/calendar'].includes(location.pathname);
 
   if (isNew) {
     return (

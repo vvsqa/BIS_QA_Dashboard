@@ -1145,18 +1145,22 @@ def calculate_qc_priority_score(ticket: Dict, today: Optional[date] = None) -> D
 # ===== STATUS DURATION TRACKING =====
 
 
-def get_status_durations(db: Session, ticket_id: int, today: Optional[date] = None) -> Dict:
+def get_status_durations(db: Session, ticket_id: int, today: Optional[date] = None,
+                         history=None, created_on=None) -> Dict:
     """
     Compute business days spent in each status for a ticket.
     Uses TicketStatusHistory to walk through transitions chronologically.
+    Pass a pre-sorted `history` list (and optionally `created_on`) to skip per-ticket queries
+    (used by the aggregate speed endpoint to avoid N+1).
     """
     today = today or date.today()
-    history = (
-        db.query(TicketStatusHistory)
-        .filter(TicketStatusHistory.ticket_id == ticket_id)
-        .order_by(TicketStatusHistory.changed_on.asc())
-        .all()
-    )
+    if history is None:
+        history = (
+            db.query(TicketStatusHistory)
+            .filter(TicketStatusHistory.ticket_id == ticket_id)
+            .order_by(TicketStatusHistory.changed_on.asc())
+            .all()
+        )
 
     if not history:
         # No history — check if ticket exists with a current status
@@ -1186,9 +1190,12 @@ def get_status_durations(db: Session, ticket_id: int, today: Optional[date] = No
 
         if i == 0 and h.previous_status:
             # First record: estimate time in initial status from ticket creation
-            ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
-            if ticket and ticket.created_on:
-                entered = ticket.created_on
+            created = created_on
+            if created is None:
+                ticket = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+                created = ticket.created_on if ticket else None
+            if created:
+                entered = created
 
         if entered and exited and entered < exited:
             entered_d = entered.date() if isinstance(entered, datetime) else entered
@@ -1225,18 +1232,21 @@ def get_status_durations(db: Session, ticket_id: int, today: Optional[date] = No
 # ===== QC CYCLE DETAIL =====
 
 
-def get_qc_cycle_details(db: Session, ticket_id: int, today: Optional[date] = None) -> Dict:
+def get_qc_cycle_details(db: Session, ticket_id: int, today: Optional[date] = None,
+                        history=None) -> Dict:
     """
     Return cycle-by-cycle breakdown of QC testing.
     Each cycle: entered QC → testing → result (pass/fail) → exit.
+    Pass a pre-sorted `history` list to skip the per-ticket query (avoids N+1).
     """
     today = today or date.today()
-    history = (
-        db.query(TicketStatusHistory)
-        .filter(TicketStatusHistory.ticket_id == ticket_id)
-        .order_by(TicketStatusHistory.changed_on.asc())
-        .all()
-    )
+    if history is None:
+        history = (
+            db.query(TicketStatusHistory)
+            .filter(TicketStatusHistory.ticket_id == ticket_id)
+            .order_by(TicketStatusHistory.changed_on.asc())
+            .all()
+        )
 
     cycles = []
     current_cycle = None
