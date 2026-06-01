@@ -77,11 +77,13 @@ function TicketMovementSection({ year, month }) {
   const isRefix = sel === 'refix_to_qc';
 
   const exportExcel = () => {
-    const headers = ['Ticket', 'Title', 'Module', 'Priority', 'QC Tester', ...(isRefix ? ['Fail Loop Count'] : []), 'Date'];
+    const headers = ['Ticket', 'Title', 'Module', 'Priority', 'QC Tester', 'Developer', 'Current Status',
+      ...(isRefix ? ['From Status', 'Fail Loop Count'] : []), 'QA Hours', 'Created', 'Date'];
     const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
     const lines = [headers.join(',')];
     rows.forEach(t => {
-      const r = [t.ticket_id, t.title, t.module, t.priority, t.qc_tester, ...(isRefix ? [t.refix_count] : []), (t.date || '').slice(0, 10)];
+      const r = [t.ticket_id, t.title, t.module, t.priority, t.qc_tester, t.developer, t.current_status,
+        ...(isRefix ? [t.from_status, t.refix_count] : []), t.qa_actual_hours, (t.created_on || '').slice(0, 10), (t.date || '').slice(0, 10)];
       lines.push(r.map(esc).join(','));
     });
     const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
@@ -111,6 +113,44 @@ function TicketMovementSection({ year, month }) {
         ))}
       </div>
 
+      {(() => {
+        const SERIES = [
+          { key: 'new_to_qc', label: 'Released to QC (First-time)', color: 'var(--accent-blue)' },
+          { key: 'refix_to_qc', label: 'Retesting', color: 'var(--accent-red)' },
+          { key: 'to_bis', label: 'Passed to BIS', color: 'var(--accent-purple, #8b5cf6)' },
+          { key: 'approved_for_live', label: 'Approved for Live', color: 'var(--accent-teal)' },
+          { key: 'closed', label: 'Closed', color: 'var(--accent-green)' },
+        ];
+        const trend = mv.trend || [];
+        const maxBy = {};
+        SERIES.forEach(s => { maxBy[s.key] = Math.max(1, ...trend.map(m => m[s.key] || 0)); });
+        return (
+          <div className="qcq-section" style={{ marginBottom: '14px' }}>
+            <h3 className="qcq-section-title" style={{ marginTop: 0 }}>12-Month Comparison — all status changes</h3>
+            <div className="emp-flow-chart" style={{ height: '170px' }}>
+              {trend.map(m => (
+                <div key={m.label} className="emp-flow-col">
+                  <div className="emp-flow-bars">
+                    {SERIES.map(s => (
+                      <div key={s.key} className="emp-flow-bar" style={{ height: `${(m[s.key] / maxBy[s.key]) * 100}%`, background: s.color, width: '7px' }}
+                        title={`${m.label} — ${s.label}: ${m[s.key]}`} />
+                    ))}
+                  </div>
+                  <div className="emp-flow-xlabel">{m.label.replace(' 20', " '")}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: 'flex', gap: '14px', marginTop: '8px', fontSize: '0.7rem', flexWrap: 'wrap' }}>
+              {SERIES.map(s => <span key={s.key}><span className="emp-dot" style={{ background: s.color }} /> {s.label}</span>)}
+            </div>
+            <p style={{ color: 'var(--text-muted)', fontSize: '0.7rem', marginTop: '6px' }}>
+              Each series scaled to its own max for readability. Released-to-QC / retest / BIS / approved fill in from
+              May 2026 (when status-history capture began); Closed has full history.
+            </p>
+          </div>
+        );
+      })()}
+
       <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
         <input className="qcq-search-input" placeholder="Search ticket / title…" value={search} onChange={e => setSearch(e.target.value)} style={{ minWidth: '180px' }} />
         <select className="qcq-search-input" value={modFilter} onChange={e => setModFilter(e.target.value)}>
@@ -132,18 +172,28 @@ function TicketMovementSection({ year, month }) {
             <Th k="module">Module</Th>
             <Th k="priority">Priority</Th>
             <Th k="qc_tester">QC Tester</Th>
+            <Th k="developer">Developer</Th>
+            <Th k="current_status">Current Status</Th>
+            {isRefix && <Th k="from_status">From</Th>}
             {isRefix && <Th k="refix_count">Fail Loop #</Th>}
+            <Th k="qa_actual_hours">QA Hrs</Th>
+            <Th k="created_on">Created</Th>
             <Th k="date">Date</Th>
           </tr></thead>
           <tbody>
             {rows.map(t => (
               <tr key={`${t.ticket_id}-${t.date}`} className="qcq-row">
                 <td style={{ textAlign: 'center' }}><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
-                <td style={{ maxWidth: '280px', whiteSpace: 'normal', textAlign: 'left' }}>{t.title}</td>
+                <td style={{ maxWidth: '260px', whiteSpace: 'normal', textAlign: 'left' }}>{t.title}</td>
                 <td style={{ textAlign: 'center' }}>{t.module}</td>
                 <td style={{ textAlign: 'center' }}>{t.priority}</td>
                 <td style={{ textAlign: 'center' }}>{t.qc_tester}</td>
+                <td style={{ textAlign: 'center' }}>{t.developer}</td>
+                <td style={{ textAlign: 'center' }}>{t.current_status || '-'}</td>
+                {isRefix && <td style={{ textAlign: 'center', fontSize: '0.72rem', color: 'var(--accent-amber)' }}>{t.from_status || '-'}</td>}
                 {isRefix && <td style={{ textAlign: 'center', fontWeight: 700, color: 'var(--accent-red)' }}>{t.refix_count}x</td>}
+                <td style={{ textAlign: 'center' }}>{t.qa_actual_hours != null ? t.qa_actual_hours : '-'}</td>
+                <td style={{ textAlign: 'center' }}>{(t.created_on || '').slice(0, 10) || '-'}</td>
                 <td style={{ textAlign: 'center' }}>{(t.date || '').slice(0, 10)}</td>
               </tr>
             ))}
