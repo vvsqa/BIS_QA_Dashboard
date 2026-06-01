@@ -76,6 +76,23 @@ function TicketMovementSection({ year, month }) {
   );
   const isRefix = sel === 'refix_to_qc';
 
+  const exportExcel = () => {
+    const headers = ['Ticket', 'Title', 'Module', 'Priority', 'QC Tester', ...(isRefix ? ['Refix Count'] : []), 'Date'];
+    const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const lines = [headers.join(',')];
+    rows.forEach(t => {
+      const r = [t.ticket_id, t.title, t.module, t.priority, t.qc_tester, ...(isRefix ? [t.refix_count] : []), (t.date || '').slice(0, 10)];
+      lines.push(r.map(esc).join(','));
+    });
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ticket-movement_${sel}_${(mv.period?.label || '').replace(/\s+/g, '-')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="qcq-section" style={{ marginTop: '12px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px', flexWrap: 'wrap' }}>
@@ -102,6 +119,8 @@ function TicketMovementSection({ year, month }) {
           <option value="">All QC testers</option>{testers.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
         <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{rows.length} of {card.count}</span>
+        <button className="btn btn-sm btn-primary" onClick={exportExcel} disabled={rows.length === 0}
+          style={{ marginLeft: 'auto' }}>Export to Excel</button>
       </div>
 
       <div className="qcq-table-container">
