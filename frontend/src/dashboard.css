@@ -17972,6 +17972,15 @@ a.qcq-ticket-link:hover {
 .emp-flow-bar { width: 18px; min-height: 2px; border-radius: 3px 3px 0 0; transition: height 0.3s; }
 .emp-flow-xlabel { margin-top: 6px; font-size: 0.68rem; color: var(--text-muted); white-space: nowrap; }
 .emp-dot { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 2px; vertical-align: middle; }
+/* Ticket-movement 3-month comparison table */
+.tm-compare { display: grid; grid-template-columns: 220px repeat(3, minmax(90px, 1fr)); gap: 10px 16px; align-items: center; }
+.tm-h { font-size: 0.7rem; color: var(--text-muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+.tm-h.tm-month { text-align: center; padding-bottom: 2px; border-bottom: 1px solid var(--border-color); }
+.tm-cat { font-size: 0.82rem; color: var(--text-secondary); font-weight: 600; display: flex; align-items: center; gap: 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tm-cell { display: flex; align-items: center; gap: 8px; }
+.tm-track { flex: 1; height: 16px; background: var(--bg-primary, rgba(100,116,139,0.15)); border-radius: 4px; overflow: hidden; }
+.tm-fill { height: 100%; border-radius: 4px; min-width: 2px; transition: width 0.3s; }
+.tm-val { width: 36px; text-align: right; font-weight: 700; font-size: 0.8rem; color: var(--text-primary); }
 .emp-summary-lines { list-style: none; margin: 10px 0 0; padding: 0; }
 .emp-summary-lines li { font-size: 0.72rem; color: var(--text-secondary); padding: 2px 0 2px 14px; position: relative; }
 .emp-summary-lines li::before { content: '•'; position: absolute; left: 2px; color: var(--accent-teal); }
