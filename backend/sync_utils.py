@@ -197,16 +197,32 @@ def upsert_tickets(
 
                 # Track status change if status changed (e.g. reopened, or moved to closed)
                 if old_status != new_status and new_status:
+                    # Use the PM-reported update time when available (more accurate than detection time).
+                    changed_on = parsed_data.get('updated_on') or datetime.utcnow()
+                    # Duration (hours) spent in the previous status = changed_on − when it entered that
+                    # status, i.e. the most recent prior transition's changed_on (fallback: created_on).
+                    prev_row = (
+                        db.query(TicketStatusHistory.changed_on)
+                        .filter(TicketStatusHistory.ticket_id == ticket_id)
+                        .order_by(TicketStatusHistory.changed_on.desc())
+                        .first()
+                    )
+                    entered_prev = (prev_row[0] if prev_row else None) or existing.created_on
+                    duration_hours = None
+                    if entered_prev and changed_on and changed_on > entered_prev:
+                        duration_hours = round((changed_on - entered_prev).total_seconds() / 3600, 2)
                     status_history = TicketStatusHistory(
                         ticket_id=ticket_id,
                         previous_status=old_status,
                         new_status=new_status,
-                        changed_on=datetime.utcnow(),
+                        changed_on=changed_on,
                         current_assignee=parsed_data.get('current_assignee'),
                         qc_tester=parsed_data.get('qc_tester'),
+                        duration_in_previous_status=duration_hours,
+                        source='sync',
                     )
                     db.add(status_history)
-                    logger.debug(f"Status change tracked for ticket {ticket_id}: {old_status} -> {new_status}")
+                    logger.debug(f"Status change tracked for ticket {ticket_id}: {old_status} -> {new_status} ({duration_hours}h)")
 
                 # Track priority change if priority changed
                 new_priority = parsed_data.get('priority')
