@@ -8,12 +8,28 @@ const PERIOD_KINDS = [
   { value: 'quarter', label: 'Quarter' },
 ];
 
-// How many periods back the user can look.
-const OFFSETS = [
-  { value: 0, label: 'Current' },
-  { value: 1, label: 'Previous' },
-  { value: 2, label: '2 ago' },
-];
+// Build a dropdown of recent months (offset = months back from current).
+function monthOptions(n = 24) {
+  const now = new Date();
+  const opts = [];
+  for (let k = 0; k < n; k++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - k, 1);
+    opts.push({ offset: k, label: d.toLocaleString('en-US', { month: 'long', year: 'numeric' }) });
+  }
+  return opts;
+}
+
+// Build a dropdown of recent quarters.
+function quarterOptions(n = 8) {
+  const now = new Date();
+  const curIdx = now.getFullYear() * 4 + Math.floor(now.getMonth() / 3);
+  const opts = [];
+  for (let k = 0; k < n; k++) {
+    const idx = curIdx - k;
+    opts.push({ offset: k, label: `Q${(idx % 4) + 1} ${Math.floor(idx / 4)}` });
+  }
+  return opts;
+}
 
 const MEDAL = { 1: '🥇', 2: '🥈', 3: '🥉' };
 
@@ -93,6 +109,8 @@ function FullRow({ entry, isQA }) {
         <td style={{ textAlign: 'center' }}>{rm.complexity_weighted_volume}</td>
         <td style={{ textAlign: 'center' }}>{rm.bugs}</td>
         <td style={{ textAlign: 'center' }} title="Days present / working days">{rm.present_days}/{rm.working_days}</td>
+        <td style={{ textAlign: 'center', color: rm.avg_hours_per_day >= 8 ? 'var(--accent-green)' : 'var(--text-secondary)' }}>{rm.avg_hours_per_day}h</td>
+        <td style={{ textAlign: 'center', color: rm.days_under_8 > 0 ? 'var(--accent-amber)' : 'var(--text-muted)' }}>{rm.days_under_8 || '–'}</td>
         <td style={{ textAlign: 'center', color: rm.leave_days > 0 ? 'var(--accent-red)' : 'var(--text-muted)' }}>
           {rm.leave_days > 0 ? `${rm.leave_days} (−${entry.leave_penalty})` : '–'}
         </td>
@@ -107,7 +125,7 @@ function FullRow({ entry, isQA }) {
       </tr>
       {open && (
         <tr className="qcq-expand-row">
-          <td colSpan={14} style={{ padding: '10px 16px' }}>
+          <td colSpan={16} style={{ padding: '10px 16px' }}>
             <div className="emp-breakdown">
               <h5>Score breakdown (weighted: presence 25 · throughput 20 · output 12 · quality 30 · efficiency 13{rm.leave_days > 0 ? `  ·  −${entry.leave_penalty} leave penalty` : ''})</h5>
               <ScoreBar label="Presence" value={num(ss.presence)} color="var(--accent-purple, #8b5cf6)" />
@@ -176,6 +194,8 @@ function TeamSection({ title, isQA, entries, summary, periodLabel }) {
                   <th title="Complexity-weighted volume (priority × estimate)">Complexity</th>
                   <th>{isQA ? 'Bugs found' : 'Bugs handled'}</th>
                   <th title="Days present / working days (attendance)">Present</th>
+                  <th title="Average hours logged per present day">Avg/day</th>
+                  <th title="Days with under 8 hours logged">&lt;8h</th>
                   <th title="Leave days taken (billing loss penalty)">Leave</th>
                   <th>Hours</th>
                   <th>Quality</th>
@@ -255,12 +275,12 @@ function QAFlowTab() {
   return (
     <>
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap' }}>
-        <div className="qcq-platform-toggle">
-          {OFFSETS.map(o => (
-            <button key={o.value} className={`btn btn-sm ${offset === o.value ? 'btn-primary' : 'btn-secondary'}`}
-              onClick={() => setOffset(o.value)}>{o.label}</button>
+        <select className="qcq-search-input" style={{ minWidth: '150px' }}
+          value={offset} onChange={e => setOffset(Number(e.target.value))}>
+          {monthOptions().map(o => (
+            <option key={o.offset} value={o.offset}>{o.label}</option>
           ))}
-        </div>
+        </select>
         <span style={{ fontWeight: 700 }}>{data?.period?.label}</span>
         <span className={`emp-period-badge ${data?.period?.frozen ? 'emp-final' : 'emp-live'}`}>
           {data?.period?.frozen ? 'Final' : 'Live'}
@@ -358,15 +378,15 @@ export default function EmployeePerformance() {
               <div className="qcq-platform-toggle">
                 {PERIOD_KINDS.map(k => (
                   <button key={k.value} className={`btn btn-sm ${kind === k.value ? 'btn-primary' : 'btn-secondary'}`}
-                    onClick={() => setKind(k.value)}>{k.label}</button>
+                    onClick={() => { setKind(k.value); setOffset(0); }}>{k.label}</button>
                 ))}
               </div>
-              <div className="qcq-platform-toggle">
-                {OFFSETS.map(o => (
-                  <button key={o.value} className={`btn btn-sm ${offset === o.value ? 'btn-primary' : 'btn-secondary'}`}
-                    onClick={() => setOffset(o.value)}>{o.label}</button>
+              <select className="qcq-search-input" style={{ minWidth: '150px' }}
+                value={offset} onChange={e => setOffset(Number(e.target.value))}>
+                {(kind === 'quarter' ? quarterOptions() : monthOptions()).map(o => (
+                  <option key={o.offset} value={o.offset}>{o.label}</option>
                 ))}
-              </div>
+              </select>
             </div>
           )}
         </header>

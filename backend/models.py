@@ -1084,3 +1084,14 @@ class QAFlowSnapshot(Base):
     payload = Column(JSONB)
     frozen = Column(Boolean, default=True)
     created_on = Column(DateTime, default=datetime.utcnow)
+
+
+class TicketMovementSnapshot(Base):
+    """Frozen monthly ticket-movement counts/lists (new-to-QC, refix, BIS, approved, closed)."""
+    __tablename__ = "ticket_movement_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    period_label = Column(String(40), unique=True, index=True)  # "May 2026"
+    payload = Column(JSONB)
+    frozen = Column(Boolean, default=True)
+    created_on = Column(DateTime, default=datetime.utcnow)

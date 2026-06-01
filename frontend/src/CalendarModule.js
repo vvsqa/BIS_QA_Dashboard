@@ -247,6 +247,7 @@ function CalendarModule() {
 
   // Get hours color class
   const getHoursColorClass = (hours) => {
+    if (hours > 8) return 'hours-over';   // more than 8h/day → strong green (overtime)
     if (hours >= 8) return 'hours-full';
     if (hours >= 4) return 'hours-half';
     if (hours > 0) return 'hours-low';

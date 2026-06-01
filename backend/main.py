@@ -37,7 +37,7 @@ from models import (
     QAPlanningWeek, QAPlannedTask, QAPlannedAllocation, QATaskHoldHistory,
     User, AdminConfig, ClientProfile,
     AutomationTestRun, AutomationTestCase,
-    PerformanceSnapshot, QAFlowSnapshot,
+    PerformanceSnapshot, QAFlowSnapshot, TicketMovementSnapshot,
 )
 from auth import (
     authenticate_user, hash_password, create_access_token,
@@ -7128,12 +7128,14 @@ ABSENCE_LEAVE_TYPES = ("leave", "sick leave", "casual leave", "half day", "earne
 AWAITING_REVIEW_STATUSES = ("BIS Testing", "Approved for Live")
 AWAITING_CREDIT = 0.7  # partial credit vs a fully shipped ticket
 
-# QA testers on the mobile/sprint model — excluded from the QA performance leaderboard.
-MOBILE_QA_EXCLUDE = ("anjaly", "arya")
+# QA testers on the mobile/sprint model — excluded from the QA board. (Now empty: all QA team
+# members are considered, including the mobile testers Anjaly/Arya.)
+MOBILE_QA_EXCLUDE = ()
 
-# Specific people excluded from the leaderboard entirely, matched by COMPACT name so other
-# similarly-named people are unaffected (e.g. exclude "Vishnu V S" but keep "Vishnu CS").
+# Specific people excluded from the leaderboard. Compact-name matches disambiguate similar names
+# ("Vishnu V S" excluded but "Vishnu CS" kept); token matches use a unique first name.
 PERFORMANCE_EXCLUDE_COMPACT = ("vishnuvs",)
+PERFORMANCE_EXCLUDE_TOKENS = ("vivek", "varsha")  # Vivek V Nair, Varsha Dcruz P
 
 
 def _ticket_complexity(t, is_dev):
@@ -7169,7 +7171,7 @@ def _employee_mode_of_work(emp):
 @app.get("/employees/performance/leaderboard")
 def get_performance_leaderboard(
     period: str = Query("month", regex="^(month|quarter)$"),
-    offset: int = Query(0, ge=0, le=12),
+    offset: int = Query(0, ge=0, le=240),
     team: str = Query("all", regex="^(qa|dev|all)$"),
 ):
     """Per-team performance leaderboards (balanced composite score) for a calendar month/quarter.
@@ -7228,8 +7230,11 @@ def get_performance_leaderboard(
             return any(x in toks for x in MOBILE_QA_EXCLUDE)
 
         def _excluded(name):
-            # Specific people excluded from both boards (exact compact-name match).
-            return _compact_person_name(name) in PERFORMANCE_EXCLUDE_COMPACT
+            # Specific people excluded from both boards (compact-name match, or unique first-name token).
+            if _compact_person_name(name) in PERFORMANCE_EXCLUDE_COMPACT:
+                return True
+            toks = _normalize_person_name(name).split()
+            return any(x in toks for x in PERFORMANCE_EXCLUDE_TOKENS)
 
         def _register(person, team_ids):
             team_ids[person.employee_id] = person
@@ -7383,18 +7388,19 @@ def get_performance_leaderboard(
             if eid:
                 ts_by_emp[eid].append(e)
 
-        # Leave days taken in the period (billing loss). WFH/Holiday are not personal absences.
+        # Leave days taken in the period (billing loss), counted exactly like the Calendar module:
+        # sum(leave hours)/8 over actual-leave entries (any "Leave" type; WFH/Holiday excluded).
         leave_days_by_emp = defaultdict(float)
         for lv in db.query(LeaveEntry).filter(
             LeaveEntry.date >= start_date.date(),
             LeaveEntry.date <= end_date.date(),
         ).all():
             lt = (lv.leave_type or "").strip().lower()
-            if lt not in ABSENCE_LEAVE_TYPES:
+            if "leave" not in lt:  # actual leave only — excludes WFH / Holiday
                 continue
             eid = _resolve(lv.employee_name)
             if eid:
-                leave_days_by_emp[eid] += 0.5 if "half" in lt else 1.0
+                leave_days_by_emp[eid] += (lv.hours or 8) / 8.0
 
         # Working days in the period (Mon–Fri) for attendance/presence.
         period_working_days = sum(
@@ -7433,7 +7439,14 @@ def get_performance_leaderboard(
                 rag = calculate_rag_score(metrics, is_dev, planning_timesheet=None,
                                           role_context={"is_manager": False})
                 # Presence / attendance (billing): days physically logged + productive hours.
-                present_days = len({e.date for e in ets if (e.hours_logged or 0) > 0})
+                daily_hours = defaultdict(float)
+                for e in ets:
+                    daily_hours[e.date] += (e.hours_logged or 0)
+                present_days = len([d for d, h in daily_hours.items() if h > 0])
+                days_under_8 = len([d for d, h in daily_hours.items() if 0 < h < 8])
+                days_over_8 = len([d for d, h in daily_hours.items() if h > 8])
+                total_logged = round(sum(daily_hours.values()), 1)
+                avg_hours_per_day = round(total_logged / present_days, 1) if present_days else 0
                 productive_hours = round(sum((e.productive_hours or e.hours_logged or 0) for e in ets), 1)
                 expected_hours = period_working_days * 8
                 attendance_ratio = present_days / period_working_days
@@ -7462,6 +7475,8 @@ def get_performance_leaderboard(
                              "output_raw": output_raw, "rag": rag,
                              "presence": presence, "present_days": present_days,
                              "productive_hours": productive_hours, "leave_days": leave_days,
+                             "avg_hours_per_day": avg_hours_per_day, "days_under_8": days_under_8,
+                             "days_over_8": days_over_8, "total_logged": total_logged,
                              "on_time_rate": on_time_rate, "overrun_tickets": overrun_tickets,
                              "overrun_hours": round(overrun_hours, 1), "estimated_tickets": estd})
 
@@ -7497,6 +7512,7 @@ def get_performance_leaderboard(
 
                 # Human-readable "how they earned this" summary.
                 summary_lines = [f"{r['present_days']}/{period_working_days} days present · "
+                                 f"avg {r['avg_hours_per_day']}h/day · {r['days_under_8']} day(s) under 8h · "
                                  f"{r['productive_hours']}h productive (attendance {presence})"]
                 if r["leave_days"]:
                     summary_lines.append(f"{r['leave_days']} leave day(s) taken "
@@ -7537,6 +7553,10 @@ def get_performance_leaderboard(
                         "present_days": r["present_days"],
                         "working_days": period_working_days,
                         "productive_hours": r["productive_hours"],
+                        "avg_hours_per_day": r["avg_hours_per_day"],
+                        "days_under_8": r["days_under_8"],
+                        "days_over_8": r["days_over_8"],
+                        "total_logged_hours": r["total_logged"],
                         "leave_days": r["leave_days"],
                         "quality_percent": round(quality, 1),
                         "estimate_accuracy": est_acc,
@@ -7649,7 +7669,7 @@ def _compute_qa_flow_month(db, start_date, end_date):
 
 
 @app.get("/qa-flow")
-def get_qa_flow(offset: int = Query(0, ge=0, le=24), trend: int = Query(6, ge=1, le=24)):
+def get_qa_flow(offset: int = Query(0, ge=0, le=240), trend: int = Query(6, ge=1, le=24)):
     """Monthly QA flow (fresh received / handed to BIS / closed) with module + QC-tester detail for
     the selected month, plus a trailing trend series for the comparison graph. Ended months are
     frozen (snapshot) so history is preserved as it accumulates."""
@@ -7685,6 +7705,97 @@ def get_qa_flow(offset: int = Query(0, ge=0, le=24), trend: int = Query(6, ge=1,
                                  "handed_to_bis": d["handed_to_bis"], "closed": d["closed"]})
         result["trend"] = trend_series
         return result
+    finally:
+        db.close()
+
+
+def _compute_ticket_movement(db, start_date, end_date):
+    """Per-month ticket movement: tickets that came to QC as NEW vs for REFIX (with refix count),
+    were delivered to BIS, approved for live, and closed — each as a list with module/QC-tester
+    detail. New/refix/BIS/approved use TicketStatusHistory transitions; closed uses closed_on."""
+    # All transitions up to end of month, in order, so refix (re-entry) counts are correct.
+    trans = db.query(TicketStatusHistory).filter(
+        TicketStatusHistory.changed_on <= end_date,
+    ).order_by(TicketStatusHistory.changed_on).all()
+    closed = db.query(TicketTracking).filter(
+        TicketTracking.closed_on >= start_date, TicketTracking.closed_on <= end_date,
+    ).all()
+
+    tids = {h.ticket_id for h in trans} | {t.ticket_id for t in closed}
+    meta = {}
+    if tids:
+        for tid, title, sub, prio, qc in db.query(
+            TicketTracking.ticket_id, TicketTracking.title, TicketTracking.subdepartment,
+            TicketTracking.priority, TicketTracking.qc_tester,
+        ).filter(TicketTracking.ticket_id.in_(tids)).all():
+            meta[tid] = {"title": title, "module": (sub or "").strip() or "Unassigned",
+                         "priority": prio, "qc_tester": qc}
+
+    def item(tid, when, qc=None, extra=None):
+        m = meta.get(tid, {})
+        d = {"ticket_id": tid, "title": m.get("title") or "", "module": m.get("module", "Unassigned"),
+             "priority": m.get("priority") or "", "qc_tester": qc or m.get("qc_tester") or "Unassigned",
+             "date": when.isoformat() if when else None}
+        if extra:
+            d.update(extra)
+        return d
+
+    def in_month(d):
+        return d and start_date <= d <= end_date
+
+    new_list, refix_list, bis_list, appr_list = [], [], [], []
+    seen_bis, seen_appr = set(), set()
+    qc_entries = defaultdict(int)  # prior QC entries per ticket (in available history)
+
+    for h in trans:
+        ns, ps, tid = h.new_status, h.previous_status, h.ticket_id
+        if ns in QA_TESTING_STATUSES and ps not in QA_TESTING_STATUSES:
+            prior = qc_entries[tid]
+            qc_entries[tid] += 1
+            if in_month(h.changed_on):
+                if prior == 0:
+                    new_list.append(item(tid, h.changed_on, h.qc_tester))
+                else:
+                    refix_list.append(item(tid, h.changed_on, h.qc_tester, {"refix_count": prior}))
+        if ns == "BIS Testing" and tid not in seen_bis and in_month(h.changed_on):
+            seen_bis.add(tid)
+            bis_list.append(item(tid, h.changed_on, h.qc_tester))
+        if ns == "Approved for Live" and tid not in seen_appr and in_month(h.changed_on):
+            seen_appr.add(tid)
+            appr_list.append(item(tid, h.changed_on, h.qc_tester))
+
+    closed_list = [item(t.ticket_id, t.closed_on, t.qc_tester) for t in closed]
+    return {
+        "new_to_qc": {"count": len(new_list), "tickets": new_list},
+        "refix_to_qc": {"count": len(refix_list), "tickets": refix_list},
+        "to_bis": {"count": len(bis_list), "tickets": bis_list},
+        "approved_for_live": {"count": len(appr_list), "tickets": appr_list},
+        "closed": {"count": len(closed_list), "tickets": closed_list},
+    }
+
+
+@app.get("/ticket-movement")
+def get_ticket_movement(offset: int = Query(0, ge=0, le=240)):
+    """Monthly ticket movement for the Ticket Movement Calendar. Ended months are frozen so the
+    lists don't change after the month closes (tickets counted up to 23:59 of the last day)."""
+    db: Session = SessionLocal()
+    try:
+        start, end, label = get_period_range("month", offset)
+        ended = end.date() < datetime.now().date()
+        if ended:
+            snap = db.query(TicketMovementSnapshot).filter_by(period_label=label).first()
+            if snap and snap.frozen and snap.payload:
+                return snap.payload
+        data = _compute_ticket_movement(db, start, end)
+        data["period"] = {"label": label, "start": start.isoformat(),
+                          "end": end.isoformat(), "frozen": ended}
+        if ended:
+            try:
+                db.add(TicketMovementSnapshot(period_label=label, payload=data, frozen=True))
+                db.commit()
+            except Exception:
+                db.rollback()
+        return data
     finally:
         db.close()
 
