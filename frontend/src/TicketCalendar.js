@@ -21,11 +21,11 @@ const RELEVANT_STATUSES = [
 ];
 
 const MOVE_CARDS = [
-  { key: 'new_to_qc', label: 'New to QC Testing', color: 'var(--accent-blue)' },
-  { key: 'refix_to_qc', label: 'Refix to QC Testing', color: 'var(--accent-red)' },
-  { key: 'to_bis', label: 'Delivered to BIS', color: 'var(--accent-purple, #8b5cf6)' },
-  { key: 'approved_for_live', label: 'Approved for Live', color: 'var(--accent-teal)' },
-  { key: 'closed', label: 'Closed', color: 'var(--accent-green)' },
+  { key: 'new_to_qc', label: 'Released to QC — First-time', sub: 'First-time testing this month', cls: 'qcq-card-testing' },
+  { key: 'refix_to_qc', label: 'Released to QC — Retesting', sub: 'Failed-loop / retest (count in list)', cls: 'qcq-card-failed' },
+  { key: 'to_bis', label: 'Passed to BIS Testing', sub: 'Delivered to BIS this month', cls: 'qcq-card-progress' },
+  { key: 'approved_for_live', label: 'Approved for Live by BIS', sub: 'BIS approved this month', cls: 'qcq-card-fpr' },
+  { key: 'closed', label: 'Closed', sub: 'Closed this month', cls: 'qcq-card-total' },
 ];
 
 function TicketMovementSection({ year, month }) {
@@ -77,7 +77,7 @@ function TicketMovementSection({ year, month }) {
   const isRefix = sel === 'refix_to_qc';
 
   const exportExcel = () => {
-    const headers = ['Ticket', 'Title', 'Module', 'Priority', 'QC Tester', ...(isRefix ? ['Refix Count'] : []), 'Date'];
+    const headers = ['Ticket', 'Title', 'Module', 'Priority', 'QC Tester', ...(isRefix ? ['Fail Loop Count'] : []), 'Date'];
     const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
     const lines = [headers.join(',')];
     rows.forEach(t => {
@@ -103,9 +103,10 @@ function TicketMovementSection({ year, month }) {
       <div className="qcq-status-cards" style={{ marginBottom: '14px' }}>
         {MOVE_CARDS.map(c => (
           <div key={c.key} onClick={() => { setSel(c.key); setModFilter(''); setQcFilter(''); setSearch(''); setSortKey('date'); setSortDir('desc'); }}
-            className="qcq-card" style={{ cursor: 'pointer', borderTop: `3px solid ${c.color}`, outline: sel === c.key ? `2px solid ${c.color}` : 'none' }}>
-            <div className="qcq-card-value" style={{ color: c.color }}>{(mv[c.key] || {}).count || 0}</div>
+            className={`qcq-card qcq-card-clickable ${c.cls} ${sel === c.key ? 'qcq-card-active' : ''}`}>
+            <div className="qcq-card-value">{(mv[c.key] || {}).count || 0}</div>
             <div className="qcq-card-label">{c.label}</div>
+            <div className="qcq-card-sub">{c.sub}</div>
           </div>
         ))}
       </div>
@@ -131,7 +132,7 @@ function TicketMovementSection({ year, month }) {
             <Th k="module">Module</Th>
             <Th k="priority">Priority</Th>
             <Th k="qc_tester">QC Tester</Th>
-            {isRefix && <Th k="refix_count">Refix #</Th>}
+            {isRefix && <Th k="refix_count">Fail Loop #</Th>}
             <Th k="date">Date</Th>
           </tr></thead>
           <tbody>
