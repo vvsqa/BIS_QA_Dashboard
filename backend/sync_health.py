@@ -35,7 +35,10 @@ class SyncSourceHealth:
 
     def __init__(self, source_name: str):
         self.source_name = source_name
-        self._lock = threading.Lock()
+        # RLock (reentrant): get_status() holds the lock and calls get_freshness(),
+        # which re-acquires it. A plain Lock would deadlock here and leak threadpool
+        # workers on every /sync/health call.
+        self._lock = threading.RLock()
         self.last_sync_time: Optional[datetime] = None
         self.last_sync_success: bool = False
         self.last_sync_message: str = ""

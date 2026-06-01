@@ -198,6 +198,20 @@ function TicketTable({ tickets, SortTh }) {
   );
 }
 
+function PlatformGroupHeading({ platform, count }) {
+  const isMobile = platform === 'Mobile';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: '18px 0 10px',
+      fontSize: '0.82rem', fontWeight: 700, color: 'var(--text-secondary)',
+      textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+      <span style={{ width: 9, height: 9, borderRadius: '50%', flexShrink: 0,
+        background: isMobile ? 'var(--accent-purple, #8b5cf6)' : 'var(--accent-teal)' }} />
+      {isMobile ? 'Mobile Team' : 'Web Team'}{typeof count === 'number' ? ` (${count})` : ''}
+      <span style={{ flex: 1, height: 1, background: 'var(--border-color)' }} />
+    </div>
+  );
+}
+
 function MemberStoryCard({ member, defaultExpanded }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
   const [sortField, setSortField] = useState('priority_order');
@@ -346,6 +360,7 @@ export default function QAActivitySummary() {
   const [modTickets, setModTickets] = useState([]);
   const [loadingModTickets, setLoadingModTickets] = useState(false);
   const [platformFilter, setPlatformFilter] = useState('all');
+  const [approvedOnly, setApprovedOnly] = useState(false);
   const [devExpandedName, setDevExpandedName] = useState(null);
   const [devStatusFilter, setDevStatusFilter] = useState('');
   const [devFlagFilter, setDevFlagFilter] = useState('');
@@ -426,9 +441,17 @@ export default function QAActivitySummary() {
   }
 
   const teamStats = data?.team_stats || {};
+  // QA testers who belong to the Mobile team regardless of the subdepartment on their
+  // tickets (their ticket subdepartment can read Web). Matched case-insensitively by name.
+  const MOBILE_QA_NAMES = ['gautam', 'gautham', 'arya'];
+  const qaPlatform = (m) => {
+    const tokens = (m.name || '').toLowerCase().split(/\s+/);
+    if (MOBILE_QA_NAMES.some(x => tokens.includes(x))) return 'Mobile';
+    return (m.platform || 'Web') === 'Mobile' ? 'Mobile' : 'Web';
+  };
   const members = (data?.members || []).filter(m => {
     // Platform filter
-    if (platformFilter !== 'all' && (m.platform || 'Web') !== platformFilter) return false;
+    if (platformFilter !== 'all' && qaPlatform(m) !== platformFilter) return false;
     // Search filter
     if (searchFilter) {
       const s = searchFilter.toLowerCase();
@@ -439,6 +462,10 @@ export default function QAActivitySummary() {
     }
     return true;
   }).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+  // Members with at least one ticket currently "Approved for Live".
+  const approvedCount = (m) => (m.tickets || []).filter(t => t.current_status === 'Approved for Live').length;
+  const membersWithApproved = members.filter(m => approvedCount(m) > 0);
 
   const bisSummary = bisData?.summary || {};
 
@@ -641,8 +668,25 @@ export default function QAActivitySummary() {
           </div>
         )}
 
-        {activeView === 'members' && !showBIS && (
+        {activeView === 'members' && !showBIS && (() => {
+          const shown = approvedOnly ? membersWithApproved : members;
+          const webMembers = shown.filter(m => qaPlatform(m) !== 'Mobile');
+          const mobileMembers = shown.filter(m => qaPlatform(m) === 'Mobile');
+          return (
           <div className="qas-members-list">
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '12px', flexWrap: 'wrap' }}>
+              <button className={`btn btn-sm ${approvedOnly ? 'btn-primary' : 'btn-secondary'}`}
+                style={{ fontSize: '0.72rem', borderColor: 'var(--accent-teal)',
+                  color: approvedOnly ? '#fff' : 'var(--accent-teal)',
+                  background: approvedOnly ? 'var(--accent-teal)' : 'transparent' }}
+                onClick={() => setApprovedOnly(v => !v)}>
+                Approved for Live ({membersWithApproved.length})
+              </button>
+              {approvedOnly && (
+                <button className="btn btn-sm btn-secondary" style={{ fontSize: '0.72rem' }}
+                  onClick={() => setApprovedOnly(false)}>Clear</button>
+              )}
+            </div>
             {teamStats.total_tickets_touched === 0 && (
               <div className="qcq-chart-panel" style={{ textAlign: 'center', padding: '30px' }}>
                 <h3 style={{ marginBottom: '8px' }}>No activity data for this period</h3>
@@ -655,11 +699,17 @@ export default function QAActivitySummary() {
                 </button>
               </div>
             )}
-            {members.map((m, i) => (
+            {webMembers.length > 0 && <PlatformGroupHeading platform="Web" count={webMembers.length} />}
+            {webMembers.map((m) => (
+              <MemberStoryCard key={m.employee_id} member={m} defaultExpanded={false} />
+            ))}
+            {mobileMembers.length > 0 && <PlatformGroupHeading platform="Mobile" count={mobileMembers.length} />}
+            {mobileMembers.map((m) => (
               <MemberStoryCard key={m.employee_id} member={m} defaultExpanded={false} />
             ))}
           </div>
-        )}
+          );
+        })()}
 
         {/* BIS to Closed Tab */}
         {/* Dev Module Activity Tab */}
@@ -880,21 +930,36 @@ export default function QAActivitySummary() {
 
         {/* Dev Team Tab */}
         {activeView === 'dev_team' && devData && (() => {
-          const UNALLOC = new Set(['Ready For Development', 'Hold/Pending', 'Code Review Passed']);
-          const ALLOC = new Set(['In Progress', 'Start Code Review', 'Code Review Failed', 'Express Lane Review', 'QC Review Fail', 'Tested - Awaiting Fixes']);
+          // Developer allocation buckets by ticket status (per ops mapping):
+          //   Fully Allocated     → developer is actively working the ticket
+          //   Partially Allocated → light / transitional engagement
+          //   Not Utilised        → ticket parked or out of the dev's hands (free for new work)
+          const FULLY_STS = new Set(['In Progress', 'Code Review Failed', 'Code Review Passed', 'QC Review Fail', 'Tested - Awaiting Fixes']);
+          const PARTIAL_STS = new Set(['Ready For Development', 'Approved for Live', 'QC Testing in Progress', 'Start Code Review']);
+          // Everything else active (Hold/Pending, QC Testing, QC Testing Hold, BIS Testing,
+          // Testing In Progress, Moved to Live, Express Lane Review) falls through to Not Utilised.
+          const devBucket = (status) => FULLY_STS.has(status) ? 'fully' : PARTIAL_STS.has(status) ? 'partial' : 'notutil';
           const getFlag = (d) => {
-            const tickets = d.tickets || [];
-            const al = tickets.filter(t => ALLOC.has(t.status)).length;
-            const un = tickets.filter(t => UNALLOC.has(t.status)).length;
-            if (d.ticket_count === 0) return 'No Tickets';
-            if (al > 0 && un === 0) return 'Fully Allocated';
-            if (al > 0 && un > 0) return 'Partially Allocated';
+            // Active tickets only — 'Moved to Live'/'Closed' are shipped and not shown here.
+            const tickets = (d.tickets || []).filter(t => !CLOSED_STATUSES_SET.has(t.status));
+            if (tickets.length === 0) return 'No Tickets';
+            if (tickets.some(t => FULLY_STS.has(t.status))) return 'Fully Allocated';
+            if (tickets.some(t => PARTIAL_STS.has(t.status))) return 'Partially Allocated';
             return 'Not Utilised';
           };
           const allDevs = (devData.developers || []).map(d => ({ ...d, _flag: getFlag(d) }));
           const flagCounts = {};
           allDevs.forEach(d => { flagCounts[d._flag] = (flagCounts[d._flag] || 0) + 1; });
 
+          // Developers have no single platform field — derive it from the plurality of
+          // their active tickets so Web devs can be grouped above Mobile devs.
+          const devPlatform = (d) => {
+            let web = 0, mob = 0;
+            (d.tickets || []).filter(t => !CLOSED_STATUSES_SET.has(t.status)).forEach(t => {
+              if ((t.platform || 'Web') === 'Mobile') mob++; else web++;
+            });
+            return mob > web ? 'Mobile' : 'Web';
+          };
           const devs = allDevs.filter(d => {
             if (devFlagFilter && d._flag !== devFlagFilter) return false;
             if (searchFilter) {
@@ -902,7 +967,15 @@ export default function QAActivitySummary() {
               return d.name.toLowerCase().includes(s) || (d.modules || []).some(m => m.toLowerCase().includes(s));
             }
             return true;
-          }).sort((a, b) => a.name.localeCompare(b.name));
+          }).map(d => ({ ...d, _platform: devPlatform(d) }))
+            .sort((a, b) => {
+              const pa = a._platform === 'Mobile' ? 1 : 0;
+              const pb = b._platform === 'Mobile' ? 1 : 0;
+              if (pa !== pb) return pa - pb;
+              return a.name.localeCompare(b.name);
+            });
+          const webDevCount = devs.filter(d => d._platform !== 'Mobile').length;
+          const mobileDevCount = devs.length - webDevCount;
           const devStatusDefs = [
             { key: 'in_progress', label: 'In Progress', color: 'var(--accent-green)' },
             { key: 'code_review', label: 'Code Review', color: 'var(--accent-blue)' },
@@ -945,15 +1018,16 @@ export default function QAActivitySummary() {
               ))}
             </div>
 
-            {devs.map(dev => {
+            {devs.map((dev, idx) => {
               const isExpanded = devExpandedName === dev.name;
-              const tickets = dev.tickets || [];
-              const UNALLOCATED_STS = new Set(['Ready For Development', 'Hold/Pending', 'Code Review Passed']);
-              const ALLOCATED_STS = new Set(['In Progress', 'Start Code Review', 'Code Review Failed', 'Express Lane Review', 'QC Review Fail', 'Tested - Awaiting Fixes']);
-              const QA_BIS_STS = new Set(['QC Testing', 'QC Testing in Progress', 'QC Testing Hold', 'BIS Testing', 'Approved for Live', 'Moved to Live']);
-              const unallocated = tickets.filter(t => UNALLOCATED_STS.has(t.status)).length;
-              const allocated = tickets.filter(t => ALLOCATED_STS.has(t.status)).length;
-              const inQaBis = tickets.filter(t => QA_BIS_STS.has(t.status)).length;
+              // Heading shown before the first dev of each platform group (Web first, Mobile last).
+              const showGroupHeading = idx === 0 || devs[idx - 1]._platform !== dev._platform;
+              // Show only active tickets; shipped 'Moved to Live'/'Closed' are excluded so the
+              // count, status badges, and expanded list reflect the developer's current workload.
+              const tickets = (dev.tickets || []).filter(t => !CLOSED_STATUSES_SET.has(t.status));
+              const fullyN = tickets.filter(t => FULLY_STS.has(t.status)).length;
+              const partialN = tickets.filter(t => PARTIAL_STS.has(t.status)).length;
+              const notUtilN = tickets.length - fullyN - partialN;
               // Group tickets by status
               const grouped = {};
               tickets.forEach(t => {
@@ -962,66 +1036,49 @@ export default function QAActivitySummary() {
                 grouped[s].push(t);
               });
               return (() => {
-                const flag = dev.ticket_count === 0 ? 'No Tickets' :
-                             allocated > 0 && unallocated === 0 ? 'Fully Allocated' :
-                             allocated > 0 && unallocated > 0 ? 'Partially Allocated' :
-                             allocated === 0 ? 'Not Utilised' : '';
+                const flag = dev._flag;
                 const flagColor = flag === 'Fully Allocated' ? 'var(--accent-green)' :
                                   flag === 'Partially Allocated' ? 'var(--accent-amber)' :
                                   flag === 'No Tickets' ? 'var(--text-muted)' : 'var(--accent-red)';
-                // Per-status counts for allocated/unallocated
-                const allocatedStatuses = {};
-                const unallocatedStatuses = {};
+                // Per-status counts within each allocation bucket (for the expandable breakdown)
+                const bucketStatuses = { fully: {}, partial: {}, notutil: {} };
                 tickets.forEach(t => {
-                  if (ALLOCATED_STS.has(t.status)) allocatedStatuses[t.status] = (allocatedStatuses[t.status]||0)+1;
-                  if (UNALLOCATED_STS.has(t.status)) unallocatedStatuses[t.status] = (unallocatedStatuses[t.status]||0)+1;
+                  const b = devBucket(t.status);
+                  bucketStatuses[b][t.status] = (bucketStatuses[b][t.status] || 0) + 1;
                 });
 
                 return (
-                <div key={dev.name} style={{ background: 'var(--bg-secondary)', borderRadius: '8px', border: `1px solid ${dev.ticket_count === 0 ? 'var(--border-color)' : 'var(--border-color)'}`, marginBottom: '8px', overflow: 'hidden', opacity: dev.ticket_count === 0 ? 0.6 : 1 }}>
+                <React.Fragment key={dev.name}>
+                {showGroupHeading && <PlatformGroupHeading platform={dev._platform} count={dev._platform === 'Mobile' ? mobileDevCount : webDevCount} />}
+                <div style={{ background: 'var(--bg-secondary)', borderRadius: '8px', border: `1px solid ${tickets.length === 0 ? 'var(--border-color)' : 'var(--border-color)'}`, marginBottom: '8px', overflow: 'hidden', opacity: tickets.length === 0 ? 0.6 : 1 }}>
                   <div style={{ padding: '10px 14px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                     {/* Name */}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '6px', minWidth: '170px', cursor: 'pointer' }}
-                      onClick={() => { if (dev.ticket_count > 0) { setDevExpandedName(isExpanded ? null : dev.name); setDevStatusFilter(''); } }}>
-                      <span style={{ width: 10, height: 10, borderRadius: '50%', background: allocated > 0 ? 'var(--accent-green)' : unallocated > 0 ? 'var(--accent-amber)' : 'var(--text-muted)', flexShrink: 0 }} />
+                      onClick={() => { if (tickets.length > 0) { setDevExpandedName(isExpanded ? null : dev.name); setDevStatusFilter(''); } }}>
+                      <span style={{ width: 10, height: 10, borderRadius: '50%', background: fullyN > 0 ? 'var(--accent-green)' : partialN > 0 ? 'var(--accent-amber)' : 'var(--text-muted)', flexShrink: 0 }} />
                       <span style={{ fontWeight: 700, fontSize: '0.88rem' }}>{dev.name}</span>
-                      {dev.ticket_count > 0 && <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{isExpanded ? '\u25B2' : '\u25BC'}</span>}
+                      {tickets.length > 0 && <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{isExpanded ? '\u25B2' : '\u25BC'}</span>}
                     </div>
 
                     {/* Ticket count */}
-                    <span style={{ fontWeight: 700, color: 'var(--text-secondary)', fontSize: '0.82rem' }}>{dev.ticket_count} tickets</span>
+                    <span style={{ fontWeight: 700, color: 'var(--text-secondary)', fontSize: '0.82rem' }}>{tickets.length} tickets</span>
 
-                    {/* Allocated + Unallocated badges */}
-                    {allocated > 0 && (
-                      <span onClick={() => { setDevExpandedName(dev.name); setDevStatusFilter(devExpandedName === dev.name && devStatusFilter === 'allocated' ? '' : 'allocated'); }}
-                        style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer',
-                          background: devExpandedName === dev.name && devStatusFilter === 'allocated' ? 'var(--accent-green)' : 'rgba(34,197,94,0.12)',
-                          color: devExpandedName === dev.name && devStatusFilter === 'allocated' ? '#fff' : 'var(--accent-green)',
-                          border: '1px solid var(--accent-green)' }}
-                        title={Object.entries(allocatedStatuses).map(([s,c])=>`${s}: ${c}`).join(', ')}>
-                        Allocated: {allocated}
-                      </span>
-                    )}
-                    {unallocated > 0 && (
-                      <span onClick={() => { setDevExpandedName(dev.name); setDevStatusFilter(devExpandedName === dev.name && devStatusFilter === 'unallocated' ? '' : 'unallocated'); }}
-                        style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer',
-                          background: devExpandedName === dev.name && devStatusFilter === 'unallocated' ? 'var(--accent-amber)' : 'rgba(245,158,11,0.12)',
-                          color: devExpandedName === dev.name && devStatusFilter === 'unallocated' ? '#fff' : 'var(--accent-amber)',
-                          border: '1px solid var(--accent-amber)' }}
-                        title={Object.entries(unallocatedStatuses).map(([s,c])=>`${s}: ${c}`).join(', ')}>
-                        Unallocated: {unallocated}
-                      </span>
-                    )}
-                    {inQaBis > 0 && (
-                      <span onClick={() => { setDevExpandedName(dev.name); setDevStatusFilter(devExpandedName === dev.name && devStatusFilter === 'qa_bis' ? '' : 'qa_bis'); }}
-                        style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer',
-                          background: devExpandedName === dev.name && devStatusFilter === 'qa_bis' ? 'var(--accent-purple, #8b5cf6)' : 'rgba(139,92,246,0.12)',
-                          color: devExpandedName === dev.name && devStatusFilter === 'qa_bis' ? '#fff' : 'var(--accent-purple, #8b5cf6)',
-                          border: '1px solid var(--accent-purple, #8b5cf6)' }}
-                        title={tickets.filter(t => QA_BIS_STS.has(t.status)).map(t => t.status).join(', ')}>
-                        In QA/BIS: {inQaBis}
-                      </span>
-                    )}
+                    {/* Allocation bucket badges (Fully / Partially / Not Utilised) */}
+                    {[
+                      { key: 'fully', n: fullyN, label: 'Fully', color: 'var(--accent-green)', bg: 'rgba(34,197,94,0.12)' },
+                      { key: 'partial', n: partialN, label: 'Partially', color: 'var(--accent-amber)', bg: 'rgba(245,158,11,0.12)' },
+                      { key: 'notutil', n: notUtilN, label: 'Not Utilised', color: 'var(--text-muted)', bg: 'rgba(100,116,139,0.12)' },
+                    ].filter(b => b.n > 0).map(b => {
+                      const active = devExpandedName === dev.name && devStatusFilter === b.key;
+                      return (
+                        <span key={b.key} onClick={() => { setDevExpandedName(dev.name); setDevStatusFilter(active ? '' : b.key); }}
+                          style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer',
+                            background: active ? b.color : b.bg, color: active ? '#fff' : b.color, border: `1px solid ${b.color}` }}
+                          title={Object.entries(bucketStatuses[b.key]).map(([s,c])=>`${s}: ${c}`).join(', ')}>
+                          {b.label}: {b.n}
+                        </span>
+                      );
+                    })}
                     {dev.refix_count > 0 && (
                       <span onClick={() => { setDevExpandedName(dev.name); setDevStatusFilter(devStatusFilter === 'refix' && devExpandedName === dev.name ? '' : 'refix'); }}
                         style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 700, cursor: 'pointer',
@@ -1043,10 +1100,10 @@ export default function QAActivitySummary() {
                     </span>
                   </div>
 
-                  {/* Per-status breakdown when allocated/unallocated is clicked */}
-                  {isExpanded && (devStatusFilter === 'allocated' || devStatusFilter === 'unallocated') && (
+                  {/* Per-status breakdown when an allocation bucket is clicked */}
+                  {isExpanded && bucketStatuses[devStatusFilter] && (
                     <div style={{ padding: '4px 14px 8px', display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
-                      {Object.entries(devStatusFilter === 'allocated' ? allocatedStatuses : unallocatedStatuses).map(([status, count]) => (
+                      {Object.entries(bucketStatuses[devStatusFilter]).map(([status, count]) => (
                         <span key={status} style={{ padding: '2px 8px', borderRadius: '4px', fontSize: '0.7rem', background: 'rgba(100,116,139,0.1)', color: 'var(--text-secondary)', fontWeight: 600 }}>
                           {status}: {count}
                         </span>
@@ -1059,9 +1116,7 @@ export default function QAActivitySummary() {
                       {(() => {
                         // Determine base set based on top-level filter
                         let baseTickets = tickets;
-                        if (devStatusFilter === 'allocated') baseTickets = tickets.filter(t => ALLOCATED_STS.has(t.status));
-                        else if (devStatusFilter === 'unallocated') baseTickets = tickets.filter(t => UNALLOCATED_STS.has(t.status));
-                        else if (devStatusFilter === 'qa_bis') baseTickets = tickets.filter(t => QA_BIS_STS.has(t.status));
+                        if (devStatusFilter === 'fully' || devStatusFilter === 'partial' || devStatusFilter === 'notutil') baseTickets = tickets.filter(t => devBucket(t.status) === devStatusFilter);
                         else if (devStatusFilter === 'refix') baseTickets = tickets.filter(t => t.is_refix);
                         else if (devStatusFilter && statusToActual[devStatusFilter]) baseTickets = tickets.filter(t => (statusToActual[devStatusFilter] || []).includes(t.status));
 
@@ -1146,6 +1201,7 @@ export default function QAActivitySummary() {
                     </div>
                   )}
                 </div>
+                </React.Fragment>
               );})();
             })}
           </div>);

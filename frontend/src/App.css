@@ -1,3 +1,9 @@
+html {
+  /* Reserve space for the vertical scrollbar so its appearance/disappearance
+     never shifts centered content left/right (fixes the pipeline "jumping"). */
+  scrollbar-gutter: stable;
+}
+
 body {
   margin: 0;
   font-family: Arial, sans-serif;

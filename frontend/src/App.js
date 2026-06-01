@@ -16,7 +16,6 @@ import QACycleDashboard from "./QACycleDashboard";
 import QAMetricsDashboard from "./QAMetricsDashboard";
 import AutomationCoverageDashboard from "./AutomationCoverageDashboard";
 import QCQueueDashboard from "./QCQueueDashboard";
-import TeamBoard from "./TeamBoard";
 import QAActivitySummary from "./QAActivitySummary";
 import ResourcePlanner from "./ResourcePlanner";
 import DevDashboard from "./DevDashboard";
@@ -145,8 +144,8 @@ function AppRoutes() {
         <Route path="/public/qa-metrics" element={<QAMetricsDashboard isPublic={true} />} />
         <Route path="/automation" element={<ProtectedRoute><ReportsAccessGuard><AutomationCoverageDashboard /></ReportsAccessGuard></ProtectedRoute>} />
         <Route path="/qc-queue" element={<QCQueueDashboard />} />
-        <Route path="/team-board" element={<TeamBoard />} />
-        <Route path="/qa-summary" element={<QAActivitySummary />} />
+        <Route path="/activity-summary" element={<QAActivitySummary />} />
+        <Route path="/qa-summary" element={<Navigate to="/activity-summary" replace />} />
         <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
         <Route path="/admin/clients" element={<ProtectedRoute><AdminOnlyRoute><ClientProfiles /></AdminOnlyRoute></ProtectedRoute>} />
         <Route path="/admin/client-modules" element={<ProtectedRoute><AdminOnlyRoute><ClientModuleAccess /></AdminOnlyRoute></ProtectedRoute>} />
@@ -164,8 +163,8 @@ function NewModuleRoutes() {
     <Routes>
       <Route path="/" element={<QCQueueDashboard />} />
       <Route path="/qc-queue" element={<QCQueueDashboard />} />
-      <Route path="/team-board" element={<TeamBoard />} />
-      <Route path="/qa-summary" element={<QAActivitySummary />} />
+      <Route path="/activity-summary" element={<QAActivitySummary />} />
+      <Route path="/qa-summary" element={<Navigate to="/activity-summary" replace />} />
       <Route path="/resource-planner" element={<ResourcePlanner />} />
       <Route path="/dev-dashboard" element={<DevDashboard />} />
       <Route path="/employee-performance" element={<EmployeePerformance />} />
@@ -179,12 +178,12 @@ function NewModuleRoutes() {
 
 function IsNewModulePath() {
   const { pathname } = useLocation();
-  return ['/', '/qc-queue', '/team-board', '/qa-summary'].includes(pathname);
+  return ['/', '/qc-queue', '/activity-summary', '/qa-summary'].includes(pathname);
 }
 
 function AppRouter() {
   const location = useLocation();
-  const isNew = ['/', '/qc-queue', '/team-board', '/qa-summary', '/resource-planner', '/dev-dashboard', '/employee-performance', '/ticket-speed', '/automation', '/ticket-calendar', '/calendar'].includes(location.pathname);
+  const isNew = ['/', '/qc-queue', '/activity-summary', '/qa-summary', '/resource-planner', '/dev-dashboard', '/employee-performance', '/ticket-speed', '/automation', '/ticket-calendar', '/calendar'].includes(location.pathname);
 
   if (isNew) {
     return (

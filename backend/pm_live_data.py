@@ -431,6 +431,72 @@ def _fetch_testrail_plans() -> Dict[int, Dict]:
         return _testrail_cache.get('data') or {}
 
 
+_TESTRAIL_MOBILE_FILE = os.path.join(os.path.dirname(__file__), 'data', 'testrail_mobile_cache.json')
+_testrail_mobile_disk = _load_file_cache(_TESTRAIL_MOBILE_FILE)
+_testrail_mobile_cache = {'data': _testrail_mobile_disk, 'timestamp': time.time() if _testrail_mobile_disk else 0}
+# Mobile test cases live in a dedicated suite of project 18 (not as named plans), linked to a
+# ticket via the case field `custom_case_ticket_id`. Default suite 847 = "Mobile App- BIS Safety".
+_TESTRAIL_MOBILE_SUITE_ID = int(os.environ.get('TESTRAIL_MOBILE_SUITE_ID', '847'))
+
+
+def _fetch_testrail_mobile_cases() -> Dict[str, int]:
+    """Fetch mobile test cases from project 18 / mobile suite, return {ticket_id(str): case_count}.
+
+    Mobile QA authors cases in this suite tagged with `custom_case_ticket_id`, instead of creating
+    a named test plan — so plan-name matching misses them. Counts cases per ticket id.
+    """
+    now = time.time()
+    if _testrail_mobile_cache['data'] is not None and (now - _testrail_mobile_cache['timestamp']) < _EXTERNAL_CACHE_TTL:
+        return _testrail_mobile_cache['data']
+
+    try:
+        import requests, base64
+        testrail_url = os.environ.get('TESTRAIL_URL', 'https://bistrainer.testrail.io')
+        email = os.environ.get('TESTRAIL_EMAIL', '')
+        key = os.environ.get('TESTRAIL_API_KEY', '')
+        if not email or not key:
+            return _testrail_mobile_cache.get('data') or {}
+
+        api_base = f'{testrail_url}/index.php?/api/v2'
+        cred = base64.b64encode(f'{email}:{key}'.encode()).decode()
+        headers = {'Authorization': f'Basic {cred}', 'Content-Type': 'application/json'}
+        project_id = int(os.environ.get('TESTRAIL_AUTOMATION_PROJECT_ID', '18'))
+        suite_id = _TESTRAIL_MOBILE_SUITE_ID
+
+        counts: Dict[str, int] = {}
+        offset = 0
+        while True:
+            resp = requests.get(f'{api_base}/get_cases/{project_id}&suite_id={suite_id}',
+                                headers=headers, params={'limit': 250, 'offset': offset}, timeout=30)
+            if resp.status_code != 200:
+                break
+            data = resp.json()
+            cases = data.get('cases', data) if isinstance(data, dict) else data
+            if not cases:
+                break
+            for c in cases:
+                raw = c.get('custom_case_ticket_id')
+                if raw in (None, '', 0):
+                    continue
+                # field may hold "20257" or "#20257 — title"; take leading digits
+                import re as _re
+                m = _re.match(r'^#?\s*(\d+)', str(raw).strip())
+                if m:
+                    counts[m.group(1)] = counts.get(m.group(1), 0) + 1
+            offset += len(cases)
+            if len(cases) < 250:
+                break
+
+        _testrail_mobile_cache['data'] = counts
+        _testrail_mobile_cache['timestamp'] = now
+        _save_file_cache(_TESTRAIL_MOBILE_FILE, counts)
+        logger.info(f'TestRail: fetched {len(counts)} mobile-suite ticket mappings (suite {suite_id})')
+        return counts
+    except Exception as e:
+        logger.error(f'TestRail mobile-suite fetch error: {e}')
+        return _testrail_mobile_cache.get('data') or {}
+
+
 _TESTRAIL_MODULE_FILE = os.path.join(os.path.dirname(__file__), 'data', 'testrail_module_cache.json')
 _testrail_module_cache = {'data': None, 'timestamp': 0}
 
@@ -672,7 +738,8 @@ def _start_external_fetch_if_needed(ticket_ids: Optional[List[int]] = None):
     """Start background thread to fetch TestRail + Redmine if cache is stale."""
     global _external_fetch_running, _pending_redmine_ticket_ids
     now = time.time()
-    testrail_stale = _testrail_cache['data'] is None or (now - _testrail_cache['timestamp']) >= _EXTERNAL_CACHE_TTL
+    testrail_stale = (_testrail_cache['data'] is None or (now - _testrail_cache['timestamp']) >= _EXTERNAL_CACHE_TTL
+                      or _testrail_mobile_cache['data'] is None)
     redmine_stale = _redmine_cache['data'] is None or (now - _redmine_cache['timestamp']) >= _EXTERNAL_CACHE_TTL
 
     if ticket_ids:
@@ -691,6 +758,7 @@ def _start_external_fetch_if_needed(ticket_ids: Optional[List[int]] = None):
         try:
             if testrail_stale:
                 _fetch_testrail_plans()
+                _fetch_testrail_mobile_cases()
                 _fetch_testrail_module_stats()
             if redmine_stale and tids:
                 _fetch_redmine_bugs_for_tickets(tids)
@@ -807,6 +875,7 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
     # Fetch TestRail and Redmine data (from cache — background thread refreshes)
     _start_external_fetch_if_needed(ticket_ids=all_relevant_ids)
     testrail_data = _testrail_cache.get('data') or {}
+    mobile_data = _testrail_mobile_cache.get('data') or {}
     redmine_data = _redmine_cache.get('data') or {}
     testrail_url = os.environ.get('TESTRAIL_URL', 'https://bistrainer.testrail.io')
 
@@ -815,6 +884,7 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
         tid = t['ticket_id']
         # JSON keys may be strings after disk cache load
         tr = testrail_data.get(tid) or testrail_data.get(str(tid))
+        mob = mobile_data.get(tid) or mobile_data.get(str(tid))  # mobile-suite case count
         if tr:
             t['test_cases'] = tr['cases']
             t['test_plan_cases'] = tr['cases']
@@ -823,6 +893,17 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
             t['test_failed'] = tr['failed']
             t['test_untested'] = tr['untested']
             t['testrail_plan_url'] = f'{testrail_url}/index.php?/plans/view/{tr["plan_id"]}'
+            t['test_plan_source'] = 'plan'
+        elif mob:
+            # Mobile tickets: cases authored in the dedicated mobile suite of project 18 (no named plan)
+            t['test_cases'] = mob
+            t['test_plan_cases'] = mob
+            t['has_test_plan'] = True
+            t['test_passed'] = 0
+            t['test_failed'] = 0
+            t['test_untested'] = 0
+            t['testrail_plan_url'] = f'{testrail_url}/index.php?/suites/view/{_TESTRAIL_MOBILE_SUITE_ID}'
+            t['test_plan_source'] = 'mobile_suite'
         else:
             t['test_cases'] = 0
             t['test_plan_cases'] = 0
@@ -831,6 +912,7 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
             t['test_failed'] = 0
             t['test_untested'] = 0
             t['testrail_plan_url'] = None
+            t['test_plan_source'] = None
 
         bugs = redmine_data.get(tid) or redmine_data.get(str(tid))
         if bugs:
@@ -1079,127 +1161,6 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
             },
         },
         'movement_24h': _get_movement_24h(all_tickets, today),
-    }
-
-
-def get_live_team_board(today: Optional[date] = None) -> Dict:
-    return _cached_response('team_board', lambda: _compute_team_board(today))
-
-def _compute_team_board(today: Optional[date] = None) -> Dict:
-    """Live team board - who is working on what."""
-    today = today or date.today()
-    success, all_tickets, msg = fetch_live_tickets()
-    if not success:
-        return {'error': msg, 'members': [], 'summary': {}}
-
-    # Include QC statuses + Approved for Live (QA needs to verify in prod)
-    qa_active_statuses = QC_STATUSES + [APPROVED_STATUS]
-    qc_tickets = [t for t in all_tickets if t['status'] in qa_active_statuses]
-
-    # Build tester -> tickets mapping
-    tester_map: Dict[str, List[Dict]] = {}
-    for t in qc_tickets:
-        tester = t.get('qc_tester') or ''
-        if tester:
-            for name in (n.strip() for n in tester.split(',') if n.strip()):
-                key = name.lower()
-                if key not in tester_map:
-                    tester_map[key] = {'name': name, 'tickets': []}
-                tester_map[key]['tickets'].append(t)
-
-    # Get active team members from ownership config
-    ownership = load_module_ownership()
-    active_team = set(ownership.get('team_members', []))
-
-    # Get all unique QC testers from active QC tickets + active team list
-    all_testers = set()
-    for t in qc_tickets:
-        tester = (t.get('qc_tester') or '').strip()
-        if tester:
-            for name in (n.strip() for n in tester.split(',') if n.strip()):
-                all_testers.add(name)
-    # Add active team members even if they have no tickets (shows as idle)
-    all_testers |= active_team
-    # Remove anyone not in the active team (resigned members)
-    if active_team:
-        all_testers = all_testers & active_team
-
-    members = []
-    busy_count = 0
-    idle_count = 0
-
-    for name in sorted(all_testers):
-        key = name.lower()
-        assigned = tester_map.get(key, {}).get('tickets', [])
-
-        if not assigned:
-            activity = 'idle'
-            idle_count += 1
-        else:
-            statuses = [t['status'] for t in assigned]
-            if all(s == 'QC Testing Hold' for s in statuses):
-                activity = 'on_hold'
-            elif 'QC Testing in Progress' in statuses:
-                activity = 'active'
-                busy_count += 1
-            elif APPROVED_STATUS in statuses:
-                activity = 'active'
-                busy_count += 1
-            else:
-                activity = 'assigned'
-                busy_count += 1
-
-        primary = None
-        if assigned:
-            scored = sorted(assigned, key=lambda t: -(
-                _calculate_score(t, today)['score']
-            ))
-            pt = scored[0]
-            primary = {
-                'ticket_id': pt['ticket_id'],
-                'title': pt['title'],
-                'status': pt['status'],
-                'priority': pt['priority'],
-                'days_in_qc': pt.get('days_in_qc', 0),
-                'eta': pt.get('eta'),
-                'module': pt.get('module', ''),
-            }
-
-        members.append({
-            'employee_id': name.replace(' ', '_'),
-            'name': name,
-            'designation': '',
-            'platform': assigned[0]['platform'] if assigned else 'Web',
-            'activity': activity,
-            'ticket_count': len(assigned),
-            'primary_ticket': primary,
-            'all_tickets': [{
-                'ticket_id': t['ticket_id'], 'title': t['title'], 'status': t['status'],
-                'priority': t['priority'], 'days_in_qc': t.get('days_in_qc', 0),
-                'eta': t.get('eta'), 'module': t.get('module', ''),
-            } for t in assigned],
-            'total_qa_estimate_hours': sum(t.get('qa_estimate_hours', 0) for t in assigned),
-            'total_qa_actual_hours': sum(t.get('qa_actual_hours', 0) for t in assigned),
-        })
-
-    activity_order = {'active': 0, 'assigned': 1, 'on_hold': 2, 'idle': 3}
-    members.sort(key=lambda m: (activity_order.get(m['activity'], 9), m['name']))
-
-    return {
-        'members': members,
-        'summary': {
-            'total_members': len(members),
-            'busy': busy_count,
-            'idle': idle_count,
-            'on_hold': sum(1 for m in members if m['activity'] == 'on_hold'),
-            'total_qc_tickets': len(qc_tickets),
-            'avg_ageing': 0,
-        },
-        'status_cards': {
-            'QC Testing': sum(1 for t in qc_tickets if t['status'] == 'QC Testing'),
-            'QC Testing in Progress': sum(1 for t in qc_tickets if t['status'] == 'QC Testing in Progress'),
-            'QC Testing Hold': sum(1 for t in qc_tickets if t['status'] == 'QC Testing Hold'),
-        },
     }
 
 

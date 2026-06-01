@@ -6,7 +6,7 @@ import './dashboard.css';
 // Content can be moved to API or config later
 const DEFAULT_RECENT = [
   { id: 1, date: '2025-01-15', title: 'Q4 release deployed to production', type: 'release' },
-  { id: 2, date: '2025-01-12', title: 'AURA360 v2.0 sprint completed', type: 'milestone' },
+  { id: 2, date: '2025-01-12', title: 'BIS 360 v2.0 sprint completed', type: 'milestone' },
   { id: 3, date: '2025-01-10', title: 'New QA planning workflow went live', type: 'feature' },
   { id: 4, date: '2025-01-08', title: 'Timesheet integration with Jira finalized', type: 'integration' },
   { id: 5, date: '2025-01-05', title: 'Performance review cycle opened', type: 'announcement' },
@@ -53,7 +53,7 @@ export default function Homepage() {
               Welcome back, <span className="homepage-hero-name">{firstName}</span>
             </h1>
             <p className="homepage-hero-subtitle">
-              AURA360 — track tickets, planning, and releases in one place.
+              BIS 360 — track tickets, planning, and releases in one place.
             </p>
             <div className="homepage-hero-actions">
               <Link to="/dashboard" className="homepage-cta primary">Open Ticket Dashboard</Link>
@@ -144,7 +144,7 @@ export default function Homepage() {
         </section>
 
         <footer className="homepage-footer">
-          <p>AURA360 · Techversant Infotech</p>
+          <p>BIS 360 · Techversant Infotech</p>
         </footer>
       </main>
     </div>

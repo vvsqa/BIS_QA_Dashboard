@@ -1,5 +1,5 @@
 /**
- * Date formatting utilities for AURA360
+ * Date formatting utilities for BIS 360
  * Standard format: DD-MMM-YYYY (e.g., 27-Jan-2026)
  */
 

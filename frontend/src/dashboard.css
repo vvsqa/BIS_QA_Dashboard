@@ -16554,12 +16554,36 @@ a.qcq-ticket-link:hover {
   color: var(--accent-amber);
   font-weight: 600;
   font-size: 0.82rem;
-  white-space: nowrap;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
 }
 .qcq-plan-pending {
   color: var(--accent-amber);
   font-size: 0.74rem;
   font-style: italic;
+}
+/* inline TestRail plan status next to the Plan-Initiated planner */
+.qcq-plan-tag {
+  display: inline-block;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 10px;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.qcq-plan-tag-ok {
+  color: var(--accent-green);
+  background: rgba(34, 197, 94, 0.13);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+}
+a.qcq-plan-tag-ok:hover { background: rgba(34, 197, 94, 0.22); }
+.qcq-plan-tag-pending {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.13);
+  border: 1px solid rgba(245, 158, 11, 0.4);
 }
 
 /* Ageing badge */
@@ -17994,6 +18018,108 @@ a.qcq-ticket-link:hover {
 .tm-val { width: 36px; text-align: right; font-weight: 700; font-size: 0.8rem; color: var(--text-primary); }
 .tm-cat.tm-sep, .tm-cell.tm-sep { border-top: 1px dashed var(--border-color); padding-top: 8px; margin-top: 2px; }
 /* Ticket Speed — per-ticket journey */
+/* ===== Ticket Speed analytics (charts + performance heatmap) ===== */
+.tspd-analytics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  margin: 14px 0;
+}
+.tspd-chart-card {
+  background: var(--bg-secondary, rgba(100,116,139,0.06));
+  border: 1px solid var(--border-color, rgba(148,163,184,0.18));
+  border-radius: 10px;
+  padding: 12px 14px 8px;
+}
+.tspd-chart-title {
+  margin: 0 0 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.tspd-chart-sub {
+  font-weight: 500;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  margin-left: 6px;
+}
+.tspd-chart-body { height: 220px; position: relative; }
+
+.tspd-heatmap-wrap {
+  background: var(--bg-secondary, rgba(100,116,139,0.06));
+  border: 1px solid var(--border-color, rgba(148,163,184,0.18));
+  border-radius: 10px;
+  padding: 12px 14px 14px;
+  margin-bottom: 14px;
+}
+.tspd-heatmap {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.6fr) repeat(5, 1fr);
+  gap: 4px;
+}
+.tspd-hm-head {
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  text-align: center;
+  padding: 4px 2px;
+}
+.tspd-hm-head.tspd-hm-left { text-align: left; }
+.tspd-hm-label {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  padding: 6px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+}
+.tspd-hm-cell {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-align: center;
+  padding: 8px 2px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ===== Ticket Flow (pictorial status journey) ===== */
+.tspd-flow { padding: 4px 2px; }
+.tspd-flow-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tspd-flow-id { font-size: 1.05rem; font-weight: 800; }
+.tspd-flow-title { font-size: 0.9rem; color: var(--text-secondary); }
+.tspd-flow-cur { font-size: 0.72rem; }
+.tspd-flow-nodes { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 8px; }
+.tspd-flow-arrow { color: var(--text-muted); font-weight: 700; padding: 0 2px; }
+.tspd-flow-node {
+  display: inline-flex; flex-direction: column; align-items: flex-start; gap: 2px;
+  border: 2px solid #94a3b8; border-left-width: 5px; border-radius: 8px;
+  padding: 6px 10px; background: var(--bg-secondary, rgba(100,116,139,0.06)); min-width: 90px;
+}
+.tspd-flow-node .tspd-flow-dot { width: 8px; height: 8px; border-radius: 50%; }
+.tspd-flow-status { font-size: 0.74rem; font-weight: 700; color: var(--text-primary); white-space: nowrap; }
+.tspd-flow-days { font-size: 0.72rem; font-weight: 700; }
+.tspd-flow-node.tspd-flow-delay { background: rgba(239,68,68,0.1); border-color: var(--accent-red, #ef4444); }
+.tspd-flow-node.tspd-flow-current { box-shadow: 0 0 0 2px rgba(20,184,166,0.5); }
+
+.tspd-flow-gantt {
+  display: flex; width: 100%; height: 30px; border-radius: 6px; overflow: hidden;
+  border: 1px solid var(--border-color, rgba(148,163,184,0.18)); margin-top: 6px;
+}
+.tspd-flow-seg {
+  height: 100%; display: flex; align-items: center; justify-content: center;
+  border-right: 1px solid rgba(15,23,42,0.25); min-width: 2px; transition: opacity 0.15s;
+}
+.tspd-flow-seg:hover { opacity: 0.82; }
+.tspd-flow-seg-lbl { font-size: 0.64rem; font-weight: 700; color: #fff; text-shadow: 0 1px 2px rgba(0,0,0,0.4); white-space: nowrap; }
+
 .tspd-journey { background: var(--bg-primary, rgba(100,116,139,0.06)); border-radius: 8px; padding: 12px 14px; }
 .tspd-metrics { display: flex; flex-wrap: wrap; gap: 16px; font-size: 0.76rem; color: var(--text-secondary); margin-bottom: 10px; }
 .tspd-metrics b { color: var(--text-primary); }

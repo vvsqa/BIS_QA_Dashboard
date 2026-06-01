@@ -13294,6 +13294,7 @@ def get_monthly_calendar(
                 "entries": []
             }),
             "total_hours": 0,
+            "total_hours_logged": 0,
             "total_productive_hours": 0,
             "total_ticket_hours": 0,
             "total_non_ticket_hours": 0,
@@ -13337,6 +13338,9 @@ def get_monthly_calendar(
             if entry.leave_type:
                 employee_data[eid]["days"][day]["leave_type"] = entry.leave_type
             employee_data[eid]["total_hours"] += display_hours
+            # "Logged" = raw hours_logged, but some entries record time only in productive_hours
+            # (hours_logged null/0). Fall back to productive so those people don't show 0 logged.
+            employee_data[eid]["total_hours_logged"] += time_spent if time_spent > 0 else (productive or 0)
             employee_data[eid]["total_productive_hours"] += productive if productive is not None else 0
         
         for leave in leaves:
@@ -13397,6 +13401,7 @@ def get_monthly_calendar(
 
         monthly_totals = {
             "productive_hours": round(sum(float(v.get("total_productive_hours", 0) or 0) for v in employee_data.values()), 1),
+            "logged_hours": round(sum(float(v.get("total_hours_logged", 0) or 0) for v in employee_data.values()), 1),
             "leave_hours": round(sum(float(v.get("total_leave_hours", 0) or 0) for v in employee_data.values()), 1),
             "leave_days": round(sum(float(v.get("total_leave_days", 0) or 0) for v in employee_data.values()), 1),
             "expected_hours": round(sum(float(v.get("expected_hours", 0) or 0) for v in employee_data.values()), 1),
@@ -16076,7 +16081,7 @@ def eta_calendar_tickets(current_user: dict = Depends(get_current_user)):
 
 # ===== LIVE PM DATA ENDPOINTS (new modules) =====
 from pm_live_data import (
-    get_live_qc_queue, get_live_team_board, get_live_activity_summary, get_live_bis_tracking,
+    get_live_qc_queue, get_live_activity_summary, get_live_bis_tracking,
     fetch_live_tickets,
     load_module_ownership, save_module_ownership, auto_detect_modules_and_members,
     get_live_resource_occupancy, get_live_assignment_suggestions, get_live_module_ownership_matrix,
@@ -16140,38 +16145,6 @@ def live_qc_queue():
         for t in (tickets or []):
             _enrich_planning(t)
     return data
-
-
-@app.get("/live/team-board")
-def live_team_board():
-    """Live team board fetched directly from PM API."""
-    return get_live_team_board()
-
-
-@app.get("/live/team-board/activity-distribution")
-def live_activity_distribution():
-    """Live activity distribution."""
-    board = get_live_team_board()
-    dist = {}
-    for m in board.get('members', []):
-        a = m['activity']
-        dist[a] = dist.get(a, 0) + 1
-    plat = {}
-    for m in board.get('members', []):
-        if m['activity'] != 'idle':
-            p = m.get('platform', 'Web')
-            plat[p] = plat.get(p, 0) + 1
-    return {'activity_distribution': dist, 'platform_distribution': plat, 'summary': board.get('summary', {})}
-
-
-@app.get("/live/team-board/member/{name}")
-def live_team_board_member(name: str):
-    """Live member detail."""
-    board = get_live_team_board()
-    for m in board.get('members', []):
-        if m['name'].lower() == name.lower() or m['employee_id'] == name:
-            return m
-    raise HTTPException(status_code=404, detail="Member not found")
 
 
 @app.get("/live/qa-activity-summary")
@@ -16489,42 +16462,78 @@ def live_assign_to_summary():
 
 @app.get("/live/ticket-calendar")
 def live_ticket_calendar():
-    """Monthly calendar showing ticket movement per day per status."""
-    from pm_live_data import _load_ageing_tracker, fetch_live_tickets
+    """Monthly calendar of REAL ticket status transitions per day.
+
+    Each day counts the tickets that actually MOVED into a status that day, taken from
+    TicketStatusHistory (changed_on), grouped by the status moved into. 'Closed' uses closed_on.
+    (Previously this bucketed by the ageing tracker's first_seen, which dumped every active ticket
+    onto the day the tracker was last initialised — e.g. 298 on the current day — not real movement.)
+    """
     from collections import defaultdict
+    db = SessionLocal()
+    try:
+        # Statuses that represent a meaningful pipeline movement (mirrors the calendar's RELEVANT_STATUSES).
+        RELEVANT = {
+            'Code Review Passed', 'QC Testing', 'QC Testing in Progress', 'QC Testing Hold',
+            'QC Review Fail', 'BIS Testing', 'Approved for Live', 'Moved to Live',
+        }
+        # closed_on can span years; cap the window so the payload stays reasonable.
+        window_start = date.today() - timedelta(days=185)
 
-    ageing = _load_ageing_tracker()
-    success, all_tickets, _ = fetch_live_tickets()
-    ticket_map = {str(t['ticket_id']): t for t in all_tickets} if success else {}
+        trans = db.query(TicketStatusHistory).filter(
+            TicketStatusHistory.new_status.in_(RELEVANT),
+        ).order_by(TicketStatusHistory.changed_on).all()
+        closed = db.query(TicketTracking).filter(
+            TicketTracking.closed_on != None,  # noqa: E711
+            TicketTracking.closed_on >= window_start,
+        ).all()
 
-    # Group by first_seen date and status
-    daily = defaultdict(lambda: defaultdict(list))
-    for tid, entry in ageing.items():
-        fs = entry.get('first_seen', '')
-        status = entry.get('status', '')
-        if fs and status:
-            t = ticket_map.get(tid, {})
-            daily[fs][status].append({
-                'ticket_id': int(tid) if tid.isdigit() else tid,
-                'title': t.get('title', ''),
-                'status': status,
-                'priority': t.get('priority', ''),
-                'module': t.get('module', ''),
-                'developers_str': t.get('developers_str', ''),
-                'qc_tester': t.get('qc_tester', ''),
-            })
+        tids = {h.ticket_id for h in trans} | {t.ticket_id for t in closed}
+        meta = {}
+        if tids:
+            for (tid, title, sub, prio, qc, bd, fd) in db.query(
+                TicketTracking.ticket_id, TicketTracking.title, TicketTracking.subdepartment,
+                TicketTracking.priority, TicketTracking.qc_tester,
+                TicketTracking.backend_developer, TicketTracking.frontend_developer,
+            ).filter(TicketTracking.ticket_id.in_(tids)).all():
+                meta[tid] = {
+                    'title': title or '', 'module': (sub or '').strip() or 'Unassigned',
+                    'priority': prio or '', 'qc_tester': qc or '',
+                    'developers_str': _strip_paren(bd or fd or '').strip() or '',
+                }
 
-    # Convert to list format
-    calendar = []
-    for day in sorted(daily.keys()):
-        statuses = {}
-        total = 0
-        for status, tickets in daily[day].items():
-            statuses[status] = {'count': len(tickets), 'tickets': tickets}
-            total += len(tickets)
-        calendar.append({'date': day, 'total': total, 'statuses': statuses})
+        # daily[date_str][status] = {ticket_id: item}  — dedup a ticket within the same day+status.
+        daily = defaultdict(lambda: defaultdict(dict))
 
-    return {'calendar': calendar}
+        def add(day, status, tid, qc=None):
+            m = meta.get(tid, {})
+            daily[day][status][tid] = {
+                'ticket_id': tid, 'title': m.get('title', ''), 'status': status,
+                'priority': m.get('priority', ''), 'module': m.get('module', 'Unassigned'),
+                'developers_str': m.get('developers_str', ''),
+                'qc_tester': qc or m.get('qc_tester', '') or '',
+            }
+
+        for h in trans:
+            if h.changed_on:
+                add(h.changed_on.date().isoformat(), h.new_status, h.ticket_id, h.qc_tester)
+        for t in closed:
+            if t.closed_on:
+                add(t.closed_on.date().isoformat(), 'Closed', t.ticket_id, t.qc_tester)
+
+        calendar = []
+        for day in sorted(daily.keys()):
+            statuses = {}
+            total = 0
+            for status, items in daily[day].items():
+                lst = list(items.values())
+                statuses[status] = {'count': len(lst), 'tickets': lst}
+                total += len(lst)
+            calendar.append({'date': day, 'total': total, 'statuses': statuses})
+
+        return {'calendar': calendar}
+    finally:
+        db.close()
 
 
 @app.get("/live/build-quality")
@@ -16955,6 +16964,29 @@ def get_ticket_speed(
             row.pop("phase_days", None)
             rows.append(row)
 
+        # Accurate per-status stage durations — computed from a dedicated transition query (NOT the
+        # 2000-ticket-capped row set, which front-loads old closed tickets with no recorded history).
+        # Only COMPLETED segments bounded by two real recorded transitions are counted, so the
+        # created_on→first-transition gap (created_on predates the transition log) never inflates it.
+        stage_acc = defaultdict(lambda: {"sum": 0.0, "n": 0})
+        seg_q = db.query(TicketStatusHistory)
+        if start:
+            seg_q = seg_q.filter(TicketStatusHistory.changed_on >= start,
+                                 TicketStatusHistory.changed_on <= datetime.combine(end, datetime.max.time()))
+        seg_by_tid = defaultdict(list)
+        for h in seg_q.order_by(TicketStatusHistory.ticket_id, TicketStatusHistory.changed_on).all():
+            seg_by_tid[h.ticket_id].append(h)
+        for hs in seg_by_tid.values():
+            prev_time = None
+            for h in hs:
+                seg = h.previous_status  # status held between prev transition and this one
+                if seg and h.changed_on and prev_time is not None:
+                    days = (h.changed_on.date() - prev_time.date()).days
+                    if 0 <= days <= 365:
+                        stage_acc[seg]["sum"] += days
+                        stage_acc[seg]["n"] += 1
+                prev_time = h.changed_on
+
         def _avg(vals):
             vals = [v for v in vals if v is not None]
             return round(sum(vals) / len(vals), 1) if vals else 0
@@ -16992,7 +17024,24 @@ def get_ticket_speed(
             out.sort(key=lambda x: x["tickets"], reverse=True)
             return out
 
-        return {"summary": summary, "rows": rows,
+        # Average days spent per status, split into Dev-side and QA-side stages (in pipeline order).
+        DEV_STATUS_ORDER = ["Ready For Development", "In Progress", "Hold/Pending",
+                            "Start Code Review", "Code Review Failed", "Express Lane Review", "Code Review Passed"]
+        QA_STATUS_ORDER = ["QC Testing", "QC Testing in Progress", "QC Testing Hold",
+                           "QC Review Fail", "Tested - Awaiting Fixes", "BIS Testing", "Approved for Live"]
+
+        def _stage_list(order):
+            out = []
+            for st in order:
+                a = stage_acc.get(st)
+                if a and a["n"]:
+                    out.append({"status": st, "avg_days": round(a["sum"] / a["n"], 1),
+                                "total_days": round(a["sum"], 1), "tickets": a["n"]})
+            return out
+
+        stage_durations = {"dev": _stage_list(DEV_STATUS_ORDER), "qa": _stage_list(QA_STATUS_ORDER)}
+
+        return {"summary": summary, "rows": rows, "stage_durations": stage_durations,
                 "by_module": _group("module"), "by_qc_tester": _group("qc_tester")}
     finally:
         db.close()
@@ -17082,211 +17131,6 @@ def qa_activity_summary(
             sd_override = date_type.fromisoformat(start_date)
             ed_override = date_type.fromisoformat(end_date)
         return get_qa_activity_summary(db, period=period, start_date_override=sd_override, end_date_override=ed_override)
-    finally:
-        db.close()
-
-
-# ===== TEAM ACTIVITY BOARD (read-only, computed from synced PM data) =====
-
-@app.get("/team-board")
-def get_team_board():
-    """
-    All QA team members with their current ticket assignments, activity type,
-    ETA, hours, workload, and idle status. Read-only view of synced PM data.
-    """
-    db: Session = SessionLocal()
-    try:
-        today = date.today()
-        qa_employees = get_qa_employees(db)
-        overview = get_qa_overview_data(db, today)
-        queue = overview.get('queue', [])
-
-        # Build tester → tickets mapping from active QC tickets
-        tester_tickets = {}
-        for t in queue:
-            tester = (t.get('qc_tester') or '').strip()
-            if tester:
-                for name in (n.strip() for n in tester.split(',') if n.strip()):
-                    name_lower = name.lower()
-                    if name_lower not in tester_tickets:
-                        tester_tickets[name_lower] = {'name': name, 'tickets': []}
-                    tester_tickets[name_lower]['tickets'].append(t)
-
-        members = []
-        busy_count = 0
-        idle_count = 0
-        total_days = 0
-
-        for emp in qa_employees:
-            emp_name = (emp.name or '').strip()
-            emp_lower = emp_name.lower()
-            assigned = tester_tickets.get(emp_lower, {}).get('tickets', [])
-
-            # Determine activity status
-            if not assigned:
-                activity = 'idle'
-                idle_count += 1
-            else:
-                statuses = [t.get('activity_type', '') for t in assigned]
-                if 'on_hold' in statuses and len(set(statuses)) == 1:
-                    activity = 'on_hold'
-                elif 'in_progress' in statuses or 'pending_retest' in statuses:
-                    activity = 'active'
-                    busy_count += 1
-                else:
-                    activity = 'assigned'
-                    busy_count += 1
-
-            # Total ageing across assigned tickets
-            member_days = sum(t.get('days_in_qc', 0) for t in assigned)
-            total_days += member_days
-
-            # Primary ticket (highest score)
-            primary_ticket = None
-            if assigned:
-                scored = []
-                for t in assigned:
-                    s = calculate_qc_priority_score(t, today)
-                    scored.append((s['score'], t))
-                scored.sort(key=lambda x: -x[0])
-                pt = scored[0][1]
-                primary_ticket = {
-                    'ticket_id': pt.get('ticket_id'),
-                    'title': pt.get('title', ''),
-                    'status': pt.get('status', ''),
-                    'priority': pt.get('priority', ''),
-                    'days_in_qc': pt.get('days_in_qc', 0),
-                    'eta': pt.get('eta'),
-                    'activity_label': pt.get('activity_label', ''),
-                    'module': pt.get('module', ''),
-                    'retest_cycle_count': pt.get('retest_cycle_count', 0),
-                    'tested_by_dev': pt.get('tested_by_dev', False),
-                }
-
-            members.append({
-                'employee_id': emp.employee_id,
-                'name': emp_name,
-                'designation': emp.designation,
-                'platform': emp.platform or 'Web',
-                'activity': activity,
-                'ticket_count': len(assigned),
-                'primary_ticket': primary_ticket,
-                'all_tickets': [
-                    {
-                        'ticket_id': t.get('ticket_id'),
-                        'title': t.get('title', ''),
-                        'status': t.get('status', ''),
-                        'priority': t.get('priority', ''),
-                        'days_in_qc': t.get('days_in_qc', 0),
-                        'activity_label': t.get('activity_label', ''),
-                        'eta': t.get('eta'),
-                        'module': t.get('module', ''),
-                        'tested_by_dev': t.get('tested_by_dev', False),
-                    }
-                    for t in assigned
-                ],
-                'total_qa_estimate_hours': sum(t.get('qa_estimate_hours') or 0 for t in assigned),
-                'total_qa_actual_hours': sum(t.get('qa_actual_hours') or 0 for t in assigned),
-            })
-
-        # Sort: active first, then assigned, then on_hold, then idle
-        activity_order = {'active': 0, 'assigned': 1, 'on_hold': 2, 'idle': 3}
-        members.sort(key=lambda m: (activity_order.get(m['activity'], 9), m['name']))
-
-        return {
-            'members': members,
-            'summary': {
-                'total_members': len(members),
-                'busy': busy_count,
-                'idle': idle_count,
-                'on_hold': sum(1 for m in members if m['activity'] == 'on_hold'),
-                'total_qc_tickets': overview.get('total', 0),
-                'avg_ageing': round(total_days / len(queue), 1) if queue else 0,
-            },
-            'status_cards': overview.get('status_cards', {}),
-        }
-    finally:
-        db.close()
-
-
-@app.get("/team-board/member/{employee_id}")
-def get_team_board_member(employee_id: str):
-    """Single member deep-dive: all assigned tickets with status durations."""
-    db: Session = SessionLocal()
-    try:
-        emp = db.query(Employee).filter(Employee.employee_id == employee_id).first()
-        if not emp:
-            raise HTTPException(status_code=404, detail="Employee not found")
-
-        today = date.today()
-        overview = get_qa_overview_data(db, today)
-        queue = overview.get('queue', [])
-        emp_lower = (emp.name or '').strip().lower()
-
-        assigned = []
-        for t in queue:
-            tester = (t.get('qc_tester') or '').strip().lower()
-            if emp_lower and emp_lower in tester:
-                durations = get_status_durations(db, t['ticket_id'], today)
-                cycles = get_qc_cycle_details(db, t['ticket_id'], today)
-                scoring = calculate_qc_priority_score(t, today)
-                assigned.append({
-                    **t,
-                    'priority_score': scoring['score'],
-                    'status_durations': durations.get('durations', {}),
-                    'total_hold_days': durations.get('total_hold_days', 0),
-                    'cycle_details': cycles,
-                })
-
-        assigned.sort(key=lambda t: -(t.get('priority_score', 0)))
-
-        return {
-            'employee_id': emp.employee_id,
-            'name': emp.name,
-            'designation': emp.designation,
-            'platform': emp.platform or 'Web',
-            'ticket_count': len(assigned),
-            'tickets': assigned,
-        }
-    finally:
-        db.close()
-
-
-@app.get("/team-board/idle-members")
-def get_idle_members():
-    """QA members with no active QC ticket — available for assignment in PM tool."""
-    db: Session = SessionLocal()
-    try:
-        board = get_team_board()
-        idle = [m for m in board['members'] if m['activity'] == 'idle']
-        return {'idle_members': idle, 'count': len(idle)}
-    finally:
-        db.close()
-
-
-@app.get("/team-board/activity-distribution")
-def get_activity_distribution():
-    """Breakdown: how many members on each activity type."""
-    db: Session = SessionLocal()
-    try:
-        board = get_team_board()
-        dist = {}
-        for m in board['members']:
-            activity = m['activity']
-            dist[activity] = dist.get(activity, 0) + 1
-
-        # Also break down by platform
-        platform_dist = {}
-        for m in board['members']:
-            if m['activity'] != 'idle':
-                platform = m.get('platform', 'Web')
-                platform_dist[platform] = platform_dist.get(platform, 0) + 1
-
-        return {
-            'activity_distribution': dist,
-            'platform_distribution': platform_dist,
-            'summary': board['summary'],
-        }
     finally:
         db.close()
 
