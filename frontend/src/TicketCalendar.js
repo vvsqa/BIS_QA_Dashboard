@@ -115,11 +115,11 @@ function TicketMovementSection({ year, month }) {
 
       {(() => {
         const SERIES = [
-          { key: 'new_to_qc', label: 'Released to QC (First-time)', color: 'var(--accent-blue)' },
-          { key: 'refix_to_qc', label: 'Retesting', color: 'var(--accent-red)' },
-          { key: 'to_bis', label: 'Passed to BIS', color: 'var(--accent-purple, #8b5cf6)' },
-          { key: 'approved_for_live', label: 'Approved for Live', color: 'var(--accent-teal)' },
-          { key: 'closed', label: 'Closed', color: 'var(--accent-green)' },
+          { key: 'new_to_qc', label: 'Released to QC (First-time)', color: '#3b82f6' },   // blue
+          { key: 'refix_to_qc', label: 'Retesting', color: '#f59e0b' },                   // amber
+          { key: 'to_bis', label: 'Passed to BIS', color: '#a855f7' },                    // violet
+          { key: 'approved_for_live', label: 'Approved for Live', color: '#06b6d4' },      // cyan
+          { key: 'closed', label: 'Closed', color: '#22c55e' },                           // green
         ];
         const months = (mv.trend || []).slice(-3);  // last 3 months, oldest → newest
         return (
