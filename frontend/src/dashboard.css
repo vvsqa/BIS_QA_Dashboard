@@ -16550,6 +16550,17 @@ a.qcq-ticket-link:hover {
   font-weight: 600;
   font-size: 0.85rem;
 }
+.qcq-planning {
+  color: var(--accent-amber);
+  font-weight: 600;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+.qcq-plan-pending {
+  color: var(--accent-amber);
+  font-size: 0.74rem;
+  font-style: italic;
+}
 
 /* Ageing badge */
 .qcq-age-badge {

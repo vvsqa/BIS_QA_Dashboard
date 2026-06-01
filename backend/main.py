@@ -16095,8 +16095,51 @@ def force_refresh_pm_data():
 
 @app.get("/live/qc-queue")
 def live_qc_queue():
-    """Live QC queue fetched directly from PM API."""
-    return get_live_qc_queue()
+    """Live QC queue fetched directly from PM API, enriched with planning status:
+    a QC-Testing ticket with no qc_tester is 'in_planning' when its PM Assign-To (current_assignee)
+    is a QA-team member (the owner planning it), else truly 'unassigned'."""
+    data = get_live_qc_queue()
+
+    # QA-team name lookup (normalized + compacted + paren-stripped) for the Assign-To check.
+    qa_lookup = set()
+    db: Session = SessionLocal()
+    try:
+        for emp in db.query(Employee).filter(
+            Employee.is_active == True, Employee.archived == False,
+        ).all():
+            if "QA" in (emp.team or "").upper() and emp.name:
+                qa_lookup.add(_normalize_person_name(emp.name))
+                qa_lookup.add(_compact_person_name(emp.name))
+    finally:
+        db.close()
+
+    def _qa_member(name):
+        if not name:
+            return None
+        for v in (name.strip(), _strip_paren(name).strip()):
+            if _normalize_person_name(v) in qa_lookup or _compact_person_name(v) in qa_lookup:
+                return name.strip()
+        return None
+
+    def _enrich_planning(t):
+        if (t.get("status") or "") not in ("QC Testing", "QC Testing in Progress", "QC Testing Hold"):
+            return
+        if t.get("qc_tester"):
+            t["planning_status"] = "assigned"
+            return
+        planner = _qa_member(t.get("current_assignee"))
+        if planner:
+            t["planning_status"] = "in_planning"
+            t["planner"] = planner
+        else:
+            t["planning_status"] = "unassigned"
+
+    for key in ("queue", "qc_failed", "bis_testing", "approved_for_live", "no_qa_estimate"):
+        section = data.get(key)
+        tickets = section.get("tickets") if isinstance(section, dict) else section
+        for t in (tickets or []):
+            _enrich_planning(t)
+    return data
 
 
 @app.get("/live/team-board")
