@@ -192,6 +192,14 @@ function TicketFlow({ ticketId }) {
         <span>In current stage: <b>{fmt(s.current_stage_age, 'd')}</b></span>
       </div>
 
+      {!s.history_complete && legs.length > 0 && (
+        <div className="tspd-flow-notice">
+          ⚠ Earlier history for this ticket isn't recorded — status-transition tracking began {(s.tracking_start || '').slice(0, 10)}.
+          Only stages from then on are shown; the Dev/QC steps that happened before aren't captured.
+          Tickets moving through the pipeline from now on show the complete flow.
+        </div>
+      )}
+
       {legs.length === 0 ? (
         <p style={{ color: 'var(--text-muted)', marginTop: '12px' }}>
           No transition history recorded for this ticket yet (movement tracking began ~May 2026).
@@ -205,15 +213,21 @@ function TicketFlow({ ticketId }) {
             {legs.map((leg, i) => (
               <React.Fragment key={i}>
                 {i > 0 && <span className="tspd-flow-arrow">→</span>}
-                <div className={`tspd-flow-node ${leg.days >= DELAY_DAYS ? 'tspd-flow-delay' : ''} ${leg.is_current ? 'tspd-flow-current' : ''}`}
+                <div className={`tspd-flow-node ${!leg.before_tracking && leg.days >= DELAY_DAYS ? 'tspd-flow-delay' : ''} ${leg.before_tracking ? 'tspd-flow-untracked' : ''} ${leg.is_current ? 'tspd-flow-current' : ''}`}
                   style={{ borderColor: PHASE_COLORS[leg.phase] || '#94a3b8' }}
-                  title={`${leg.status} — ${leg.days}d${leg.hours != null && leg.days < 1 ? ` (${leg.hours}h)` : ''}\n${(leg.entered_on || '').slice(0, 10)} → ${leg.exited_on ? leg.exited_on.slice(0, 10) : 'now'}`}>
+                  title={leg.before_tracking
+                    ? `${leg.status} — entered before tracking began (duration unknown)\n… → ${leg.exited_on ? leg.exited_on.slice(0, 10) : 'now'}`
+                    : `${leg.status} — ${leg.days}d${leg.hours != null && leg.days < 1 ? ` (${leg.hours}h)` : ''}\n${(leg.entered_on || '').slice(0, 10)} → ${leg.exited_on ? leg.exited_on.slice(0, 10) : 'now'}`}>
                   <span className="tspd-flow-dot" style={{ background: PHASE_COLORS[leg.phase] || '#94a3b8' }} />
                   <span className="tspd-flow-status">{leg.status}</span>
-                  <span className="tspd-flow-days" style={{ color: dayColor(leg.days) }}>
-                    {leg.days}d{leg.hours != null && leg.days < 1 ? ` (${leg.hours}h)` : ''}
-                    {leg.days >= DELAY_DAYS ? ' ⚠' : ''}{leg.days === slowest && slowest > 0 ? ' ◆' : ''}
-                  </span>
+                  {leg.before_tracking ? (
+                    <span className="tspd-flow-days" style={{ color: 'var(--text-muted)' }}>⏳ pre-tracking</span>
+                  ) : (
+                    <span className="tspd-flow-days" style={{ color: dayColor(leg.days) }}>
+                      {leg.days}d{leg.hours != null && leg.days < 1 ? ` (${leg.hours}h)` : ''}
+                      {leg.days >= DELAY_DAYS ? ' ⚠' : ''}{leg.days === slowest && slowest > 0 ? ' ◆' : ''}
+                    </span>
+                  )}
                 </div>
               </React.Fragment>
             ))}
@@ -223,7 +237,7 @@ function TicketFlow({ ticketId }) {
             Time distribution <span className="tspd-chart-sub">segment width ∝ days in that status</span>
           </h4>
           <div className="tspd-flow-gantt">
-            {legs.map((leg, i) => (
+            {legs.filter(l => !l.before_tracking && l.days != null).map((leg, i) => (
               <div key={i} className="tspd-flow-seg"
                 title={`${leg.status}: ${leg.days}d (${(leg.entered_on || '').slice(0, 10)} → ${leg.exited_on ? leg.exited_on.slice(0, 10) : 'now'})`}
                 style={{ width: `${Math.max(1.5, (leg.days / totalDays) * 100)}%`, background: PHASE_COLORS[leg.phase] || '#94a3b8' }}>
@@ -253,9 +267,13 @@ function TicketFlow({ ticketId }) {
               <div key={i} className={`tspd-leg ${leg.is_current ? 'tspd-leg-current' : ''}`}>
                 <span className="tspd-leg-dot" style={{ background: PHASE_COLORS[leg.phase] || '#94a3b8' }} />
                 <span className="tspd-leg-status">{leg.status}</span>
-                <span className="tspd-leg-days" style={{ color: dayColor(leg.days) }}>{leg.days}d{leg.hours != null && leg.days < 1 ? ` (${leg.hours}h)` : ''}</span>
+                {leg.before_tracking ? (
+                  <span className="tspd-leg-days" style={{ color: 'var(--text-muted)' }}>pre-tracking</span>
+                ) : (
+                  <span className="tspd-leg-days" style={{ color: dayColor(leg.days) }}>{leg.days}d{leg.hours != null && leg.days < 1 ? ` (${leg.hours}h)` : ''}</span>
+                )}
                 <span className="tspd-leg-dates">
-                  {(leg.entered_on || '').slice(0, 10)}{leg.exited_on ? ` → ${leg.exited_on.slice(0, 10)}` : ' → now'}
+                  {leg.before_tracking ? '… (before tracking)' : (leg.entered_on || '').slice(0, 10)}{leg.exited_on ? ` → ${leg.exited_on.slice(0, 10)}` : ' → now'}
                 </span>
               </div>
             ))}

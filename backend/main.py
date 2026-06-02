@@ -16105,7 +16105,18 @@ def live_qc_queue():
     is a QA-team member (the owner planning it), else truly 'unassigned'."""
     data = get_live_qc_queue()
 
-    # QA-team name lookup (normalized + compacted + paren-stripped) for the Assign-To check.
+    def _name_keys(name):
+        """Match keys for a person name: normalized + compacted, PLUS forms with single-letter
+        initials dropped — so PM 'Amal Raj' matches roster 'Amalraj R' (and vice-versa)."""
+        keys = {_normalize_person_name(name), _compact_person_name(name)}
+        toks = _normalize_person_name(name).split()
+        core = [t for t in toks if len(t) > 1]
+        if core and len(core) != len(toks):
+            keys.add(" ".join(core))
+            keys.add("".join(core))
+        return {k for k in keys if k}
+
+    # QA-team name lookup (normalized + compacted + initial-stripped) for the Assign-To check.
     qa_lookup = set()
     db: Session = SessionLocal()
     try:
@@ -16113,8 +16124,7 @@ def live_qc_queue():
             Employee.is_active == True, Employee.archived == False,
         ).all():
             if "QA" in (emp.team or "").upper() and emp.name:
-                qa_lookup.add(_normalize_person_name(emp.name))
-                qa_lookup.add(_compact_person_name(emp.name))
+                qa_lookup |= _name_keys(emp.name)
     finally:
         db.close()
 
@@ -16122,7 +16132,7 @@ def live_qc_queue():
         if not name:
             return None
         for v in (name.strip(), _strip_paren(name).strip()):
-            if _normalize_person_name(v) in qa_lookup or _compact_person_name(v) in qa_lookup:
+            if _name_keys(v) & qa_lookup:
                 return name.strip()
         return None
 
@@ -16808,33 +16818,57 @@ def _phase_of(status):
     return "Other"
 
 
-def _build_ticket_journey(history, ticket, today):
-    """Ordered status legs for a ticket: each {status, phase, entered/exited, days, hours, current}."""
+def _build_ticket_journey(history, ticket, today, tracking_start=None):
+    """Ordered status legs for a ticket: each {status, phase, entered/exited, days, hours, current}.
+
+    `tracking_start` = the date the transition log began. If the ticket was created before that, the
+    status held before its FIRST recorded transition was really reached via earlier (untracked)
+    transitions — so we must NOT fabricate a created_on→first-transition duration (that produced
+    bogus legs like "BIS Testing 86d" for tickets whose Dev/QC history predates tracking). Such a
+    leg is flagged before_tracking with an unknown duration.
+    """
     legs = []
 
-    def _leg(status, entered, exited, assignee, tester, current=False):
-        if not entered:
+    def _leg(status, entered, exited, assignee, tester, current=False, before_tracking=False):
+        if not entered and not before_tracking:
             return
         end = exited or datetime.combine(today, datetime.min.time())
-        ed = entered.date() if isinstance(entered, datetime) else entered
-        xd = end.date() if isinstance(end, datetime) else end
-        days = max(0, (xd - ed).days)
+        days = None
         hours = None
-        if isinstance(entered, datetime) and isinstance(end, datetime) and end > entered:
-            hours = round((end - entered).total_seconds() / 3600, 1)
+        if entered:
+            ed = entered.date() if isinstance(entered, datetime) else entered
+            xd = end.date() if isinstance(end, datetime) else end
+            days = max(0, (xd - ed).days)
+            if isinstance(entered, datetime) and isinstance(end, datetime) and end > entered:
+                hours = round((end - entered).total_seconds() / 3600, 1)
         legs.append({
             "status": status, "phase": _phase_of(status),
-            "entered_on": entered.isoformat() if hasattr(entered, "isoformat") else None,
+            "entered_on": entered.isoformat() if (entered and hasattr(entered, "isoformat")) else None,
             "exited_on": exited.isoformat() if exited and hasattr(exited, "isoformat") else None,
             "days": days, "hours": hours, "assignee": assignee, "qc_tester": tester,
-            "is_current": current,
+            "is_current": current, "before_tracking": before_tracking,
         })
 
+    def _before_start(dt):
+        if not (dt and tracking_start):
+            return False
+        d = dt.date() if isinstance(dt, datetime) else dt
+        ts = tracking_start.date() if isinstance(tracking_start, datetime) else tracking_start
+        return d < ts
+
     if history:
-        for i, h in enumerate(history):
-            status = h.previous_status or "Created"
-            entered = history[i - 1].changed_on if i > 0 else ticket.created_on
-            _leg(status, entered, h.changed_on, h.current_assignee, h.qc_tester)
+        first = history[0]
+        init_status = first.previous_status or "Created"
+        # Initial status (before first recorded transition): only trust created_on as its start if
+        # the ticket was created within the tracked era; otherwise mark it untracked (unknown duration).
+        if ticket.created_on and not _before_start(ticket.created_on):
+            _leg(init_status, ticket.created_on, first.changed_on, first.current_assignee, first.qc_tester)
+        else:
+            _leg(init_status, None, first.changed_on, first.current_assignee, first.qc_tester, before_tracking=True)
+        # Subsequent legs are bounded by two real recorded transitions → accurate.
+        for i in range(1, len(history)):
+            h = history[i]
+            _leg(h.previous_status or "Created", history[i - 1].changed_on, h.changed_on, h.current_assignee, h.qc_tester)
         last = history[-1]
         _leg(last.new_status, last.changed_on, None, last.current_assignee, last.qc_tester,
              current=(ticket.closed_on is None))
@@ -16901,9 +16935,14 @@ def get_ticket_movement_detail(ticket_id: int):
         summary["eta"] = ticket.eta.isoformat() if ticket.eta else None
         summary["qa_estimate_hours"] = ticket.qa_estimate_hours
         summary["qa_actual_hours"] = ticket.actual_qa_hours
+        # Date the transition log began — used to flag pre-tracking history rather than fabricate it.
+        tracking_start = db.query(func.min(TicketStatusHistory.changed_on)).scalar()
+        journey = _build_ticket_journey(history, ticket, today, tracking_start=tracking_start)
+        summary["tracking_start"] = tracking_start.isoformat() if tracking_start else None
+        summary["history_complete"] = not any(l.get("before_tracking") for l in journey)
         return {
             "summary": summary,
-            "journey": _build_ticket_journey(history, ticket, today),
+            "journey": journey,
             "durations": durations.get("durations", {}),
             "phase_days": summary["phase_days"],
             "cycles": cycles,
