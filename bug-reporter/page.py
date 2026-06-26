@@ -144,6 +144,7 @@ try{ document.documentElement.setAttribute('data-theme', localStorage.getItem('b
       <option value="forest">🌿 Forest</option>
     </select>
     <button class="iconbtn" onclick="window.open('/guide','_blank')" title="Open the user guide (PDF)">📖 User Guide</button>
+    <button class="iconbtn" id="updateBtn" onclick="applyUpdate()" title="Check for and install the latest version" style="display:none"></button>
     <button class="iconbtn" onclick="openSettings()">⚙ Settings</button>
   </header>
 
@@ -306,6 +307,7 @@ try{ document.documentElement.setAttribute('data-theme', localStorage.getItem('b
 
       <div class="row" style="margin-top:10px">
         <input id="bulkTicket" type="number" placeholder="Default Ticket ID (optional)" style="max-width:200px"/>
+        <input id="bulkParent" type="number" placeholder="Parent task # (optional — nests all bugs)" style="max-width:260px"/>
         <input id="bulkMax" type="number" placeholder="# bugs (optional)" style="max-width:150px"/>
       </div>
       <div class="row" style="margin-top:10px">
@@ -419,6 +421,40 @@ async function boot(){
     toast('Could not load Redmine field definitions: '+(e.message||e)+'. Connect to the network once.','bad');
   }
   if(!CFG.key_set){ openSettings(); }
+  checkUpdate();
+}
+
+/* ---- self-update ---- */
+let UPDATE=null;
+async function checkUpdate(){
+  try{
+    const d=await (await fetch('/update/check')).json();
+    UPDATE=d;
+    const b=$('updateBtn'); if(!b) return;
+    if(d.available && d.frozen){
+      b.style.display='';
+      b.textContent='⬆ Update to '+d.latest;
+      b.title=(d.notes||('Version '+d.latest+' is available'))+' — click to install';
+    }else{
+      b.style.display='none';
+    }
+  }catch(e){ /* offline / older server — silently skip */ }
+}
+async function applyUpdate(){
+  if(!UPDATE||!UPDATE.available) return;
+  const b=$('updateBtn');
+  if(!confirm('Update BIS Bug Reporter to '+UPDATE.latest+'?\n\n'+(UPDATE.notes||'')+'\n\nThe app will download the new version and restart.')) return;
+  b.disabled=true; b.textContent='⬇ Downloading…';
+  try{
+    const r=await fetch('/update/apply',{method:'POST'});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail||r.statusText);
+    b.textContent='✓ Restarting…';
+    toast('Updating to '+d.version+' — the app will reopen in a moment. You can close this tab.','ok');
+  }catch(e){
+    b.disabled=false; b.textContent='⬆ Update to '+UPDATE.latest;
+    toast('Update failed: '+(e.message||e),'bad');
+  }
 }
 
 function ticketTouched(){ clearTimeout(window._tt); window._tt=setTimeout(fetchTicketTitle,500); }
@@ -703,6 +739,7 @@ function renderBulk(bugs){
       '<label>Summary<span class="req">*</span></label><input id="b'+i+'_subject" value="'+esc(b.subject)+'"/>'+
       '<div class="grid3" style="margin-top:8px">'+
         '<div><label>Ticket ID<span class="req">*</span></label><input id="b'+i+'_ticket" type="number" value="'+(b.ticket_id||'')+'"/></div>'+
+        '<div><label>Parent task</label><input id="b'+i+'_parent" type="number" placeholder="nests under task #" value="'+(b.parent_task_id||'')+'"/></div>'+
         '<div><label>Severity<span class="req">*</span></label><select id="b'+i+'_severity">'+opts(fv('severity'),b.severity,'—')+'</select></div>'+
         '<div><label>Type<span class="req">*</span></label><select id="b'+i+'_type">'+opts(fv('type'),b.type,'—')+'</select></div>'+
         '<div><label>Environment<span class="req">*</span></label><select id="b'+i+'_environment">'+opts(fv('environment'),b.environment||(CFG.defaults||{}).environment,'—')+'</select></div>'+
@@ -731,9 +768,11 @@ async function createAll(){
     const g=(s)=>($('b'+i+'_'+s)?$('b'+i+'_'+s).value.trim():'');
     const miss=[]; if(!g('ticket'))miss.push('Ticket'); if(!g('subject'))miss.push('Summary'); if(!g('severity'))miss.push('Severity'); if(!g('type'))miss.push('Type'); if(!g('environment'))miss.push('Environment'); if(!g('jam'))miss.push('Jam');
     if(miss.length){ st.textContent='⚠ missing: '+miss.join(', '); st.style.color='#fca5a5'; fail++; done++; continue; }
+    const parent = g('parent') ? parseInt(g('parent')) : (val('bulkParent') ? parseInt(val('bulkParent')) : null);
     const body={subject:g('subject'),ticket_id:parseInt(g('ticket')),severity:g('severity'),environment:g('environment'),type:g('type'),module:g('module'),
       platform:g('platform')||dz.platform||'',os:dz.os||'',browser:dz.browser||'',devices:dz.devices||'',build_version:dz.build_version||'',fix_version_mobile:dz.fix_version_mobile||'',
       jam_link:g('jam'),steps:g('steps'),test_data:g('test_data'),expected:g('expected'),actual:g('actual'),
+      parent_task_id:parent,
       assigned_to_id:g('assignee')?parseInt(g('assignee')):null, source:'bulk', tool_seconds:null};
     try{
       const r=await fetch('/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});

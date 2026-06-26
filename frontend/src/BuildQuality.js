@@ -114,6 +114,77 @@ function FailRow({ row }) {
   );
 }
 
+// Sort comparators for the ticket drill-down (ascending; direction applied by caller)
+const TICKET_SORTS = {
+  ticket_id: (a, b) => a.ticket_id - b.ticket_id,
+  fail_events: (a, b) => a.fail_events - b.fail_events,
+  refix_count: (a, b) => (a.refix_count || 0) - (b.refix_count || 0),
+  module: (a, b) => (a.module || '').localeCompare(b.module || ''),
+  platform: (a, b) => (a.platform || '').localeCompare(b.platform || ''),
+  current_status: (a, b) => (a.current_status || '').localeCompare(b.current_status || ''),
+  qc_tester: (a, b) => (a.qc_tester || '').localeCompare(b.qc_tester || ''),
+  last_failed_on: (a, b) => String(a.last_failed_on || '').localeCompare(String(b.last_failed_on || '')),
+};
+
+// Drill-down modal: a filtered ticket list with its own search / sort / export, reusing FailRow.
+function DrillPanel({ title, subtitle, rows, onClose }) {
+  const [q, setQ] = useState('');
+  const [sk, setSk] = useState('fail_events');
+  const [sd, setSd] = useState('desc');
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+  const term = q.trim().toLowerCase();
+  const filtered = rows.filter(t => !term || String(t.ticket_id).includes(term) || (t.title || '').toLowerCase().includes(term));
+  const sorted = [...filtered].sort((a, b) => { const c = (TICKET_SORTS[sk] || TICKET_SORTS.fail_events)(a, b); return sd === 'asc' ? c : -c; });
+  const toggle = (k) => { if (sk === k) setSd(d => (d === 'asc' ? 'desc' : 'asc')); else { setSk(k); setSd('desc'); } };
+  const H = ({ k, children, left }) => <th onClick={() => toggle(k)} style={{ cursor: 'pointer', textAlign: left ? 'left' : 'center' }}>{children}{sk === k ? (sd === 'asc' ? ' ▲' : ' ▼') : ''}</th>;
+  const exportCsv = () => downloadCsv(
+    `build-quality_${(title || 'tickets').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}.csv`,
+    ['Ticket', 'Title', 'Module', 'Platform', 'Backend dev', 'Frontend dev', 'Refixes', 'Fail events', 'Current status', 'QC tester', 'First failed', 'Last failed'],
+    sorted.map(t => [t.ticket_id, t.title, t.module, t.platform, t.backend_developer, t.frontend_developer, t.refix_count, t.fail_events, t.current_status, t.qc_tester, (t.first_failed_on || '').slice(0, 10), (t.last_failed_on || '').slice(0, 10)]));
+  return (
+    <div className="bq-modal-overlay" onClick={onClose}>
+      <div className="bq-modal" onClick={e => e.stopPropagation()}>
+        <div className="bq-modal-head">
+          <div>
+            <h3 style={{ margin: 0, fontSize: '1rem', color: 'var(--text-primary)' }}>{title}</h3>
+            {subtitle && <p style={{ margin: '2px 0 0', color: 'var(--text-muted)', fontSize: '0.75rem' }}>{subtitle}</p>}
+          </div>
+          <button className="bq-modal-close" onClick={onClose} aria-label="Close">×</button>
+        </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', margin: '10px 0', flexWrap: 'wrap' }}>
+          <input className="qcq-search-input" placeholder="Search ticket / title…" value={q} onChange={e => setQ(e.target.value)} style={{ minWidth: '200px' }} autoFocus />
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.78rem' }}>{sorted.length} ticket{sorted.length === 1 ? '' : 's'}{filtered.length !== rows.length ? ` of ${rows.length}` : ''}</span>
+          <button className="btn btn-sm btn-primary" onClick={exportCsv} disabled={sorted.length === 0} style={{ marginLeft: 'auto' }}>Export CSV</button>
+        </div>
+        <div className="qcq-table-container" style={{ maxHeight: '60vh', overflow: 'auto' }}>
+          <table className="qcq-table" style={{ fontSize: '0.78rem' }}>
+            <thead><tr>
+              <H k="ticket_id">Ticket</H>
+              <th style={{ textAlign: 'left' }}>Title</th>
+              <H k="module">Module</H>
+              <H k="platform">Platform</H>
+              <th>Backend dev</th>
+              <th>Frontend dev</th>
+              <H k="fail_events">Refixes</H>
+              <H k="current_status">Status</H>
+              <H k="qc_tester">QC tester</H>
+              <H k="last_failed_on">Last failed</H>
+            </tr></thead>
+            <tbody>
+              {sorted.map(t => <FailRow key={t.ticket_id} row={t} />)}
+              {sorted.length === 0 && <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: '14px' }}>No tickets match.</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function BuildQuality() {
   const [kind, setKind] = useState('quarter');
   const [offset, setOffset] = useState(0);
@@ -129,6 +200,7 @@ export default function BuildQuality() {
   const [error, setError] = useState(null);
   const [devSort, setDevSort] = useState('reject_pct');
   const [modSort, setModSort] = useState('reject_pct');
+  const [drill, setDrill] = useState(null);   // { title, subtitle, rows } for the drill-down modal
 
   const buildQuery = useCallback((off) => {
     const p = new URLSearchParams();
@@ -175,6 +247,12 @@ export default function BuildQuality() {
   const tickets = (data?.tickets || []).filter(t =>
     !search || String(t.ticket_id).includes(search) || (t.title || '').toLowerCase().includes(search.toLowerCase())
   );
+
+  // Drill-down: open the modal with a labelled subset of the failed-ticket list.
+  const allFailed = data?.tickets || [];
+  const openDrill = (title, subtitle, rows) => { if (rows && rows.length) setDrill({ title, subtitle, rows }); };
+  const devTickets = (name) => allFailed.filter(t => t.backend_developer === name || t.frontend_developer === name);
+  const modTickets = (name) => allFailed.filter(t => (t.module || 'Unassigned') === name);
 
   // ----- Charts -----
   const trend = data?.trend || [];
@@ -223,11 +301,11 @@ export default function BuildQuality() {
     ['Ticket', 'Title', 'Module', 'Platform', 'Backend dev', 'Frontend dev', 'Refixes', 'Fail events', 'Current status', 'QC tester', 'First failed', 'Last failed'],
     tickets.map(t => [t.ticket_id, t.title, t.module, t.platform, t.backend_developer, t.frontend_developer, t.refix_count, t.fail_events, t.current_status, t.qc_tester, (t.first_failed_on || '').slice(0, 10), (t.last_failed_on || '').slice(0, 10)]));
 
-  const AggTable = ({ title, rows, keyLabel, sortKey, setSort, onExport }) => (
+  const AggTable = ({ title, rows, keyLabel, sortKey, setSort, onExport, onRowClick }) => (
     <div className="qcq-section" style={{ marginTop: '14px' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', flexWrap: 'wrap' }}>
         <h3 style={{ fontSize: '0.95rem', margin: 0, color: 'var(--text-primary)' }}>{title}</h3>
-        <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{rows.length} {keyLabel.toLowerCase()}s · sorted by {sortKey === 'reject_pct' ? 'reject %' : sortKey}</span>
+        <span style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{rows.length} {keyLabel.toLowerCase()}s · sorted by {sortKey === 'reject_pct' ? 'reject %' : sortKey} · click a row for its tickets</span>
         <button className="btn btn-sm btn-primary" onClick={onExport} disabled={rows.length === 0} style={{ marginLeft: 'auto' }}>Export CSV</button>
       </div>
       <div className="qcq-table-container">
@@ -242,8 +320,8 @@ export default function BuildQuality() {
           </tr></thead>
           <tbody>
             {rows.map(r => (
-              <tr key={r.name} className="qcq-row">
-                <td style={{ textAlign: 'left' }}>{r.name}</td>
+              <tr key={r.name} className="qcq-row bq-clickable" style={{ cursor: 'pointer' }} onClick={() => onRowClick && onRowClick(r)}>
+                <td style={{ textAlign: 'left' }}>{r.name} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>›</span></td>
                 <td style={{ textAlign: 'center' }}>{r.reached_qc}</td>
                 <td style={{ textAlign: 'center' }}>{r.failed}</td>
                 <td style={{ textAlign: 'center' }}>{r.fail_events}</td>
@@ -292,31 +370,37 @@ export default function BuildQuality() {
         ) : (
           <>
             <div className="qcq-status-cards">
-              <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-green)' }}>
+              <div className="qcq-card bq-clickable" style={{ borderTop: '3px solid var(--accent-green)' }} title="View the tickets that lowered first-pass yield"
+                onClick={() => openDrill('Rejected builds (lowered First-Pass Yield)', `${s.failed_tickets || 0} of ${s.reached_qc || 0} builds bounced — yield ${pct(s.first_pass_yield_pct)}`, allFailed)}>
                 <div className="qcq-card-value" style={{ color: 'var(--accent-green)' }}>{pct(s.first_pass_yield_pct)}</div>
                 <div className="qcq-card-label">First-Pass Yield</div>
                 <Delta now={s.first_pass_yield_pct} prev={ps.first_pass_yield_pct} suffix="%" />
               </div>
-              <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-red)' }}>
+              <div className="qcq-card bq-clickable" style={{ borderTop: '3px solid var(--accent-red)' }} title="View the rejected tickets"
+                onClick={() => openDrill('Rejected tickets', `${s.failed_tickets || 0} of ${s.reached_qc || 0} builds bounced (${pct(s.reject_rate_pct)})`, allFailed)}>
                 <div className="qcq-card-value" style={{ color: 'var(--accent-red)' }}>{pct(s.reject_rate_pct)}</div>
                 <div className="qcq-card-label">QC Reject Rate</div>
                 <Delta now={s.reject_rate_pct} prev={ps.reject_rate_pct} suffix="%" goodWhenDown />
               </div>
-              <div className="qcq-card qcq-card-total">
+              <div className="qcq-card qcq-card-total bq-clickable" title="View all tickets that failed QC"
+                onClick={() => openDrill('Tickets that failed QC', `${s.failed_tickets || 0} tickets failed of ${s.reached_qc || 0} that reached QC`, allFailed)}>
                 <div className="qcq-card-value">{s.failed_tickets || 0}</div>
                 <div className="qcq-card-label">Tickets failed QC</div>
                 <div className="qcq-card-sub">of {s.reached_qc || 0} reaching QC</div>
               </div>
-              <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-amber)' }}>
+              <div className="qcq-card bq-clickable" style={{ borderTop: '3px solid var(--accent-amber)' }} title="View tickets by fail-event count"
+                onClick={() => openDrill('Fail events by ticket', `${s.fail_events || 0} total QC Review Fail events across ${s.failed_tickets || 0} tickets`, allFailed)}>
                 <div className="qcq-card-value">{s.fail_events || 0}</div>
                 <div className="qcq-card-label">Total fail events</div>
                 <Delta now={s.fail_events} prev={ps.fail_events} goodWhenDown />
               </div>
-              <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-blue)' }}>
+              <div className="qcq-card bq-clickable" style={{ borderTop: '3px solid var(--accent-blue)' }} title="View failed tickets by refix count"
+                onClick={() => openDrill('Failed tickets by refixes', `Average ${s.avg_refix_per_failed || 0} refixes per failed ticket`, allFailed)}>
                 <div className="qcq-card-value">{s.avg_refix_per_failed || 0}</div>
                 <div className="qcq-card-label">Avg refixes / failed</div>
               </div>
-              <div className="qcq-card" style={{ borderTop: '3px solid var(--accent-red)' }}>
+              <div className="qcq-card bq-clickable" style={{ borderTop: '3px solid var(--accent-red)' }} title="View repeat-offender tickets"
+                onClick={() => openDrill('Repeat offenders (≥2× fails)', `${s.repeat_offenders || 0} tickets bounced QC two or more times`, allFailed.filter(t => t.fail_events >= 2))}>
                 <div className="qcq-card-value">{s.repeat_offenders || 0}</div>
                 <div className="qcq-card-label">Repeat offenders (≥2×)</div>
               </div>
@@ -358,8 +442,10 @@ export default function BuildQuality() {
               </label>
             </div>
 
-            <AggTable title="Worst developers" rows={devRows} keyLabel="Developer" sortKey={devSort} setSort={setDevSort} onExport={exportDevs} />
-            <AggTable title="Worst modules" rows={modRows} keyLabel="Module" sortKey={modSort} setSort={setModSort} onExport={exportMods} />
+            <AggTable title="Worst developers" rows={devRows} keyLabel="Developer" sortKey={devSort} setSort={setDevSort} onExport={exportDevs}
+              onRowClick={r => openDrill(`Failed tickets — ${r.name}`, `${r.failed} failed of ${r.reached_qc} delivered · ${pct(r.reject_pct)} reject · ${r.fail_events} fail events (credited as backend or frontend dev)`, devTickets(r.name))} />
+            <AggTable title="Worst modules" rows={modRows} keyLabel="Module" sortKey={modSort} setSort={setModSort} onExport={exportMods}
+              onRowClick={r => openDrill(`Failed tickets — ${r.name}`, `${r.failed} failed of ${r.reached_qc} delivered · ${pct(r.reject_pct)} reject · ${r.fail_events} fail events`, modTickets(r.name))} />
 
             <div className="qcq-section" style={{ marginTop: '14px' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px', flexWrap: 'wrap' }}>
@@ -395,6 +481,7 @@ export default function BuildQuality() {
             </p>
           </>
         )}
+        {drill && <DrillPanel title={drill.title} subtitle={drill.subtitle} rows={drill.rows} onClose={() => setDrill(null)} />}
       </main>
     </div>
   );

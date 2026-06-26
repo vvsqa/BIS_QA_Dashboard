@@ -27,6 +27,7 @@ from pydantic import BaseModel
 
 # --------------------------------------------------------------------------- config
 APP_NAME = "bis-bug-reporter"
+APP_VERSION = "1.1.0"          # bump on each packaged release; compared against the dashboard manifest
 PORT = int(os.environ.get("BUG_REPORTER_PORT", "8765"))
 
 DEFAULT_REDMINE_URL = "https://redmine.bissafety.app"
@@ -128,6 +129,134 @@ def shutdown():
         os._exit(0)
     threading.Thread(target=_bye, daemon=True).start()
     return {"ok": True}
+
+
+# --------------------------------------------------------------------------- self-update
+def _vtuple(s):
+    """Parse a dotted version like '1.2.0' into a comparable tuple; non-numeric parts sort as 0."""
+    out = []
+    for part in str(s or "").split("."):
+        try:
+            out.append(int(part))
+        except ValueError:
+            out.append(0)
+    return tuple(out) or (0,)
+
+
+def _is_frozen():
+    return bool(getattr(sys, "frozen", False))
+
+
+@app.get("/version")
+def version():
+    """This utility's own version (so the page can show it and the updater can compare)."""
+    return {"version": APP_VERSION, "frozen": _is_frozen(), "exe": (sys.executable if _is_frozen() else None)}
+
+
+@app.get("/update/check")
+def update_check():
+    """Ask the dashboard for the latest packaged version and report whether an update is available.
+    Read-only — never downloads anything."""
+    cfg = load_config()
+    dash = (cfg.get("dashboard_url") or DEFAULT_DASHBOARD_URL).rstrip("/")
+    try:
+        r = requests.get(f"{dash}/bug-reporter/latest", timeout=10)
+        if r.status_code != 200:
+            raise HTTPException(status_code=502, detail=f"Update server returned {r.status_code}.")
+        m = r.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Couldn't reach the update server: {e}")
+    latest = str(m.get("version") or "0.0.0")
+    available = m.get("available", True) and _vtuple(latest) > _vtuple(APP_VERSION)
+    return {
+        "current": APP_VERSION,
+        "latest": latest,
+        "available": bool(available),
+        "notes": m.get("notes") or "",
+        "size": m.get("size") or 0,
+        "built_on": m.get("built_on"),
+        "frozen": _is_frozen(),
+        "download_url": (dash + (m.get("download_url") or "")) if m.get("download_url") else None,
+    }
+
+
+@app.post("/update/apply")
+def update_apply():
+    """Download the latest exe next to the running one, then hand off to a tiny updater script that
+    swaps the file once this process exits and relaunches it. Only works for the packaged .exe."""
+    if not _is_frozen():
+        raise HTTPException(status_code=400, detail="Self-update only works for the packaged BIS-Bug-Reporter.exe (you're running from source).")
+    info = update_check()
+    if not info["available"] or not info["download_url"]:
+        raise HTTPException(status_code=409, detail="No update available.")
+
+    cur_exe = os.path.abspath(sys.executable)
+    exe_dir = os.path.dirname(cur_exe)
+    new_exe = os.path.join(exe_dir, "BIS-Bug-Reporter.new.exe")
+
+    # 1) download the new binary
+    try:
+        with requests.get(info["download_url"], stream=True, timeout=120) as resp:
+            if resp.status_code != 200:
+                raise HTTPException(status_code=502, detail=f"Download failed ({resp.status_code}).")
+            written = 0
+            with open(new_exe, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=262144):
+                    if chunk:
+                        f.write(chunk)
+                        written += len(chunk)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Download failed: {e}")
+    # sanity: a real exe is large; an error page is not
+    if written < 1_000_000:
+        try:
+            os.remove(new_exe)
+        except OSError:
+            pass
+        raise HTTPException(status_code=502, detail="Downloaded file looks too small to be the app — aborting.")
+
+    # 2) updater script: waits for THIS exe to unlock, swaps in the new one, relaunches it
+    bat = os.path.join(exe_dir, "_bug_reporter_update.bat")
+    script = (
+        "@echo off\r\n"
+        "setlocal\r\n"
+        f'set "CUR={cur_exe}"\r\n'
+        f'set "NEW={new_exe}"\r\n'
+        ":retry\r\n"
+        'move /y "%NEW%" "%CUR%" >nul 2>&1\r\n'
+        "if errorlevel 1 (\r\n"
+        "  timeout /t 1 /nobreak >nul\r\n"
+        "  goto retry\r\n"
+        ")\r\n"
+        'start "" "%CUR%"\r\n'
+        'del "%~f0"\r\n'
+    )
+    try:
+        with open(bat, "w", encoding="utf-8") as f:
+            f.write(script)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Couldn't write the updater: {e}")
+
+    # 3) launch the updater detached, then exit so the exe file unlocks for the swap
+    try:
+        DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        import subprocess
+        subprocess.Popen(["cmd", "/c", bat], cwd=exe_dir, creationflags=DETACHED,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         close_fds=True)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Couldn't launch the updater: {e}")
+
+    def _bye():
+        import time as _t
+        _t.sleep(0.8)
+        os._exit(0)
+    threading.Thread(target=_bye, daemon=True).start()
+    return {"ok": True, "version": info["latest"], "restarting": True}
 
 
 @app.get("/config")

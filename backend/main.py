@@ -27077,6 +27077,41 @@ def bug_reporter_stats(reporter: Optional[str] = Query(None)):
         db.close()
 
 
+# Where the packaged utility lives for download + the version manifest the utility self-update reads.
+BUGREP_EXE_REL = "tools/BIS-Bug-Reporter.exe"            # under uploads/ → served at /uploads/tools/...
+BUGREP_VERSION_FILE = os.path.join(os.path.dirname(__file__), "data", "bug_reporter_version.json")
+
+
+@app.get("/bug-reporter/latest")
+def bug_reporter_latest():
+    """Latest packaged BIS Bug Reporter version + download URL, consumed by the utility's in-app
+    'Update' button. Version is maintained in backend/data/bug_reporter_version.json (bumped when a
+    new exe is deployed to uploads/tools/). Returns the relative /uploads download path and the exe's
+    size/mtime so the client can show progress and confirm a real binary is present."""
+    import json as _json   # main.py has no module-level `import json` — match the local-import pattern
+    ver, notes = "0.0.0", ""
+    try:
+        if os.path.exists(BUGREP_VERSION_FILE):
+            with open(BUGREP_VERSION_FILE, "r", encoding="utf-8") as f:
+                m = _json.load(f)
+            ver = str(m.get("version") or ver)
+            notes = str(m.get("notes") or "")
+    except Exception:
+        pass
+    exe_path = os.path.join(UPLOADS_ROOT, *BUGREP_EXE_REL.split("/"))
+    exists = os.path.exists(exe_path)
+    size = os.path.getsize(exe_path) if exists else 0
+    mtime = (datetime.utcfromtimestamp(os.path.getmtime(exe_path)).isoformat() + "Z") if exists else None
+    return {
+        "version": ver,
+        "notes": notes,
+        "download_url": "/uploads/" + BUGREP_EXE_REL,   # join with the utility's configured dashboard_url
+        "available": exists,
+        "size": size,
+        "built_on": mtime,
+    }
+
+
 def _bug_reporter_ticket_stats(db, ticket_id):
     """Per-ticket BIS Bug Reporter rollup used to TIGHTEN the QA estimation recalc: bug count, the avg
     REAL measured fill->create tool time (min/bug), total minutes saved vs hand-filing, TestRail-coupled
