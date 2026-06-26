@@ -20,9 +20,12 @@ import QAActivitySummary from "./QAActivitySummary";
 import ResourcePlanner from "./ResourcePlanner";
 import DevDashboard from "./DevDashboard";
 import EmployeePerformance from "./EmployeePerformance";
+import TicketEstimation from "./TicketEstimation";
 import TicketSpeed from "./TicketSpeed";
-import AutomationUtilization from "./AutomationUtilization";
+import BuildQuality from "./BuildQuality";
+import AutomationDashboard from "./AutomationDashboard";
 import TicketCalendar from "./TicketCalendar";
+import ReportsCenter from "./ReportsCenter";
 import ClientProfiles from "./ClientProfiles";
 import ClientModuleAccess from "./ClientModuleAccess";
 import { isPathAllowedForClient } from "./clientModules";
@@ -168,9 +171,12 @@ function NewModuleRoutes() {
       <Route path="/resource-planner" element={<ResourcePlanner />} />
       <Route path="/dev-dashboard" element={<DevDashboard />} />
       <Route path="/employee-performance" element={<EmployeePerformance />} />
+      <Route path="/qa-estimation" element={<TicketEstimation />} />
       <Route path="/ticket-speed" element={<TicketSpeed />} />
-      <Route path="/automation" element={<AutomationUtilization />} />
+      <Route path="/build-quality" element={<BuildQuality />} />
+      <Route path="/automation" element={<AutomationDashboard />} />
       <Route path="/ticket-calendar" element={<TicketCalendar />} />
+      <Route path="/reports-center" element={<ReportsCenter />} />
       <Route path="/calendar" element={<CalendarModule />} />
     </Routes>
   );
@@ -183,7 +189,7 @@ function IsNewModulePath() {
 
 function AppRouter() {
   const location = useLocation();
-  const isNew = ['/', '/qc-queue', '/activity-summary', '/qa-summary', '/resource-planner', '/dev-dashboard', '/employee-performance', '/ticket-speed', '/automation', '/ticket-calendar', '/calendar'].includes(location.pathname);
+  const isNew = ['/', '/qc-queue', '/activity-summary', '/qa-summary', '/resource-planner', '/dev-dashboard', '/employee-performance', '/qa-estimation', '/ticket-speed', '/build-quality', '/automation', '/ticket-calendar', '/reports-center', '/calendar'].includes(location.pathname);
 
   if (isNew) {
     return (

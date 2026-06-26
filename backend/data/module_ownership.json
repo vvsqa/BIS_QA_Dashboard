@@ -1,64 +1,146 @@
 {
-  "last_updated": "2026-05-21T14:37:05.976423",
+  "last_updated": "2026-06-05",
   "modules": {
     "Forms": {
-      "primary_owners": ["Aravind K V"],
-      "support_owners": ["Sariga KA", "Amalraj R"]
+      "primary_owners": [
+        "Aravind K V"
+      ],
+      "support_owners": [
+        "Sariga KA",
+        "Amalraj R"
+      ]
     },
     "Classroom Calendar": {
-      "primary_owners": ["Suby Baby"],
-      "support_owners": ["Kavyagayathry S"]
+      "primary_owners": [
+        "Suby Baby"
+      ],
+      "support_owners": [
+        "Kavyagayathry S"
+      ]
     },
     "Reporting": {
-      "primary_owners": ["Amalraj R"],
-      "support_owners": ["Aravind K V", "Kavyagayathry S"]
+      "primary_owners": [
+        "Amalraj R"
+      ],
+      "support_owners": [
+        "Aravind K V",
+        "Kavyagayathry S"
+      ]
     },
     "Training Matrix": {
-      "primary_owners": ["Julie Varghese"],
-      "support_owners": ["Vincy JP"]
+      "primary_owners": [
+        "Julie Varghese"
+      ],
+      "support_owners": [
+        "Vincy JP"
+      ]
     },
     "Assets": {
-      "primary_owners": ["Subhash S V Nair"],
-      "support_owners": ["Aravind K V"]
+      "primary_owners": [
+        "Subhash S V Nair"
+      ],
+      "support_owners": [
+        "Aravind K V"
+      ]
     },
     "Accounting": {
-      "primary_owners": ["Reshma R"],
-      "support_owners": ["Anna Job"]
+      "primary_owners": [
+        "Reshma R"
+      ],
+      "support_owners": [
+        "Anna Job"
+      ]
     },
     "Training Record Management": {
-      "primary_owners": ["Julie Varghese"],
-      "support_owners": ["Nandana TR"]
+      "primary_owners": [
+        "Julie Varghese"
+      ],
+      "support_owners": [
+        "Nandana TR"
+      ]
     },
     "Folders": {
-      "primary_owners": ["Reshma Madhavan Nair"],
-      "support_owners": ["Subhash S V Nair"]
+      "primary_owners": [
+        "Reshma Madhavan Nair"
+      ],
+      "support_owners": [
+        "Subhash S V Nair"
+      ]
     },
     "Project Management": {
-      "primary_owners": [],
+      "primary_owners": [
+        "Vivek V Nair"
+      ],
       "support_owners": []
     },
     "E-Commerce": {
-      "primary_owners": ["Reshma Madhavan Nair"],
-      "support_owners": ["Nandana TR"]
+      "primary_owners": [
+        "Reshma Madhavan Nair"
+      ],
+      "support_owners": [
+        "Nandana TR"
+      ]
     },
     "User Management": {
-      "primary_owners": ["Aravind K V"],
-      "support_owners": ["Sariga KA"]
+      "primary_owners": [
+        "Aravind K V"
+      ],
+      "support_owners": [
+        "Sariga KA"
+      ]
     },
     "Online Course": {
-      "primary_owners": ["Vincy JP"],
-      "support_owners": ["Suby Baby", "Reshma Madhavan Nair"]
+      "primary_owners": [
+        "Vincy JP"
+      ],
+      "support_owners": [
+        "Suby Baby",
+        "Reshma Madhavan Nair"
+      ]
     },
     "Reporting Dashboard": {
-      "primary_owners": ["Kavyagayathry S"],
-      "support_owners": ["Amalraj R", "Anna Job"]
+      "primary_owners": [
+        "Kavyagayathry S"
+      ],
+      "support_owners": [
+        "Amalraj R",
+        "Anna Job"
+      ]
     },
     "Virtual Proctor": {
-      "primary_owners": ["Subhash S V Nair"],
+      "primary_owners": [
+        "Subhash S V Nair"
+      ],
       "support_owners": []
     },
     "Playbook": {
-      "primary_owners": ["Reshma R"],
+      "primary_owners": [
+        "Reshma R"
+      ],
+      "support_owners": []
+    },
+    "BIS Safety Software": {
+      "primary_owners": [
+        "Vishnu VS"
+      ],
+      "support_owners": []
+    },
+    "Task Management": {
+      "primary_owners": [
+        "Kavyagayathry S"
+      ],
+      "support_owners": []
+    },
+    "New AI Initiatives": {
+      "primary_owners": [
+        "Vishnu VS"
+      ],
+      "support_owners": []
+    },
+    "Incident & Problem Management": {
+      "primary_owners": [
+        "Vishnu VS"
+      ],
       "support_owners": []
     }
   },
@@ -80,7 +162,8 @@
     "Suby Baby",
     "Varsha Dcruz P",
     "Vincy JP",
-    "Vivek V Nair"
+    "Vivek V Nair",
+    "Vishnu VS"
   ],
   "main_modules": [
     "Forms",
@@ -106,6 +189,7 @@
     "Gautham Krishna"
   ],
   "automation_team": [
+    "Vishnu VS",
     "Varsha Dcruz P",
     "Vivek V Nair"
   ],

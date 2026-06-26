@@ -12,6 +12,7 @@ import re
 import calendar
 import tempfile
 import os
+import sys
 import shutil
 import time
 import logging
@@ -38,6 +39,10 @@ from models import (
     User, AdminConfig, ClientProfile,
     AutomationTestRun, AutomationTestCase,
     PerformanceSnapshot, QAFlowSnapshot, TicketMovementSnapshot,
+    AutomationCase, AutomationExecution, AutomationSnapshot, AppSetting,
+    TestPlanRequest, WeeklyTicketReview, PerformanceNote,
+    TicketEstimation, TicketEstimationRound, TestPlanCaseLog,
+    PerformerRecord, BugReporterEvent,
 )
 from auth import (
     authenticate_user, hash_password, create_access_token,
@@ -71,6 +76,9 @@ from dev_planning import (
 from google_sheets_sync import GoogleSheetsSync, get_sheets_sync_status
 from sheets_scheduler import get_scheduler, start_auto_sync, stop_auto_sync
 from pm_tracker_scheduler import start_pm_auto_sync, stop_pm_auto_sync, get_pm_scheduler_status, unpause_pm_sync
+from automation_scheduler import start_automation_auto_sync
+from test_plan_queue_scheduler import start_test_plan_queue_scheduler
+from review_autostatus_scheduler import start_review_autostatus_scheduler
 from sync_health import sync_health
 from redmine_scheduler import start_redmine_auto_sync, stop_redmine_auto_sync, get_redmine_scheduler_status
 from monthly_report_scheduler import (
@@ -283,6 +291,27 @@ async def startup_event():
             print("[INFO] TestRail auto-sync is disabled (set TESTRAIL_AUTO_SYNC=true to enable)")
     except Exception as e:
         print(f"[WARNING] Failed to start TestRail auto-sync: {e}")
+    try:
+        if start_automation_auto_sync():
+            print("[OK] Automation daily sync started (TestRail Project 18 catalog/executions/snapshot)")
+        else:
+            print("[INFO] Automation auto-sync is disabled (set AUTOMATION_AUTO_SYNC=true to enable)")
+    except Exception as e:
+        print(f"[WARNING] Failed to start Automation auto-sync: {e}")
+    try:
+        if start_test_plan_queue_scheduler():
+            print("[OK] Test-plan queue scheduler started (auto-enqueues first-time QC tickets needing a plan)")
+        else:
+            print("[INFO] Test-plan queue scheduler is disabled (set TEST_PLAN_QUEUE_AUTO=true to enable)")
+    except Exception as e:
+        print(f"[WARNING] Failed to start test-plan queue scheduler: {e}")
+    try:
+        if start_review_autostatus_scheduler():
+            print("[OK] Review auto-status scheduler started (Draft→Reviewed once plan execution begins)")
+        else:
+            print("[INFO] Review auto-status scheduler is disabled (set REVIEW_AUTOSTATUS_AUTO=true to enable)")
+    except Exception as e:
+        print(f"[WARNING] Failed to start review auto-status scheduler: {e}")
     try:
         if start_sheets_export_scheduler():
             print("[OK] Google Sheets Export auto-sync started (exports every hour)")
@@ -3715,7 +3744,16 @@ def sync_latest_ticket_report():
     try:
         success, message, stats, sync_source, _, _ = _sync_from_api(db, start_time)
         duration_seconds = time.time() - start_time
-        
+
+        if success:
+            # Drop the live caches so the dashboard reflects this sync immediately (otherwise the
+            # 5-min PM cache + 60s response cache keep serving pre-sync data — looks like "no sync").
+            try:
+                from pm_live_data import invalidate_pm_cache
+                invalidate_pm_cache()
+            except Exception as e:
+                logging.warning(f"sync-latest: cache invalidation failed: {e}")
+
         return {
             "success": success,
             "message": message,
@@ -4036,6 +4074,13 @@ def trigger_testrail_sync():
         status_code = 200 if result.get("success") else 500
         if status_code != 200:
             raise HTTPException(status_code=status_code, detail=result)
+        # Refresh the TestRail plan map + clear computed responses so a just-synced plan shows now.
+        try:
+            from pm_live_data import force_refresh_testrail, clear_response_cache
+            clear_response_cache()
+            force_refresh_testrail()
+        except Exception as e:
+            logging.warning(f"testrail/sync: cache invalidation failed: {e}")
         return result
     except HTTPException:
         raise
@@ -4052,6 +4097,12 @@ def trigger_redmine_sync(all_bugs: bool = Query(True, description="Include all b
     """
     try:
         processed, created, updated = sync_redmine_bugs(all_bugs=all_bugs)
+        # Reset the Redmine external cache + computed responses so new bug counts show immediately.
+        try:
+            from pm_live_data import clear_response_cache
+            clear_response_cache()
+        except Exception as e:
+            logging.warning(f"redmine/sync: cache invalidation failed: {e}")
         return {
             "success": True,
             "message": "Redmine sync completed",
@@ -6825,6 +6876,8 @@ def _build_employee_metrics(db, employee, start_date, end_date, is_dev, is_manag
                 )
             if start_date:
                 ticket_query = ticket_query.filter(TicketTracking.updated_on >= start_date)
+            if end_date:
+                ticket_query = ticket_query.filter(TicketTracking.updated_on <= end_date)
             tickets = ticket_query.all()
         ticket_ids = [t.ticket_id for t in tickets]
 
@@ -6859,6 +6912,8 @@ def _build_employee_metrics(db, employee, start_date, end_date, is_dev, is_manag
                 bug_query = bug_query.filter(Bug.author.ilike(f"%{employee_name}%"))
             if start_date:
                 bug_query = bug_query.filter(Bug.created_on >= start_date)
+            if end_date:
+                bug_query = bug_query.filter(Bug.created_on <= end_date)
             bugs = bug_query.all()
         total_bugs = len(bugs)
 
@@ -6944,6 +6999,8 @@ def _build_employee_metrics(db, employee, start_date, end_date, is_dev, is_manag
             )
             if start_date:
                 test_query = test_query.filter(TestResult.created_on >= start_date)
+            if end_date:
+                test_query = test_query.filter(TestResult.created_on <= end_date)
             tests = test_query.all()
         test_results = tests
         total_tests = len(test_results)
@@ -6984,9 +7041,11 @@ def _build_employee_metrics(db, employee, start_date, end_date, is_dev, is_manag
         )
         if start_date:
             enhanced_query = enhanced_query.filter(EnhancedTimesheet.date >= start_date.date())
+        if end_date:
+            enhanced_query = enhanced_query.filter(EnhancedTimesheet.date <= end_date.date())
         enhanced_entries = enhanced_query.all()
         if enhanced_entries:
-            total_hours = round(sum(e.hours_logged or 0 for e in enhanced_entries), 1)
+            total_hours = round(sum(_eff_hours(e) for e in enhanced_entries), 1)
             timesheet_entries_count = len(enhanced_entries)
         else:
             timesheet_query = db.query(Timesheet).filter(
@@ -6994,12 +7053,14 @@ def _build_employee_metrics(db, employee, start_date, end_date, is_dev, is_manag
             )
             if start_date:
                 timesheet_query = timesheet_query.filter(Timesheet.date >= start_date.date())
+            if end_date:
+                timesheet_query = timesheet_query.filter(Timesheet.date <= end_date.date())
             timesheets = timesheet_query.all()
             total_minutes = sum(t.time_logged_minutes or 0 for t in timesheets)
             total_hours = round(total_minutes / 60, 1)
             timesheet_entries_count = len(timesheets)
     else:
-        total_hours = round(sum(e.hours_logged or 0 for e in timesheet_entries), 1)
+        total_hours = round(sum(_eff_hours(e) for e in timesheet_entries), 1)
         timesheet_entries_count = len(timesheet_entries)
 
     # Calculate working days in period
@@ -7112,13 +7173,68 @@ def get_employee_performance(
 
 
 # Leaderboard weights (sum = 100). Tune here.
-# Presence (attendance) is a major billing criterion; quality stays high; throughput credits
-# work awaiting external review so raw closure count is not the deciding factor.
-LEADERBOARD_WEIGHTS = {"presence": 25, "throughput": 20, "output": 12, "quality": 30, "efficiency": 13}
+# Ranking is led by THROUGHPUT (tickets taken × complexity) and TICKET_FOCUS (share of logged
+# time spent on real tickets vs non-ticket tasks). Bug volume is only a small capped bonus
+# (`output`) and no longer inflates `quality` — a clean, low-bug ticket is not penalised.
+LEADERBOARD_WEIGHTS = {
+    "throughput": 31,     # tickets taken × TESTING complexity (depth) — the primary signal
+    "ticket_focus": 14,   # ticket-related logged time ÷ total worked time (calendar)
+    "quality": 20,        # pass-rate / rejections / utilization — NOT bug count
+    "presence": 14,       # attendance + productive hours (billing)
+    "efficiency": 13,     # on-time vs target (33% of dev / revised) + estimate accuracy + utilization
+    "output": 8,          # bugs found / tests — small capped bonus only
+}
+# Manager-comment adjustment (the "Diligence" line) is NOT a weighted 0-100 metric — it is a signed
+# adjustment added directly to the composite: 0 by default, + for positive notes, − for negative.
+MANAGER_ADJ_CAP = 40  # max absolute swing from manager comments
+
+# Per-ticket testing-complexity multiplier on top of the depth weight (uses ticket_complexity engine).
+# High-complexity delivery is weighted more heavily so testers who take on hard tickets rank higher.
+def _cx_multiplier(level):
+    return {"High": 1.9, "Medium": 1.0, "Low": 0.7}.get(level, 1.0)
+
+# Aravind's team-management time is capped at this many hours/day for rating (excess ignored entirely).
+ARAVIND_TEAM_MGMT_DAILY_CAP = 1.0
+
+# Ticket-vs-non-ticket classification of timesheet entries (for the ticket_focus sub-score).
+# A numeric ticket_id (optionally a leading '#') is real ticket work; anything else is a
+# non-ticket task (Learning, Team Management, Meetings, Discussions, Code Reviews, …) or leave.
+_TICKET_ID_RE = re.compile(r"^#?\d{3,}$")
+
+
+def _ts_is_ticket(e):
+    if _TICKET_ID_RE.match((e.ticket_id or "").strip()):
+        return True
+    # Customer Support is ticket-related work (counts toward ticket focus, not "non-ticket task").
+    blob = ((e.ticket_id or "") + " " + (getattr(e, "task_description", "") or "")).lower()
+    return "customer support" in blob or "customer-support" in blob
+
+
+def _ts_is_team_mgmt(e):
+    blob = ((e.ticket_id or "") + " " + (getattr(e, "task_description", "") or "")).lower()
+    return "team management" in blob or "team mgmt" in blob
+
+
+def _ts_is_leave(e):
+    if (e.leave_type or "").strip():
+        return True
+    t = (e.ticket_id or "").strip().lower()
+    return t in ("leave", "wfh", "holiday") or "leave" in t
+
+
+def _eff_hours(e):
+    """Effective worked hours for a timesheet entry. The MANAGER-set `productive_hours` is the
+    authoritative figure (entered at month-end, sometimes trimmed for non-productive time); until
+    it's filled, fall back to the resource-entered `hours_logged`. Matches the Calendar module."""
+    return e.productive_hours if (e.productive_hours or 0) > 0 else (e.hours_logged or 0)
 
 # Leave is a billing loss: deduct this many composite points per leave day taken, capped.
 LEAVE_PENALTY_PER_DAY = 1.5
 LEAVE_PENALTY_CAP = 15
+# Handing a ticket to BIS while its test run still has UNEXECUTED cases = incomplete testing.
+# Modest, bounded deduction so one stuck ticket can't tank a score (current-state signal only).
+BIS_UNEXEC_PENALTY_PER = 4.0
+BIS_UNEXEC_PENALTY_CAP = 12.0
 # Leave types that count as a billing-loss absence (WFH = still working; Holiday = company-wide).
 ABSENCE_LEAVE_TYPES = ("leave", "sick leave", "casual leave", "half day", "earned leave", "lop")
 
@@ -7127,6 +7243,10 @@ ABSENCE_LEAVE_TYPES = ("leave", "sick leave", "casual leave", "half day", "earne
 # aren't penalized for a low closed-count caused by tickets sitting in review.
 AWAITING_REVIEW_STATUSES = ("BIS Testing", "Approved for Live")
 AWAITING_CREDIT = 0.7  # partial credit vs a fully shipped ticket
+# QA throughput also rewards raw test-execution VOLUME (more cases executed = more weight).
+# 0.07 makes the top executor (~695 cases → ~49 pts) slightly OUTWEIGH the top complexity-volume
+# (~44), so execution volume is the primary throughput driver while tickets still count.
+EXEC_THROUGHPUT_FACTOR = 0.07
 
 # QA testers on the mobile/sprint model — excluded from the QA board. (Now empty: all QA team
 # members are considered, including the mobile testers Anjaly/Arya.)
@@ -7134,8 +7254,18 @@ MOBILE_QA_EXCLUDE = ()
 
 # Specific people excluded from the leaderboard. Compact-name matches disambiguate similar names
 # ("Vishnu V S" excluded but "Vishnu CS" kept); token matches use a unique first name.
-PERFORMANCE_EXCLUDE_COMPACT = ("vishnuvs",)
-PERFORMANCE_EXCLUDE_TOKENS = ("vivek", "varsha")  # Vivek V Nair, Varsha Dcruz P
+PERFORMANCE_EXCLUDE_COMPACT = ("vishnuvs", "johndemendoza", "preetimaan")
+PERFORMANCE_EXCLUDE_TOKENS = ("vivek", "varsha", "preeti", "mendoza")  # Vivek V Nair, Varsha Dcruz P;
+# Preeti Maan + John De-Mendoza are BIS-QA team (not our QA team) — excluded from QA lists/boards.
+
+
+def _is_qa_excluded(name):
+    """True if `name` should be kept off the QA team lists/boards (shared by the leaderboard and the
+    review modules' _qa_team_members)."""
+    if _compact_person_name(name) in PERFORMANCE_EXCLUDE_COMPACT:
+        return True
+    toks = _normalize_person_name(name).split()
+    return any(x in toks for x in PERFORMANCE_EXCLUDE_TOKENS)
 
 
 def _ticket_complexity(t, is_dev):
@@ -7149,6 +7279,16 @@ def _ticket_complexity(t, is_dev):
     est = (t.dev_estimate_hours if is_dev else t.qa_estimate_hours) or 0
     depth_hours = actual or est  # prefer real effort; fall back to estimate
     return priority_weight * (1 + min(depth_hours, 40) / 40)
+
+
+def _complexity_band(score):
+    """Word label for a per-ticket complexity score, so the report shows words not a raw rating.
+    Bands chosen against the _ticket_complexity range (~1.0–6.0)."""
+    if score < 2.5:
+        return "Simple"
+    if score < 4.0:
+        return "Moderate"
+    return "Complex"
 
 
 def _strip_paren(name):
@@ -7168,11 +7308,433 @@ def _employee_mode_of_work(emp):
     return None
 
 
+# ===== Manager performance notes (comments/incidents folded into the Diligence rating) =====
+PERF_NOTE_POINTS = {"minor": 5, "major": 12, "critical": 25}  # magnitude; sign comes from sentiment
+
+
+def _perf_note_points(sentiment, severity):
+    mag = PERF_NOTE_POINTS.get((severity or "").lower(), 5)
+    return mag if (sentiment or "").lower() == "positive" else -mag
+
+
+class PerfNoteBody(BaseModel):
+    text: str
+    sentiment: str            # positive | negative
+    severity: Optional[str] = None   # minor | major | critical (optional when points is given)
+    points: Optional[int] = None     # manual magnitude override; sign still comes from sentiment
+    note_date: Optional[str] = None
+    employee_name: Optional[str] = None
+    created_by: Optional[str] = "manager"
+
+
+@app.post("/employees/{employee_id}/performance/notes")
+def add_performance_note(employee_id: str, body: PerfNoteBody):
+    """Add a manager comment/incident for an employee. Folds into their Diligence score for the
+    period containing note_date (positive = appreciation, negative = incident). Magnitude comes from
+    `severity` (minor/major/critical) OR a manually-entered `points` value; the sign comes from sentiment."""
+    if (body.sentiment or "").lower() not in ("positive", "negative"):
+        raise HTTPException(status_code=400, detail="sentiment must be positive|negative")
+    manual = body.points is not None
+    if not manual and (body.severity or "").lower() not in PERF_NOTE_POINTS:
+        raise HTTPException(status_code=400, detail="severity must be minor|major|critical (or supply points)")
+    if manual:
+        mag = abs(int(body.points))
+        if mag == 0 or mag > 1000:
+            raise HTTPException(status_code=400, detail="points must be between 1 and 1000")
+        signed = mag if body.sentiment.lower() == "positive" else -mag
+        sev_label = (body.severity or "").lower() if (body.severity or "").lower() in PERF_NOTE_POINTS else "manual"
+    else:
+        signed = _perf_note_points(body.sentiment, body.severity)
+        sev_label = body.severity.lower()
+    try:
+        nd = date.fromisoformat(body.note_date) if body.note_date else date.today()
+    except Exception:
+        nd = date.today()
+    db: Session = SessionLocal()
+    try:
+        n = PerformanceNote(employee_id=employee_id, employee_name=body.employee_name,
+                            note_date=nd, sentiment=body.sentiment.lower(), severity=sev_label,
+                            points=signed,
+                            text=(body.text or "").strip(), created_by=body.created_by or "manager")
+        db.add(n)
+        db.commit()
+        return {"id": n.id, "employee_id": employee_id, "points": n.points, "note_date": nd.isoformat()}
+    finally:
+        db.close()
+
+
+@app.get("/employees/{employee_id}/performance/notes")
+def list_performance_notes(employee_id: str):
+    """All manager notes for an employee, newest first."""
+    db: Session = SessionLocal()
+    try:
+        rows = (db.query(PerformanceNote).filter(PerformanceNote.employee_id == employee_id)
+                .order_by(PerformanceNote.note_date.desc(), PerformanceNote.id.desc()).all())
+        return {"employee_id": employee_id, "notes": [
+            {"id": n.id, "text": n.text, "sentiment": n.sentiment, "severity": n.severity,
+             "points": n.points, "note_date": n.note_date.isoformat() if n.note_date else None,
+             "created_by": n.created_by} for n in rows]}
+    finally:
+        db.close()
+
+
+@app.delete("/employees/performance/notes/{note_id}")
+def delete_performance_note(note_id: int):
+    db: Session = SessionLocal()
+    try:
+        n = db.query(PerformanceNote).filter(PerformanceNote.id == note_id).first()
+        if not n:
+            raise HTTPException(status_code=404, detail="note not found")
+        db.delete(n)
+        db.commit()
+        return {"deleted": note_id}
+    finally:
+        db.close()
+
+
+def _appraisal_narrative(emp, period_label, use_ai=True):
+    """Strengths / areas-to-improve / overall summary for an appraisal. Rule baseline + optional AI."""
+    rm = emp.get("raw_metrics", {}) or {}
+    ss = emp.get("sub_scores", {}) or {}
+    cc = rm.get("complexity_counts") or {}
+    name = emp.get("name", "The employee")
+    strengths, areas = [], []
+    if rm.get("delivered_to_live", 0) >= 10:
+        strengths.append(f"Strong delivery — {rm['delivered_to_live']} tickets shipped to live this period.")
+    if cc.get("high", 0) >= 2:
+        strengths.append(f"Takes on hard work — delivered {cc['high']} High-complexity ticket(s).")
+    if (rm.get("quality_percent") or 0) >= 85:
+        strengths.append(f"High quality ({rm['quality_percent']}%).")
+    elif (rm.get("quality_percent") or 0) and rm["quality_percent"] < 70:
+        areas.append(f"Quality is below target ({rm['quality_percent']}%).")
+    if (rm.get("ticket_focus_percent") or 0) >= 85:
+        strengths.append(f"Excellent ticket focus ({rm['ticket_focus_percent']}% of time on real tickets).")
+    if (rm.get("on_time_rate") or 0) < 80:
+        areas.append(f"On-time delivery vs target needs improvement ({rm.get('on_time_rate')}% · {rm.get('overrun_tickets',0)} over).")
+    ea = rm.get("estimate_accuracy")
+    if ea is not None and abs(100 - ea) > 25:
+        areas.append(f"Estimate accuracy is off ({ea}%) — estimates vs actuals diverge.")
+    if (rm.get("present_days") or 0) and (rm.get("working_days") or 0) and rm["present_days"] / rm["working_days"] < 0.7:
+        areas.append(f"Attendance is low ({rm['present_days']}/{rm['working_days']} days present).")
+    if rm.get("manager_note_net", 0) > 0:
+        strengths.append(f"Positive manager feedback (+{rm['manager_note_net']} diligence).")
+    elif rm.get("manager_note_net", 0) < 0:
+        areas.append(f"Manager-flagged concern(s) ({rm['manager_note_net']} diligence) — see comments.")
+    if rm.get("bugs", 0) >= 15:
+        strengths.append(f"Productive bug-finding ({rm['bugs']} bugs).")
+    overall = (f"{name} scored {emp.get('composite_score', 0)}/100 over {period_label}, delivering "
+               f"{rm.get('delivered_to_live', 0)} ticket(s) ({cc.get('high',0)} High / {cc.get('medium',0)} Med / "
+               f"{cc.get('low',0)} Low complexity) with {rm.get('quality_percent',0)}% quality and "
+               f"{rm.get('on_time_rate',0)}% on-time delivery.")
+    rule = {"overall": overall, "strengths": strengths or ["Consistent contributor this period."],
+            "areas": areas or ["No specific concerns flagged by the metrics this period."], "source": "rule"}
+    if not use_ai:
+        return rule
+    try:
+        import llm_client
+        if not llm_client.available():
+            return rule
+        user = (f"Employee: {name} ({emp.get('role') or 'QA'}). Period: {period_label}. "
+                f"Composite {emp.get('composite_score')}/100.\n"
+                f"Delivered {rm.get('delivered_to_live',0)} (H{cc.get('high',0)}/M{cc.get('medium',0)}/L{cc.get('low',0)}), "
+                f"in-progress {rm.get('in_progress',0)}, awaiting {rm.get('awaiting_review',0)}, bugs {rm.get('bugs',0)}.\n"
+                f"Quality {rm.get('quality_percent')}%, estimate-accuracy {rm.get('estimate_accuracy')}%, "
+                f"on-time {rm.get('on_time_rate')}% ({rm.get('overrun_tickets',0)} over), ticket-focus {rm.get('ticket_focus_percent')}%, "
+                f"presence {rm.get('present_days')}/{rm.get('working_days')}, utilization {rm.get('utilization_percent')}%.\n"
+                f"Sub-scores: {ss}.\n"
+                f"Manager comments: {[ (n.get('sentiment'), n.get('severity'), n.get('text')) for n in (rm.get('manager_notes') or []) ] or 'none'}.\n"
+                f"Modules: {[ (m.get('module'), m.get('count')) for m in (rm.get('module_breakdown') or [])[:6] ]}.")
+        sysmsg = ("You are a QA manager writing a fair, specific performance appraisal for ONE QA team member from "
+                  "their metrics and your comments. Be balanced and evidence-based; cite the numbers. Note: bug-leakage "
+                  "is NOT auto-scored and may be a false positive — only treat manager comments as conduct signals. "
+                  "Return a 2-4 sentence overall summary, 2-4 concrete strengths, and 1-3 areas to improve. Emit via the tool.")
+        schema = {"type": "object", "additionalProperties": False,
+                  "required": ["overall", "strengths", "areas"],
+                  "properties": {"overall": {"type": "string"},
+                                 "strengths": {"type": "array", "items": {"type": "string"}},
+                                 "areas": {"type": "array", "items": {"type": "string"}}}}
+        ai = llm_client.complete_json(sysmsg, user, schema, tool_name="emit", max_tokens=700)
+        if ai and ai.get("overall"):
+            return {"overall": ai["overall"], "strengths": ai.get("strengths") or rule["strengths"],
+                    "areas": ai.get("areas") or rule["areas"], "source": "ai"}
+    except Exception:
+        pass
+    return rule
+
+
+def _find_emp_in_leaderboard(data, employee_id):
+    """Locate one employee entry + their team list across qa/mobile/dev leaderboards."""
+    for key in ("qa", "mobile", "dev"):
+        for s in data.get(key, []):
+            if s.get("employee_id") == employee_id:
+                return s, data[key]
+    return None, None
+
+
+# Targets used in the 1-on-1 discussion view (own metrics vs target — never vs peers / no rank).
+_DISCUSSION_TARGETS = {
+    "quality_percent": ("Quality", 85, "%", "higher"),
+    "on_time_rate": ("On-time delivery", 80, "%", "higher"),
+    "ticket_focus_percent": ("Ticket focus", 85, "%", "higher"),
+    "utilization_percent": ("Utilization", 80, "%", "higher"),
+    "estimate_accuracy": ("Estimate accuracy", 100, "%", "closeness"),
+}
+
+
+def _discussion_metrics(rm):
+    """Build a list of {label, value, target, unit, status} from raw_metrics — absolute, target-relative,
+    never ranked. status ∈ good/warn/bad."""
+    out = []
+    for key, (label, target, unit, mode) in _DISCUSSION_TARGETS.items():
+        v = rm.get(key)
+        if v is None:
+            continue
+        try:
+            v = round(float(v), 1)
+        except (TypeError, ValueError):
+            continue
+        if mode == "closeness":  # accuracy: distance from 100
+            dev = abs(target - v)
+            status = "good" if dev <= 10 else ("warn" if dev <= 25 else "bad")
+        else:  # higher is better
+            status = "good" if v >= target else ("warn" if v >= target - 10 else "bad")
+        out.append({"label": label, "value": v, "target": target, "unit": unit, "status": status})
+    # Attendance (present / working days) — informational with a soft 70% floor.
+    pd_, wd = rm.get("present_days"), rm.get("working_days")
+    if pd_ is not None and wd:
+        ratio = pd_ / wd if wd else 0
+        out.append({"label": "Attendance", "value": pd_, "target": wd, "unit": " days",
+                    "status": "good" if ratio >= 0.85 else ("warn" if ratio >= 0.7 else "bad")})
+    return out
+
+
+def _discussion_trend(curr_rm, prev_rm, curr_emp, prev_emp):
+    """Period-over-period deltas on headline metrics (direction, not rank)."""
+    if not prev_rm and not prev_emp:
+        return []
+    prev_rm = prev_rm or {}
+    fields = [("Overall score", (curr_emp or {}).get("composite_score"), (prev_emp or {}).get("composite_score"), ""),
+              ("Delivered", curr_rm.get("delivered_to_live"), prev_rm.get("delivered_to_live"), ""),
+              ("Quality", curr_rm.get("quality_percent"), prev_rm.get("quality_percent"), "%"),
+              ("On-time", curr_rm.get("on_time_rate"), prev_rm.get("on_time_rate"), "%"),
+              ("Bugs found", curr_rm.get("bugs"), prev_rm.get("bugs"), "")]
+    out = []
+    for label, cv, pv, unit in fields:
+        if cv is None or pv is None:
+            continue
+        try:
+            delta = round(float(cv) - float(pv), 1)
+        except (TypeError, ValueError):
+            continue
+        out.append({"label": label, "current": cv, "previous": pv, "delta": delta, "unit": unit})
+    return out
+
+
+_DISCUSSION_CAT_ORDER = {"Delivered": 0, "Awaiting review": 1, "In progress": 2, "Worked on": 3}
+
+
+def _discussion_tickets(db, emp_rec, is_dev, start_iso, end_iso, window_ends_today):
+    """Tickets the employee TOUCHED in the window, grouped by category (Delivered / Awaiting review /
+    In progress / Worked on), each with planned vs actual vs revised + bugs. Broadened well beyond
+    just-closed — same 'worked on' pool the Performance Export uses — so an actively-testing person is
+    never blank (the bug that showed 'no data')."""
+    try:
+        start_dt = datetime.fromisoformat(start_iso)
+        end_dt = datetime.fromisoformat(end_iso)
+    except (ValueError, TypeError):
+        return []
+    end_dt = end_dt.replace(hour=23, minute=59, second=59)
+    # delivered in window (real ship date) + tickets that moved in the window + (live window) current QC/awaiting
+    pool = {t.id: t for t in db.query(TicketTracking).filter(
+        TicketTracking.closed_on >= start_dt, TicketTracking.closed_on <= end_dt).all()}
+    moved_ids = [row[0] for row in db.query(TicketStatusHistory.ticket_id).filter(
+        TicketStatusHistory.changed_on >= start_dt, TicketStatusHistory.changed_on <= end_dt).distinct().all()]
+    if moved_ids:
+        for t in db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(moved_ids)).all():
+            pool.setdefault(t.id, t)
+    if window_ends_today:
+        for t in db.query(TicketTracking).filter(
+                TicketTracking.status.in_(list(AWAITING_REVIEW_STATUSES) + list(QA_TESTING_STATUSES))).all():
+            pool.setdefault(t.id, t)
+    mine = _attribute_tickets_to_employees([(emp_rec, is_dev)], list(pool.values())).get(emp_rec.employee_id, [])
+    if not mine:
+        return []
+    tids = [t.ticket_id for t in mine]
+    import ticket_review as TR
+    try:
+        import ticket_complexity as TC
+    except Exception:
+        TC = None
+
+    # --- batch loads (cheap, all indexed on ticket_id) ---
+    est_by = {e.ticket_id: e for e in db.query(TicketEstimation).filter(TicketEstimation.ticket_id.in_(tids)).all()}
+    wk_rev = {}
+    for r in db.query(WeeklyTicketReview).filter(WeeklyTicketReview.ticket_id.in_(tids)).all():
+        if r.revised_estimate is not None:
+            wk_rev[r.ticket_id] = r.revised_estimate
+    bugs_by = defaultdict(lambda: {"total": 0, "major": 0})
+    for b in db.query(Bug).filter(Bug.ticket_id.in_(tids)).all():
+        d = bugs_by[b.ticket_id]; d["total"] += 1
+        if TR._sev_bucket(b.severity) == "major":
+            d["major"] += 1
+    # Test execution per ticket comes from the TestRail plan CACHE (the reliable source the QC queue +
+    # leaderboard use) — NOT the test_results DB table, whose assigned_to holds numeric TestRail ids.
+    _trsum = {}
+    try:
+        import pm_live_data as _PLD
+        _trsum = _PLD._fetch_testrail_plans() or {}
+    except Exception:
+        try:
+            import json as _json
+            _trf = os.path.join(os.path.dirname(__file__), "data", "testrail_cache.json")
+            if os.path.exists(_trf):
+                with open(_trf, "r", encoding="utf-8") as _f:
+                    _trsum = _json.load(_f) or {}
+        except Exception:
+            _trsum = {}
+
+    def _tests_for(tid):
+        tr = _trsum.get(tid) or _trsum.get(str(tid))
+        if not tr:
+            return 0, 0
+        ex = (tr.get("passed", 0) or 0) + (tr.get("failed", 0) or 0) + (tr.get("blocked", 0) or 0) + (tr.get("retest", 0) or 0)
+        ut = tr.get("untested", 0) or 0
+        tot = (tr.get("cases", 0) or 0) or (ex + ut)
+        return ex, tot
+
+    def _category(t):
+        if t.closed_on and start_dt <= t.closed_on <= end_dt:
+            return "Delivered"
+        if t.status in AWAITING_REVIEW_STATUSES:
+            return "Awaiting review"
+        if t.status in QA_TESTING_STATUSES:
+            return "In progress"
+        return "Worked on"
+
+    def _h(v):  # hours → rounded float or None (treat 0 as no-data)
+        try:
+            return round(float(v), 1) if v else None
+        except (TypeError, ValueError):
+            return None
+
+    rows = []
+    for t in mine:
+        e = est_by.get(t.ticket_id)
+        cx = {}
+        if TC is not None:
+            try:
+                cx = TC.get_cached(t.ticket_id) or {}
+            except Exception:
+                cx = {}
+        bb = bugs_by.get(t.ticket_id, {"total": 0, "major": 0})
+        planned = _h(t.qa_estimate_hours) or (_h(e.suggested_total) if e else None)
+        actual = _h(t.actual_qa_hours) or (_h(e.actual_hours) if e else None)
+        revised = (_h(e.recalc_total) if (e and e.recalc_total is not None) else _h(wk_rev.get(t.ticket_id)))
+        ex_cases, tot_cases = _tests_for(t.ticket_id)
+        rows.append({
+            "ticket_id": t.ticket_id,
+            "title": (t.title or "")[:90],
+            "module": (t.subdepartment or "").strip() or None,
+            "status": t.status,
+            "category": _category(t),
+            "complexity": cx.get("level"),
+            "planned": planned, "actual": actual, "revised": revised,
+            "bugs": bb["total"], "bugs_major": bb["major"],
+            "tests_total": tot_cases, "tests_executed": ex_cases,
+            "refix": t.refix_count or 0,
+            "closed_on": t.closed_on.date().isoformat() if t.closed_on else None,
+        })
+    rows.sort(key=lambda r: (_DISCUSSION_CAT_ORDER.get(r["category"], 9), -(r["bugs"] or 0), -r["ticket_id"]))
+    return rows
+
+
+@app.get("/employees/{employee_id}/discussion")
+def employee_discussion(employee_id: str,
+                        period: str = Query("month", regex="^(month|quarter)$"),
+                        offset: int = Query(0, ge=0, le=240),
+                        from_date: Optional[str] = Query(None, alias="from"),
+                        to_date: Optional[str] = Query(None, alias="to"),
+                        use_ai: bool = Query(True)):
+    """Rank-FREE 1-on-1 discussion view for ONE employee over a month / quarter / custom range:
+    the SAME full leaderboard detail (minus position), period-over-period trend, AI talking points, and a
+    categorized per-ticket breakdown. period+offset, or a custom from/to that overrides them."""
+    data = get_performance_leaderboard(period=period, offset=offset, team="all",
+                                       from_date=from_date, to_date=to_date)
+    emp, _team = _find_emp_in_leaderboard(data, employee_id)
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee has no performance activity in this range.")
+    rm = emp.get("raw_metrics", {}) or {}
+    pinfo = data.get("period", {}) or {}
+    narrative = _appraisal_narrative(emp, pinfo.get("label"), use_ai=use_ai)
+    # Prior comparable period for the trend (offset+1 for month/quarter; equal-length shift for custom).
+    prev_emp = prev_rm = None
+    try:
+        if from_date and to_date:
+            d0, d1 = date.fromisoformat(from_date), date.fromisoformat(to_date)
+            span = (d1 - d0).days + 1
+            pdata = get_performance_leaderboard(period=period, offset=0, team="all",
+                                                from_date=(d0 - timedelta(days=span)).isoformat(),
+                                                to_date=(d0 - timedelta(days=1)).isoformat())
+        else:
+            pdata = get_performance_leaderboard(period=period, offset=offset + 1, team="all")
+        prev_emp, _ = _find_emp_in_leaderboard(pdata, employee_id)
+        prev_rm = (prev_emp or {}).get("raw_metrics", {}) if prev_emp else None
+    except Exception:
+        pass
+    db: Session = SessionLocal()
+    try:
+        emp_rec = db.query(Employee).filter(Employee.employee_id == employee_id).first()
+        is_dev = "DEV" in ((emp_rec.team if emp_rec else "") or "").upper()
+        window_ends_today = False
+        try:
+            window_ends_today = date.fromisoformat(pinfo.get("end")) >= date.today()
+        except (ValueError, TypeError):
+            pass
+        tickets = (_discussion_tickets(db, emp_rec, is_dev, pinfo.get("start"), pinfo.get("end"), window_ends_today)
+                   if emp_rec else [])
+    finally:
+        db.close()
+    return {
+        "employee": {"employee_id": employee_id, "name": emp.get("name"), "role": emp.get("role") or "QA"},
+        "period": pinfo,
+        "score": emp.get("composite_score"),            # own absolute score — NOT a rank
+        "entry": emp,                                   # full leaderboard entry → rich rank-free breakdown
+        "metrics": _discussion_metrics(rm),
+        "trend": _discussion_trend(rm, prev_rm, emp, prev_emp),
+        "talking_points": narrative,
+        "tickets": tickets,
+    }
+
+
+@app.get("/employees/{employee_id}/appraisal-report")
+def appraisal_report(employee_id: str,
+                     from_date: Optional[str] = Query(None, alias="from"),
+                     to_date: Optional[str] = Query(None, alias="to"),
+                     use_ai: bool = Query(True),
+                     hide_rank: bool = Query(False, description="omit leaderboard rank — for 1-on-1 discussion PDFs")):
+    """Per-employee QA appraisal PDF over a date range (default: start of this month → today).
+    hide_rank=true produces the rank-free 'discussion' variant used in 1-on-1s."""
+    fd = from_date or date.today().replace(day=1).isoformat()
+    td = to_date or date.today().isoformat()
+    data = get_performance_leaderboard(period="month", offset=0, team="all", from_date=fd, to_date=td)
+    emp, team_list = _find_emp_in_leaderboard(data, employee_id)
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee has no performance activity in this range.")
+    narrative = _appraisal_narrative(emp, data["period"]["label"], use_ai=use_ai)
+    from appraisal_report import generate_appraisal_pdf
+    rank = None if hide_rank else emp.get("rank")
+    team_size = None if hide_rank else len(team_list)
+    path = generate_appraisal_pdf(emp, data["period"]["label"], rank, team_size, narrative)
+    return FileResponse(str(path), media_type="application/pdf", filename=path.name)
+
+
 @app.get("/employees/performance/leaderboard")
 def get_performance_leaderboard(
     period: str = Query("month", regex="^(month|quarter)$"),
     offset: int = Query(0, ge=0, le=240),
-    team: str = Query("all", regex="^(qa|dev|all)$"),
+    team: str = Query("all", regex="^(qa|dev|mobile|all)$"),
+    from_date: Optional[str] = Query(None, description="custom range start YYYY-MM-DD (overrides period)"),
+    to_date: Optional[str] = Query(None, description="custom range end YYYY-MM-DD"),
 ):
     """Per-team performance leaderboards (balanced composite score) for a calendar month/quarter.
 
@@ -7183,11 +7745,17 @@ def get_performance_leaderboard(
     """
     db: Session = SessionLocal()
     try:
-        start_date, end_date, label = get_period_range(period, offset)
-
-        # Once a period has ended its leaderboard is frozen: computed once, then served unchanged
-        # so history never shifts as ticket/bug data drifts afterwards.
-        period_ended = end_date.date() < datetime.now().date()
+        # Custom date range (for appraisal reports) overrides the calendar period and is never frozen.
+        if from_date and to_date:
+            start_date = datetime.combine(date.fromisoformat(from_date), datetime.min.time())
+            end_date = datetime.combine(date.fromisoformat(to_date), datetime.max.time())
+            label = f"{from_date} → {to_date}"
+            period_ended = False
+        else:
+            start_date, end_date, label = get_period_range(period, offset)
+            # Once a period has ended its leaderboard is frozen: computed once, then served unchanged
+            # so history never shifts as ticket/bug data drifts afterwards.
+            period_ended = end_date.date() < datetime.now().date()
         period_key = f"{period}:{label}:{team}"
         if period_ended:
             snap = db.query(PerformanceSnapshot).filter_by(period_key=period_key).first()
@@ -7221,8 +7789,28 @@ def get_performance_leaderboard(
                 self.role = team
                 self.mapping_data = {}
 
-        qa_by_id, dev_by_id = {}, {}
+        qa_by_id, dev_by_id, mobile_by_id = {}, {}, {}
         name_to_employee_id = {}
+
+        # Mobile QA roster (separate board, separate top performer) — from module_ownership.json
+        # `mobile_team`. Matched by compact name or first-two-token signature so "Gautham Krishna"
+        # in the config still matches the employee "Gautham Krishna KP".
+        try:
+            _mobile_names = (load_module_ownership() or {}).get("mobile_team") or []
+        except Exception:
+            _mobile_names = []
+        _mobile_compacts = {_compact_person_name(n) for n in _mobile_names}
+        _mobile_sigs = set()
+        for _n in _mobile_names:
+            _t = _normalize_person_name(_n).split()
+            if len(_t) >= 2:
+                _mobile_sigs.add((_t[0], _t[1]))
+
+        def _is_mobile(name):
+            if _compact_person_name(name) in _mobile_compacts:
+                return True
+            toks = _normalize_person_name(name).split()
+            return len(toks) >= 2 and (toks[0], toks[1]) in _mobile_sigs
 
         def _excluded_qa(name):
             # Mobile/sprint-model QA testers are not ranked on this delivery board.
@@ -7255,7 +7843,7 @@ def get_performance_leaderboard(
             if "DEV" in tu:
                 _register(emp, dev_by_id)
             elif "QA" in tu and not _excluded_qa(emp.name):
-                _register(emp, qa_by_id)
+                _register(emp, mobile_by_id if _is_mobile(emp.name) else qa_by_id)
 
         # EmployeeNameMapping aliases (only for already-registered employees).
         known_ids = set(qa_by_id) | set(dev_by_id)
@@ -7273,7 +7861,7 @@ def get_performance_leaderboard(
         # name ("Gautham Krishna") resolve to the fuller employee record ("Gautham Krishna KP")
         # instead of spawning a duplicate, without merging distinct people (e.g. the various Vishnus).
         _f2_sets = defaultdict(set)
-        for _eid, _p in list(qa_by_id.items()) + list(dev_by_id.items()):
+        for _eid, _p in list(qa_by_id.items()) + list(dev_by_id.items()) + list(mobile_by_id.items()):
             _tk = _normalize_person_name(_p.name).split()
             if len(_tk) >= 2:
                 _f2_sets[(_tk[0], _tk[1])].add(_eid)
@@ -7303,18 +7891,24 @@ def get_performance_leaderboard(
                 nm = _strip_paren(nm or "").strip()
                 if nm:
                     dev_name_counts[nm] += 1
-        # Overlaps go to the role where the name appears more often (tie => QA).
+        # Overlaps go to the role where the name appears more often (tie => QA). Mobile-roster
+        # names land on the separate Mobile board, not the main QA board.
         for nm, qc in qa_name_counts.items():
             if not _resolve(nm) and not _excluded_qa(nm) and not _excluded(nm) and qc >= dev_name_counts.get(nm, 0):
-                _register(_LbPerson(nm, "QA"), qa_by_id)
+                _register(_LbPerson(nm, "QA"), mobile_by_id if _is_mobile(nm) else qa_by_id)
         for nm in dev_name_counts:
             if not _resolve(nm) and not _excluded(nm):
                 _register(_LbPerson(nm, "DEV"), dev_by_id)
 
         qa_emps = list(qa_by_id.values())
         dev_emps = list(dev_by_id.values())
+        mobile_emps = list(mobile_by_id.values())
         qa_ids = set(qa_by_id)
         dev_ids = set(dev_by_id)
+        mobile_ids = set(mobile_by_id)
+        # Mobile testers are QA-role: include them in the QC-side bucketing (tickets/bugs/tests
+        # are attributed via qc_tester / bug author the same way), then split into their own board.
+        qc_ids = qa_ids | mobile_ids
 
         # ---- Bucket delivered tickets by person ----
         tickets_by_emp = defaultdict(list)
@@ -7328,7 +7922,7 @@ def get_performance_leaderboard(
 
         for t in closed_tickets:
             qa_eid = _resolve(t.qc_tester)
-            if qa_eid in qa_ids:
+            if qa_eid in qc_ids:
                 _add_ticket(qa_eid, t)
             for nm in (t.backend_developer, t.frontend_developer):
                 d_eid = _resolve(nm)
@@ -7351,12 +7945,24 @@ def get_performance_leaderboard(
                 TicketTracking.status.in_(AWAITING_REVIEW_STATUSES)
             ).all():
                 qa_eid = _resolve(t.qc_tester)
-                if qa_eid in qa_ids:
+                if qa_eid in qc_ids:
                     _add_await(qa_eid, t)
                 for nm in (t.backend_developer, t.frontend_developer):
                     d_eid = _resolve(nm)
                     if d_eid in dev_ids:
                         _add_await(d_eid, t)
+
+        # Tickets the person is CURRENTLY testing (in QC right now) — for the expanded "in progress" detail.
+        inprogress_by_emp = defaultdict(int)
+        inprogress_tickets_by_emp = defaultdict(list)
+        if end_date.date() >= datetime.now().date():
+            _QC_NOW = ("QC Testing", "QC Testing in Progress", "QC Testing Hold",
+                       "QC Review Fail", "Tested - Awaiting Fixes")
+            for t in db.query(TicketTracking).filter(TicketTracking.status.in_(_QC_NOW)).all():
+                qa_eid = _resolve(t.qc_tester)
+                if qa_eid in qc_ids:
+                    inprogress_by_emp[qa_eid] += 1
+                    inprogress_tickets_by_emp[qa_eid].append(t)
 
         bugs_by_emp = defaultdict(list)
         for b in db.query(Bug).filter(
@@ -7364,20 +7970,74 @@ def get_performance_leaderboard(
             Bug.created_on <= end_date,
         ).all():
             qa_eid = _resolve(b.author)        # QA reported the bug
-            if qa_eid in qa_ids:
+            if qa_eid in qc_ids:
                 bugs_by_emp[qa_eid].append(b)
             dev_eid = _resolve(b.assignee)     # Dev assigned to fix it
             if dev_eid in dev_ids:
                 bugs_by_emp[dev_eid].append(b)
 
-        tests_by_emp = defaultdict(list)
-        for r in db.query(TestResult).filter(
-            TestResult.created_on >= start_date,
-            TestResult.created_on <= end_date,
-        ).all():
-            eid = _resolve(r.assigned_to)
-            if eid in qa_ids:
-                tests_by_emp[eid].append(r)
+        # ---- Test executions: attribute via the ticket's qc_tester using the live
+        # TestRail plan cache (the same reliable source the QC queue shows). The
+        # TestResult table stores numeric TestRail user ids in `assigned_to`, which
+        # don't resolve to employees, so it cannot be used for per-tester attribution
+        # (it silently produced 0 executions for everyone). We instead sum per-ticket
+        # executed/untested counts from `_fetch_testrail_plans()` over each person's
+        # period tickets (delivered + currently at BIS/awaiting + in-QC now). ----
+        _testrail_summary = {}
+        try:
+            import pm_live_data as _PLD
+            _testrail_summary = _PLD._fetch_testrail_plans() or {}
+        except Exception:
+            try:
+                import json as _json, os as _os
+                _trf = _os.path.join(_os.path.dirname(__file__), "data", "testrail_cache.json")
+                if _os.path.exists(_trf):
+                    with open(_trf, "r", encoding="utf-8") as _f:
+                        _testrail_summary = _json.load(_f) or {}
+            except Exception:
+                _testrail_summary = {}
+
+        def _tr_for(tid):
+            """Per-ticket {cases,passed,failed,untested,blocked,retest} from the TestRail cache."""
+            if not tid:
+                return None
+            return _testrail_summary.get(tid) or _testrail_summary.get(str(tid))
+
+        def _exec_aggregate(emp_id, etickets, eawait):
+            """Sum executed/total/untested test cases over the person's period tickets and
+            count tickets handed to BIS that still have untested cases (incomplete testing)."""
+            executed = total = untested = 0
+            bis_tids = []
+            seen = set()
+            ticket_pool = (list(etickets) + list(eawait)
+                           + inprogress_tickets_by_emp.get(emp_id, []))
+            for t in ticket_pool:
+                tid = getattr(t, "ticket_id", None)
+                if not tid or tid in seen:
+                    continue
+                seen.add(tid)
+                tr = _tr_for(tid)
+                if not tr:
+                    continue
+                ex = ((tr.get("passed", 0) or 0) + (tr.get("failed", 0) or 0)
+                      + (tr.get("blocked", 0) or 0) + (tr.get("retest", 0) or 0))
+                ut = tr.get("untested", 0) or 0
+                tot = (tr.get("cases", 0) or 0) or (ex + ut)
+                executed += ex
+                total += tot
+                untested += ut
+                # Currently handed to BIS but still has untested cases → incomplete testing (negative).
+                if (getattr(t, "status", "") or "") == "BIS Testing" and ut > 0:
+                    bis_tids.append(tid)
+            completeness = round(100 * executed / total, 1) if total else 0.0
+            return {
+                "total_executed": executed,
+                "total_cases": total,
+                "untested": untested,
+                "execution_completeness": completeness,
+                "unexecuted_at_bis": len(bis_tids),
+                "unexecuted_bis_tids": bis_tids,
+            }
 
         ts_by_emp = defaultdict(list)
         for e in db.query(EnhancedTimesheet).filter(
@@ -7408,66 +8068,213 @@ def get_performance_leaderboard(
             if (start_date.date() + timedelta(days=i)).weekday() < 5
         ) or 1
 
+        # ---- Ticket Review / Complexity preload (batched, no per-ticket N+1) ----
+        import ticket_review as _TR
+        try:
+            import ticket_complexity as _TCM
+            _cx_cache_lb = _TCM._load_cache()
+        except Exception:
+            _cx_cache_lb = {}
+        _all_tids = set()
+        for _lst in list(tickets_by_emp.values()) + list(awaiting_by_emp.values()):
+            for _t in _lst:
+                if getattr(_t, "ticket_id", None):
+                    _all_tids.add(_t.ticket_id)
+        _hist_map = defaultdict(list)
+        _bugs_map = defaultdict(list)
+        if _all_tids:
+            _ids = list(_all_tids)
+            for _h in (db.query(TicketStatusHistory)
+                       .filter(TicketStatusHistory.ticket_id.in_(_ids))
+                       .order_by(TicketStatusHistory.changed_on.asc()).all()):
+                _hist_map[_h.ticket_id].append(_h)
+            for _b in db.query(Bug).filter(Bug.ticket_id.in_(_ids)).all():
+                _bugs_map[_b.ticket_id].append(_b)
+        # Manager-revised QA estimates feed only the LIVE (current/unfrozen) period.
+        _revised_map = {}
+        if end_date.date() >= datetime.now().date():
+            try:
+                for _r in (db.query(WeeklyTicketReview)
+                           .filter(WeeklyTicketReview.status == "reviewed",
+                                   WeeklyTicketReview.revised_estimate.isnot(None)).all()):
+                    _revised_map[_r.ticket_id] = _r.revised_estimate
+            except Exception:
+                _revised_map = {}
+
+        def _effective_qa_target(t):
+            """QA target hours: manager-revised (if reviewed) else qa_estimate else 33% of dev_estimate."""
+            rev = _revised_map.get(t.ticket_id)
+            if rev is not None:
+                return float(rev)
+            qa = (t.qa_estimate_hours or 0)
+            if qa > 0:
+                return float(qa)
+            return round((t.dev_estimate_hours or 0) * 0.33, 2)
+
         def _build_team(emps, is_dev):
+            # Manager performance notes that fall in this period window (folded into Diligence below).
+            notes_by_emp = defaultdict(list)
+            try:
+                for n in (db.query(PerformanceNote)
+                          .filter(PerformanceNote.note_date >= start_date.date(),
+                                  PerformanceNote.note_date <= end_date.date()).all()):
+                    notes_by_emp[n.employee_id].append(n)
+            except Exception:
+                pass
             rows = []
             for emp in emps:
                 etickets = tickets_by_emp.get(emp.employee_id, [])
+                in_progress = inprogress_by_emp.get(emp.employee_id, 0)
                 ebugs = bugs_by_emp.get(emp.employee_id, [])
-                etests = None if is_dev else tests_by_emp.get(emp.employee_id, [])
+                # Tests are now sourced from the TestRail cache (below), not TestResult —
+                # pass an empty list so _build_employee_metrics doesn't re-query the table.
+                etests = None if is_dev else []
                 ets = ts_by_emp.get(emp.employee_id, [])
+                eawait = awaiting_by_emp.get(emp.employee_id, [])
                 metrics = _build_employee_metrics(
                     db, emp, start_date, end_date, is_dev, False,
                     _employee_mode_of_work(emp),
                     tickets=etickets, bugs=ebugs, tests=etests, timesheet_entries=ets,
                 )
-                eawait = awaiting_by_emp.get(emp.employee_id, [])
+                # Overwrite the (empty) tests metric with real execution-completeness data
+                # attributed by qc_tester from the TestRail cache.
+                if not is_dev:
+                    metrics["tests"] = _exec_aggregate(emp.employee_id, etickets, eawait)
                 tcount = metrics["tickets"]["count"]
                 bcount = metrics["bugs"].get("total", 0)
                 testcount = metrics.get("tests", {}).get("total_executed", 0)
                 awaiting_n = len(eawait)
                 if tcount == 0 and bcount == 0 and testcount == 0 and awaiting_n == 0:
                     continue  # no activity this period → off the board
-                delivered_cwv = sum(_ticket_complexity(t, is_dev) for t in etickets)
-                awaiting_cwv = sum(_ticket_complexity(t, is_dev) for t in eawait)
+                def _cwv(t):
+                    lvl = (_cx_cache_lb.get(str(t.ticket_id)) or {}).get("level")
+                    return _ticket_complexity(t, is_dev) * _cx_multiplier(lvl)
+                delivered_cwv = sum(_cwv(t) for t in etickets)
+                awaiting_cwv = sum(_cwv(t) for t in eawait)
+                # Count delivered tickets by complexity level (High/Medium/Low; Unrated = no cached level).
+                cx_counts = {"high": 0, "medium": 0, "low": 0, "unrated": 0}
+                _modc = defaultdict(int)
+                for t in etickets:
+                    lvl = (_cx_cache_lb.get(str(t.ticket_id)) or {}).get("level")
+                    cx_counts[(lvl or "unrated").lower() if (lvl or "unrated").lower() in cx_counts else "unrated"] += 1
+                    _modc[(getattr(t, "subdepartment", "") or "Unassigned").strip() or "Unassigned"] += 1
+                module_breakdown = sorted(({"module": k, "count": v} for k, v in _modc.items()),
+                                          key=lambda x: -x["count"])
                 # Throughput credits shipped work fully and handed-off/awaiting-review work partially,
                 # so a low closed-count caused by tickets sitting in BIS review isn't penalized.
-                throughput_base = delivered_cwv + AWAITING_CREDIT * awaiting_cwv
+                # For QA it ALSO credits raw test-execution VOLUME — more cases executed carries more
+                # weight (a tester who runs 695 cases did more verification work than one who ran 64).
+                # Factor tuned so max executions (~28 pts) is comparable to max complexity-volume.
+                exec_executed = 0 if is_dev else metrics.get("tests", {}).get("total_executed", 0)
+                throughput_base = (delivered_cwv + AWAITING_CREDIT * awaiting_cwv
+                                   + EXEC_THROUGHPUT_FACTOR * exec_executed)
                 if is_dev:
                     output_raw = metrics["bugs"].get("closed", 0) + 0.5 * bcount
                 else:
                     output_raw = bcount + testcount
+                # Quality WITHOUT the bug-volume reward (count_bug_volume=False) — bug count must
+                # not decide a tester's rank; it only feeds the small capped `output` sub-score.
                 rag = calculate_rag_score(metrics, is_dev, planning_timesheet=None,
-                                          role_context={"is_manager": False})
+                                          role_context={"is_manager": False}, count_bug_volume=False)
                 # Presence / attendance (billing): days physically logged + productive hours.
+                # Effective hours per entry: prefer productive_hours when set (some testers log only
+                # there — hours_logged stays 0), else hours_logged. Matches the Calendar module so
+                # "avg time"/present-days aren't 0 for those people (e.g. Reshma Madhavan, Aravind).
+                def _eh(e):
+                    return e.productive_hours if (e.productive_hours or 0) > 0 else (e.hours_logged or 0)
                 daily_hours = defaultdict(float)
                 for e in ets:
-                    daily_hours[e.date] += (e.hours_logged or 0)
+                    daily_hours[e.date] += _eh(e)
                 present_days = len([d for d, h in daily_hours.items() if h > 0])
                 days_under_8 = len([d for d, h in daily_hours.items() if 0 < h < 8])
                 days_over_8 = len([d for d, h in daily_hours.items() if h > 8])
                 total_logged = round(sum(daily_hours.values()), 1)
                 avg_hours_per_day = round(total_logged / present_days, 1) if present_days else 0
-                productive_hours = round(sum((e.productive_hours or e.hours_logged or 0) for e in ets), 1)
+                productive_hours = round(sum(_eh(e) for e in ets), 1)
                 expected_hours = period_working_days * 8
                 attendance_ratio = present_days / period_working_days
                 prod_ratio = (productive_hours / expected_hours) if expected_hours else 0
                 presence = round(100 * min(1.0, 0.6 * attendance_ratio + 0.4 * min(1.0, prod_ratio)), 1)
+                # Ticket-focus: of the time actually WORKED (leave excluded), how much went to real
+                # tickets vs non-ticket tasks (Learning, meetings, team mgmt, …). Rewards delivery.
+                is_aravind = _TR._same_person(emp.name, "Aravind K V")
+                ticket_hours = 0.0
+                task_hours = 0.0
+                _tm_by_day = defaultdict(float)
+                for e in ets:
+                    if _ts_is_leave(e):
+                        continue
+                    h = _eh(e)
+                    if _ts_is_ticket(e):
+                        ticket_hours += h
+                    elif is_aravind and _ts_is_team_mgmt(e):
+                        # Cap Aravind's team-management at 1h/day; excess is dropped (not counted at all).
+                        room = max(0.0, ARAVIND_TEAM_MGMT_DAILY_CAP - _tm_by_day[e.date])
+                        counted = min(h, room)
+                        _tm_by_day[e.date] += counted
+                        task_hours += counted
+                    else:
+                        task_hours += h
+                ticket_hours = round(ticket_hours, 1)
+                task_hours = round(task_hours, 1)
+                worked_hours = round(ticket_hours + task_hours, 1)
+                has_focus = worked_hours > 0
+                ticket_focus = round(100 * ticket_hours / worked_hours, 1) if has_focus else 0.0
                 leave_days = round(leave_days_by_emp.get(emp.employee_id, 0), 1)
                 # Time overruns: tickets where ACTUAL exceeded ESTIMATE (genuine overrun — scope
                 # changes get re-estimated so actual≈estimate and don't count). Per-ticket so an
                 # underrun elsewhere can't mask it.
                 estd = overrun_tickets = 0
                 overrun_hours = 0.0
+                tot_target = tot_actual = 0.0    # for revised-aware estimate accuracy (QA)
                 for t in etickets:
-                    est = (t.dev_estimate_hours if is_dev else t.qa_estimate_hours) or 0
+                    if is_dev:
+                        est = (t.dev_estimate_hours or 0)
+                    else:
+                        est = _effective_qa_target(t)   # revised → qa_est → 33% of dev
                     act = (t.actual_dev_hours if is_dev else t.actual_qa_hours) or 0
                     if est > 0:
                         estd += 1
+                        tot_target += est
+                        tot_actual += act
                         if act > est:
                             overrun_tickets += 1
                             overrun_hours += (act - est)
                 on_time_rate = round(100 * (estd - overrun_tickets) / estd, 1) if estd else 100.0
+                # Revised-aware estimate accuracy for QA (how close target matched actual effort).
+                revised_est_acc = round(100 * tot_target / tot_actual, 1) if (not is_dev and tot_actual > 0) else None
+                revised_used = sum(1 for t in etickets if t.ticket_id in _revised_map)
+
+                # ---- Diligence = ONLY the manager's comments (0-centered: +positive / −negative) ----
+                # Auto bug-leakage is NOT scored: it reaches into the past, often isn't QA's fault, and
+                # can be a false positive. It's surfaced as an informational, period-scoped flag instead.
+                enotes = notes_by_emp.get(emp.employee_id, [])
+                manager_net = sum(n.points for n in enotes)        # 0 by default; signed
+                manager_notes = [{"id": n.id, "text": n.text, "sentiment": n.sentiment,
+                                  "severity": n.severity, "points": n.points,
+                                  "date": n.note_date.isoformat() if n.note_date else None} for n in enotes]
+                diligence_lines = [f"{'+' if n.points >= 0 else ''}{n.points} ({n.severity} {n.sentiment}): "
+                                   f"{(n.text or '')[:70]}" for n in enotes]
+                diligence_score = manager_net  # the "Diligence" value = net of comments (0 if none)
+
+                # Informational ONLY (not scored): possible Live leakage THIS PERIOD on tickets that
+                # actually passed QC to BIS — so the manager can review and comment if warranted.
+                leak_tids = []
+                if not is_dev:
+                    for t in etickets:
+                        bp = next((h.changed_on for h in _hist_map.get(t.ticket_id, [])
+                                   if (h.new_status or "") == "BIS Testing"), None)
+                        if not bp:
+                            continue
+                        for b in _bugs_map.get(t.ticket_id, []):
+                            env = (getattr(b, "environment", "") or "").strip().lower()
+                            if (env in ("live", "production", "prod") and b.created_on and b.created_on >= bp
+                                    and start_date.date() <= b.created_on.date() <= end_date.date()):
+                                leak_tids.append(t.ticket_id)
+                                break
                 rows.append({"emp": emp, "metrics": metrics,
+                             "cx_counts": cx_counts, "in_progress": in_progress,
+                             "module_breakdown": module_breakdown,
                              "delivered_cwv": round(delivered_cwv, 1),
                              "awaiting_cwv": round(awaiting_cwv, 1),
                              "throughput_base": throughput_base,
@@ -7477,8 +8284,14 @@ def get_performance_leaderboard(
                              "productive_hours": productive_hours, "leave_days": leave_days,
                              "avg_hours_per_day": avg_hours_per_day, "days_under_8": days_under_8,
                              "days_over_8": days_over_8, "total_logged": total_logged,
+                             "ticket_focus": ticket_focus, "has_focus": has_focus,
+                             "ticket_hours": ticket_hours, "task_hours": task_hours,
                              "on_time_rate": on_time_rate, "overrun_tickets": overrun_tickets,
-                             "overrun_hours": round(overrun_hours, 1), "estimated_tickets": estd})
+                             "overrun_hours": round(overrun_hours, 1), "estimated_tickets": estd,
+                             "diligence_score": diligence_score, "diligence_lines": diligence_lines,
+                             "manager_net": manager_net, "manager_notes": manager_notes,
+                             "leak_tids": leak_tids,
+                             "revised_est_acc": revised_est_acc, "revised_used": revised_used})
 
             max_cwv = max((r["throughput_base"] for r in rows), default=0) or 0
             max_out = max((r["output_raw"] for r in rows), default=0) or 0
@@ -7488,26 +8301,44 @@ def get_performance_leaderboard(
                 throughput = 100 * (r["throughput_base"] / max_cwv) ** 0.5 if max_cwv > 0 else 0
                 output = 100 * (r["output_raw"] / max_out) ** 0.5 if max_out > 0 else 0
                 quality = r["rag"]
-                est_acc = m["tickets"].get("estimate_accuracy")
+                # Estimate accuracy: for QA prefer the revised-aware figure (target vs actual), so a
+                # wrong dev/QA estimate the manager corrected no longer flatters or punishes.
+                est_acc = r.get("revised_est_acc")
+                if est_acc is None:
+                    est_acc = m["tickets"].get("estimate_accuracy")
                 est_acc = 100 if est_acc is None else est_acc
                 util = m["timesheet"].get("utilization_percent", 0)
-                # Efficiency blends on-time delivery (per-ticket: did actual stay within estimate —
-                # genuine overruns lower this; re-estimated scope changes stay on-time) with how close
-                # the aggregate estimate matched actual, plus utilization (real logged effort).
+                # Efficiency blends on-time delivery vs TARGET (33% of dev / qa-est / manager-revised —
+                # i.e. moving the ticket to BIS within budget) with estimate closeness and utilization.
                 on_time = r["on_time_rate"]
                 est_close = max(0, 100 - abs(100 - est_acc))
                 efficiency = round(0.45 * on_time + 0.25 * est_close + 0.30 * min(100, util), 1)
                 presence = r["presence"]
-                sub = {"presence": presence, "throughput": round(throughput, 1),
-                       "output": round(output, 1), "quality": round(quality, 1),
-                       "efficiency": round(efficiency, 1)}
-                contrib = {k: round(sub[k] * LEADERBOARD_WEIGHTS[k] / 100, 1) for k in sub}
+                sub = {"throughput": round(throughput, 1), "ticket_focus": round(r["ticket_focus"], 1),
+                       "quality": round(quality, 1), "presence": presence,
+                       "efficiency": round(efficiency, 1), "output": round(output, 1)}
+                # Weights: drop ticket_focus when no hours were logged and renormalise the rest to 100.
+                drop = set()
+                if not r["has_focus"]:
+                    drop.add("ticket_focus")
+                base = {k: v for k, v in LEADERBOARD_WEIGHTS.items() if k not in drop}
+                tot = sum(base.values()) or 1
+                weights = {k: v * 100.0 / tot for k, v in base.items()}
+                for k in drop:
+                    weights[k] = 0.0
+                contrib = {k: round(sub.get(k, 0) * weights.get(k, 0) / 100, 1) for k in sub}
                 # Leave is a billing loss — deduct from the composite.
                 leave_penalty = round(min(LEAVE_PENALTY_CAP, r["leave_days"] * LEAVE_PENALTY_PER_DAY), 1)
-                composite = round(max(0, sum(contrib.values()) - leave_penalty), 1)
+                # Incomplete testing: ticket handed to BIS with unexecuted cases (current-state, bounded).
+                unexec_bis = m.get("tests", {}).get("unexecuted_at_bis", 0)
+                bis_penalty = round(min(BIS_UNEXEC_PENALTY_CAP, unexec_bis * BIS_UNEXEC_PENALTY_PER), 1)
+                # Manager comments: signed adjustment added directly (0 default; capped swing).
+                manager_adj = max(-MANAGER_ADJ_CAP, min(MANAGER_ADJ_CAP, r.get("manager_net") or 0))
+                composite = round(max(0, sum(contrib.values()) - leave_penalty - bis_penalty + manager_adj), 1)
                 delivered = m["tickets"]["count"]
                 bugs = m["bugs"].get("total", 0)
                 tests = m.get("tests", {}).get("total_executed", 0)
+                _texec = m.get("tests", {})
                 hours = m["timesheet"]["total_hours"]
 
                 # Human-readable "how they earned this" summary.
@@ -7517,19 +8348,43 @@ def get_performance_leaderboard(
                 if r["leave_days"]:
                     summary_lines.append(f"{r['leave_days']} leave day(s) taken "
                                          f"(−{leave_penalty} billing-loss penalty)")
+                _cc = r["cx_counts"]
                 summary_lines.append(f"Delivered {delivered} ticket(s) to live "
-                                     f"({r['delivered_cwv']} depth pts)")
+                                     f"({r['delivered_cwv']} depth pts · "
+                                     f"{_cc['high']} High / {_cc['medium']} Med / {_cc['low']} Low complexity)")
                 if r["awaiting_n"]:
                     summary_lines.append(f"{r['awaiting_n']} ticket(s) handed off, awaiting BIS "
                                          f"review/go-live (credited)")
+                if r["has_focus"]:
+                    summary_lines.append(f"Ticket focus {r['ticket_focus']}% — {r['ticket_hours']}h on "
+                                         f"tickets vs {r['task_hours']}h on non-ticket tasks")
                 if bugs:
-                    summary_lines.append(f"{'Found' if not is_dev else 'Handled'} {bugs} bug(s)")
-                if tests:
-                    summary_lines.append(f"{tests} test result(s) executed")
-                summary_lines.append(f"{round(quality, 1)}% quality · {est_acc}% estimate accuracy")
+                    summary_lines.append(f"{'Found' if not is_dev else 'Handled'} {bugs} bug(s)"
+                                         + ("" if is_dev else " (all reported bugs count — rejected/deferred included)"))
+                if not is_dev and _texec.get("total_cases", 0):
+                    summary_lines.append(f"Executed {_texec.get('total_executed', 0)}/"
+                                         f"{_texec.get('total_cases', 0)} test case(s) "
+                                         f"({_texec.get('execution_completeness', 0)}% completeness)")
+                elif tests:
+                    summary_lines.append(f"{tests} test case(s) executed")
+                if not is_dev and unexec_bis:
+                    summary_lines.append(f"⚠ {unexec_bis} ticket(s) handed to BIS with unexecuted cases "
+                                         f"(−{bis_penalty} incomplete-testing penalty): "
+                                         + ", ".join('#' + str(x) for x in _texec.get("unexecuted_bis_tids", [])[:6]))
+                summary_lines.append(f"{round(quality, 1)}% quality · {est_acc}% estimate accuracy"
+                                     + (f" (revised on {r['revised_used']} ticket(s))" if r.get("revised_used") else ""))
                 if r["overrun_tickets"]:
-                    summary_lines.append(f"{r['overrun_tickets']} ticket(s) over estimate "
+                    summary_lines.append(f"{r['overrun_tickets']} ticket(s) over target "
                                          f"(+{r['overrun_hours']}h overrun) · on-time {on_time}%")
+                if r.get("manager_net"):
+                    summary_lines.append(f"Diligence {'+' if r['manager_net'] >= 0 else ''}{r['manager_net']} "
+                                         f"from {len(r['manager_notes'])} manager comment(s): "
+                                         + "; ".join(r["diligence_lines"][:4]))
+                if r.get("leak_tids"):
+                    summary_lines.append("ℹ Possible Live leakage this period on "
+                                         f"{len(r['leak_tids'])} ticket(s): "
+                                         + ", ".join('#' + str(x) for x in r["leak_tids"][:6])
+                                         + " — review (NOT auto-scored; add a comment if it's a real miss)")
 
                 scored.append({
                     "employee_id": r["emp"].employee_id,
@@ -7546,10 +8401,23 @@ def get_performance_leaderboard(
                         "delivered_to_live": delivered,            # shipped (closed) in-period
                         "awaiting_review": r["awaiting_n"],        # handed off, awaiting BIS/go-live
                         "complexity_weighted_volume": r["delivered_cwv"],
+                        "complexity_counts": r["cx_counts"],
+                        "in_progress": r.get("in_progress", 0),
+                        "module_breakdown": r.get("module_breakdown", []),
                         "awaiting_complexity": r["awaiting_cwv"],
                         "bugs": bugs,
                         "test_results_executed": tests,
+                        "tests_executed": _texec.get("total_executed", 0),
+                        "tests_total_cases": _texec.get("total_cases", 0),
+                        "tests_untested": _texec.get("untested", 0),
+                        "execution_completeness": _texec.get("execution_completeness", 0),
+                        "unexecuted_at_bis": _texec.get("unexecuted_at_bis", 0),
+                        "unexecuted_bis_tickets": _texec.get("unexecuted_bis_tids", []),
+                        "bis_penalty": bis_penalty,
                         "hours": hours,
+                        "ticket_focus_percent": r["ticket_focus"],
+                        "ticket_hours": r["ticket_hours"],
+                        "non_ticket_hours": r["task_hours"],
                         "present_days": r["present_days"],
                         "working_days": period_working_days,
                         "productive_hours": r["productive_hours"],
@@ -7565,6 +8433,12 @@ def get_performance_leaderboard(
                         "overrun_hours": r["overrun_hours"],
                         "utilization_percent": util,
                         "rag_score": round(r["rag"], 1),
+                        "diligence_score": r.get("manager_net") or 0,   # signed manager-comment net (0 default)
+                        "diligence_flags": r.get("diligence_lines") or [],
+                        "manager_notes": r.get("manager_notes") or [],
+                        "manager_note_net": r.get("manager_net") or 0,
+                        "leakage_tickets": r.get("leak_tids") or [],
+                        "revised_estimate_used": r.get("revised_used") or 0,
                     },
                     "_tb": r["throughput_base"],
                 })
@@ -7589,9 +8463,12 @@ def get_performance_leaderboard(
                            "ended": period_ended, "frozen": period_ended}}
         if team in ("qa", "all"):
             resp["qa"] = _build_team(qa_emps, False)
+        if team in ("mobile", "all"):
+            resp["mobile"] = _build_team(mobile_emps, False)  # separate board, own top performer
         if team in ("dev", "all"):
             resp["dev"] = _build_team(dev_emps, True)
         resp["summary"] = {"qa": _team_summary(resp.get("qa", [])),
+                           "mobile": _team_summary(resp.get("mobile", [])),
                            "dev": _team_summary(resp.get("dev", []))}
 
         # Freeze ended periods on first computation (immutable thereafter).
@@ -7607,6 +8484,1026 @@ def get_performance_leaderboard(
         return resp
     finally:
         db.close()
+
+
+# ============================================================================
+# Performance Export — per-person Delivery & Efficiency metrics for a SELECTABLE
+# set of employees over a SELECTABLE window (last N working days / month / custom).
+# Public (no auth, like the leaderboard); reuses the leaderboard's metric math but
+# strips out all ranking/scoring/normalization. One sheet per person, no comparison.
+# ============================================================================
+
+PERF_EXPORT_DEFAULTS = ["TV0573", "TV0672"]  # Suby Baby, Vincy JP (QA) — default selection
+PERF_EXPORT_PERIOD_LABELS = {
+    "last_5_working_days": "Last 5 working days",
+    "last_10_working_days": "Last 10 working days",
+    "this_month": "This month",
+    "last_month": "Last month",
+    "custom": "Custom range",
+}
+
+
+def _resolve_export_window(db, period, start, end):
+    """Resolve an export period to (start_datetime, end_datetime) spanning whole days.
+
+    Working-day presets walk back over real working days (weekends AND holidays excluded,
+    holiday-aware via is_working_day); month presets reuse get_period_range; custom takes
+    explicit ISO dates (validated). Today (2026-06-xx) is included in the working-day presets.
+    """
+    if period == "custom":
+        if not start or not end:
+            raise HTTPException(status_code=400, detail="custom period requires both start and end dates")
+        try:
+            sd = date.fromisoformat(start)
+            ed = date.fromisoformat(end)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="start/end must be ISO dates (YYYY-MM-DD)")
+        if ed < sd:
+            raise HTTPException(status_code=400, detail="end date must not be before start date")
+        if (ed - sd).days > 366:
+            raise HTTPException(status_code=400, detail="date range too large (max 366 days)")
+        return (datetime.combine(sd, datetime.min.time()),
+                datetime.combine(ed, datetime.max.time()))
+
+    if period in ("this_month", "last_month"):
+        start_dt, end_dt, _ = get_period_range("month", 0 if period == "this_month" else 1)
+        return start_dt, end_dt
+
+    n = 10 if period == "last_10_working_days" else 5
+    today = datetime.now().date()
+    days = []
+    d = today
+    for _ in range(120):  # bound the walk so a mis-seeded holiday table can't loop forever
+        if is_working_day(d, db):
+            days.append(d)
+            if len(days) >= n:
+                break
+        d -= timedelta(days=1)
+    if not days:
+        days = [today]
+    return (datetime.combine(min(days), datetime.min.time()),
+            datetime.combine(max(days), datetime.max.time()))
+
+
+def _delivery_efficiency_for_employee(emp, is_dev, *, delivered_tickets, awaiting_tickets):
+    """Delivery + efficiency metrics for one person over a window — extracted from the leaderboard
+    math (_build_team) MINUS the scoring/normalization (no AWAITING_CREDIT blend, no ranking).
+    delivered/awaiting complexity are reported separately."""
+    delivered_cwv = sum(_ticket_complexity(t, is_dev) for t in delivered_tickets)
+    awaiting_cwv = sum(_ticket_complexity(t, is_dev) for t in awaiting_tickets)
+    estd = overrun_tickets = 0
+    overrun_hours = 0.0
+    for t in delivered_tickets:
+        est = (t.dev_estimate_hours if is_dev else t.qa_estimate_hours) or 0
+        act = (t.actual_dev_hours if is_dev else t.actual_qa_hours) or 0
+        if est > 0:
+            estd += 1
+            if act > est:
+                overrun_tickets += 1
+                overrun_hours += (act - est)
+    on_time_rate = round(100 * (estd - overrun_tickets) / estd, 1) if estd else 100.0
+    return {
+        "delivered_to_live": len(delivered_tickets),
+        "awaiting_review": len(awaiting_tickets),
+        "complexity_weighted_volume": round(delivered_cwv, 1),
+        "awaiting_complexity": round(awaiting_cwv, 1),
+        "on_time_rate": on_time_rate,
+        "overrun_tickets": overrun_tickets,
+        "overrun_hours": round(overrun_hours, 1),
+        "estimated_tickets": estd,
+    }
+
+
+def _attribute_tickets_to_employees(selected, tickets):
+    """Bucket tickets to the given selected employees, mirroring the leaderboard's name resolution
+    (raw/normalized/compact-name match + unambiguous first+last-token fallback, which also absorbs
+    trailing initials on QC-tester names). `selected` = list of (Employee, is_dev). QA matches on
+    qc_tester; Dev matches on backend/frontend developer. Returns {employee_id: [ticket, ...]}."""
+    name_to_eid = {}
+    is_dev_by_eid = {}
+    f2_sets = defaultdict(set)
+    for emp, is_dev in selected:
+        is_dev_by_eid[emp.employee_id] = is_dev
+        if not emp.name:
+            continue
+        for variant in (emp.name.strip(), _strip_paren(emp.name).strip()):
+            if not variant:
+                continue
+            for v in (variant, _normalize_person_name(variant), _compact_person_name(variant)):
+                if v:
+                    name_to_eid.setdefault(v, emp.employee_id)
+        tk = _normalize_person_name(emp.name).split()
+        if len(tk) >= 2:
+            f2_sets[(tk[0], tk[1])].add(emp.employee_id)
+    first2 = {k: next(iter(v)) for k, v in f2_sets.items() if len(v) == 1}
+
+    def resolve(raw):
+        if not raw:
+            return None
+        for variant in (raw.strip(), _strip_paren(raw).strip()):
+            eid = (name_to_eid.get(variant)
+                   or name_to_eid.get(_normalize_person_name(variant))
+                   or name_to_eid.get(_compact_person_name(variant)))
+            if eid:
+                return eid
+        toks = _normalize_person_name(_strip_paren(raw)).split()
+        if len(toks) >= 2:
+            return first2.get((toks[0], toks[1]))
+        return None
+
+    buckets = defaultdict(list)
+    seen = set()
+
+    def add(eid, t):
+        key = (eid, t.id)
+        if eid and key not in seen:
+            seen.add(key)
+            buckets[eid].append(t)
+
+    for t in tickets:
+        qa_eid = resolve(t.qc_tester)
+        if qa_eid and not is_dev_by_eid.get(qa_eid, False):
+            add(qa_eid, t)
+        for nm in (t.backend_developer, t.frontend_developer):
+            d_eid = resolve(nm)
+            if d_eid and is_dev_by_eid.get(d_eid, False):
+                add(d_eid, t)
+    return buckets
+
+
+# ===== PERFORMER OF THE MONTH / QUARTER (hall-of-record) =====
+
+PERFORMER_CATEGORY_TEAM = {"qa": "qa", "dev": "dev", "mobile": "mobile", "overall": "all"}
+PERFORMER_CATEGORY_LABEL = {"qa": "QA", "dev": "Development", "mobile": "Mobile", "overall": "Overall"}
+
+
+def _performer_period_key(period_type: str, start: datetime) -> str:
+    """Canonical sortable key: '2026-06' (month) or '2026-Q2' (quarter)."""
+    if period_type == "quarter":
+        return f"{start.year}-Q{(start.month - 1) // 3 + 1}"
+    return start.strftime("%Y-%m")
+
+
+def _performer_leaderboard_list(category: str, period_type: str, offset: int):
+    """The ranked leaderboard list for a category + period. 'overall' merges all teams and re-ranks."""
+    team = PERFORMER_CATEGORY_TEAM.get(category, "qa")
+    data = get_performance_leaderboard(period=period_type, offset=offset, team=team, from_date=None, to_date=None)
+    if category == "overall":
+        merged = []
+        for k in ("qa", "dev", "mobile"):
+            merged.extend(data.get(k) or [])
+        merged.sort(key=lambda e: -(e.get("composite_score") or 0))
+        for i, e in enumerate(merged, 1):
+            e = dict(e); e["rank"] = i; merged[i - 1] = e
+        return merged
+    return data.get(category) or data.get(team) or []
+
+
+def _build_performer_summary(entry: dict, category: str, period_label: str, team_size: int) -> str:
+    """Citation-style write-up auto-generated from a leaderboard entry (editable before freezing)."""
+    rm = entry.get("raw_metrics") or {}
+    ss = entry.get("sub_scores") or {}
+    name = entry.get("name", "")
+    rank = entry.get("rank")
+    score = entry.get("composite_score")
+    delivered = rm.get("delivered_to_live", rm.get("tickets", 0))
+    bugs = rm.get("bugs", 0)
+    execd = rm.get("tests_executed", 0)
+    total = rm.get("tests_total_cases", 0)
+    completeness = rm.get("execution_completeness")
+    quality = rm.get("quality_percent")
+    focus = rm.get("ticket_focus_percent")
+    n_modules = len(rm.get("module_breakdown") or [])
+    cat_label = PERFORMER_CATEGORY_LABEL.get(category, category.upper())
+
+    bits = []
+    lead = f"{name} ranked #{rank} of {team_size} on the {cat_label} performance leaderboard for {period_label}"
+    if score is not None:
+        lead += f" (composite score {round(score, 1)})"
+    bits.append(lead + ".")
+    deliv = []
+    if delivered:
+        deliv.append(f"delivered {delivered} ticket(s) to live" + (f" across {n_modules} module(s)" if n_modules else ""))
+    if bugs:
+        deliv.append(f"found {bugs} bug(s)")
+    if execd or total:
+        c = f" ({round(completeness)}% completeness)" if completeness is not None else ""
+        deliv.append(f"executed {execd}/{total} test case(s){c}")
+    if deliv:
+        bits.append("This period " + (", ".join(deliv[:-1]) + (", and " if len(deliv) > 1 else "") + deliv[-1]) + ".")
+    qbits = []
+    if quality is not None:
+        qbits.append(f"{round(quality)}% quality")
+    if focus is not None:
+        qbits.append(f"{round(focus)}% ticket focus")
+    if qbits:
+        closer = "the most well-rounded performer on the team" if rank == 1 else "a consistently strong, dependable performer"
+        bits.append("With " + " and ".join(qbits) + f", {name.split()[0]} was {closer}.")
+    return " ".join(bits)
+
+
+@app.get("/performers")
+def list_performers():
+    """All recorded performers (frozen + provisional drafts), newest period first, grouped for the UI."""
+    db: Session = SessionLocal()
+    try:
+        rows = db.query(PerformerRecord).order_by(
+            PerformerRecord.period_key.desc(), PerformerRecord.category.asc()
+        ).all()
+        def ser(r):
+            return {
+                "id": r.id, "period_type": r.period_type, "period_key": r.period_key,
+                "period_label": r.period_label, "category": r.category,
+                "category_label": PERFORMER_CATEGORY_LABEL.get(r.category, r.category),
+                "employee_id": r.employee_id, "employee_name": r.employee_name,
+                "team": r.team, "role": r.role, "composite_score": r.composite_score,
+                "rank": r.rank, "team_size": r.team_size, "summary": r.summary,
+                "frozen": r.frozen, "frozen_on": r.frozen_on.isoformat() if r.frozen_on else None,
+                "frozen_by": r.frozen_by, "created_on": r.created_on.isoformat() if r.created_on else None,
+                "updated_on": r.updated_on.isoformat() if r.updated_on else None,
+            }
+        out = [ser(r) for r in rows]
+        return {
+            "quarter": [r for r in out if r["period_type"] == "quarter"],
+            "month": [r for r in out if r["period_type"] == "month"],
+        }
+    finally:
+        db.close()
+
+
+@app.get("/performers/candidates")
+def performer_candidates(
+    period_type: str = Query("quarter", regex="^(month|quarter)$"),
+    offset: int = Query(0, ge=0, le=240),
+    category: str = Query("qa", regex="^(qa|dev|mobile|overall)$"),
+):
+    """Ranked candidates for a period + category, each with an auto-generated, editable summary.
+    Drives the 'record a performer' form: pick the period/category, choose a person, tweak the text."""
+    start, end, label = get_period_range(period_type, offset)
+    lst = _performer_leaderboard_list(category, period_type, offset)
+    team_size = len(lst)
+    cands = []
+    for e in lst:
+        cands.append({
+            "employee_id": e.get("employee_id"), "name": e.get("name"),
+            "team": e.get("team"), "role": e.get("role"),
+            "composite_score": e.get("composite_score"), "rank": e.get("rank"),
+            "team_size": team_size,
+            "summary": _build_performer_summary(e, category, label, team_size),
+            "raw_metrics": e.get("raw_metrics"),
+        })
+    return {
+        "period_type": period_type, "offset": offset, "category": category,
+        "period_label": label, "period_key": _performer_period_key(period_type, start),
+        "period_ended": end.date() < datetime.now().date(),
+        "candidates": cands,
+    }
+
+
+class PerformerBody(BaseModel):
+    period_type: str
+    offset: int = 0
+    category: str
+    employee_id: Optional[str] = None
+    employee_name: str
+    team: Optional[str] = None
+    role: Optional[str] = None
+    composite_score: Optional[float] = None
+    rank: Optional[int] = None
+    team_size: Optional[int] = None
+    summary: Optional[str] = None
+    metrics: Optional[dict] = None
+    freeze: bool = False
+
+
+@app.post("/performers")
+def upsert_performer(body: PerformerBody, current_user: dict = Depends(get_current_user)):
+    """Record (or update) the performer for a period + category. Re-recording a FROZEN period is
+    rejected — a frozen result is the official, immutable record. Set freeze=true to finalize."""
+    if body.period_type not in ("month", "quarter") or body.category not in PERFORMER_CATEGORY_TEAM:
+        raise HTTPException(status_code=400, detail="Bad period_type or category")
+    start, end, label = get_period_range(body.period_type, body.offset)
+    pkey = _performer_period_key(body.period_type, start)
+    db: Session = SessionLocal()
+    try:
+        rec = db.query(PerformerRecord).filter_by(
+            period_type=body.period_type, period_key=pkey, category=body.category
+        ).first()
+        if rec and rec.frozen:
+            raise HTTPException(status_code=409, detail=f"{label} {body.category.upper()} is frozen and cannot be changed.")
+        now = datetime.utcnow()
+        uname = (current_user or {}).get("name") or (current_user or {}).get("username")
+        if not rec:
+            rec = PerformerRecord(period_type=body.period_type, period_key=pkey,
+                                  period_label=label, category=body.category, created_by=uname,
+                                  employee_name=body.employee_name)
+            db.add(rec)
+        rec.period_label = label
+        rec.employee_id = body.employee_id
+        rec.employee_name = body.employee_name
+        rec.team = body.team
+        rec.role = body.role
+        rec.composite_score = body.composite_score
+        rec.rank = body.rank
+        rec.team_size = body.team_size
+        rec.summary = body.summary
+        if body.metrics is not None:
+            rec.metrics = body.metrics
+        rec.updated_on = now
+        if body.freeze:
+            rec.frozen = True
+            rec.frozen_on = now
+            rec.frozen_by = uname
+        db.commit()
+        return {"ok": True, "id": rec.id, "frozen": rec.frozen, "period_label": label, "period_key": pkey}
+    finally:
+        db.close()
+
+
+@app.post("/performers/{record_id}/freeze")
+def freeze_performer(record_id: int, current_user: dict = Depends(get_current_user)):
+    db: Session = SessionLocal()
+    try:
+        rec = db.query(PerformerRecord).get(record_id)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Not found")
+        rec.frozen = True
+        rec.frozen_on = datetime.utcnow()
+        rec.frozen_by = (current_user or {}).get("name") or (current_user or {}).get("username")
+        db.commit()
+        return {"ok": True, "frozen": True}
+    finally:
+        db.close()
+
+
+@app.post("/performers/{record_id}/unfreeze")
+def unfreeze_performer(record_id: int, current_user: dict = Depends(require_role("admin"))):
+    """Admin-only: reopen a frozen record (in case it was finalized in error)."""
+    db: Session = SessionLocal()
+    try:
+        rec = db.query(PerformerRecord).get(record_id)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Not found")
+        rec.frozen = False
+        rec.frozen_on = None
+        db.commit()
+        return {"ok": True, "frozen": False}
+    finally:
+        db.close()
+
+
+@app.delete("/performers/{record_id}")
+def delete_performer(record_id: int, current_user: dict = Depends(get_current_user)):
+    """Delete a provisional (unfrozen) record. Frozen records are protected (admins use unfreeze first)."""
+    db: Session = SessionLocal()
+    try:
+        rec = db.query(PerformerRecord).get(record_id)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Not found")
+        if rec.frozen and (current_user or {}).get("role") != "admin":
+            raise HTTPException(status_code=409, detail="Record is frozen; unfreeze (admin) before deleting.")
+        db.delete(rec)
+        db.commit()
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+@app.get("/employees/performance/export-options")
+def performance_export_options():
+    """Public picker source for the Performance Export tool: active, non-archived employees
+    (id, name, team, is_dev) plus the default selection (Suby & Vincy). No auth — matches the
+    sibling /employees/performance/* dashboards so the export is 'downloadable for all'."""
+    db: Session = SessionLocal()
+    try:
+        emps = db.query(Employee).filter(
+            Employee.is_active == True, Employee.archived == False,
+        ).order_by(Employee.team, Employee.name).all()
+        out = []
+        for e in emps:
+            team = (e.team or "").strip()
+            out.append({
+                "employee_id": e.employee_id,
+                "name": e.name,
+                "team": team,
+                "is_dev": "DEV" in team.upper(),
+            })
+        return {"employees": out, "defaults": PERF_EXPORT_DEFAULTS}
+    finally:
+        db.close()
+
+
+# NOTE: path is "export-xlsx" (not "export") to avoid colliding with the dynamic
+# route /employees/{employee_id}/export (defined earlier, which would otherwise win
+# with employee_id="performance").
+@app.get("/employees/performance/export-xlsx")
+def export_performance_metrics(
+    employees: str = Query(",".join(PERF_EXPORT_DEFAULTS), description="Comma-separated employee_id (or numeric id) list"),
+    period: str = Query("last_5_working_days",
+                        regex="^(last_5_working_days|last_10_working_days|this_month|last_month|custom)$"),
+    start: Optional[str] = Query(None, description="ISO start date (custom period only)"),
+    end: Optional[str] = Query(None, description="ISO end date (custom period only)"),
+):
+    """Public per-person Delivery & Efficiency export (.xlsx) over a selectable window.
+
+    One sheet per selected employee: Delivery/throughput + Efficiency metric blocks plus a
+    delivered-ticket detail table. No ranking, no scoring, no side-by-side comparison. QA people
+    are attributed via qc_tester, Dev via backend/frontend developer. Delivered membership uses
+    closed_on (real ship date); awaiting-review is current-status and only populated when the
+    window ends today.
+    """
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    from openpyxl.chart import BarChart, Reference
+    from openpyxl.chart.label import DataLabelList
+    from io import BytesIO
+
+    db: Session = SessionLocal()
+    try:
+        start_dt, end_dt = _resolve_export_window(db, period, start, end)
+        period_label = PERF_EXPORT_PERIOD_LABELS.get(period, period)
+        window_ends_today = end_dt.date() >= datetime.now().date()
+        working_days = get_working_days_in_range(start_dt.date(), end_dt.date(), db)
+
+        # Resolve selected employees (preserve requested order; drop blanks/dupes/unknown).
+        wanted = [e.strip() for e in (employees or "").split(",") if e.strip()]
+        selected = []  # (Employee, is_dev)
+        seen_ids = set()
+        for eid in wanted:
+            conds = [Employee.employee_id == eid]
+            if eid.isdigit():
+                conds.append(Employee.id == int(eid))
+            emp = db.query(Employee).filter(or_(*conds)).first()
+            if emp and emp.employee_id not in seen_ids:
+                seen_ids.add(emp.employee_id)
+                selected.append((emp, "DEV" in (emp.team or "").upper()))
+        if not selected:
+            raise HTTPException(status_code=404, detail="No matching employees found")
+
+        # Delivered-in-window tickets (real ship date), bucketed to the selected people.
+        closed_tickets = db.query(TicketTracking).filter(
+            TicketTracking.closed_on >= start_dt,
+            TicketTracking.closed_on <= end_dt,
+        ).all()
+        delivered_by_eid = _attribute_tickets_to_employees(selected, closed_tickets)
+
+        # Awaiting external review (BIS / Approved for Live) — current-status, only when window ends today.
+        awaiting_by_eid = defaultdict(list)
+        if window_ends_today:
+            await_tickets = db.query(TicketTracking).filter(
+                TicketTracking.status.in_(AWAITING_REVIEW_STATUSES)
+            ).all()
+            awaiting_by_eid = _attribute_tickets_to_employees(selected, await_tickets)
+
+        # Tickets WORKED ON in the window (broader than delivered) so an actively-testing person
+        # shows up even with 0 closed: union of delivered (closed_on in window), tickets with a
+        # status transition in the window (TicketStatusHistory), and — for a live window — current
+        # in-progress / awaiting tickets. Attribution is by qc_tester (QA) / developer (Dev).
+        worked_pool = {t.id: t for t in closed_tickets}
+        moved_ids = [row[0] for row in db.query(TicketStatusHistory.ticket_id).filter(
+            TicketStatusHistory.changed_on >= start_dt,
+            TicketStatusHistory.changed_on <= end_dt,
+        ).distinct().all()]
+        if moved_ids:
+            for t in db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(moved_ids)).all():
+                worked_pool.setdefault(t.id, t)
+        if window_ends_today:
+            for t in db.query(TicketTracking).filter(
+                TicketTracking.status.in_(list(AWAITING_REVIEW_STATUSES) + list(QA_TESTING_STATUSES))
+            ).all():
+                worked_pool.setdefault(t.id, t)
+        worked_by_eid = _attribute_tickets_to_employees(selected, list(worked_pool.values()))
+
+        # ---- styling ----
+        WHITE, DARK, MIDBLUE, NEUTRAL = "FFFFFF", "1F4E78", "2E5FA3", "7F8C8D"
+        NCOLS = 9  # A:I content width
+        header_fill = PatternFill("solid", fgColor="366092")
+        header_font = Font(bold=True, color=WHITE, size=11)
+        section_fill = PatternFill("solid", fgColor=DARK)
+        section_font = Font(bold=True, color=WHITE, size=11)
+        subband_fill = PatternFill("solid", fgColor=MIDBLUE)
+        label_font = Font(bold=True)
+        title_font = Font(bold=True, size=16, color=WHITE)
+        sub_font = Font(size=10, color="DCE6F1")
+        note_font = Font(italic=True, size=9, color="888888")
+        kpi_val_font = Font(bold=True, size=20, color=WHITE)
+        kpi_lbl_font = Font(size=9, color=WHITE)
+        center = Alignment(horizontal="center", vertical="center")
+        left = Alignment(horizontal="left", vertical="center")
+        thin = Border(left=Side(style="thin", color="D9D9D9"),
+                      right=Side(style="thin", color="D9D9D9"),
+                      top=Side(style="thin", color="D9D9D9"),
+                      bottom=Side(style="thin", color="D9D9D9"))
+        band_fill = {"Simple": PatternFill("solid", fgColor="D5F5E3"),
+                     "Moderate": PatternFill("solid", fgColor="FCF3CF"),
+                     "Complex": PatternFill("solid", fgColor="FADBD8")}
+
+        def rag_fill(v, good, ok):
+            color = "1E8449" if v >= good else ("B9770E" if v >= ok else "A93226")
+            return PatternFill("solid", fgColor=color)
+
+        wb = openpyxl.Workbook()
+        wb.remove(wb.active)  # drop the default sheet; add one per person
+        used_titles = set()
+
+        def sheet_title(name, eid):
+            base = re.sub(r"[\[\]:\*\?/\\]", " ", name or eid or "Sheet").strip()[:28] or (eid or "Sheet")[:28]
+            t, i = base, 2
+            while t.lower() in used_titles:
+                t = f"{base[:26]} {i}"
+                i += 1
+            used_titles.add(t.lower())
+            return t
+
+        for emp, is_dev in selected:
+            delivered = delivered_by_eid.get(emp.employee_id, [])
+            awaiting = awaiting_by_eid.get(emp.employee_id, [])
+            worked = worked_by_eid.get(emp.employee_id, [])
+            tteam = "DEV" if is_dev else "QA"
+            ts = db.query(EnhancedTimesheet).filter(
+                EnhancedTimesheet.employee_name.ilike(f"%{emp.name}%"),
+                EnhancedTimesheet.team == tteam,
+                EnhancedTimesheet.date >= start_dt.date(),
+                EnhancedTimesheet.date <= end_dt.date(),
+            ).all()
+            metrics = _build_employee_metrics(
+                db, emp, start_dt, end_dt, is_dev, False, _employee_mode_of_work(emp),
+                tickets=delivered, bugs=[], tests=[], timesheet_entries=ts,
+            )
+            de = _delivery_efficiency_for_employee(
+                emp, is_dev, delivered_tickets=delivered, awaiting_tickets=awaiting,
+            )
+            tk, tsm = metrics["tickets"], metrics["timesheet"]
+
+            ws = wb.create_sheet(title=sheet_title(emp.name, emp.employee_id))
+            est_lbl = "Dev" if is_dev else "QA"
+
+            # Hours over the tickets WORKED ON (so they tie to the table and aren't 0 for someone
+            # actively testing with nothing closed yet). Accuracy / on-time / overruns stay on
+            # DELIVERED (completed) work; show "—" when nothing was delivered in the window.
+            worked_est = round(sum((t.dev_estimate_hours if is_dev else t.qa_estimate_hours) or 0 for t in worked), 1)
+            worked_act = round(sum((t.actual_dev_hours if is_dev else t.actual_qa_hours) or 0 for t in worked), 1)
+            has_delivered = bool(delivered)
+            acc_disp = f'{tk["estimate_accuracy"]:.0f}%' if has_delivered else "—"
+            ontime_disp = f'{de["on_time_rate"]:.0f}%' if has_delivered else "—"
+            acc_fill = rag_fill(tk["estimate_accuracy"], 90, 75) if has_delivered else PatternFill("solid", fgColor=NEUTRAL)
+            ontime_fill = rag_fill(de["on_time_rate"], 80, 50) if has_delivered else PatternFill("solid", fgColor=NEUTRAL)
+
+            # ---- title band (full width) ----
+            for cc in range(1, NCOLS + 1):
+                ws.cell(row=1, column=cc).fill = section_fill
+                ws.cell(row=2, column=cc).fill = subband_fill
+            ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=NCOLS)
+            tcell = ws.cell(row=1, column=1, value=f"{emp.name}    ·    {emp.employee_id}    ·    {emp.team or ''}")
+            tcell.font = title_font; tcell.alignment = left
+            ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=NCOLS)
+            scell = ws.cell(row=2, column=1,
+                            value=f"{period_label}  ·  {start_dt.date().isoformat()} to {end_dt.date().isoformat()}"
+                                  f"  ·  {working_days} working days"
+                                  + ("  ·  Development (dev hours)" if is_dev else ""))
+            scell.font = sub_font; scell.alignment = left
+            ws.row_dimensions[1].height = 28
+            ws.row_dimensions[2].height = 18
+
+            # ---- KPI tiles ----
+            kpi_row = 4
+            tiles = [
+                ("Delivered to live", de["delivered_to_live"], subband_fill),
+                ("On-time rate", ontime_disp, ontime_fill),
+                ("Utilization", f'{tsm["utilization_percent"]:.0f}%', rag_fill(tsm["utilization_percent"], 85, 70)),
+                ("Estimate accuracy", acc_disp, acc_fill),
+            ]
+            for i, (lbl, val, fill) in enumerate(tiles):
+                c0 = 1 + i * 2
+                for cc in (c0, c0 + 1):
+                    ws.cell(row=kpi_row, column=cc).fill = fill
+                    ws.cell(row=kpi_row + 1, column=cc).fill = fill
+                ws.merge_cells(start_row=kpi_row, start_column=c0, end_row=kpi_row, end_column=c0 + 1)
+                ws.merge_cells(start_row=kpi_row + 1, start_column=c0, end_row=kpi_row + 1, end_column=c0 + 1)
+                vc = ws.cell(row=kpi_row, column=c0, value=val); vc.font = kpi_val_font; vc.alignment = center
+                lc = ws.cell(row=kpi_row + 1, column=c0, value=lbl); lc.font = kpi_lbl_font; lc.alignment = center
+            ws.row_dimensions[kpi_row].height = 30
+            ws.row_dimensions[kpi_row + 1].height = 16
+
+            # ---- metric blocks: Delivery (A:B) and Efficiency (D:E) side by side ----
+            block_start = kpi_row + 3
+
+            def block(title, items, start_col):
+                for cc in (start_col, start_col + 1):
+                    ws.cell(row=block_start, column=cc).fill = section_fill
+                ws.merge_cells(start_row=block_start, start_column=start_col, end_row=block_start, end_column=start_col + 1)
+                ws.cell(row=block_start, column=start_col, value=title).font = section_font
+                ws.cell(row=block_start, column=start_col).alignment = left
+                rr = block_start + 1
+                for lbl, val in items:
+                    lc = ws.cell(row=rr, column=start_col, value=lbl); lc.font = label_font; lc.border = thin
+                    vc = ws.cell(row=rr, column=start_col + 1, value=val); vc.border = thin; vc.alignment = center
+                    rr += 1
+                return rr
+
+            left_end = block("DELIVERY / THROUGHPUT", [
+                ("Tickets worked on", len(worked)),
+                ("Delivered to live", de["delivered_to_live"]),
+                ("Awaiting review", de["awaiting_review"]),
+                ("Delivery volume (weighted)", de["complexity_weighted_volume"]),
+                ("Awaiting volume (weighted)", de["awaiting_complexity"]),
+            ], 1)
+            right_end = block("EFFICIENCY", [
+                (f"{est_lbl} estimate hours", worked_est),
+                (f"{est_lbl} actual hours", worked_act),
+                ("Estimate accuracy %", (tk["estimate_accuracy"] if has_delivered else "—")),
+                ("On-time rate %", (de["on_time_rate"] if has_delivered else "—")),
+                ("Overrun tickets", de["overrun_tickets"]),
+                ("Overrun hours", de["overrun_hours"]),
+                ("Utilization %", tsm["utilization_percent"]),
+                ("Total logged hours", tsm["total_hours"]),
+                ("Expected hours", tsm["expected_hours"]),
+            ], 4)
+            metrics_end = max(left_end, right_end)
+
+            # Basis note so the two scopes are unambiguous.
+            ws.cell(row=metrics_end, column=1,
+                    value="Hours = all tickets worked on in the window.  "
+                          "Estimate accuracy, on-time rate & overruns = delivered (closed) tickets only.").font = note_font
+
+            # ---- reserve two full-width chart bands; filled in once detail data exists ----
+            chartA_anchor = metrics_end + 2
+            chartB_anchor = chartA_anchor + 17
+            r = chartB_anchor + 17
+
+            # ---- tickets-worked-on table (Complexity shown as words, current status per ticket) ----
+            for cc in range(1, NCOLS + 1):
+                ws.cell(row=r, column=cc).fill = section_fill
+            ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=NCOLS)
+            ws.cell(row=r, column=1, value="TICKETS WORKED ON (in window)").font = section_font
+            ws.cell(row=r, column=1).alignment = left
+            r += 1
+            detail_start = r
+            detail_headers = ["Ticket ID", "Title", "Status", "Priority", "Closed On",
+                              f"{est_lbl} Est", f"{est_lbl} Actual", "Overrun (h)", "Complexity"]
+            for ci, h in enumerate(detail_headers, 1):
+                c = ws.cell(row=r, column=ci, value=h)
+                c.fill = header_fill; c.font = header_font; c.border = thin; c.alignment = center
+            hdr_row = r
+            r += 1
+            band_counts = {"Simple": 0, "Moderate": 0, "Complex": 0}
+            # Open/in-progress first (closed_on = None sorts to the top), then most-recently closed.
+            for t in sorted(worked, key=lambda x: x.closed_on or datetime.max, reverse=True):
+                est = (t.dev_estimate_hours if is_dev else t.qa_estimate_hours) or 0
+                act = (t.actual_dev_hours if is_dev else t.actual_qa_hours) or 0
+                overrun = round(max(0.0, act - est), 1)
+                band = _complexity_band(_ticket_complexity(t, is_dev))
+                band_counts[band] += 1
+                vals = [t.ticket_id, t.title or "", t.status or "", t.priority or "",
+                        t.closed_on.date().isoformat() if t.closed_on else "—",
+                        round(est, 1), round(act, 1), overrun, band]
+                for ci, v in enumerate(vals, 1):
+                    cc = ws.cell(row=r, column=ci, value=v); cc.border = thin
+                    if ci in (1, 5, 6, 7, 8):
+                        cc.alignment = center
+                    if ci in (6, 7, 8):
+                        cc.number_format = "0.0"
+                if overrun > 0:
+                    ws.cell(row=r, column=8).font = Font(color="C0392B", bold=True)
+                bcell = ws.cell(row=r, column=9)
+                bcell.fill = band_fill[band]; bcell.alignment = center
+                r += 1
+            last_data_row = r - 1
+            if not worked:
+                ws.cell(row=r, column=1, value="No tickets worked on in this window.").font = note_font
+                r += 1
+
+            # ---- chart-data mini table (complexity mix) ----
+            r += 1
+            ws.cell(row=r, column=1, value="Chart data — complexity mix").font = note_font
+            r += 1
+            mix_hdr = r
+            ws.cell(row=r, column=1, value="Complexity"); ws.cell(row=r, column=2, value="Tickets")
+            r += 1
+            mix_first = r
+            for b in ("Simple", "Moderate", "Complex"):
+                ws.cell(row=r, column=1, value=b)
+                ws.cell(row=r, column=2, value=band_counts[b])
+                r += 1
+            mix_last = r - 1
+
+            # ---- charts (only when there are tickets worked on) ----
+            if worked:
+                a_last = min(last_data_row, hdr_row + 20)  # cap categories for readability
+                cA = BarChart(); cA.type = "col"; cA.style = 10
+                cA.title = "Estimate vs Actual hours (per ticket)"
+                cA.height = 7.2; cA.width = 22
+                cA.add_data(Reference(ws, min_col=6, max_col=7, min_row=hdr_row, max_row=a_last),
+                            titles_from_data=True)
+                cA.set_categories(Reference(ws, min_col=1, max_col=1, min_row=hdr_row + 1, max_row=a_last))
+                cA.y_axis.title = "Hours"; cA.x_axis.title = "Ticket"
+                ws.add_chart(cA, f"A{chartA_anchor}")
+
+                cB = BarChart(); cB.type = "col"; cB.style = 12; cB.legend = None
+                cB.title = "Complexity mix (tickets)"
+                cB.height = 7.0; cB.width = 13
+                cB.add_data(Reference(ws, min_col=2, max_col=2, min_row=mix_hdr, max_row=mix_last),
+                            titles_from_data=True)
+                cB.set_categories(Reference(ws, min_col=1, max_col=1, min_row=mix_first, max_row=mix_last))
+                cB.dataLabels = DataLabelList(); cB.dataLabels.showVal = True
+                cB.y_axis.title = "Tickets"
+                ws.add_chart(cB, f"A{chartB_anchor}")
+
+            # ---- widths / filter ----
+            for i, w in enumerate([28, 40, 16, 22, 13, 11, 12, 12, 13], 1):
+                ws.column_dimensions[get_column_letter(i)].width = w
+            if worked:
+                ws.auto_filter.ref = f"A{detail_start}:{get_column_letter(NCOLS)}{last_data_row}"
+
+        ts_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"Performance_Export_{period}_{ts_stamp}.xlsx"
+        out = BytesIO()
+        wb.save(out)
+        out.seek(0)
+        return StreamingResponse(
+            out,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    finally:
+        db.close()
+
+
+# ============================================================================
+# Automation module (rebuilt 2026-06) — public, no-auth (matches /live/* dashboards).
+# Source of truth: TestRail Project 18 via automation_sync. New clean paths; the legacy
+# /automation/* + /live/automation-* endpoints are left as unused dead code. The manual
+# sync trigger is "/automation/trigger-sync" to avoid colliding with legacy "/automation/sync".
+# ============================================================================
+class AutoMarkBody(BaseModel):
+    case_ids: List[int]
+    person: str
+
+
+class AutoConfigBody(BaseModel):
+    manual_minutes_per_case: int
+
+
+def _automation_last_sync(db):
+    row = (db.query(SyncLog).filter(SyncLog.sync_source == "automation")
+           .order_by(SyncLog.started_at.desc()).first())
+    if not row:
+        return None
+    return {"success": row.success, "message": row.message,
+            "at": row.completed_at.isoformat() if row.completed_at else None,
+            "duration_seconds": row.duration_seconds}
+
+
+def _autocase_brief(c):
+    return {
+        "case_id": c.case_id, "title": c.title, "module": c.module,
+        "section_name": c.section_name, "suite_name": c.suite_name,
+        "automation_status": c.automation_status, "automated_by": c.automated_by,
+        "planned_on": c.planned_on.date().isoformat() if c.planned_on else None,
+        "automated_on": c.automated_on.date().isoformat() if c.automated_on else None,
+    }
+
+
+@app.get("/automation/overview")
+def automation_overview(week: Optional[str] = Query(None, description="ISO Monday of the week to view; default current")):
+    """Full automation dashboard payload: overview KPIs, per-module, per-ticket, team,
+    planning/backlog, daily growth, config + last sync. One call drives the dashboard.
+    `week` selects which week the team/planning/scripting tabs report on (default current)."""
+    import automation_sync as A
+    import automation_override as OV
+    ws = None
+    if week:
+        try:
+            ws = date.fromisoformat(week)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="week must be ISO date YYYY-MM-DD")
+    db: Session = SessionLocal()
+    try:
+        m = A.compute_metrics(db, ws)
+        m["growth"] = A.growth_series(db)
+        m["scripting"] = A.compute_weekly_automation(db, ws)  # this/next-week + daily + backlog for the Scripting tab
+        m["selected_week"] = A._week_start(ws).isoformat()
+        m["last_sync"] = _automation_last_sync(db)
+        m["config"] = {"manual_minutes_per_case": A.get_manual_minutes(db), "team": A.TEAM}
+        # Manual Excel override for Team + Planning tabs (until TestRail attribution is corrected).
+        ov = OV.load_override()
+        if ov.get("enabled"):
+            planned_ids = [cid for p in (ov.get("planned") or {}).values() for cid in p.get("case_ids", [])]
+            mod_lookup = {}
+            if planned_ids:
+                mod_lookup = {cid: mod for cid, mod in db.query(
+                    AutomationCase.case_id, AutomationCase.module
+                ).filter(AutomationCase.case_id.in_(planned_ids)).all()}
+            OV.apply_to_team(m["team"])
+            OV.apply_to_planning(m["planning"], module_lookup=mod_lookup)
+            OV.apply_to_modules(m["modules"], m["overview"])
+            m["override"] = {"active": True, "imported_at": ov.get("imported_at"),
+                             "note": "Some figures use uploaded Excel data, overriding TestRail where its data is being corrected."}
+        return m
+    finally:
+        db.close()
+
+
+@app.get("/automation/cases")
+def automation_cases(
+    status: Optional[str] = Query(None, description="Planned|Automated|In Progress|Not Automated|Not Automatable"),
+    person: Optional[str] = Query(None),
+    module: Optional[str] = Query(None),
+    limit: int = Query(1000, ge=1, le=8000),
+):
+    """List catalog cases (for Claude/the engineer to see what to automate). Default use:
+    GET /automation/cases?status=Planned -> the automation backlog."""
+    import automation_sync as A
+    db: Session = SessionLocal()
+    try:
+        q = db.query(AutomationCase)
+        if status:
+            q = q.filter(AutomationCase.automation_status == status)
+        if module:
+            q = q.filter(AutomationCase.module == module)
+        if person:
+            bid = A.person_to_byid(person)
+            if bid:
+                q = q.filter(AutomationCase.automated_by == A.BYID_TO_PERSON[bid])
+        rows = q.order_by(AutomationCase.module, AutomationCase.case_id).limit(limit).all()
+        return {"count": len(rows), "cases": [_autocase_brief(c) for c in rows]}
+    finally:
+        db.close()
+
+
+def _automation_mark(case_ids, person, status_label, status_id):
+    import automation_sync as A
+    from datetime import datetime as _dt
+    db: Session = SessionLocal()
+    try:
+        bid = A.person_to_byid(person)
+        if not bid:
+            raise HTTPException(status_code=400,
+                                detail=f"Unknown person '{person}' (expected Vishnu VS / Varsha / Vivek)")
+        pname = A.BYID_TO_PERSON[bid]
+        now = _dt.utcnow()
+        updated, tr_ok, tr_err = [], [], []
+        for cid in case_ids:
+            row = db.query(AutomationCase).filter(AutomationCase.case_id == cid).first()
+            if not row:
+                tr_err.append({"case_id": cid, "error": "not in catalog (run a sync first)"})
+                continue
+            if status_label == "Automated" and row.automation_status != "Automated":
+                row.automated_on = now
+            if status_label == "Planned" and row.automation_status != "Planned":
+                row.planned_on = now
+                row.planned_by = pname
+            row.automation_status = status_label
+            row.automation_status_id = status_id
+            row.automatable = (status_id != 4)
+            row.automated_by = pname
+            row.automated_by_id = bid
+            updated.append(cid)
+            try:
+                A.update_case(cid, {A.STATUS_KEY: status_id, A.AUTOMATED_BY_KEY: bid})
+                tr_ok.append(cid)
+            except Exception as e:
+                tr_err.append({"case_id": cid, "error": str(e)[:200]})
+        db.commit()
+        return {"updated": updated, "testrail_written": tr_ok, "testrail_errors": tr_err,
+                "person": pname, "status": status_label}
+    finally:
+        db.close()
+
+
+@app.post("/automation/cases/mark-automated")
+def automation_mark_automated(body: AutoMarkBody):
+    """Record cases as Automated by a person (app DB) AND write status+automated-by back to
+    TestRail. testrail_errors lists any cases the write-back failed for (app record still kept)."""
+    return _automation_mark(body.case_ids, body.person, "Automated", 3)
+
+
+@app.post("/automation/cases/mark-planned")
+def automation_mark_planned(body: AutoMarkBody):
+    """Record cases as Planned (weekly planning) by a person + TestRail write-back."""
+    return _automation_mark(body.case_ids, body.person, "Planned", 1)
+
+
+@app.post("/automation/trigger-sync")
+def automation_trigger_sync(include_executions: bool = Query(False)):
+    """Kick off a TestRail sync in the background (cases [+ executions]) and refresh today's
+    snapshot. Default is cases-only (faster ~6-7 min refresh of status/attribution/coverage);
+    pass include_executions=true for the full utilization refresh (the daily job does this).
+    Returns immediately with the last sync log."""
+    import threading
+    import automation_sync as A
+    threading.Thread(target=A.run_automation_sync,
+                     kwargs={"include_executions": include_executions}, daemon=True).start()
+    db: Session = SessionLocal()
+    try:
+        return {"status": "started", "include_executions": include_executions,
+                "last_sync": _automation_last_sync(db)}
+    finally:
+        db.close()
+
+
+@app.get("/automation/config")
+def automation_get_config():
+    import automation_sync as A
+    db: Session = SessionLocal()
+    try:
+        return {"manual_minutes_per_case": A.get_manual_minutes(db),
+                "team": A.TEAM, "automated_by_options": A.BYID_TO_PERSON}
+    finally:
+        db.close()
+
+
+@app.put("/automation/config")
+def automation_put_config(body: AutoConfigBody):
+    import automation_sync as A
+    db: Session = SessionLocal()
+    try:
+        mm = max(1, min(int(body.manual_minutes_per_case), 600))
+        A.set_setting(db, "manual_minutes_per_case", mm)
+        return {"manual_minutes_per_case": mm}
+    finally:
+        db.close()
+
+
+class AutoOverrideToggle(BaseModel):
+    enabled: bool
+
+
+@app.get("/automation/override")
+def automation_override_status():
+    import automation_override as OV
+    d = OV.load_override()
+    return {"enabled": bool(d.get("enabled")), "imported_at": d.get("imported_at"),
+            "team_people": list((d.get("team") or {}).keys()),
+            "planned_people": {p: v.get("count") for p, v in (d.get("planned") or {}).items()}}
+
+
+@app.post("/automation/override/rebuild")
+def automation_override_rebuild():
+    """Re-parse the Desktop Excel files (automation_dashboard.xlsx + UA_Planned_Cases_By_Team.xlsx)
+    into the override store. Run this after you update those files."""
+    import automation_override as OV
+    home = os.path.expanduser("~")
+    dash = os.path.join(home, "Desktop", "automation_dashboard.xlsx")
+    plan = os.path.join(home, "Desktop", "UA_Planned_Cases_By_Team.xlsx")
+    d = OV.build_override(dash if os.path.exists(dash) else None,
+                          plan if os.path.exists(plan) else None)
+    return {"rebuilt": True, "imported_at": d["imported_at"],
+            "team": list(d["team"].keys()),
+            "planned": {p: v["count"] for p, v in d["planned"].items()}}
+
+
+@app.put("/automation/override")
+def automation_override_toggle(body: AutoOverrideToggle):
+    """Turn the Excel override on/off (off = tabs revert to TestRail-derived figures)."""
+    import automation_override as OV
+    OV.set_enabled(body.enabled)
+    return {"enabled": body.enabled}
+
+
+class AutoScriptedBody(BaseModel):
+    person: str
+    case_ids: List[int]
+    total_scripted: Optional[int] = None
+
+
+@app.post("/automation/override/scripted")
+def automation_override_scripted(body: AutoScriptedBody):
+    """Record a person's THIS-WEEK scripted case list (e.g. Vivek/Varsha) into the override.
+    Cumulative stays pending until total_scripted is supplied. Preserved across re-imports."""
+    import automation_override as OV
+    return OV.set_manual_scripted(body.person, body.case_ids, total_scripted=body.total_scripted)
+
+
+@app.get("/automation/weekly-card")
+def automation_weekly_card(week: Optional[str] = Query(None, description="ISO Monday of the week; default current")):
+    """Generate the dark-themed weekly report card (.png, snip into the mail body) on the Desktop
+    and stream it for download."""
+    from automation_weekly_card import generate_weekly_card
+    ws = None
+    if week:
+        try:
+            ws = date.fromisoformat(week)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="week must be ISO date YYYY-MM-DD")
+    path = generate_weekly_card(week_start=ws)
+    return FileResponse(str(path), media_type="image/png", filename=path.name)
+
+
+class AutoSeedBody(BaseModel):
+    path: Optional[str] = None
+    person: Optional[str] = "Vishnu VS"
+
+
+@app.post("/automation/seed-from-excel")
+def automation_seed_from_excel(body: AutoSeedBody):
+    """One-time seed of already-automated cases from the desktop QA Automation Scripting Report."""
+    import automation_sync as A
+    path = body.path or os.path.join(os.path.expanduser("~"), "Desktop", "automation_dashboard.xlsx")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"file not found: {path}")
+    return A.seed_from_excel(path, person=body.person or "Vishnu VS")
 
 
 # QA testing statuses — a ticket "enters QA" when it moves into one of these from a non-QA status.
@@ -7808,6 +9705,103 @@ def _compute_ticket_movement(db, start_date, end_date):
     }
 
 
+# QA-responsible statuses for cycle time = the QC-queue set (pm_live_data QC_STATUSES + APPROVED_STATUS).
+QA_RESPONSIBLE_STATUSES = ("QC Testing", "QC Testing in Progress", "QC Testing Hold", "Approved for Live")
+# QA TIME (cycle) counts only active QC statuses — "Approved for Live" is EXCLUDED because go-live
+# approval depends on many departments and that delay isn't QA's to own (per user).
+QA_TIME_STATUSES = ("QC Testing", "QC Testing in Progress", "QC Testing Hold")
+
+
+def _compute_qa_load_summary(db, start_date, end_date, movement):
+    """QA load for the month (received / delivered / closed counts) plus, for CLOSED tickets
+    (which have a complete lifecycle), three averages: QA time (days in QA-responsible statuses),
+    BIS time (the client/BIS approval wait, in 'BIS Testing'), and total cycle time (created→closed).
+    These are stored per month so a monthly comparison chart can be built going forward."""
+    closed_tids = list({t["ticket_id"] for t in movement.get("closed", {}).get("tickets", [])})
+
+    hist_by = defaultdict(list)
+    created_by, closed_by = {}, {}
+    if closed_tids:
+        for h in db.query(TicketStatusHistory).filter(
+            TicketStatusHistory.ticket_id.in_(closed_tids)
+        ).order_by(TicketStatusHistory.changed_on.asc()).all():
+            hist_by[h.ticket_id].append(h)
+        for tid, cr, cl in db.query(
+            TicketTracking.ticket_id, TicketTracking.created_on, TicketTracking.closed_on
+        ).filter(TicketTracking.ticket_id.in_(closed_tids)).all():
+            created_by[tid] = cr
+            closed_by[tid] = cl
+
+    _dur_cache = {}
+
+    def durs(tid):
+        if tid not in _dur_cache:
+            d = get_status_durations(db, tid, history=hist_by.get(tid), created_on=created_by.get(tid))
+            _dur_cache[tid] = d.get("durations", {}) or {}
+        return _dur_cache[tid]
+
+    def qa_time(tid):
+        # Sum of days in active QC statuses (QC Testing / In Progress / Hold). Approved-for-Live
+        # and the BIS wait and any dev rework are NOT counted.
+        d = durs(tid)
+        return sum(d.get(s, 0) for s in QA_TIME_STATUSES)
+
+    def bis_time(tid):
+        # Span from moving to BIS Testing until moving to Approved for Live (the client/BIS wait).
+        hist = hist_by.get(tid) or []
+        bis_start = next((h.changed_on for h in hist if h.new_status == "BIS Testing"), None)
+        if not bis_start:
+            return None
+        appr = next((h.changed_on for h in hist
+                     if h.new_status == "Approved for Live" and h.changed_on >= bis_start), None)
+        if not appr:
+            return None
+        return max(0, (appr.date() - bis_start.date()).days)
+
+    def total_time(tid):
+        cr, cl = created_by.get(tid), closed_by.get(tid)
+        return max(0, (cl.date() - cr.date()).days) if cr and cl else None
+
+    qa_vals, bis_vals, total_vals = [], [], []
+    for t in closed_tids:
+        qa_vals.append(qa_time(t))
+        bv = bis_time(t)
+        if bv is not None:
+            bis_vals.append(bv)
+        tv = total_time(t)
+        if tv is not None:
+            total_vals.append(tv)
+
+    def mean(v):
+        return round(sum(v) / len(v), 1) if v else 0
+
+    return {
+        "received": {
+            "count": (movement.get("new_to_qc", {}).get("count", 0)
+                      + movement.get("refix_to_qc", {}).get("count", 0)),
+            "first_time": movement.get("new_to_qc", {}).get("count", 0),
+            "retest": movement.get("refix_to_qc", {}).get("count", 0),
+        },
+        "delivered_to_bis": {"count": movement.get("to_bis", {}).get("count", 0)},
+        "closed": {
+            "count": movement.get("closed", {}).get("count", 0),
+            "tickets": len(closed_tids),
+            "qa_avg_days": mean(qa_vals),
+            "bis_avg_days": mean(bis_vals),
+            "bis_tickets": len(bis_vals),
+            "total_avg_days": mean(total_vals),
+        },
+        "methodology": {
+            "qa": "Average days a closed ticket spent in active QC statuses (QC Testing, QC Testing in "
+                  "Progress, QC Testing Hold). Approved-for-Live, the BIS wait and dev rework are excluded.",
+            "bis": "Average days from moving to BIS Testing until moving to Approved for Live "
+                   "(the client/BIS approval wait). Computed over closed tickets that reached Approved for Live.",
+            "total": "Average full lead time: ticket created date to closed date.",
+        },
+        "qa_statuses": list(QA_TIME_STATUSES),
+    }
+
+
 @app.get("/ticket-movement")
 def get_ticket_movement(offset: int = Query(0, ge=0, le=240), trend: int = Query(12, ge=1, le=24)):
     """Monthly ticket movement for the Ticket Movement Calendar. Ended months are frozen so the
@@ -7828,6 +9822,9 @@ def get_ticket_movement(offset: int = Query(0, ge=0, le=240), trend: int = Query
                     return lbl, s, e, ended, snap.payload
             d = _compute_ticket_movement(db, s, e)
             d["period"] = {"label": lbl, "start": s.isoformat(), "end": e.isoformat(), "frozen": ended}
+            # QA load + closed-ticket cycle metrics (QA / BIS / total avg). Stored in the frozen
+            # snapshot so the monthly cycle-comparison chart accumulates going forward.
+            d["qa_summary"] = _compute_qa_load_summary(db, s, e, d)
             if ended:
                 try:
                     db.add(TicketMovementSnapshot(period_label=lbl, payload=d, frozen=True))
@@ -7836,17 +9833,401 @@ def get_ticket_movement(offset: int = Query(0, ge=0, le=240), trend: int = Query
                     db.rollback()
             return lbl, s, e, ended, d
 
-        _, _, _, _, data = _month(offset)
-        series = []
+        m_lbl, m_s, m_e, m_ended, data = _month(offset)
+        series, cycle_series = [], []
         for k in range(trend - 1, -1, -1):
             lbl, _s, _e, _ended, d = _month(offset + k)
             row = {"label": lbl}
             for c in CATS:
                 row[c] = (d.get(c) or {}).get("count", 0)
             series.append(row)
+            qc = (d.get("qa_summary") or {}).get("closed") or {}
+            cycle_series.append({"label": lbl, "qa": qc.get("qa_avg_days"),
+                                 "bis": qc.get("bis_avg_days"), "total": qc.get("total_avg_days"),
+                                 "closed": qc.get("count", 0)})
         data = dict(data)
         data["trend"] = series
+        data["cycle_trend"] = cycle_series
         return data
+    finally:
+        db.close()
+
+
+# Names explicitly kept off the web manual weekly report (not on the mobile/automation rosters,
+# but not part of the web manual-testing team either). Matched by compact name + first/last signature.
+WEB_MANUAL_REPORT_EXCLUDE = ("John De-Mendoza", "Preeti Maan")
+
+
+def _web_manual_excluder():
+    """Matcher that returns True for QA people who are NOT on the WEB MANUAL team — i.e. the
+    Mobile QA roster and the Automation team (from module_ownership.json). The weekly report is
+    purely for the web manual-testing team, so their tickets/bugs are filtered out."""
+    try:
+        cfg = load_module_ownership() or {}
+        names = (cfg.get("mobile_team") or []) + (cfg.get("automation_team") or [])
+    except Exception:
+        names = []
+    # People who must never appear on the web manual weekly report even though they aren't on the
+    # mobile/automation rosters (e.g. client-side reviewers / non-QA assignees).
+    names = list(names) + list(WEB_MANUAL_REPORT_EXCLUDE)
+    compacts = {_compact_person_name(n) for n in names}
+    sigs = set()
+    for n in names:
+        t = _normalize_person_name(n).split()
+        if len(t) >= 2:
+            sigs.add((t[0], t[1]))
+
+    def excluded(name):
+        if not name:
+            return False
+        if _compact_person_name(name) in compacts:
+            return True
+        t = _normalize_person_name(name).split()
+        return len(t) >= 2 and (t[0], t[1]) in sigs
+
+    return excluded
+
+
+def _build_qa_weekly_data(db, ws, we, period_kind="week"):
+    """Aggregate WEB MANUAL QA testing for the client report over ws→we.
+
+    period_kind "week" → Mon–Fri daily load bars; "month" → per-week load buckets. Mobile-QA and
+    Automation people are filtered out (their tickets/bugs don't belong on the web manual board)."""
+    ws_dt = datetime.combine(ws, datetime.min.time())
+    we_dt = datetime.combine(we, datetime.max.time())
+    is_excluded = _web_manual_excluder()
+    raw_mov = _compute_ticket_movement(db, ws_dt, we_dt)
+
+    # Web-manual only: drop tickets whose QC tester is on the mobile / automation rosters.
+    movement = {}
+    for k, v in raw_mov.items():
+        if isinstance(v, dict) and "tickets" in v:
+            kept = [t for t in v["tickets"] if not is_excluded(t.get("qc_tester"))]
+            movement[k] = {"tickets": kept, "count": len(kept)}
+        else:
+            movement[k] = v
+    qa_summary = _compute_qa_load_summary(db, ws_dt, we_dt, movement)
+    bugs = [b for b in db.query(Bug).filter(Bug.created_on >= ws_dt, Bug.created_on <= we_dt).all()
+            if not is_excluded(b.author)]
+
+    testers = defaultdict(lambda: {"received": 0, "delivered": 0, "closed": 0, "bugs": 0})
+    modules = defaultdict(lambda: {"received": 0, "delivered": 0, "closed": 0, "bugs": 0})
+    daily = {}
+
+    def bump_daily(dk, field):
+        if not dk:
+            return
+        daily.setdefault(dk, {"received": 0, "delivered": 0, "closed": 0})[field] += 1
+
+    for t in movement["new_to_qc"]["tickets"] + movement["refix_to_qc"]["tickets"]:
+        testers[t.get("qc_tester") or "Unassigned"]["received"] += 1
+        modules[t.get("module") or "Unassigned"]["received"] += 1
+        bump_daily((t.get("date") or "")[:10], "received")
+    for t in movement["to_bis"]["tickets"]:
+        testers[t.get("qc_tester") or "Unassigned"]["delivered"] += 1
+        modules[t.get("module") or "Unassigned"]["delivered"] += 1
+        bump_daily((t.get("date") or "")[:10], "delivered")
+    for t in movement["closed"]["tickets"]:
+        testers[t.get("qc_tester") or "Unassigned"]["closed"] += 1
+        modules[t.get("module") or "Unassigned"]["closed"] += 1
+        bump_daily((t.get("date") or "")[:10], "closed")
+
+    sev = defaultdict(int)
+    bug_author, bug_module = defaultdict(int), defaultdict(int)
+    for b in bugs:
+        sev[(b.severity or "Unspecified").strip() or "Unspecified"] += 1
+        if b.author:
+            bug_author[_compact_person_name(b.author)] += 1
+        bug_module[(b.module or "").strip() or "Unassigned"] += 1
+    for name, v in testers.items():
+        v["bugs"] = bug_author.get(_compact_person_name(name), 0)
+    for mod, v in modules.items():
+        v["bugs"] = bug_module.get(mod, 0)
+
+    # Per-tester complexity mix — so a low workload count that's actually HARD work is visible.
+    try:
+        import ticket_complexity as _TCx
+        _cxc = _TCx._load_cache()
+    except Exception:
+        _cxc = {}
+    _tester_tids = defaultdict(set)
+    for _key in ("new_to_qc", "refix_to_qc", "to_bis", "closed"):
+        for _t in movement.get(_key, {}).get("tickets", []):
+            _tid = _t.get("ticket_id")
+            if _tid:
+                _tester_tids[_t.get("qc_tester") or "Unassigned"].add(_tid)
+    for name, v in testers.items():
+        cc = {"high": 0, "medium": 0, "low": 0}
+        for _tid in _tester_tids.get(name, ()):
+            _k = ((_cxc.get(str(_tid)) or {}).get("level") or "").lower()
+            if _k in cc:
+                cc[_k] += 1
+        v["complexity"] = cc
+
+    # Load series: short spans → daily bars; long spans (month/wide custom) → per-week buckets.
+    span_days = (we - ws).days + 1
+    if period_kind == "month" or (period_kind == "custom" and span_days > 8):
+        nweeks = ((we - ws).days // 7) + 1
+        buckets = {wi: {"received": 0, "delivered": 0, "closed": 0} for wi in range(nweeks)}
+        for dk, vals in daily.items():
+            try:
+                wi = (date.fromisoformat(dk) - ws).days // 7
+            except Exception:
+                continue
+            if wi in buckets:
+                for f in ("received", "delivered", "closed"):
+                    buckets[wi][f] += vals.get(f, 0)
+        daily_series = [{"day": f"Wk{wi + 1}", **buckets[wi]} for wi in range(nweeks)]
+        load_title = "Weekly QC load"
+    else:
+        daily_series = []
+        for i in range(span_days):
+            dd = ws + timedelta(days=i)
+            if period_kind == "week" and dd.weekday() >= 5:  # weekly report = Mon–Fri only
+                continue
+            row = daily.get(dd.isoformat(), {"received": 0, "delivered": 0, "closed": 0})
+            daily_series.append({"day": dd.strftime("%a %d") if period_kind == "custom" else dd.strftime("%a"), **row})
+        load_title = "Daily QC load"
+    if period_kind == "month":
+        title, range_caption, period_word = "QA Monthly Report", ws.strftime("%B %Y"), "month"
+    elif period_kind == "custom":
+        title, range_caption, period_word = "QA Report", f"{ws.strftime('%d %b')} – {we.strftime('%d %b %Y')}", "period"
+    else:
+        title, range_caption, period_word = "QA Weekly Report", "Mon–Fri", "week"
+
+    order = ["Critical", "Major", "Minor"]
+    sev_list = [{"label": s, "count": sev[s]} for s in order if sev.get(s)]
+    sev_list += [{"label": s, "count": c} for s, c in sev.items() if s not in order]
+
+    # ALL web-manual testers (no cap) so the workload graph shows the whole team.
+    testers_list = sorted(
+        [{"name": n, **v} for n, v in testers.items() if n != "Unassigned"],
+        key=lambda x: -(x["received"] + x["delivered"] + x["closed"]))
+    modules_list = sorted(
+        [{"module": m, **v} for m, v in modules.items() if m != "Unassigned"],
+        key=lambda x: -(x["received"] + x["delivered"] + x["closed"]))[:12]
+
+    first_time = movement["new_to_qc"]["count"]
+    retest = movement["refix_to_qc"]["count"]
+    received = first_time + retest
+    delivered = movement["to_bis"]["count"]
+    approved = movement["approved_for_live"]["count"]
+    closed = movement["closed"]["count"]
+    cyc = qa_summary["closed"]
+
+    # Month-to-date cumulative (1st of the report week's month → we) shown alongside the weekly
+    # figures. Only for the weekly report; the monthly/custom views already span their own period.
+    mtd = None
+    if period_kind == "week":
+        m_start_dt = datetime.combine(ws.replace(day=1), datetime.min.time())
+        raw_m = _compute_ticket_movement(db, m_start_dt, we_dt)
+        _kept = lambda key: len([t for t in raw_m[key]["tickets"] if not is_excluded(t.get("qc_tester"))])
+        m_received = _kept("new_to_qc") + _kept("refix_to_qc")
+        m_bugs = len([b for b in db.query(Bug).filter(Bug.created_on >= m_start_dt, Bug.created_on <= we_dt).all()
+                      if not is_excluded(b.author)])
+        mtd = {
+            "label": ws.strftime("%B"),
+            "received": m_received,
+            "delivered": _kept("to_bis"),
+            "closed": _kept("closed"),
+            "bugs": m_bugs,
+        }
+
+    return {
+        "week_start": ws.isoformat(), "week_end": we.isoformat(),
+        "period_kind": period_kind, "title": title, "range_caption": range_caption,
+        "load_title": load_title, "period_word": period_word,
+        "kpis": {
+            "received": received,
+            "delivered": delivered,
+            "closed": closed,
+            "bugs": len(bugs),
+            "qa_cycle": cyc["qa_avg_days"],
+            "lead_time": cyc["total_avg_days"],
+            "testers": len([n for n in testers if n != "Unassigned"]),
+        },
+        # Ticket movement through the QA pipeline this week (the "flow").
+        "flow": {
+            "first_time": first_time, "retest": retest, "received": received,
+            "delivered": delivered, "approved": approved, "closed": closed,
+        },
+        # Average cycle time over tickets CLOSED this week (complete lifecycle). BIS wait is
+        # intentionally omitted from the report (not QA-owned).
+        "cycle": {
+            "qa_days": cyc["qa_avg_days"],
+            "total_days": cyc["total_avg_days"],
+            "closed_tickets": cyc["tickets"],
+        },
+        # Manual test-case execution counts (prepared/executed/passed/failed). Not yet tracked in
+        # DB with weekly dates — populated from next week once capture is built. None => placeholder.
+        "manual_tests": None,
+        "daily": daily_series,
+        "severity": sev_list,
+        "testers": testers_list,
+        "modules": modules_list,
+        "mtd": mtd,
+    }
+
+
+def _build_dev_report_data(db, ws, we, period_kind="week"):
+    """Aggregate WEB DEV-team delivery for the client report over ws→we.
+
+    Dev-relevant view: tickets HANDED TO QC (dev finished build), DELIVERED TO LIVE (closed),
+    BUGS FIXED (bugs closed in period by their dev assignee), average lead time (created→closed)
+    and average dev effort (actual dev hours/ticket). Attribution by ticket developer (backend/
+    frontend). period_kind "week" → Mon–Fri daily load; "month" → per-week buckets."""
+    ws_dt = datetime.combine(ws, datetime.min.time())
+    we_dt = datetime.combine(we, datetime.max.time())
+    mov = _compute_ticket_movement(db, ws_dt, we_dt)
+
+    devs = defaultdict(lambda: {"to_qc": 0, "closed": 0, "bugs": 0})
+    modules = defaultdict(lambda: {"to_qc": 0, "closed": 0, "bugs": 0})
+    daily = {}
+
+    def bump(dk, f):
+        if dk:
+            daily.setdefault(dk, {"to_qc": 0, "closed": 0})[f] += 1
+
+    for t in mov["new_to_qc"]["tickets"] + mov["refix_to_qc"]["tickets"]:
+        dv = t.get("developer") or "Unassigned"
+        devs[dv]["to_qc"] += 1
+        modules[t.get("module") or "Unassigned"]["to_qc"] += 1
+        bump((t.get("date") or "")[:10], "to_qc")
+    for t in mov["closed"]["tickets"]:
+        dv = t.get("developer") or "Unassigned"
+        devs[dv]["closed"] += 1
+        modules[t.get("module") or "Unassigned"]["closed"] += 1
+        bump((t.get("date") or "")[:10], "closed")
+
+    # Bugs fixed = bugs CLOSED in the period, credited to their dev assignee + module.
+    fixed_bugs = db.query(Bug).filter(Bug.closed_on >= ws_dt, Bug.closed_on <= we_dt).all()
+    bug_by_dev, bug_by_mod = defaultdict(int), defaultdict(int)
+    for b in fixed_bugs:
+        if b.assignee:
+            bug_by_dev[_compact_person_name(b.assignee)] += 1
+        bug_by_mod[(b.module or "").strip() or "Unassigned"] += 1
+    for nm, v in devs.items():
+        v["bugs"] = bug_by_dev.get(_compact_person_name(nm), 0)
+    for md, v in modules.items():
+        v["bugs"] = bug_by_mod.get(md, 0)
+
+    # Lead time (created→closed) + dev effort over tickets closed in period.
+    closed_tt = db.query(TicketTracking).filter(
+        TicketTracking.closed_on >= ws_dt, TicketTracking.closed_on <= we_dt).all()
+    lead, dhours = [], []
+    for t in closed_tt:
+        if not (t.backend_developer or t.frontend_developer):
+            continue
+        if t.created_on and t.closed_on:
+            lead.append(max(0, (t.closed_on.date() - t.created_on.date()).days))
+        if t.actual_dev_hours:
+            dhours.append(t.actual_dev_hours)
+
+    def mean(v):
+        return round(sum(v) / len(v), 1) if v else 0
+
+    # Load series: short spans → daily bars; month/wide custom → per-week buckets.
+    span_days = (we - ws).days + 1
+    if period_kind == "month" or (period_kind == "custom" and span_days > 8):
+        nweeks = ((we - ws).days // 7) + 1
+        buckets = {wi: {"to_qc": 0, "closed": 0} for wi in range(nweeks)}
+        for dk, vals in daily.items():
+            try:
+                wi = (date.fromisoformat(dk) - ws).days // 7
+            except Exception:
+                continue
+            if wi in buckets:
+                for f in ("to_qc", "closed"):
+                    buckets[wi][f] += vals.get(f, 0)
+        daily_series = [{"day": f"Wk{wi + 1}", **buckets[wi]} for wi in range(nweeks)]
+        load_title = "Weekly dev load"
+    else:
+        daily_series = []
+        for i in range(span_days):
+            dd = ws + timedelta(days=i)
+            if period_kind == "week" and dd.weekday() >= 5:
+                continue
+            row = daily.get(dd.isoformat(), {"to_qc": 0, "closed": 0})
+            daily_series.append({"day": dd.strftime("%a %d") if period_kind == "custom" else dd.strftime("%a"), **row})
+        load_title = "Daily dev load"
+    if period_kind == "month":
+        title, range_caption, period_word = "Dev Monthly Report", ws.strftime("%B %Y"), "month"
+    elif period_kind == "custom":
+        title, range_caption, period_word = "Dev Report", f"{ws.strftime('%d %b')} – {we.strftime('%d %b %Y')}", "period"
+    else:
+        title, range_caption, period_word = "Dev Weekly Report", "Mon–Fri", "week"
+
+    to_qc = mov["new_to_qc"]["count"] + mov["refix_to_qc"]["count"]
+    closed = mov["closed"]["count"]
+    dev_list = sorted([{"name": n, **v} for n, v in devs.items() if n != "Unassigned"],
+                      key=lambda x: -(x["to_qc"] + x["closed"]))
+    mod_list = sorted([{"module": m, **v} for m, v in modules.items() if m != "Unassigned"],
+                      key=lambda x: -(x["to_qc"] + x["closed"]))[:12]
+
+    return {
+        "week_start": ws.isoformat(), "week_end": we.isoformat(),
+        "period_kind": period_kind, "title": title, "range_caption": range_caption,
+        "load_title": load_title, "period_word": period_word,
+        "kpis": {
+            "to_qc": to_qc, "closed": closed, "bugs_fixed": len(fixed_bugs),
+            "lead_time": mean(lead), "dev_hours": mean(dhours),
+            "devs": len([n for n in devs if n != "Unassigned"]),
+        },
+        "flow": {
+            "first_time": mov["new_to_qc"]["count"], "retest": mov["refix_to_qc"]["count"],
+            "to_qc": to_qc, "to_bis": mov["to_bis"]["count"],
+            "approved": mov["approved_for_live"]["count"], "closed": closed,
+        },
+        "cycle": {"lead_days": mean(lead), "dev_hours": mean(dhours), "closed_tickets": len(closed_tt)},
+        "daily": daily_series,
+        "developers": dev_list,
+        "modules": mod_list,
+    }
+
+
+@app.get("/live/qa-weekly-report")
+def qa_weekly_report(week: Optional[str] = Query(None, description="ISO Monday of the week; default current")):
+    """Dark-themed weekly QA manual-testing report (.pdf) — snip/attach for the mail body."""
+    db: Session = SessionLocal()
+    try:
+        today = datetime.now().date()
+        if week:
+            try:
+                ws = date.fromisoformat(week)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="week must be ISO date YYYY-MM-DD")
+        else:
+            ws = today - timedelta(days=today.weekday())
+        we = ws + timedelta(days=4)  # Monday → Friday (report is sent on Friday)
+        data = _build_qa_weekly_data(db, ws, we)
+        from qa_weekly_report import generate_pdf
+        path = generate_pdf(data)
+        return FileResponse(str(path), media_type="application/pdf", filename=path.name)
+    finally:
+        db.close()
+
+
+@app.get("/live/reports/qa-automation-weekly")
+def qa_automation_combined_weekly(week: Optional[str] = Query(None, description="ISO Monday; default current"),
+                                  start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
+    """Combined weekly report (.pdf): manual QA card + automation card + planned/backlog case tables."""
+    db: Session = SessionLocal()
+    try:
+        today = datetime.now().date()
+        wk = week or start_date
+        if wk:
+            try:
+                ws = date.fromisoformat(wk)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="week must be ISO date YYYY-MM-DD")
+            ws = ws - timedelta(days=ws.weekday())  # normalise to that week's Monday
+        else:
+            ws = today - timedelta(days=today.weekday())
+        we = ws + timedelta(days=4)  # Mon–Fri for the manual card
+        manual_data = _build_qa_weekly_data(db, ws, we)
+        from combined_weekly_report import generate_combined_pdf
+        path = generate_combined_pdf(manual_data, ws)
+        return FileResponse(str(path), media_type="application/pdf", filename=path.name)
     finally:
         db.close()
 
@@ -7926,8 +10307,16 @@ def _get_planning_timesheet_summary(db: Session, employee: Employee, weeks: int 
         return None
 
 
-def calculate_rag_score(metrics, is_dev, planning_timesheet: Optional[dict] = None, role_context: Optional[dict] = None):
-    """Calculate RAG score based on metrics"""
+def calculate_rag_score(metrics, is_dev, planning_timesheet: Optional[dict] = None, role_context: Optional[dict] = None,
+                        count_bug_volume: bool = True):
+    """Calculate RAG score based on metrics.
+
+    `count_bug_volume` (QA only): when False, the bug-VOLUME reward components (pass-rate,
+    bugs-per-ticket and critical-bugs-found) are dropped so a clean low-bug ticket isn't scored
+    worse — the remaining QA components (execution completeness, utilization) renormalize to 100.
+    Used by the leaderboard so ranking is driven by tickets/complexity + execution completeness,
+    not bug count. Rejected/deferred bugs are NOT penalized (every reported bug is positive).
+    """
     role_context = role_context or {}
     if role_context.get("is_manager"):
         score = 0
@@ -8001,35 +10390,43 @@ def calculate_rag_score(metrics, is_dev, planning_timesheet: Optional[dict] = No
             weights_used += 15
     else:  # QA
         tests = metrics.get("tests", {})
-        
-        # Pass rate (20%)
-        if tests.get("total_executed", 0) > 0:
+
+        # Pass-rate is NOT a tester-quality signal: a FAILED case means the tester caught a bug (good
+        # work). So it must not lower quality. Excluded from the performance matrix (count_bug_volume=
+        # False) — bug-finding is rewarded separately in the 'output' sub-score. Kept only for legacy
+        # dashboards that still pass count_bug_volume=True.
+        if count_bug_volume and tests.get("total_executed", 0) > 0:
             pass_rate = tests.get("pass_rate", 0)
             score += (pass_rate / 100) * 20
             weights_used += 20
-        
-        # Bugs per ticket (25%) - higher is generally better for QA
-        bugs_per_ticket = metrics.get("bugs_per_ticket", 0)
-        if bugs_per_ticket > 0:
-            bpt_score = min(100, bugs_per_ticket * 20)  # 5+ bugs/ticket = 100
-            score += (bpt_score / 100) * 25
-            weights_used += 25
-        
-        # Rejected % inverse (15%)
-        if bugs.get("total", 0) > 0:
-            rejected_pct = bugs.get("rejected_percent", 0)
-            rejected_score = max(0, 100 - (rejected_pct * 5))
-            score += (rejected_score / 100) * 15
-            weights_used += 15
-        
+
+        # Bugs per ticket (25%) - higher is generally better for QA.
+        # Skipped when count_bug_volume is False (leaderboard) so bug count doesn't decide quality.
+        if count_bug_volume:
+            bugs_per_ticket = metrics.get("bugs_per_ticket", 0)
+            if bugs_per_ticket > 0:
+                bpt_score = min(100, bugs_per_ticket * 20)  # 5+ bugs/ticket = 100
+                score += (bpt_score / 100) * 25
+                weights_used += 25
+
+        # Test EXECUTION COMPLETENESS (35%) — the primary QA-quality signal: of the cases in this
+        # person's tickets' runs, how many were actually executed. Executing all cases is POSITIVE;
+        # leaving cases untested (esp. when the ticket moves on) is the real quality concern. Rejected/
+        # deferred bugs are NOT penalized — every reported bug is positive volume (feeds 'output').
+        if tests.get("total_cases", 0) > 0:
+            completeness = min(100, tests.get("execution_completeness", 0))
+            score += (completeness / 100) * 35
+            weights_used += 35
+
         # Utilization (20%)
         if timesheet.get("expected_hours", 0) > 0:
             utilization = min(100, timesheet.get("utilization_percent", 0))
             score += (utilization / 100) * 20
             weights_used += 20
-        
-        # Critical bugs found (20%) - higher is better for QA
-        if bugs.get("total", 0) > 0:
+
+        # Critical bugs found (20%) - higher is better for QA.
+        # Also bug-VOLUME based, so skipped on the leaderboard (count_bug_volume False).
+        if count_bug_volume and bugs.get("total", 0) > 0:
             critical_pct = bugs.get("severity", {}).get("critical_percent", 0)
             critical_score = min(100, critical_pct * 5)  # Finding critical bugs is good
             score += (critical_score / 100) * 20
@@ -12701,6 +15098,11 @@ def trigger_google_sheets_sync(team: Optional[str] = Query(None, description="Te
             result = sync.sync_team(team.upper())
         else:
             result = sync.sync_all()
+        try:
+            from pm_live_data import clear_response_cache
+            clear_response_cache()
+        except Exception as e:
+            logging.warning(f"google-sheets sync: cache invalidation failed: {e}")
         return {"success": True, "result": result}
     except FileNotFoundError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -12750,6 +15152,11 @@ def trigger_scheduled_sync(teams: Optional[str] = Query(None, description="Comma
         scheduler = get_scheduler()
         teams_list = [t.strip().upper() for t in teams.split(',')] if teams else None
         result = scheduler.trigger_manual_sync(teams=teams_list)
+        try:
+            from pm_live_data import clear_response_cache
+            clear_response_cache()
+        except Exception as e:
+            logging.warning(f"google-sheets trigger sync: cache invalidation failed: {e}")
         return {
             "success": True,
             "message": "Manual sync triggered",
@@ -16091,11 +18498,557 @@ from pm_live_data import (
 
 @app.post("/live/refresh")
 def force_refresh_pm_data():
-    """Force refresh PM data from API, clearing all caches."""
-    from pm_live_data import clear_response_cache
+    """Force refresh PM data + TestRail caches from API, clearing all caches.
+
+    Refreshes the TestRail plan/case maps SYNCHRONOUSLY so a just-created test plan shows
+    immediately on the next page load (otherwise it would only appear after the 10-min TTL).
+    """
+    from pm_live_data import clear_response_cache, force_refresh_testrail
     clear_response_cache()
+    force_refresh_testrail()
     success, tickets, msg = fetch_live_tickets(force_refresh=True)
     return {'success': success, 'ticket_count': len(tickets) if tickets else 0, 'message': msg}
+
+
+def _log_case_count(db, ticket_id, total, manual=None, automated=None, applied_loop=None, commit=True):
+    """Append a test-case COUNT history row when the total CHANGES (or the first time a ticket is seen).
+    reason = 'initial' (first row) / 'review' (a review apply happened since last row — applied_loop
+    advanced) / 'regen' (otherwise = RN or scope change, relabelable). Backfills the manual/automated
+    split when it becomes known and the total is unchanged. No-op (read-only) in steady state."""
+    if total is None:
+        return None
+    total = int(total)
+    last = (db.query(TestPlanCaseLog).filter(TestPlanCaseLog.ticket_id == ticket_id)
+            .order_by(TestPlanCaseLog.id.desc()).first())
+    if last is None:
+        db.add(TestPlanCaseLog(ticket_id=ticket_id, total=total, manual=manual, automated=automated,
+                               delta=0, reason="initial", loop=applied_loop))
+        if commit:
+            db.commit()
+        return "initial"
+    if total == int(last.total or 0):
+        if manual is not None and last.manual is None:
+            last.manual = manual
+            last.automated = automated
+            if commit:
+                db.commit()
+        return None
+    reason = "review" if (applied_loop and applied_loop > (last.loop or 0)) else "regen"
+    db.add(TestPlanCaseLog(ticket_id=ticket_id, total=total, manual=manual, automated=automated,
+                           delta=total - int(last.total or 0), reason=reason, loop=applied_loop))
+    if commit:
+        db.commit()
+    return reason
+
+
+def _case_log_payload(db, ticket_id):
+    """(log rows, summary) for a ticket's case-count history."""
+    rows = (db.query(TestPlanCaseLog).filter(TestPlanCaseLog.ticket_id == ticket_id)
+            .order_by(TestPlanCaseLog.id.asc()).all())
+    if not rows:
+        return [], None
+    log = [{"id": r.id, "total": r.total, "manual": r.manual, "automated": r.automated,
+            "delta": r.delta, "reason": r.reason, "loop": r.loop,
+            "recorded_on": r.recorded_on.isoformat() if r.recorded_on else None} for r in rows]
+    added = sum(r.delta for r in rows if (r.delta or 0) > 0)
+    removed = -sum(r.delta for r in rows if (r.delta or 0) < 0)
+    summary = {"initial": rows[0].total, "current": rows[-1].total, "added": added,
+               "removed": removed, "net": rows[-1].total - rows[0].total, "changes": len(rows) - 1}
+    return log, summary
+
+
+class CaseLogReasonBody(BaseModel):
+    reason: str   # rn | scope | regen | review | manual
+
+
+@app.post("/live/test-plan-queue/{ticket_id}/case-log/{log_id}/reason")
+def relabel_case_log(ticket_id: int, log_id: int, body: CaseLogReasonBody):
+    """Relabel a case-count change entry's cause (e.g. a generic 'regen' → 'rn' or 'scope')."""
+    allowed = {"rn", "scope", "regen", "review", "manual"}
+    if body.reason not in allowed:
+        raise HTTPException(status_code=400, detail=f"reason must be one of {sorted(allowed)}")
+    db: Session = SessionLocal()
+    try:
+        row = (db.query(TestPlanCaseLog)
+               .filter(TestPlanCaseLog.id == log_id, TestPlanCaseLog.ticket_id == ticket_id).first())
+        if not row:
+            raise HTTPException(status_code=404, detail="case-log entry not found")
+        row.reason = body.reason
+        db.commit()
+        log, summary = _case_log_payload(db, ticket_id)
+        return {"ticket_id": ticket_id, "log_id": log_id, "reason": row.reason,
+                "case_log": log, "case_summary": summary}
+    finally:
+        db.close()
+
+
+@app.get("/live/ticket-lookup")
+def live_ticket_lookup(ticket_id: str = Query(..., description="PM ticket number to look up (any status)")):
+    """Look up ANY ticket by id across the whole app (regardless of status) for the queue page's
+    global search box. Returns the ticket's core details + bug counts + test-plan info; the PM link
+    is built on the frontend from the ticket number."""
+    raw = str(ticket_id).strip().lstrip("#").strip()
+    try:
+        tid = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Enter a numeric ticket id")
+    db: Session = SessionLocal()
+    try:
+        t = db.query(TicketTracking).filter(TicketTracking.ticket_id == tid).first()
+        if not t:
+            raise HTTPException(status_code=404, detail=f"Ticket {tid} not found in the app")
+        bugs = db.query(Bug).filter(Bug.ticket_id == tid).all()
+        open_set = {"new", "reopened", "fixed", "assigned to dev", "in progress", "feedback"}
+        bugs_open = sum(1 for b in bugs if (b.status or "").strip().lower() in open_set)
+        # TestRail plan/case counts + plan URL (from the cached per-ticket map used elsewhere).
+        cases = passed = failed = None
+        testrail_plan_url = None
+        cases_manual = cases_automated = None
+        try:
+            from pm_live_data import _fetch_testrail_plans
+            tr = (_fetch_testrail_plans() or {}).get(str(tid)) or (_fetch_testrail_plans() or {}).get(tid)
+            if tr:
+                cases = tr.get("cases"); passed = tr.get("passed"); failed = tr.get("failed")
+                if tr.get("plan_id"):
+                    base = os.environ.get("TESTRAIL_URL", "https://bistrainer.testrail.io")
+                    testrail_plan_url = f"{base}/index.php?/plans/view/{tr['plan_id']}"
+                    cases_manual, cases_automated = _count_plan_exec_methods(tr["plan_id"])
+        except Exception:
+            pass
+
+        # Test-plan generation + review + PR status (mirrors the /live/qc-queue enrichment).
+        tpr = db.query(TestPlanRequest).filter(TestPlanRequest.ticket_id == tid).first()
+        review_status = review_action = pr_status = test_plan_request = None
+        review_loops = 0
+        review_error = review_applied_on = review_applied_loop = None
+        has_test_plan = bool(cases)
+        if tpr:
+            review_status = tpr.review_status or "Draft"
+            review_action = tpr.review_action
+            review_loops = tpr.review_loops or 0
+            review_error = tpr.review_error
+            review_applied_on = tpr.review_applied_on.isoformat() if tpr.review_applied_on else None
+            review_applied_loop = tpr.review_applied_loop
+            pr_status = tpr.pr_status
+            if tpr.status and tpr.status != "done":
+                test_plan_request = tpr.status
+            if tpr.status == "done" or tpr.plan_url:
+                has_test_plan = True
+        elif has_test_plan:
+            review_status = "Draft"
+
+        # Refix (retest) — from the QC cycle tracker (string-keyed JSON).
+        is_retesting = False
+        retest_cycle_count = 0
+        try:
+            from pm_live_data import _load_cycle_tracker
+            ct = (_load_cycle_tracker() or {}).get(str(tid)) or {}
+            is_retesting = bool(ct.get("is_retesting"))
+            retest_cycle_count = ct.get("cycle_count", 0) or 0
+        except Exception:
+            pass
+
+        # Days since last status change ("no action") — falls back to overall age.
+        days_since_last_action = None
+        try:
+            last = db.query(func.max(TicketStatusHistory.changed_on)).filter(
+                TicketStatusHistory.ticket_id == tid).scalar()
+            ref = last.date() if last else (t.created_on.date() if t.created_on else None)
+            if ref:
+                days_since_last_action = max(0, (date.today() - ref).days)
+        except Exception:
+            pass
+
+        # Documentation Confidence (Scope ⇄ Release Note ⇄ PR) — deep for a single-ticket lookup.
+        doc = {}
+        try:
+            import doc_confidence
+            doc = doc_confidence.compute(tid, deep=True) or {}
+        except Exception:
+            pass
+
+        # Track the test-case count history (initial vs added/removed after review / RN / scope).
+        case_log = []
+        case_summary = None
+        if has_test_plan and cases is not None:
+            try:
+                _log_case_count(db, tid, cases, cases_manual, cases_automated, review_applied_loop)
+                case_log, case_summary = _case_log_payload(db, tid)
+            except Exception:
+                db.rollback()
+
+        return {
+            "found": True,
+            "ticket_id": t.ticket_id,
+            "title": t.title or "",
+            "status": t.status or "",
+            "priority": t.priority or "",
+            "module": (t.subdepartment or "").strip() or "Unassigned",
+            "qc_tester": _strip_paren(t.qc_tester or "").strip() or None,
+            "backend_developer": _strip_paren(t.backend_developer or "").strip() or None,
+            "frontend_developer": _strip_paren(t.frontend_developer or "").strip() or None,
+            "current_assignee": _strip_paren(t.current_assignee or "").strip() or None,
+            "created_on": t.created_on.isoformat() if t.created_on else None,
+            "eta": t.eta.isoformat() if t.eta else None,
+            "closed_on": t.closed_on.isoformat() if t.closed_on else None,
+            "qa_estimate_hours": t.qa_estimate_hours,
+            "qa_actual_hours": t.actual_qa_hours,
+            "dev_estimate_hours": t.dev_estimate_hours,
+            "dev_actual_hours": t.actual_dev_hours,
+            "bugs_total": len(bugs),
+            "bugs_open": bugs_open,
+            "bugs_closed": len(bugs) - bugs_open,
+            "test_cases": cases, "test_passed": passed, "test_failed": failed,
+            "test_cases_manual": cases_manual, "test_cases_automated": cases_automated,
+            "has_test_plan": has_test_plan, "testrail_plan_url": testrail_plan_url,
+            "test_plan_request": test_plan_request, "review_status": review_status,
+            "review_action": review_action, "review_loops": review_loops, "pr_status": pr_status,
+            "review_error": review_error, "review_applied_on": review_applied_on,
+            "review_applied_loop": review_applied_loop,
+            "case_log": case_log, "case_summary": case_summary,
+            "planned_qa_estimate": (tpr.planned_qa_estimate_hours if tpr else None),
+            "planned_qa_breakdown": (tpr.planned_qa_breakdown if tpr else None),
+            "is_retesting": is_retesting, "retest_cycle_count": retest_cycle_count,
+            "days_since_last_action": days_since_last_action,
+            "doc_confidence": doc.get("flag"),
+            "doc_pr_present": doc.get("pr_present"),
+            "doc_rn_present": doc.get("rn_present"),
+            "doc_rn_thin_tier": doc.get("rn_thin_tier"),
+            "doc_unexplained": doc.get("unexplained") or [],
+            "doc_functional_total": doc.get("functional_total"),
+            **_complexity_fields(tid),
+        }
+    finally:
+        db.close()
+
+
+def _doc_warm_run(ids, deep, limit):
+    import doc_confidence
+    cache = doc_confidence._load_cache()
+    now = time.time()
+    done = skipped = 0
+    for tid in ids:
+        if done >= max(1, limit):
+            break
+        hit = cache.get(str(tid))
+        if hit and (now - hit.get("computed_on", 0)) < doc_confidence._TTL_SECONDS and (hit.get("deep") or not deep):
+            skipped += 1
+            continue
+        try:
+            doc_confidence.compute(tid, deep=deep)
+            done += 1
+        except Exception:
+            continue
+    return done, skipped
+
+
+@app.post("/live/doc-confidence/warm")
+def warm_doc_confidence(ticket_ids: Optional[List[int]] = Body(default=None, embed=True),
+                        deep: bool = Body(default=False, embed=True),
+                        limit: int = Body(default=40, embed=True),
+                        background: bool = Body(default=False, embed=True)):
+    """Populate the doc-confidence cache for the queue's badges. With no ids, warms the current QC
+    queue. deep=True runs the gh PR-file compare (THIN_RN/ALIGNED split); deep=False is structural only.
+    background=True runs the pass in a daemon thread and returns immediately (use for an on-load deep warm
+    so the request doesn't block). Bounded by `limit`; skips entries already fresh."""
+    try:
+        import doc_confidence  # noqa: F401
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"doc_confidence unavailable: {e}")
+    ids = list(ticket_ids or [])
+    if not ids:
+        try:
+            from pm_live_data import get_live_qc_queue
+            data = get_live_qc_queue() or {}
+            sec = data.get("queue")
+            qt = sec.get("tickets") if isinstance(sec, dict) else (sec or [])
+            for t in (qt or []):
+                try:
+                    ids.append(int(t.get("ticket_id")))
+                except (TypeError, ValueError):
+                    continue
+        except Exception:
+            pass
+    if background:
+        import threading
+        threading.Thread(target=_doc_warm_run, args=(ids, deep, limit), daemon=True).start()
+        return {"started": len(ids), "deep": deep, "background": True}
+    done, skipped = _doc_warm_run(ids, deep, limit)
+    return {"computed": done, "skipped_fresh": skipped, "requested": len(ids), "deep": deep}
+
+
+@app.get("/live/doc-confidence/summary")
+def doc_confidence_summary():
+    """Documentation Confidence rollup for the current QC queue — counts per flag + a per-ticket list
+    (joined with live queue metadata). Drives the Dev Dashboard 'Docs Health' cards + list and the
+    QC-queue summary. Reads the cache only (no network); warm it via /live/doc-confidence/warm."""
+    FLAGS = ["NO_PR_NO_RN", "THIN_RN", "RN_REVIEW", "PR_NO_RN", "RN_NO_PR", "ALIGNED", "UNKNOWN"]
+    try:
+        import doc_confidence
+        cache = doc_confidence._load_cache()
+    except Exception:
+        cache = {}
+    rows = []
+    try:
+        from pm_live_data import get_live_qc_queue
+        data = get_live_qc_queue() or {}
+        sec = data.get("queue")
+        qt = sec.get("tickets") if isinstance(sec, dict) else (sec or [])
+    except Exception:
+        qt = []
+    counts = {f: 0 for f in FLAGS}
+    for t in (qt or []):
+        try:
+            tid = int(t.get("ticket_id"))
+        except (TypeError, ValueError):
+            continue
+        dc = cache.get(str(tid)) or {}
+        flag = dc.get("flag") or "UNKNOWN"
+        counts[flag] = counts.get(flag, 0) + 1
+        rows.append({
+            "ticket_id": tid,
+            "flag": flag,
+            "rn_thin_tier": dc.get("rn_thin_tier"),
+            "unexplained_count": len(dc.get("unexplained") or []),
+            "unexplained": dc.get("unexplained") or [],
+            "pr_present": dc.get("pr_present"),
+            "rn_present": dc.get("rn_present"),
+            "title": t.get("title") or "",
+            "module": t.get("module") or "",
+            "status": t.get("status") or "",
+            "qc_tester": t.get("qc_tester") or None,
+            "has_test_plan": bool(t.get("has_test_plan")),
+            "days_in_qc": t.get("days_in_qc"),
+        })
+    # Highest-risk first: NO_PR_NO_RN, then THIN_RN by unexplained count, then the rest.
+    risk_order = {"NO_PR_NO_RN": 0, "THIN_RN": 1, "RN_REVIEW": 2, "PR_NO_RN": 3, "RN_NO_PR": 4, "ALIGNED": 5, "UNKNOWN": 6}
+    rows.sort(key=lambda r: (risk_order.get(r["flag"], 9), -r["unexplained_count"]))
+    weak = sum(counts[f] for f in ("NO_PR_NO_RN", "THIN_RN", "RN_REVIEW", "PR_NO_RN", "RN_NO_PR"))
+    return {"counts": counts, "order": FLAGS, "total": len(rows), "weak": weak, "tickets": rows}
+
+
+def _complexity_fields(ticket_id):
+    """Complexity fields (cache + manual override) for a single ticket — for the lookup card. {} if none."""
+    try:
+        import ticket_complexity
+        cx = ticket_complexity.get_cached(ticket_id) or {}
+        ov = ticket_complexity.get_override(ticket_id)
+    except Exception:
+        return {}
+    out = {}
+    if cx:
+        out.update({"complexity": cx.get("level"), "complexity_score": cx.get("score"),
+                    "complexity_factors": cx.get("factors"), "complexity_escalations": cx.get("escalations"),
+                    "complexity_rationale": cx.get("rationale"), "complexity_mode": cx.get("engine_mode")})
+    if ov:
+        out.update({"complexity": ov.get("level"), "complexity_overridden": True,
+                    "complexity_overridden_by": ov.get("by"), "complexity_override_note": ov.get("note")})
+    return out
+
+
+def _complexity_eligible(status):
+    """Complexity is only computed once a ticket reaches QC Testing — and for every stage AFTER it
+    (QC review/refix, BIS, approved, moved to live, closed). Earlier dev stages (In Progress, Code
+    Review, Ready for Dev/QC, etc.) are skipped so we don't rate work that isn't testable yet."""
+    s = (status or "").strip().lower()
+    if not s:
+        return False
+    if s.startswith("qc testing") or "qc review" in s:
+        return True
+    return any(a in s for a in ("bis", "approved", "moved to live", "ready for live",
+                                "released", "live", "closed", "complete", "done"))
+
+
+def _kick_complexity_autowarm(tickets):
+    """Spawn ONE bounded background complexity warm for QC-and-after tickets whose rating is cold or
+    stale. Cache-first + TTL means fresh entries are skipped, so steady-state cost is ~zero. Used by
+    every ticket-list endpoint (QC queue, Dev dashboard, …) so complexity fills in wherever those
+    tickets appear — but ONLY for tickets in QC Testing or a later stage."""
+    if os.environ.get("COMPLEXITY_AUTO_WARM", "1") == "0":
+        return
+    try:
+        import ticket_complexity, threading, llm_client
+        cache = ticket_complexity._load_cache()
+        now = time.time()
+        want_llm = (os.environ.get("COMPLEXITY_AUTO_WARM_LLM", "1") != "0")
+        llm_on = want_llm and llm_client.available()
+        stale = []
+        for t in (tickets or []):
+            if not _complexity_eligible(t.get("status")):
+                continue
+            try:
+                cid = int(t.get("ticket_id"))
+            except (TypeError, ValueError):
+                continue
+            hit = cache.get(str(cid))
+            fresh = hit and (now - hit.get("computed_on", 0)) < ticket_complexity._TTL_SECONDS
+            up_to_mode = fresh and (hit.get("engine_mode") == "llm" or not llm_on)
+            if not up_to_mode:
+                stale.append(dict(t))
+        if stale:
+            threading.Thread(target=_complexity_warm_run,
+                             args=(stale, want_llm, int(os.environ.get("COMPLEXITY_AUTO_WARM_LIMIT", "60"))),
+                             daemon=True).start()
+    except Exception:
+        pass
+
+
+def _complexity_warm_run(tickets, use_llm, limit):
+    """Compute complexity for a list of queue-ticket dicts (or ids), serially, bounded by `limit`.
+    Passing the queue dict lets the engine reuse structured signals instead of re-fetching them."""
+    import ticket_complexity
+    cache = ticket_complexity._load_cache()
+    now = time.time()
+    done = skipped = 0
+    for t in tickets:
+        if done >= max(1, limit):
+            break
+        qt = t if isinstance(t, dict) else {}
+        try:
+            tid = int(qt.get("ticket_id") if qt else t)
+        except (TypeError, ValueError):
+            continue
+        hit = cache.get(str(tid))
+        fresh = hit and (now - hit.get("computed_on", 0)) < ticket_complexity._TTL_SECONDS
+        if fresh and (hit.get("engine_mode") == "llm" or not use_llm):
+            skipped += 1
+            continue
+        try:
+            ticket_complexity.compute(tid, queue_ticket=qt or None, use_llm=use_llm)
+            done += 1
+        except Exception:
+            continue
+    return done, skipped
+
+
+def _live_queue_tickets():
+    """The current QC-queue 'queue' section as a list of ticket dicts (best-effort, [] on failure)."""
+    try:
+        from pm_live_data import get_live_qc_queue
+        data = get_live_qc_queue() or {}
+        sec = data.get("queue")
+        return (sec.get("tickets") if isinstance(sec, dict) else sec) or []
+    except Exception:
+        return []
+
+
+@app.post("/live/complexity/warm")
+def warm_complexity(ticket_ids: Optional[List[int]] = Body(default=None, embed=True),
+                    use_llm: bool = Body(default=True, embed=True),
+                    limit: int = Body(default=40, embed=True),
+                    background: bool = Body(default=True, embed=True)):
+    """Populate the ticket-complexity cache for the QC queue. With no ids, warms the current queue.
+    use_llm=True uses the AI pass when ANTHROPIC_API_KEY is set (else rule-only). background=True runs in
+    a daemon thread and returns immediately. Bounded by `limit`; skips entries already fresh."""
+    try:
+        import ticket_complexity  # noqa: F401
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ticket_complexity unavailable: {e}")
+    if ticket_ids:
+        items = [{"ticket_id": i} for i in ticket_ids]
+    else:
+        items = _live_queue_tickets()
+    if background:
+        import threading
+        threading.Thread(target=_complexity_warm_run, args=(items, use_llm, limit), daemon=True).start()
+        return {"started": len(items), "use_llm": use_llm, "background": True}
+    done, skipped = _complexity_warm_run(items, use_llm, limit)
+    return {"computed": done, "skipped_fresh": skipped, "requested": len(items), "use_llm": use_llm}
+
+
+@app.post("/live/complexity/{ticket_id}")
+def recompute_complexity(ticket_id: int, use_llm: bool = Body(default=True, embed=True)):
+    """Force-recompute one ticket's complexity (the per-row Refresh button). Reuses live-queue signals."""
+    try:
+        import ticket_complexity
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ticket_complexity unavailable: {e}")
+    qt = next((t for t in _live_queue_tickets() if str(t.get("ticket_id")) == str(ticket_id)), None)
+    entry = ticket_complexity.compute(ticket_id, queue_ticket=qt, use_llm=use_llm, force=True)
+    over = ticket_complexity.get_override(ticket_id)
+    if over:
+        entry = {**entry, "level": over.get("level"), "complexity_overridden": True}
+    return entry
+
+
+class ComplexityOverrideBody(BaseModel):
+    level: str                       # High | Medium | Low
+    note: Optional[str] = None
+
+
+@app.put("/live/complexity/{ticket_id}/override")
+def set_complexity_override(ticket_id: int, body: ComplexityOverrideBody):
+    """Manually set a ticket's complexity (wins over the computed value, shown with an 'edited' mark)."""
+    try:
+        import ticket_complexity
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ticket_complexity unavailable: {e}")
+    if body.level not in ticket_complexity.LEVELS:
+        raise HTTPException(status_code=400, detail="level must be High|Medium|Low")
+    rec = ticket_complexity.set_override(ticket_id, body.level, by="dashboard", note=body.note)
+    return {"ticket_id": ticket_id, **rec}
+
+
+@app.delete("/live/complexity/{ticket_id}/override")
+def clear_complexity_override(ticket_id: int):
+    """Remove a manual complexity override; the computed rating takes over again."""
+    try:
+        import ticket_complexity
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ticket_complexity unavailable: {e}")
+    removed = ticket_complexity.clear_override(ticket_id)
+    return {"ticket_id": ticket_id, "cleared": removed is not None}
+
+
+@app.get("/live/complexity/summary")
+def complexity_summary():
+    """Per-level counts for the current QC queue + a per-ticket list. Cache-only (no compute);
+    warm via /live/complexity/warm."""
+    try:
+        import ticket_complexity
+        cache = ticket_complexity._load_cache()
+        over = ticket_complexity.load_overrides()
+    except Exception:
+        cache, over = {}, {}
+    counts = {"High": 0, "Medium": 0, "Low": 0, "Unrated": 0}
+    rows = []
+    for t in _live_queue_tickets():
+        try:
+            tid = int(t.get("ticket_id"))
+        except (TypeError, ValueError):
+            continue
+        cx = cache.get(str(tid)) or {}
+        ov = over.get(str(tid))
+        level = (ov or {}).get("level") or cx.get("level") or "Unrated"
+        counts[level] = counts.get(level, 0) + 1
+        rows.append({"ticket_id": tid, "title": t.get("title") or "", "module": t.get("module") or "",
+                     "level": level, "score": cx.get("score"), "engine_mode": cx.get("engine_mode"),
+                     "overridden": bool(ov), "escalations": cx.get("escalations") or []})
+    rank = {"High": 0, "Medium": 1, "Low": 2, "Unrated": 3}
+    rows.sort(key=lambda r: (rank.get(r["level"], 9), -(r["score"] or 0)))
+    return {"counts": counts, "order": ["High", "Medium", "Low", "Unrated"], "total": len(rows), "tickets": rows}
+
+
+@app.get("/live/complexity/map")
+def complexity_map():
+    """Whole complexity cache as {ticket_id: {level, score, overridden, mode}} for ALL rated tickets.
+    Cache-only (no compute). The frontend fetches this once and joins it into every ticket list by
+    ticket_id, so complexity shows next to the title everywhere without per-endpoint stamping."""
+    try:
+        import ticket_complexity
+        cache = ticket_complexity._load_cache()
+        over = ticket_complexity.load_overrides()
+    except Exception:
+        cache, over = {}, {}
+    out = {}
+    for tid, e in (cache or {}).items():
+        out[str(tid)] = {"level": e.get("level"), "score": e.get("score"),
+                         "mode": e.get("engine_mode"), "overridden": False}
+    for tid, ov in (over or {}).items():
+        cur = out.get(str(tid), {})
+        cur.update({"level": ov.get("level"), "overridden": True})
+        out[str(tid)] = cur
+    return {"map": out, "count": len(out)}
 
 
 @app.get("/live/qc-queue")
@@ -16154,7 +19107,1907 @@ def live_qc_queue():
         tickets = section.get("tickets") if isinstance(section, dict) else section
         for t in (tickets or []):
             _enrich_planning(t)
+
+    # Attach test-plan generation status + review status/loops so the list shows both.
+    db2: Session = SessionLocal()
+    try:
+        rmap = {r.ticket_id: r for r in db2.query(TestPlanRequest).all()}
+        gen = {tid: r.status for tid, r in rmap.items() if r.status != "done"}
+        rev = {tid: {"review_status": r.review_status or "Draft", "review_action": r.review_action,
+                     "review_loops": r.review_loops or 0, "pr_status": r.pr_status,
+                     "review_error": r.review_error,
+                     "review_applied_on": r.review_applied_on.isoformat() if r.review_applied_on else None,
+                     "review_applied_loop": r.review_applied_loop} for tid, r in rmap.items()}
+        planned = {tid: {"planned_qa_estimate": r.planned_qa_estimate_hours,
+                         "planned_qa_breakdown": r.planned_qa_breakdown}
+                   for tid, r in rmap.items() if r.planned_qa_estimate_hours is not None}
+        # "No action" ageing: most-recent status change per ticket, in one query.
+        _sub = db2.query(TicketStatusHistory.ticket_id,
+                         func.max(TicketStatusHistory.changed_on).label("c")
+                         ).group_by(TicketStatusHistory.ticket_id).subquery()
+        last_action = {tid: c for tid, c in db2.query(_sub.c.ticket_id, _sub.c.c).all()}
+    finally:
+        db2.close()
+    # Test-case count history: log any total change per queue ticket (batched, change-guarded), then
+    # expose a per-ticket summary (initial / current / added / removed). Total comes from the same
+    # TestRail cache the lookup uses, so the two paths stay consistent (no oscillation).
+    case_summary = {}
+    case_log_map = {}
+
+    def _all_q_sections(d):
+        """Every ticket dict across the queue's sections (plan'd tickets live in qc_failed /
+        bis_testing / approved_for_live, not the 'queue' section)."""
+        out = []
+        for _k in ("queue", "qc_failed", "bis_testing", "approved_for_live", "no_qa_estimate"):
+            _s = d.get(_k)
+            _ts = _s.get("tickets") if isinstance(_s, dict) else _s
+            for _x in (_ts or []):
+                if isinstance(_x, dict):
+                    out.append(_x)
+        return out
+
+    try:
+        _alltix = _all_q_sections(data)
+        _qids = set()
+        for _t in _alltix:
+            try:
+                _qids.add(int(_t.get("ticket_id")))
+            except (TypeError, ValueError):
+                pass
+        dbc: Session = SessionLocal()
+        try:
+            for _t in _alltix:
+                try:
+                    _tid = int(_t.get("ticket_id"))
+                except (TypeError, ValueError):
+                    continue
+                if _t.get("has_test_plan") and _t.get("test_cases") is not None:
+                    _al = (rev.get(_tid) or {}).get("review_applied_loop")
+                    _log_case_count(dbc, _tid, _t.get("test_cases"), applied_loop=_al, commit=False)
+            dbc.commit()
+            _rows_by = defaultdict(list)
+            if _qids:
+                for _r in (dbc.query(TestPlanCaseLog)
+                           .filter(TestPlanCaseLog.ticket_id.in_(list(_qids)))
+                           .order_by(TestPlanCaseLog.id.asc()).all()):
+                    _rows_by[_r.ticket_id].append(_r)
+            for _tid, _rows in _rows_by.items():
+                _added = sum(r.delta for r in _rows if (r.delta or 0) > 0)
+                _removed = -sum(r.delta for r in _rows if (r.delta or 0) < 0)
+                case_summary[_tid] = {"initial": _rows[0].total, "current": _rows[-1].total,
+                                      "added": _added, "removed": _removed,
+                                      "net": _rows[-1].total - _rows[0].total, "changes": len(_rows) - 1}
+                # full timeline only when there were changes (keeps the payload lean)
+                if len(_rows) > 1:
+                    case_log_map[_tid] = [{"id": r.id, "total": r.total, "manual": r.manual,
+                                           "automated": r.automated, "delta": r.delta, "reason": r.reason,
+                                           "loop": r.loop,
+                                           "recorded_on": r.recorded_on.isoformat() if r.recorded_on else None}
+                                          for r in _rows]
+        finally:
+            dbc.close()
+    except Exception:
+        case_summary, case_log_map = {}, {}
+    # Attach the case-count summary/history to every section's tickets.
+    for _t in _all_q_sections(data):
+        try:
+            _tid = int(_t.get("ticket_id"))
+        except (TypeError, ValueError):
+            continue
+        if _tid in case_summary:
+            _t["case_summary"] = case_summary[_tid]
+        if _tid in case_log_map:
+            _t["case_log"] = case_log_map[_tid]
+    # Documentation Confidence — read the cache only (no per-row PM/gh calls in the queue hot path).
+    # Entries are populated by the single-ticket lookup and by the runner after a generation.
+    try:
+        import doc_confidence
+        _doc_cache = doc_confidence._load_cache()
+    except Exception:
+        _doc_cache = {}
+    # Ticket Complexity — read the cache + manual overrides only (no compute on the hot path; a
+    # bounded background warm below fills cold/stale entries).
+    try:
+        import ticket_complexity
+        _cx_cache = ticket_complexity._load_cache()
+        _cx_over = ticket_complexity.load_overrides()
+    except Exception:
+        _cx_cache, _cx_over = {}, {}
+    _today = date.today()
+    sec = data.get("queue")
+    qtickets = sec.get("tickets") if isinstance(sec, dict) else sec
+    for t in (qtickets or []):
+        try:
+            tid = int(t.get("ticket_id"))
+        except (TypeError, ValueError):
+            continue
+        if gen.get(tid):
+            t["test_plan_request"] = gen[tid]
+        if tid in rev:
+            t.update(rev[tid])
+        elif t.get("has_test_plan"):
+            t["review_status"] = "Draft"  # plan exists but never tracked → treat as Draft
+        if tid in case_summary:
+            t["case_summary"] = case_summary[tid]
+        if tid in case_log_map:
+            t["case_log"] = case_log_map[tid]
+        _la = last_action.get(tid)
+        # days since last status change; fall back to current-QC dwell so it's never null.
+        t["days_since_last_action"] = max(0, (_today - _la.date()).days) if _la else (t.get("days_in_qc") or 0)
+        _dc = _doc_cache.get(str(tid))
+        if _dc:
+            t["doc_confidence"] = _dc.get("flag")
+            t["doc_rn_thin_tier"] = _dc.get("rn_thin_tier")
+            _un = _dc.get("unexplained") or []
+            t["doc_unexplained_count"] = len(_un)
+            t["doc_unexplained"] = _un
+            t["doc_pr_present"] = _dc.get("pr_present")
+            t["doc_rn_present"] = _dc.get("rn_present")
+            # Backfill the PR filter when the runner hasn't stamped pr_status: the doc-confidence
+            # reconciliation knows reliably whether a PR exists.
+            if not t.get("pr_status") and _dc.get("pr_present") is not None:
+                t["pr_status"] = "ready" if _dc.get("pr_present") else "pre_release"
+        # Ticket complexity: manual override (if any) wins over the computed rating.
+        _cx = _cx_cache.get(str(tid))
+        if _cx:
+            t["complexity"] = _cx.get("level")
+            t["complexity_score"] = _cx.get("score")
+            t["complexity_factors"] = _cx.get("factors")
+            t["complexity_escalations"] = _cx.get("escalations")
+            t["complexity_rationale"] = _cx.get("rationale")
+            t["complexity_mode"] = _cx.get("engine_mode")
+        _ov = _cx_over.get(str(tid))
+        if _ov:
+            t["complexity"] = _ov.get("level")
+            t["complexity_overridden"] = True
+            t["complexity_overridden_by"] = _ov.get("by")
+            t["complexity_override_note"] = _ov.get("note")
+
+    # Flag which tickets have an uploaded review Excel (so the Test Plan cell can offer a download).
+    try:
+        excel_ids = {int(os.path.splitext(f)[0]) for f in os.listdir(TEST_PLAN_EXCEL_DIR)
+                     if f.lower().endswith(".xlsx") and os.path.splitext(f)[0].isdigit()}
+    except FileNotFoundError:
+        excel_ids = set()
+    if excel_ids:
+        for keysec in ("queue", "qc_failed", "bis_testing", "approved_for_live", "no_qa_estimate"):
+            _s = data.get(keysec)
+            _ts = _s.get("tickets") if isinstance(_s, dict) else _s
+            for t in (_ts or []):
+                try:
+                    if int(t.get("ticket_id")) in excel_ids:
+                        t["has_excel"] = True
+                except (TypeError, ValueError):
+                    pass
+
+    # Stamp the stored planned QA estimate across all sections (column on the queue; the BIS review
+    # popup reads it for the "Claude planned activity" panel).
+    if planned:
+        for keysec in ("queue", "qc_failed", "bis_testing", "approved_for_live", "no_qa_estimate"):
+            _s = data.get(keysec)
+            _ts = _s.get("tickets") if isinstance(_s, dict) else _s
+            for t in (_ts or []):
+                try:
+                    p = planned.get(int(t.get("ticket_id")))
+                except (TypeError, ValueError):
+                    p = None
+                if p:
+                    t["planned_qa_estimate"] = p["planned_qa_estimate"]
+                    t["planned_qa_breakdown"] = p["planned_qa_breakdown"]
+
+    # Previous QC tester from status history for tickets with NO current tester (retests that came
+    # back unassigned → show who tested it before, sourced from PM-synced TicketStatusHistory).
+    sec = data.get("queue")
+    qtickets = sec.get("tickets") if isinstance(sec, dict) else sec
+    need_prev = []
+    for t in (qtickets or []):
+        if not t.get("qc_tester"):
+            try:
+                need_prev.append(int(t.get("ticket_id")))
+            except (TypeError, ValueError):
+                pass
+    if need_prev:
+        db3: Session = SessionLocal()
+        try:
+            rows = (db3.query(TicketStatusHistory.ticket_id, TicketStatusHistory.qc_tester,
+                              TicketStatusHistory.changed_on)
+                    .filter(TicketStatusHistory.ticket_id.in_(need_prev),
+                            TicketStatusHistory.qc_tester.isnot(None))
+                    .order_by(TicketStatusHistory.changed_on.desc()).all())
+        finally:
+            db3.close()
+        prev = {}
+        for tid, tester, _ in rows:
+            if tid not in prev and (tester or "").strip():
+                prev[tid] = _strip_paren(tester).strip()
+        for t in (qtickets or []):
+            try:
+                tid = int(t.get("ticket_id"))
+            except (TypeError, ValueError):
+                continue
+            if not t.get("qc_tester") and prev.get(tid):
+                t["previous_qc_tester"] = prev[tid]
+
+    # Auto-warm complexity for QC Testing + every later stage (refix, BIS, approved). Cache-first;
+    # never blocks this request. The helper gates by status, so pre-QC tickets are skipped.
+    _warm_pool = []
+    for _k in ("queue", "qc_failed", "bis_testing", "approved_for_live", "no_qa_estimate"):
+        _s = data.get(_k)
+        _warm_pool.extend((_s.get("tickets") if isinstance(_s, dict) else _s) or [])
+    _kick_complexity_autowarm(_warm_pool)
     return data
+
+
+class TestPlanStatusBody(BaseModel):
+    status: str                          # pending | generating | done | error
+    error: Optional[str] = None
+    plan_url: Optional[str] = None
+
+
+@app.get("/live/test-plan-queue")
+def list_test_plan_queue(status: Optional[str] = Query(None, description="filter: pending|generating|done|error"),
+                         review_action: Optional[str] = Query(None, description="filter: apply|sync_status")):
+    """List test-plan requests. The runner pulls status=pending (generation) and
+    review_action=apply|sync_status (review loop)."""
+    db: Session = SessionLocal()
+    try:
+        q = db.query(TestPlanRequest)
+        if status:
+            q = q.filter(TestPlanRequest.status == status)
+        if review_action:
+            q = q.filter(TestPlanRequest.review_action == review_action)
+        rows = q.order_by(TestPlanRequest.requested_on.asc()).all()
+        return {"count": len(rows), "requests": [{
+            "ticket_id": r.ticket_id, "status": r.status, "source": r.source,
+            "attempts": r.attempts, "error": r.error, "plan_url": r.plan_url,
+            "review_status": r.review_status, "review_action": r.review_action,
+            "review_loops": r.review_loops, "review_error": r.review_error, "pr_status": r.pr_status,
+            "requested_on": r.requested_on.isoformat() if r.requested_on else None,
+            "updated_on": r.updated_on.isoformat() if r.updated_on else None,
+        } for r in rows]}
+    finally:
+        db.close()
+
+
+@app.post("/live/test-plan-queue/{ticket_id}")
+def enqueue_test_plan(ticket_id: int):
+    """Manually enqueue a ticket for test-plan generation (the Generate button)."""
+    db: Session = SessionLocal()
+    try:
+        r = db.query(TestPlanRequest).filter(TestPlanRequest.ticket_id == ticket_id).first()
+        if r:
+            if r.status in ("done", "generating"):
+                return {"ticket_id": ticket_id, "status": r.status, "message": f"Already {r.status}"}
+            r.status = "pending"; r.source = "manual"; r.error = None
+        else:
+            r = TestPlanRequest(ticket_id=ticket_id, status="pending", source="manual")
+            db.add(r)
+        db.commit()
+        return {"ticket_id": ticket_id, "status": "pending", "message": "Queued for test-plan generation"}
+    finally:
+        db.close()
+
+
+class PrStatusBody(BaseModel):
+    pr_status: str   # ready | pre_release
+
+
+@app.post("/live/test-plan-queue/{ticket_id}/pr-status")
+def update_pr_status(ticket_id: int, body: PrStatusBody):
+    """Runner reports whether the ticket has a PR/release note (ready) or is pre_release."""
+    if body.pr_status not in ("ready", "pre_release"):
+        raise HTTPException(status_code=400, detail="pr_status must be ready|pre_release")
+    db: Session = SessionLocal()
+    try:
+        r = db.query(TestPlanRequest).filter(TestPlanRequest.ticket_id == ticket_id).first()
+        if not r:
+            r = TestPlanRequest(ticket_id=ticket_id, status="pending", source="auto")
+            db.add(r)
+        r.pr_status = body.pr_status
+        db.commit()
+        return {"ticket_id": ticket_id, "pr_status": r.pr_status}
+    finally:
+        db.close()
+
+
+@app.post("/live/test-plan-queue/{ticket_id}/status")
+def update_test_plan_status(ticket_id: int, body: TestPlanStatusBody):
+    """Headless runner reports progress: generating | done | error (with optional error/plan_url)."""
+    if body.status not in ("pending", "generating", "done", "error"):
+        raise HTTPException(status_code=400, detail="status must be pending|generating|done|error")
+    db: Session = SessionLocal()
+    try:
+        r = db.query(TestPlanRequest).filter(TestPlanRequest.ticket_id == ticket_id).first()
+        if not r:
+            r = TestPlanRequest(ticket_id=ticket_id, source="auto")
+            db.add(r)
+        r.status = body.status
+        if body.status == "generating":
+            r.attempts = (r.attempts or 0) + 1
+        if body.error is not None:
+            r.error = body.error
+        if body.plan_url is not None:
+            r.plan_url = body.plan_url
+        db.commit()
+        # (Plan-time planned-estimate retired — estimation now happens in the QA Estimation module.)
+        return {"ticket_id": ticket_id, "status": r.status, "attempts": r.attempts}
+    finally:
+        db.close()
+
+
+TEST_PLAN_EXCEL_DIR = os.path.join(os.path.dirname(__file__), "reports", "test-plans")
+
+
+@app.post("/live/test-plan-queue/{ticket_id}/excel")
+async def upload_test_plan_excel(ticket_id: int, request: Request):
+    """Runner uploads the generated review Excel (raw .xlsx body). Stored as <ticket_id>.xlsx so
+    the dashboard can serve it when the user clicks the Test Plan cell."""
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty body — POST the .xlsx file bytes")
+    os.makedirs(TEST_PLAN_EXCEL_DIR, exist_ok=True)
+    path = os.path.join(TEST_PLAN_EXCEL_DIR, f"{ticket_id}.xlsx")
+    with open(path, "wb") as f:
+        f.write(data)
+    return {"ticket_id": ticket_id, "bytes": len(data), "stored": True}
+
+
+_TR_STATUS = {1: "Passed", 2: "Blocked", 3: "Untested", 4: "Retest", 5: "Failed"}
+TEST_PLAN_TR_DIR = os.path.join(os.path.dirname(__file__), "reports", "test-plans", "from-testrail")
+_TR_EXCEL_TTL = 600  # seconds — rebuild the on-demand Excel at most this often per ticket
+
+
+def _testrail_auth():
+    """(base_url, headers) for the TestRail API, or (None, None) if creds aren't configured."""
+    import base64
+    url = os.environ.get("TESTRAIL_URL", "https://bistrainer.testrail.io")
+    email = os.environ.get("TESTRAIL_EMAIL", "")
+    key = os.environ.get("TESTRAIL_API_KEY", "")
+    if not email or not key:
+        return None, None
+    cred = base64.b64encode(f"{email}:{key}".encode()).decode()
+    return url, {"Authorization": f"Basic {cred}", "Content-Type": "application/json"}
+
+
+def _tr_get(api, path, headers, tries=3):
+    """GET a TestRail endpoint with simple 429/backoff retries. Returns parsed JSON or None."""
+    import requests
+    import time as _t
+    for i in range(tries):
+        try:
+            r = requests.get(f"{api}/{path}", headers=headers, timeout=30)
+            if r.status_code == 429:
+                _t.sleep(2 * (i + 1))
+                continue
+            if r.status_code == 200:
+                return r.json()
+            return None
+        except Exception:
+            _t.sleep(1)
+    return None
+
+
+_EXEC_METHOD_CACHE = {}   # plan_id -> (timestamp, (manual, automated))
+_EXEC_METHOD_TTL = 900    # cache a successful split for 15 min (lookups don't re-hit TestRail)
+
+
+def _count_plan_exec_methods(plan_id):
+    """Count unique cases in a TestRail plan as (manual, automated). Automated = Execution Method
+    'Automated' (custom_case_execution_method=2) OR Automation Status 'Automated'
+    (custom_case_automated=3); manual = everything else. Returns (None, None) if the plan/tests
+    can't be read (rate-limited/error) so the UI hides the split rather than showing a false 0/0.
+    Caches successful results for _EXEC_METHOD_TTL to avoid hammering TestRail on every lookup."""
+    import time as _t
+    cached = _EXEC_METHOD_CACHE.get(plan_id)
+    if cached and (_t.time() - cached[0]) < _EXEC_METHOD_TTL:
+        return cached[1]
+    url, h = _testrail_auth()
+    if not h:
+        return None, None
+    api = f"{url}/index.php?/api/v2"
+    plan = _tr_get(api, f"get_plan/{plan_id}", h)
+    if not isinstance(plan, dict) or not plan.get("entries"):
+        return None, None
+    seen = {}
+    for e in plan.get("entries", []):
+        for run in e.get("runs", []):
+            tr = _tr_get(api, f"get_tests/{run['id']}", h)
+            tl = tr.get("tests", tr) if isinstance(tr, dict) else tr
+            for x in (tl or []):
+                if isinstance(x, dict):
+                    seen[x.get("case_id")] = (x.get("custom_case_execution_method"), x.get("custom_case_automated"))
+    if not seen:
+        return None, None  # couldn't read cases — hide the split instead of reporting 0/0
+    automated = sum(1 for em, au in seen.values() if em == 2 or au == 3)
+    manual = len(seen) - automated
+    _EXEC_METHOD_CACHE[plan_id] = (_t.time(), (manual, automated))
+    return manual, automated
+
+
+def _build_testrail_excel(ticket_id: int, force: bool = False):
+    """Build an Excel of a ticket's TestRail plan cases on demand (when no pre-built runner Excel
+    exists), so every plan is downloadable. Caches to from-testrail/<id>.xlsx for _TR_EXCEL_TTL.
+    force=True bypasses the cache (used right after a review-apply changes the plan).
+    Returns the file path, or None if there's no plan / TestRail is unreachable."""
+    import time as _t
+    cached = os.path.join(TEST_PLAN_TR_DIR, f"{ticket_id}.xlsx")
+    if not force and os.path.exists(cached) and (_t.time() - os.path.getmtime(cached)) < _TR_EXCEL_TTL:
+        return cached
+    url, headers = _testrail_auth()
+    if not headers:
+        return None
+    try:
+        import requests
+        from pm_live_data import _fetch_testrail_plans
+        info = (_fetch_testrail_plans() or {}).get(ticket_id) or (_fetch_testrail_plans() or {}).get(str(ticket_id))
+        if not info or not info.get("plan_id"):
+            return None
+        plan_id = info["plan_id"]
+        api = f"{url}/index.php?/api/v2"
+        pr = requests.get(f"{api}/get_plan/{plan_id}", headers=headers, timeout=30)
+        if pr.status_code != 200:
+            return None
+        run_ids = [run["id"] for entry in pr.json().get("entries", [])
+                   for run in entry.get("runs", []) if run.get("id")]
+        rows, seen = [], set()
+        for rid in run_ids:
+            tr = requests.get(f"{api}/get_tests/{rid}", headers=headers, timeout=30)
+            if tr.status_code != 200:
+                continue
+            data = tr.json()
+            tests = data.get("tests", data) if isinstance(data, dict) else data
+            for tc in (tests or []):
+                cid = tc.get("case_id")
+                if cid in seen:
+                    continue
+                seen.add(cid)
+                steps_txt, exp_txt = "", tc.get("custom_expected") or ""
+                sep = tc.get("custom_steps_separated")
+                if isinstance(sep, list) and sep:
+                    parts, exps = [], []
+                    for i, s in enumerate(sep, 1):
+                        parts.append(f"{i}. {s.get('content', '')}")
+                        if s.get("expected"):
+                            exps.append(f"{i}. {s.get('expected')}")
+                    steps_txt = "\n".join(parts)
+                    if exps:
+                        exp_txt = "\n".join(exps)
+                else:
+                    steps_txt = tc.get("custom_steps") or ""
+                rows.append({"case_id": cid, "title": tc.get("title") or "",
+                             "steps": steps_txt, "expected": exp_txt,
+                             "status": _TR_STATUS.get(tc.get("status_id"), "")})
+        if not rows:
+            return None
+        rows.sort(key=lambda r: r["case_id"] or 0)
+
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+        from openpyxl.utils import get_column_letter
+        wb = Workbook()
+        ws = wb.active
+        ws.title = f"Test Plan {ticket_id}"
+        plan_url = f"{url}/index.php?/plans/view/{plan_id}"
+        link = ws.cell(row=1, column=1, value=f"Test Plan - {ticket_id}")
+        link.hyperlink = plan_url
+        link.font = Font(color="1155CC", underline="single", bold=True, size=12)
+        ws.cell(row=1, column=3, value=f"{len(rows)} cases").font = Font(italic=True, color="888888")
+        hdr = ["#", "Case ID", "Title", "Steps", "Expected Result", "Status"]
+        for c, h in enumerate(hdr, 1):
+            cell = ws.cell(row=3, column=c, value=h)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="2F5496")
+        for i, r in enumerate(rows, 1):
+            rr = 3 + i
+            ws.cell(row=rr, column=1, value=i)
+            ws.cell(row=rr, column=2, value=f"C{r['case_id']}")
+            ws.cell(row=rr, column=3, value=r["title"])
+            ws.cell(row=rr, column=4, value=r["steps"]).alignment = Alignment(wrap_text=True, vertical="top")
+            ws.cell(row=rr, column=5, value=r["expected"]).alignment = Alignment(wrap_text=True, vertical="top")
+            ws.cell(row=rr, column=6, value=r["status"])
+        for i, w in enumerate([5, 10, 40, 60, 50, 12], 1):
+            ws.column_dimensions[get_column_letter(i)].width = w
+        ws.freeze_panes = "A4"
+        # Review Comments tab so the review loop keeps working from a re-downloaded plan: the
+        # reviewer fills these rows, re-uploads, and the runner's "update as per excel" applies them.
+        rc = wb.create_sheet("Review Comments")
+        rc.cell(row=1, column=1, value="REVIEW COMMENTS — add a row per change. To ADD cases, put 'NEW' in the first column, "
+                "describe the case(s)/scenarios in 'Action / Comment', and any context in 'Notes'.").font = Font(bold=True, color="2F5496")
+        for c, h in enumerate(["Case # or Case ID", "Action / Comment", "Notes"], 1):
+            cell = rc.cell(row=2, column=c, value=h)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = PatternFill("solid", fgColor="2F5496")
+        for i, w in enumerate([18, 70, 50], 1):
+            rc.column_dimensions[get_column_letter(i)].width = w
+        os.makedirs(TEST_PLAN_TR_DIR, exist_ok=True)
+        wb.save(cached)
+        return cached
+    except Exception as e:
+        print(f"[testrail-excel] build failed for {ticket_id}: {e}")
+        return None
+
+
+def _excel_path_for(ticket_id):
+    """The Excel to share: runner-uploaded pre-built if present, else built from the live TestRail plan."""
+    p = os.path.join(TEST_PLAN_EXCEL_DIR, f"{ticket_id}.xlsx")
+    if os.path.exists(p):
+        return p
+    return _build_testrail_excel(ticket_id)
+
+
+def _plan_id_for(ticket_id):
+    try:
+        from pm_live_data import _fetch_testrail_plans
+        info = (_fetch_testrail_plans() or {}).get(ticket_id) or (_fetch_testrail_plans() or {}).get(str(ticket_id))
+        return info.get("plan_id") if info else None
+    except Exception:
+        return None
+
+
+def _plan_excel_attachment_ids(plan_id, ticket_id):
+    """Attachment ids on the plan whose filename is TestPlan_<id>.xlsx (our managed Excel)."""
+    url, h = _testrail_auth()
+    if not h:
+        return []
+    import requests
+    try:
+        g = requests.get(f"{url}/index.php?/api/v2/get_attachments_for_plan/{plan_id}", headers=h, timeout=30).json()
+        atts = g.get("attachments", g) if isinstance(g, dict) else g
+        name = f"TestPlan_{ticket_id}.xlsx"
+        return sorted({a["id"] for a in (atts or []) if (a.get("filename") or a.get("name")) == name})
+    except Exception:
+        return []
+
+
+def _detach_plan_excel(plan_id, ticket_id):
+    """Delete our TestPlan_<id>.xlsx attachment(s) from the plan (delete_attachment needs the JSON header)."""
+    url, h = _testrail_auth()
+    if not h:
+        return 0
+    import requests
+    removed = 0
+    for aid in _plan_excel_attachment_ids(plan_id, ticket_id):
+        try:
+            r = requests.post(f"{url}/index.php?/api/v2/delete_attachment/{aid}", headers=h, timeout=30)
+            if r.status_code == 200:
+                removed += 1
+        except Exception:
+            pass
+    return removed
+
+
+def _attach_excel_to_plan(ticket_id, force=False):
+    """Attach the ticket's Excel to its TestRail plan. Idempotent: skips if already attached unless
+    force=True (then it swaps — removes the old TestPlan_<id>.xlsx and uploads a fresh one)."""
+    url, h = _testrail_auth()
+    if not h:
+        return {"attached": False, "reason": "no testrail creds"}
+    plan_id = _plan_id_for(ticket_id)
+    if not plan_id:
+        return {"attached": False, "reason": "no plan for ticket"}
+    existing = _plan_excel_attachment_ids(plan_id, ticket_id)
+    if existing and not force:
+        return {"attached": False, "reason": "already attached", "plan_id": plan_id, "count": len(existing)}
+    path = _excel_path_for(ticket_id)
+    if not path or not os.path.exists(path):
+        return {"attached": False, "reason": "no excel to attach"}
+    if existing:  # swap
+        _detach_plan_excel(plan_id, ticket_id)
+    import requests
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+        files = {"attachment": (f"TestPlan_{ticket_id}.xlsx", data,
+                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")}
+        # multipart: drop the JSON Content-Type so requests sets the multipart boundary itself
+        mh = {k: v for k, v in h.items() if k.lower() != "content-type"}
+        r = requests.post(f"{url}/index.php?/api/v2/add_attachment_to_plan/{plan_id}", headers=mh, files=files, timeout=60)
+        if r.status_code == 200:
+            return {"attached": True, "swapped": bool(existing), "plan_id": plan_id,
+                    "attachment_id": r.json().get("attachment_id")}
+        return {"attached": False, "reason": f"HTTP {r.status_code}: {r.text[:120]}"}
+    except Exception as e:
+        return {"attached": False, "reason": str(e)}
+
+
+@app.post("/live/test-plan-queue/{ticket_id}/attach-excel")
+def attach_excel_endpoint(ticket_id: int, force: bool = Query(False)):
+    return _attach_excel_to_plan(ticket_id, force=force)
+
+
+@app.post("/live/test-plan-queue/{ticket_id}/detach-excel")
+def detach_excel_endpoint(ticket_id: int):
+    plan_id = _plan_id_for(ticket_id)
+    if not plan_id:
+        return {"removed": 0, "reason": "no plan for ticket"}
+    return {"removed": _detach_plan_excel(plan_id, ticket_id), "plan_id": plan_id}
+
+
+@app.get("/live/test-plan-excel/{ticket_id}")
+def download_test_plan_excel(ticket_id: int):
+    """Download a ticket's test-plan Excel. Serves the runner-uploaded review Excel when present;
+    otherwise builds one on demand from the ticket's TestRail plan so every plan is downloadable."""
+    path = os.path.join(TEST_PLAN_EXCEL_DIR, f"{ticket_id}.xlsx")
+    if not os.path.exists(path):
+        path = _build_testrail_excel(ticket_id)
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="No TestRail plan found for this ticket (and no Excel on file)")
+    return FileResponse(path, filename=f"TestPlan_{ticket_id}.xlsx",
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.post("/live/test-plan-queue/{ticket_id}/rebuild-excel")
+def rebuild_test_plan_excel(ticket_id: int):
+    """Regenerate the downloadable Excel from the LIVE TestRail plan and refresh the case count.
+    Called by the runner after a review-apply so the download always mirrors the actual plan
+    rather than whatever local sheet was last uploaded (which could be the reviewed input, or even
+    the wrong ticket's sheet). Drops the stale pre-built file, refreshes the TestRail cache (count),
+    and force-builds a fresh export."""
+    removed = False
+    prebuilt = os.path.join(TEST_PLAN_EXCEL_DIR, f"{ticket_id}.xlsx")
+    if os.path.exists(prebuilt):
+        try:
+            os.remove(prebuilt)
+            removed = True
+        except OSError:
+            pass
+    # refresh the plans cache so the QC-queue case count reflects added/removed cases
+    try:
+        from pm_live_data import force_refresh_testrail
+        force_refresh_testrail()
+    except Exception as e:
+        print(f"[rebuild-excel] cache refresh failed for {ticket_id}: {e}")
+    path = _build_testrail_excel(ticket_id, force=True)
+    # refresh the TestRail attachment too (swap the stale Excel for the rebuilt one), best-effort.
+    att = _attach_excel_to_plan(ticket_id, force=True)
+    return {"ticket_id": ticket_id, "removed_prebuilt": removed, "rebuilt": bool(path), "attachment": att}
+
+
+# ===== PM ticket comment: strip the temporary 'Download Excel' link =====
+_PM_CREDS_CACHE = None
+
+
+def _pm_creds():
+    """Read PM_API_URL + PM_BEARER_TOKEN from the runner's .env.vvsstaging (the only place with a
+    working PM bearer token on this box)."""
+    global _PM_CREDS_CACHE
+    if _PM_CREDS_CACHE is not None:
+        return _PM_CREDS_CACHE
+    url = tok = None
+    for envf in (r"C:\Apps\bis-automation\e2e_tests\helper\env\.env.vvsstaging",
+                 os.path.join(os.path.dirname(__file__), "..", "..", "bis-automation",
+                              "e2e_tests", "helper", "env", ".env.vvsstaging")):
+        try:
+            for line in open(envf, encoding="utf-8"):
+                line = line.strip()
+                if line.startswith("PM_API_URL="):
+                    url = line.split("=", 1)[1].strip()
+                elif line.startswith("PM_BEARER_TOKEN="):
+                    tok = line.split("=", 1)[1].strip()
+            if url and tok:
+                break
+        except Exception:
+            continue
+    _PM_CREDS_CACHE = (url, tok)
+    return _PM_CREDS_CACHE
+
+
+@app.post("/live/test-plan-queue/{ticket_id}/strip-excel-comment")
+def strip_excel_comment(ticket_id: int):
+    """Edit the ticket's 'Test Plan - <id>' PM comment to remove the temporary 'Download Excel' link,
+    keeping the TestRail plan link. Idempotent. Auto-detects the PM edit verb (PUT/PATCH) and verifies
+    the edit actually took before reporting success."""
+    import urllib.request
+    import json
+    url, tok = _pm_creds()
+    if not url or not tok:
+        raise HTTPException(status_code=503, detail="PM credentials not available on the server")
+    H = {"Authorization": "Bearer " + tok}
+
+    def _get_ticket():
+        req = urllib.request.Request(f"{url}/ticket/{ticket_id}", headers=H)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            data = json.loads(r.read().decode("utf-8", "replace"))
+        return data if isinstance(data, dict) else (data[0] if isinstance(data, list) and data else {})
+
+    try:
+        obj = _get_ticket()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"PM fetch failed: {e}")
+
+    marker = f"Test Plan - {ticket_id}"
+
+    def _has_excel(b):
+        return "/live/test-plan-excel/" in b or "Download Excel" in b
+    cms = obj.get("comments", [])
+    # Prefer the comment that actually carries the Excel link (handles multiple test-plan comments).
+    target = next((c for c in cms if marker in (c.get("comment") or "") and _has_excel(c.get("comment") or "")), None)
+    if not target:
+        if any(marker in (c.get("comment") or "") for c in cms):
+            return {"stripped": False, "reason": "no Excel link in the comment (nothing to remove)"}
+        return {"stripped": False, "reason": "no test-plan comment found"}
+    body = target.get("comment") or ""
+    cid = target.get("commentID")
+
+    m = re.search(r'<a href="([^"]+)">Test Plan - ' + str(ticket_id) + r"</a>", body)
+    if m:
+        new_html = f'<p><a href="{m.group(1)}">Test Plan - {ticket_id}</a></p>'
+    else:  # fallback: surgically drop the Excel anchor (+ separator)
+        new_html = re.sub(r"\s*(?:&nbsp;)?\s*\|\s*(?:&nbsp;)?\s*<a href=\"[^\"]*test-plan-excel[^\"]*\">[^<]*</a>", "", body)
+
+    payload = json.dumps({"comment": new_html}).encode()
+    last = None
+    for method in ("PUT", "PATCH"):
+        try:
+            req = urllib.request.Request(f"{url}/ticket/{ticket_id}/comment?commentID={cid}",
+                                         data=payload, method=method,
+                                         headers={**H, "Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                status = r.status
+            # verify the edit actually removed the Excel link
+            after = next((c for c in _get_ticket().get("comments", []) if str(c.get("commentID")) == str(cid)), None)
+            if after and "/live/test-plan-excel/" not in (after.get("comment") or "") and "Download Excel" not in (after.get("comment") or ""):
+                return {"stripped": True, "method": method, "comment_id": cid}
+            last = f"{method} returned {status} but Excel link still present"
+        except Exception as e:
+            last = f"{method}: {e}"
+    raise HTTPException(status_code=502, detail=f"could not edit the PM comment ({last})")
+
+
+# ===== Test-plan REVIEW loop (human-gated) =====
+TEST_PLAN_REVIEW_DIR = os.path.join(os.path.dirname(__file__), "reports", "test-plans", "reviews")
+REVIEW_STATUSES = ("Draft", "Reviewed", "Obsolete")
+
+
+def _get_or_create_tpr(db, ticket_id):
+    r = db.query(TestPlanRequest).filter(TestPlanRequest.ticket_id == ticket_id).first()
+    if not r:
+        r = TestPlanRequest(ticket_id=ticket_id, status="done", source="manual")
+        db.add(r)
+    return r
+
+
+class ReviewBody(BaseModel):
+    review_status: Optional[str] = None    # Draft|Reviewed|Obsolete (app sets via dropdown)
+    review_action: Optional[str] = None    # apply|sync_status|none  (none clears; runner clears after done)
+    review_error: Optional[str] = None
+
+
+@app.post("/live/test-plan-queue/{ticket_id}/review-upload")
+async def upload_reviewed_excel(ticket_id: int, request: Request):
+    """Manager uploads a reviewed Excel (raw .xlsx body). Stored as a new review loop; queues the
+    runner to apply the comments to TestRail ('update as per excel'). Can be repeated (loops)."""
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="empty body — POST the reviewed .xlsx bytes")
+    os.makedirs(TEST_PLAN_REVIEW_DIR, exist_ok=True)
+    db: Session = SessionLocal()
+    try:
+        r = _get_or_create_tpr(db, ticket_id)
+        r.review_loops = (r.review_loops or 0) + 1
+        loop = r.review_loops
+        # keep each loop's file + a 'latest' the runner reads
+        with open(os.path.join(TEST_PLAN_REVIEW_DIR, f"{ticket_id}-r{loop}.xlsx"), "wb") as f:
+            f.write(data)
+        with open(os.path.join(TEST_PLAN_REVIEW_DIR, f"{ticket_id}-latest.xlsx"), "wb") as f:
+            f.write(data)
+        r.review_action = "apply"
+        r.review_error = None
+        db.commit()
+        return {"ticket_id": ticket_id, "review_loop": loop, "review_action": "apply",
+                "message": "Reviewed Excel stored — queued to apply to TestRail"}
+    finally:
+        db.close()
+
+
+@app.get("/live/test-plan-review-file/{ticket_id}")
+def download_reviewed_excel(ticket_id: int):
+    """Latest uploaded reviewed Excel (the runner downloads this to apply 'update as per excel')."""
+    path = os.path.join(TEST_PLAN_REVIEW_DIR, f"{ticket_id}-latest.xlsx")
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="No reviewed Excel on file for this ticket")
+    return FileResponse(path, filename=f"{ticket_id}-reviewed.xlsx",
+                        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.post("/live/test-plan-queue/{ticket_id}/review")
+def update_review(ticket_id: int, body: ReviewBody):
+    """Set review status/action. App: set review_status (Draft|Reviewed|Obsolete) + action 'sync_status'
+    to push to TestRail. Runner: send review_action='none' to clear after applying, with optional error."""
+    if body.review_status and body.review_status not in REVIEW_STATUSES:
+        raise HTTPException(status_code=400, detail=f"review_status must be one of {REVIEW_STATUSES}")
+    db: Session = SessionLocal()
+    try:
+        r = _get_or_create_tpr(db, ticket_id)
+        if body.review_status:
+            r.review_status = body.review_status
+        if body.review_action is not None:
+            prev = r.review_action
+            r.review_action = None if body.review_action == "none" else body.review_action
+            # Runner reports completion by clearing the 'apply' flag. If it cleared a pending apply
+            # with no error, stamp the apply as DONE so the UI can show "Applied · rN · <time>".
+            had_error = bool(body.review_error and body.review_error.strip())
+            if body.review_action == "none" and prev == "apply" and not had_error:
+                r.review_applied_on = datetime.utcnow()
+                r.review_applied_loop = r.review_loops or 0
+        if body.review_error is not None:
+            r.review_error = body.review_error or None
+        db.commit()
+        return {"ticket_id": ticket_id, "review_status": r.review_status,
+                "review_action": r.review_action, "review_loops": r.review_loops,
+                "review_applied_on": r.review_applied_on.isoformat() if r.review_applied_on else None,
+                "review_applied_loop": r.review_applied_loop}
+    finally:
+        db.close()
+
+
+# ============================ WEEKLY TICKET REVIEW ============================
+def _week_bounds(week_str):
+    """Monday–Sunday bounds for a given (any-day) ISO date string; defaults to the current week."""
+    try:
+        d = date.fromisoformat(week_str) if week_str else date.today()
+    except Exception:
+        d = date.today()
+    ws = d - timedelta(days=d.weekday())
+    return ws, ws + timedelta(days=6)
+
+
+def _get_or_create_weekly_review(db, ticket_id, member, week_start):
+    r = (db.query(WeeklyTicketReview)
+         .filter(WeeklyTicketReview.ticket_id == ticket_id,
+                 WeeklyTicketReview.reviewee_name == member,
+                 WeeklyTicketReview.week_start == week_start).first())
+    if not r:
+        r = WeeklyTicketReview(ticket_id=ticket_id, reviewee_name=member, week_start=week_start,
+                               week_end=week_start + timedelta(days=6), status="pending")
+        db.add(r)
+    return r
+
+
+def _qa_team_members():
+    try:
+        return [m for m in (load_module_ownership().get("team_members") or [])
+                if m and not _is_qa_excluded(m)]
+    except Exception:
+        return []
+
+
+class WeeklyReviewSaveBody(BaseModel):
+    member: str
+    week_start: Optional[str] = None
+    revised_estimate: Optional[float] = None
+    suggested_estimate: Optional[float] = None
+    verdict: Optional[str] = None
+    notes: Optional[str] = None
+    ai_summary: Optional[str] = None
+    reviewer: Optional[str] = None
+    signals_snapshot: Optional[dict] = None
+    requested_estimate: Optional[float] = None
+    requested_reason: Optional[str] = None
+    phase_breakdown: Optional[dict] = None
+
+
+def _apply_review_fields(r, body, db):
+    import ticket_review as TR
+    if r.original_estimate is None:
+        try:
+            sig = TR.get_ticket_review_signals(db, r.ticket_id, r.reviewee_name)
+            r.original_estimate = sig["expected"]["target_qa_hours"]
+            if r.signals_snapshot is None:
+                r.signals_snapshot = sig
+        except Exception:
+            pass
+    for fld in ("revised_estimate", "suggested_estimate", "verdict", "notes", "ai_summary"):
+        v = getattr(body, fld, None)
+        if v is not None:
+            setattr(r, fld, v)
+    for fld in ("requested_estimate", "requested_reason", "phase_breakdown"):
+        v = getattr(body, fld, None)
+        if v is not None:
+            setattr(r, fld, v)
+    if getattr(body, "signals_snapshot", None) is not None:
+        r.signals_snapshot = body.signals_snapshot
+    if getattr(body, "reviewer", None):
+        r.reviewer_name = body.reviewer
+
+
+@app.get("/reviews/weekly/pending")
+def weekly_review_pending(week: Optional[str] = Query(None), member: Optional[str] = Query(None)):
+    """Per-member pending review list for a week: tickets the member was QC tester on AND that had QC
+    activity (QC testing / fail / moved to BIS) that week, minus any already marked reviewed."""
+    import ticket_review as TR
+    from qa_planning import QA_QC_STATUSES, QC_FAIL_STATUSES
+    ws, we = _week_bounds(week)
+    ws_dt = datetime.combine(ws, datetime.min.time())
+    we_dt = datetime.combine(we, datetime.max.time())
+    statuses = list(QA_QC_STATUSES) + ["BIS Testing"] + list(QC_FAIL_STATUSES)
+    team = _qa_team_members()
+    db: Session = SessionLocal()
+    try:
+        rows = (db.query(TicketStatusHistory.ticket_id, TicketStatusHistory.qc_tester)
+                .filter(TicketStatusHistory.changed_on >= ws_dt,
+                        TicketStatusHistory.changed_on <= we_dt,
+                        TicketStatusHistory.new_status.in_(statuses)).all())
+        # ticket -> candidate tester names (history tester, else live qc_tester)
+        cand = {}
+        for tid, tester in rows:
+            cand.setdefault(tid, set())
+            if tester:
+                cand[tid].add(tester)
+        # fill in live qc_tester where history had none
+        if cand:
+            for t in db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(list(cand.keys()))).all():
+                if t.qc_tester:
+                    cand[t.ticket_id].add(t.qc_tester)
+        # reviewed set for the week
+        reviewed = {(r.ticket_id, r.reviewee_name) for r in
+                    db.query(WeeklyTicketReview).filter(WeeklyTicketReview.week_start == ws,
+                                                        WeeklyTicketReview.status == "reviewed").all()}
+        # resolve each ticket's tester(s) to canonical team members
+        per_member = {}
+        for tid, testers in cand.items():
+            resolved = set()
+            for nm in testers:
+                m = next((tm for tm in team if TR._same_person(nm, tm)), None)
+                if m:
+                    resolved.add(m)
+            for m in resolved:
+                if member and not TR._same_person(member, m):
+                    continue
+                if (tid, m) in reviewed:
+                    continue
+                per_member.setdefault(m, []).append(tid)
+
+        members_out = []
+        for m, tids in per_member.items():
+            items = []
+            for tid in sorted(set(tids), reverse=True):
+                try:
+                    sig = TR.get_ticket_review_signals(db, tid, m)
+                    sug = TR.suggest_revision(sig, use_ai=False)
+                    items.append({
+                        "ticket_id": tid, "title": sig.get("title", ""), "module": sig.get("module"),
+                        "current_status": sig["actual"]["movement"]["current_status"],
+                        "complexity": sig["expected"]["complexity"],
+                        "bugs_total": sig["actual"]["bugs_total"],
+                        "hold_days": sig["actual"]["hold_days"],
+                        "target_qa_hours": sig["expected"]["target_qa_hours"],
+                        "effort_hours": sig["time"]["effort_hours"],
+                        "suggested_hours": sug["suggested_hours"],
+                        "diligence_flags": sig["diligence"]["signals"],
+                    })
+                except Exception:
+                    continue
+            members_out.append({"name": m, "pending_count": len(items), "tickets": items})
+        members_out.sort(key=lambda x: -x["pending_count"])
+        return {"week_start": ws.isoformat(), "week_end": we.isoformat(), "members": members_out}
+    finally:
+        db.close()
+
+
+@app.get("/reviews/weekly/ticket/{ticket_id}")
+def weekly_review_ticket(ticket_id: int, member: str = Query(...), week: Optional[str] = Query(None)):
+    """Full review insight for one ticket+member: expected/actual/time/diligence signals + AI suggestion,
+    merged with any saved review row."""
+    import ticket_review as TR
+    ws, we = _week_bounds(week)
+    db: Session = SessionLocal()
+    try:
+        sig = TR.get_ticket_review_signals(db, ticket_id, member)
+        sug = TR.suggest_revision(sig, use_ai=True)
+        r = (db.query(WeeklyTicketReview)
+             .filter(WeeklyTicketReview.ticket_id == ticket_id,
+                     WeeklyTicketReview.reviewee_name == member,
+                     WeeklyTicketReview.week_start == ws).first())
+        saved = None
+        if r:
+            saved = {"status": r.status, "original_estimate": r.original_estimate,
+                     "suggested_estimate": r.suggested_estimate, "revised_estimate": r.revised_estimate,
+                     "verdict": r.verdict, "notes": r.notes, "ai_summary": r.ai_summary,
+                     "reviewer": r.reviewer_name}
+        return {"week_start": ws.isoformat(), "member": member, "signals": sig,
+                "suggestion": sug, "saved": saved}
+    finally:
+        db.close()
+
+
+@app.post("/reviews/weekly/ticket/{ticket_id}/save")
+def weekly_review_save(ticket_id: int, body: WeeklyReviewSaveBody):
+    """Persist (accept/override) a ticket review without marking it reviewed — stays in the pending list."""
+    ws, we = _week_bounds(body.week_start)
+    db: Session = SessionLocal()
+    try:
+        r = _get_or_create_weekly_review(db, ticket_id, body.member, ws)
+        _apply_review_fields(r, body, db)
+        db.commit()
+        return {"ticket_id": ticket_id, "member": body.member, "week_start": ws.isoformat(),
+                "status": r.status, "revised_estimate": r.revised_estimate, "verdict": r.verdict}
+    finally:
+        db.close()
+
+
+@app.post("/reviews/weekly/ticket/{ticket_id}/mark-reviewed")
+def weekly_review_mark(ticket_id: int, body: WeeklyReviewSaveBody):
+    """Mark a ticket review done — it drops off the pending list and its revised estimate feeds the matrix."""
+    ws, we = _week_bounds(body.week_start)
+    db: Session = SessionLocal()
+    try:
+        r = _get_or_create_weekly_review(db, ticket_id, body.member, ws)
+        _apply_review_fields(r, body, db)
+        if r.signals_snapshot is None:
+            try:
+                import ticket_review as TR
+                r.signals_snapshot = TR.get_ticket_review_signals(db, ticket_id, body.member)
+            except Exception:
+                pass
+        r.status = "reviewed"
+        r.reviewer_name = r.reviewer_name or body.reviewer or "manager"
+        db.commit()
+        return {"ticket_id": ticket_id, "member": body.member, "week_start": ws.isoformat(),
+                "status": r.status, "revised_estimate": r.revised_estimate}
+    finally:
+        db.close()
+
+
+# ======================= REVIEW BOARD (all QC/BIS tickets) ============================
+# Every ticket that reaches QC Testing or later is reviewable here (not just this-week activity),
+# filterable by QC tester and module, with review-status charts and bulk + individual review.
+def _review_week_for(dt):
+    """Monday of the week a ticket first reached QC — the stable week_start for its review row."""
+    d = dt.date() if hasattr(dt, "date") else dt
+    return d - timedelta(days=d.weekday())
+
+
+class BulkReviewBody(BaseModel):
+    items: List[dict]                  # [{ticket_id, member, week_start}]
+    status: str = "reviewed"           # reviewed | pending
+    reviewer: Optional[str] = "manager"
+
+
+@app.get("/reviews/board")
+def reviews_board(period: str = Query("60d", regex="^(30d|60d|90d|180d|all)$"),
+                  qc_tester: Optional[str] = Query(None),
+                  module: Optional[str] = Query(None),
+                  status: str = Query("all", regex="^(all|pending|reviewed)$"),
+                  search: Optional[str] = Query(None),
+                  limit: int = Query(800, ge=1, le=3000)):
+    """All tickets that reached QC/BIS in the period, with per-ticket review status + summary charts.
+    Light assembly (batched queries, complexity from cache) — the heavy per-ticket signal computation
+    happens lazily in the existing detail endpoint when a ticket is opened."""
+    import ticket_review as TR
+    from qa_planning import QA_QC_STATUSES, QC_FAIL_STATUSES
+    reached = set(QA_QC_STATUSES) | {"BIS Testing", "Approved for Live"} | set(QC_FAIL_STATUSES)
+    days = {"30d": 30, "60d": 60, "90d": 90, "180d": 180, "all": 36500}.get(period, 60)
+    since = datetime.now() - timedelta(days=days)
+    db: Session = SessionLocal()
+    try:
+        first_qc = dict(db.query(TicketStatusHistory.ticket_id, func.min(TicketStatusHistory.changed_on))
+                        .filter(TicketStatusHistory.new_status.in_(reached),
+                                TicketStatusHistory.changed_on >= since)
+                        .group_by(TicketStatusHistory.ticket_id).all())
+        tids = list(first_qc.keys())
+        if not tids:
+            return {"period": period, "total": 0, "shown": 0, "tickets": [],
+                    "summary": {"totals": {"pending": 0, "reviewed": 0}, "by_tester": [], "by_module": []}}
+        tmap = {t.ticket_id: t for t in db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(tids)).all()}
+        bug_counts = dict(db.query(Bug.ticket_id, func.count(Bug.id)).filter(Bug.ticket_id.in_(tids))
+                          .group_by(Bug.ticket_id).all())
+        reviews = {(r.ticket_id, r.reviewee_name): r for r in
+                   db.query(WeeklyTicketReview).filter(WeeklyTicketReview.ticket_id.in_(tids)).all()}
+        try:
+            import ticket_complexity as TCM
+            cxcache = TCM._load_cache()
+        except Exception:
+            cxcache = {}
+        team = _qa_team_members()
+
+        items = []
+        by_tester = defaultdict(lambda: {"pending": 0, "reviewed": 0})
+        by_module = defaultdict(lambda: {"pending": 0, "reviewed": 0})
+        for tid in tids:
+            t = tmap.get(tid)
+            if not t:
+                continue
+            ws = _review_week_for(first_qc[tid])
+            raw_testers = [x.strip() for x in (t.qc_tester or "").split(",") if x.strip()]
+            members = set()
+            for nm in raw_testers:
+                m = next((tm for tm in team if TR._same_person(nm, tm)), None) or nm
+                members.add(m)
+            if not members:
+                members = {"Unassigned"}
+            mod = (t.subdepartment or "Unassigned").strip() or "Unassigned"
+            rev_rows = [reviews.get((tid, m)) for m in members]
+            reviewed = any(r and r.status == "reviewed" for r in rev_rows)
+            rstatus = "reviewed" if reviewed else "pending"
+            if status != "all" and rstatus != status:
+                continue
+            if module and module.lower() not in mod.lower():
+                continue
+            if qc_tester and not any(TR._same_person(qc_tester, m) for m in members):
+                continue
+            if search and (search.strip().lstrip("#").lower() not in (str(tid) + " " + (t.title or "")).lower()):
+                continue
+            cx = cxcache.get(str(tid)) or {}
+            _orig = next((r.original_estimate for r in rev_rows if r and r.original_estimate is not None), None)
+            _rev = next((r.revised_estimate for r in rev_rows if r and r.revised_estimate is not None), None)
+            items.append({
+                "ticket_id": tid, "title": t.title or "", "module": mod,
+                "qc_testers": sorted(members), "member": sorted(members)[0],
+                "complexity": {"level": cx.get("level"), "score": cx.get("score")},
+                "bugs_total": int(bug_counts.get(tid, 0)),
+                "target_qa_hours": round((t.qa_estimate_hours or (t.dev_estimate_hours or 0) * 0.33), 2),
+                "effort_hours": round(t.actual_qa_hours or 0, 2),
+                "current_status": t.status, "review_status": rstatus,
+                "planned_estimate": _orig, "revised_estimate": _rev,
+                "deviation": (round(_rev - _orig, 1) if (_orig is not None and _rev is not None) else None),
+                "verdict": next((r.verdict for r in rev_rows if r and r.verdict), None),
+                "week_start": ws.isoformat(),
+            })
+            for m in members:
+                by_tester[m][rstatus] += 1
+            by_module[mod][rstatus] += 1
+
+        items.sort(key=lambda x: (x["review_status"] != "pending", -x["ticket_id"]))
+        totals = {"pending": sum(1 for i in items if i["review_status"] == "pending"),
+                  "reviewed": sum(1 for i in items if i["review_status"] == "reviewed")}
+        return {
+            "period": period, "total": len(items), "shown": min(len(items), limit),
+            "tickets": items[:limit],
+            "summary": {
+                "totals": totals,
+                "by_tester": [{"name": k, **v} for k, v in
+                              sorted(by_tester.items(), key=lambda kv: -(kv[1]["pending"] + kv[1]["reviewed"]))],
+                "by_module": [{"module": k, **v} for k, v in
+                              sorted(by_module.items(), key=lambda kv: -(kv[1]["pending"] + kv[1]["reviewed"]))],
+            },
+        }
+    finally:
+        db.close()
+
+
+@app.post("/reviews/bulk-mark")
+def reviews_bulk_mark(body: BulkReviewBody):
+    """Bulk set review status for many (ticket, member, week) rows in one action."""
+    import ticket_review as TR
+    new_status = body.status if body.status in ("pending", "reviewed") else "reviewed"
+    db: Session = SessionLocal()
+    try:
+        updated = 0
+        for it in body.items:
+            try:
+                tid = int(it["ticket_id"]); member = it["member"]
+                ws = date.fromisoformat(it["week_start"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            r = _get_or_create_weekly_review(db, tid, member, ws)
+            if r.original_estimate is None:
+                try:
+                    sig = TR.get_ticket_review_signals(db, tid, member)
+                    r.original_estimate = sig["expected"]["target_qa_hours"]
+                    if r.signals_snapshot is None:
+                        r.signals_snapshot = sig
+                except Exception:
+                    pass
+            r.status = new_status
+            r.reviewer_name = r.reviewer_name or body.reviewer or "manager"
+            updated += 1
+        db.commit()
+        return {"updated": updated, "status": new_status}
+    finally:
+        db.close()
+
+
+# (BIS Ticket Review popup retired — superseded by the QA Estimation module. The reusable
+# helpers _resolve_qc_tester / _first_qc_dt below are kept for the estimation matrix feed.)
+def _resolve_qc_tester(db, ticket_id):
+    """Best QC-tester name for a ticket: current field, else most recent in status history."""
+    t = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+    nm = (getattr(t, "qc_tester", "") or "").split(",")[0].strip() if t else ""
+    if nm:
+        return nm
+    h = (db.query(TicketStatusHistory)
+         .filter(TicketStatusHistory.ticket_id == ticket_id, TicketStatusHistory.qc_tester.isnot(None))
+         .order_by(TicketStatusHistory.changed_on.desc()).first())
+    return (h.qc_tester or "").strip() if h else ""
+
+
+def _first_qc_dt(db, ticket_id):
+    """Datetime the ticket first reached a QC/BIS status (for the stable review week)."""
+    from qa_planning import QA_QC_STATUSES, QC_FAIL_STATUSES
+    reached = set(QA_QC_STATUSES) | {"BIS Testing", "Approved for Live"} | set(QC_FAIL_STATUSES)
+    dt = (db.query(func.min(TicketStatusHistory.changed_on))
+          .filter(TicketStatusHistory.ticket_id == ticket_id,
+                  TicketStatusHistory.new_status.in_(reached)).scalar())
+    return dt or datetime.now()
+
+
+# (BIS Time Validation module removed — endpoints retired. The shared WeeklyTicketReview
+# columns it used (requested_estimate / requested_reason / phase_breakdown) remain in use by
+# the QA Estimation matrix feed.)
+
+
+# ============================ QA ESTIMATION (plan-first, iterative) ============================
+# The QA member submits the activities + time they expect to need; Claude validates each and suggests
+# a balanced, rule-compliant time (full staging+pre, high-level live, minus automated cases, +10%
+# buffer). The manager pushes it to PM, re-estimates on scope/bug changes (each a new immutable round),
+# then marks it reviewed & completed — which feeds the performance matrix the accepted QA target.
+class EstimateBody(BaseModel):
+    ticket_id: int
+    qa_member: Optional[str] = None
+    submitted_activities: Optional[List[dict]] = None    # [{activity, environment, hours}]
+    raw_text: Optional[str] = None                       # pasted plan (parsed if activities not given)
+    trigger: Optional[str] = "initial"                   # initial|scope_change|more_bugs|manual
+    reason: Optional[str] = None
+    use_ai: Optional[bool] = True
+    persist: Optional[bool] = False                      # False = recompute preview; True = save a round
+
+
+class EstMarkPushedBody(BaseModel):
+    ticket_id: int
+    round_id: int
+    pushed_estimate: Optional[float] = None
+
+
+class EstReviewBody(BaseModel):
+    ticket_id: int
+    actual_hours: Optional[float] = None
+    qa_comments: Optional[str] = None
+    use_ai: Optional[bool] = True
+    persist: Optional[bool] = False                      # False = preview; True = save actuals + recalc
+
+
+class EstCompleteBody(BaseModel):
+    ticket_id: int
+    manager_comment: Optional[str] = None
+    reviewer: Optional[str] = "manager"
+    accepted_estimate: Optional[float] = None            # defaults to recalc_total, else suggested_total
+    actual_hours: Optional[float] = None                 # optional: collect actuals at submit time
+    qa_comments: Optional[str] = None
+
+
+class EstReopenBody(BaseModel):
+    ticket_id: int
+    to_status: Optional[str] = "planning"                # planning | in_review
+
+
+class EstSavePlanBody(BaseModel):
+    ticket_id: int
+    qa_member: Optional[str] = None
+    activities: Optional[List[dict]] = None              # [{seq, activity, environment, phase, suggested_hours, rationale}]
+    total: Optional[float] = None
+    buffer_hours: Optional[float] = None
+    approach_notes: Optional[str] = None
+    trigger: Optional[str] = "manual"
+    reason: Optional[str] = None
+
+
+class EstPlanExcelBody(BaseModel):
+    ticket_id: int
+    activities: Optional[List[dict]] = None              # current on-screen plan (empty → blank template)
+    total: Optional[float] = None
+
+
+def _ticket_automation_split(ticket_id):
+    """(manual, automated) pre-existing case counts for a ticket via its TestRail plan; (None,None) if
+    no plan / unreadable so the estimate simply skips automation subtraction."""
+    try:
+        from pm_live_data import _fetch_testrail_plans
+        tr = _fetch_testrail_plans() or {}
+        info = tr.get(str(ticket_id)) or tr.get(ticket_id)
+        if info and info.get("plan_id"):
+            return _count_plan_exec_methods(info["plan_id"])
+    except Exception:
+        pass
+    return None, None
+
+
+def _get_or_create_estimation(db, ticket_id, member=None):
+    r = db.query(TicketEstimation).filter(TicketEstimation.ticket_id == ticket_id).first()
+    if not r:
+        r = TicketEstimation(ticket_id=ticket_id, qa_member=member, status="planning", current_round=0)
+        db.add(r)
+        db.flush()
+    return r
+
+
+def _estimation_thread_dict(r):
+    return {"ticket_id": r.ticket_id, "qa_member": r.qa_member, "status": r.status,
+            "test_type": r.test_type, "current_round": r.current_round,
+            "submitted_total": r.submitted_total, "suggested_total": r.suggested_total,
+            "automated_cases": r.automated_cases, "manual_cases": r.manual_cases,
+            "actual_hours": r.actual_hours, "qa_comments": r.qa_comments,
+            "recalc_total": r.recalc_total, "recalc_breakdown": r.recalc_breakdown,
+            "manager_comment": r.manager_comment,
+            "reviewed_on": r.reviewed_on.isoformat() if r.reviewed_on else None,
+            "reviewed_by": r.reviewed_by}
+
+
+def _ticket_test_type(module, platform=None):
+    """Classify a ticket as web|mobile from its platform or module name."""
+    s = f"{platform or ''} {module or ''}".lower()
+    return "mobile" if "mobile" in s else "web"
+
+
+def _f_actual(sig):
+    """Actual logged QA effort (hours) from a signals dict; 0.0 if absent."""
+    try:
+        return round(float((sig.get("time") or {}).get("effort_hours") or 0), 1)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _estimation_round_dict(r):
+    return {"id": r.id, "round_no": r.round_no, "trigger": r.trigger,
+            "submitted_activities": r.submitted_activities, "submitted_total": r.submitted_total,
+            "claude_breakdown": r.claude_breakdown, "suggested_total": r.suggested_total,
+            "pushed_to_pm": r.pushed_to_pm, "pushed_estimate": r.pushed_estimate,
+            "reason": r.reason, "created_on": r.created_on.isoformat() if r.created_on else None,
+            "created_by": r.created_by}
+
+
+_EST_STATES = ("awaiting", "planning", "in_review", "reviewed")
+
+
+@app.get("/qa-estimation/board")
+def qa_estimation_board(period: str = Query("60d", regex="^(30d|60d|90d|180d|all)$"),
+                        qc_tester: Optional[str] = Query(None),
+                        module: Optional[str] = Query(None),
+                        status: str = Query("all", regex="^(all|awaiting|planning|in_review|reviewed)$"),
+                        tab: str = Query("active", regex="^(active|reviewed|all)$"),
+                        test_type: str = Query("all", regex="^(all|web|mobile)$"),
+                        search: Optional[str] = Query(None),
+                        limit: int = Query(800, ge=1, le=3000)):
+    """Unified QA Planning & Review board. tab=active (awaiting/planning/in_review) vs reviewed.
+    test_type=web|mobile. Find by employee name (qc_tester), module, status, free-text search."""
+    import ticket_review as TR
+    from qa_planning import QA_QC_STATUSES, QC_FAIL_STATUSES
+    reached = set(QA_QC_STATUSES) | {"BIS Testing", "Approved for Live"} | set(QC_FAIL_STATUSES)
+    # QA-relevant CURRENT statuses for auto-populated (no-thread) tickets. Closed / Approved-for-Live /
+    # non-QA are excluded unless the ticket has an estimation thread (so reopened or in-progress ones
+    # stay). A reopened ticket is back in a QA status, so it shows automatically.
+    qa_visible = set(QA_QC_STATUSES) | set(QC_FAIL_STATUSES) | {"BIS Testing"}
+    days = {"30d": 30, "60d": 60, "90d": 90, "180d": 180, "all": 36500}.get(period, 60)
+    since = datetime.now() - timedelta(days=days)
+    db: Session = SessionLocal()
+    try:
+        first_qc = dict(db.query(TicketStatusHistory.ticket_id, func.min(TicketStatusHistory.changed_on))
+                        .filter(TicketStatusHistory.new_status.in_(reached),
+                                TicketStatusHistory.changed_on >= since)
+                        .group_by(TicketStatusHistory.ticket_id).all())
+        threads = {r.ticket_id: r for r in db.query(TicketEstimation).all()}
+        tids = list(set(first_qc.keys()) | set(threads.keys()))
+        _empty = {s: 0 for s in _EST_STATES}
+        if not tids:
+            return {"period": period, "total": 0, "shown": 0, "tickets": [],
+                    "summary": {"totals": dict(_empty), "by_tester": [], "by_module": []}}
+        tmap = {t.ticket_id: t for t in db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(tids)).all()}
+        rounds_count = dict(db.query(TicketEstimationRound.ticket_id, func.count(TicketEstimationRound.id))
+                            .filter(TicketEstimationRound.ticket_id.in_(tids))
+                            .group_by(TicketEstimationRound.ticket_id).all())
+        try:
+            import ticket_complexity as TCM
+            cxcache = TCM._load_cache()
+        except Exception:
+            cxcache = {}
+        team = _qa_team_members()
+
+        items = []
+        by_status = dict(_empty)
+        by_tester = defaultdict(lambda: dict(_empty))
+        by_module = defaultdict(lambda: dict(_empty))
+        for tid in tids:
+            t = tmap.get(tid)
+            if not t:
+                continue
+            th = threads.get(tid)
+            # Drop non-QA / closed tickets that were never estimated (threaded ones always stay).
+            if not th and (t.status or "") not in qa_visible:
+                continue
+            st = th.status if th else "awaiting"
+            raw_testers = [x.strip() for x in (t.qc_tester or "").split(",") if x.strip()]
+            members = set()
+            for nm in raw_testers:
+                members.add(next((tm for tm in team if TR._same_person(nm, tm)), None) or nm)
+            if not members:
+                members = {"Unassigned"}
+            mod = (t.subdepartment or "Unassigned").strip() or "Unassigned"
+            ttype = th.test_type if (th and th.test_type) else _ticket_test_type(mod, getattr(t, "platform", None))
+            # filters
+            if tab == "active" and st == "reviewed":
+                continue
+            if tab == "reviewed" and st != "reviewed":
+                continue
+            if status != "all" and st != status:
+                continue
+            if test_type != "all" and ttype != test_type:
+                continue
+            if module and module.lower() not in mod.lower():
+                continue
+            if qc_tester and not any(TR._same_person(qc_tester, m) for m in members):
+                continue
+            if search and (search.strip().lstrip("#").lower() not in (str(tid) + " " + (t.title or "")).lower()):
+                continue
+            cx = cxcache.get(str(tid)) or {}
+            items.append({
+                "ticket_id": tid, "title": t.title or "", "module": mod, "test_type": ttype,
+                "qc_testers": sorted(members), "member": sorted(members)[0],
+                "complexity": {"level": cx.get("level"), "score": cx.get("score")},
+                "current_status": t.status, "est_status": st,
+                "submitted_total": th.submitted_total if th else None,
+                "suggested_total": th.suggested_total if th else None,
+                "actual_hours": th.actual_hours if th else None,
+                "recalc_total": th.recalc_total if th else None,
+                "rounds": int(rounds_count.get(tid, 0)),
+                "automated_cases": th.automated_cases if th else None,
+                "manual_cases": th.manual_cases if th else None,
+                "reviewed_on": th.reviewed_on.isoformat() if (th and th.reviewed_on) else None,
+            })
+            by_status[st] += 1
+            for m in members:
+                by_tester[m][st] += 1
+            by_module[mod][st] += 1
+
+        order = {"awaiting": 0, "planning": 1, "in_review": 2, "reviewed": 3}
+        items.sort(key=lambda x: (order.get(x["est_status"], 9), -x["ticket_id"]))
+        return {
+            "period": period, "total": len(items), "shown": min(len(items), limit),
+            "tickets": items[:limit],
+            "summary": {
+                "totals": by_status,
+                "by_tester": [{"name": k, **v} for k, v in
+                              sorted(by_tester.items(), key=lambda kv: -sum(kv[1].values()))],
+                "by_module": [{"module": k, **v} for k, v in
+                              sorted(by_module.items(), key=lambda kv: -sum(kv[1].values()))],
+            },
+        }
+    finally:
+        db.close()
+
+
+@app.post("/qa-estimation/estimate")
+def qa_estimation_estimate(body: EstimateBody):
+    """Run Claude's estimation review of a submitted activity plan. persist=False → preview only;
+    persist=True → append an immutable round and update the thread (latest totals + status)."""
+    import ticket_review as TR
+    db: Session = SessionLocal()
+    try:
+        t = db.query(TicketTracking).filter(TicketTracking.ticket_id == body.ticket_id).first()
+        member = body.qa_member or ((t.qc_tester or "").split(",")[0].strip() if t else "")
+        activities = body.submitted_activities
+        if not activities and body.raw_text:
+            activities = TR.parse_activity_plan(body.raw_text)
+        activities = activities or []
+        manual, automated = _ticket_automation_split(body.ticket_id)
+        sig = TR.get_ticket_review_signals(db, body.ticket_id, member)
+        res = TR.suggest_estimation_plan(sig, activities, automated_cases=automated, manual_cases=manual,
+                                         trigger=body.trigger or "initial", use_ai=bool(body.use_ai),
+                                         tester_text=body.raw_text)
+        result = {"ticket_id": body.ticket_id, "qa_member": member,
+                  "submitted_activities": activities, **res}
+        if body.persist:
+            thread = _get_or_create_estimation(db, body.ticket_id, member)
+            thread.current_round = (thread.current_round or 0) + 1
+            thread.qa_member = member or thread.qa_member
+            thread.submitted_total = res["submitted_total"]
+            thread.suggested_total = res["recommended_total"]
+            thread.automated_cases = automated
+            thread.manual_cases = manual
+            thread.status = "planning"
+            if not thread.test_type:
+                _tt_mod = (sig.get("module") or "")
+                thread.test_type = _ticket_test_type(_tt_mod, None)
+            rnd = TicketEstimationRound(
+                ticket_id=body.ticket_id, round_no=thread.current_round,
+                trigger=body.trigger or "initial", submitted_activities=activities,
+                submitted_total=res["submitted_total"], claude_breakdown=res,
+                suggested_total=res["recommended_total"], reason=body.reason,
+                created_by=member or "manager")
+            db.add(rnd)
+            db.commit()
+            result["round_no"] = thread.current_round
+            result["round_id"] = rnd.id
+        return result
+    finally:
+        db.close()
+
+
+@app.post("/qa-estimation/save-plan")
+def qa_estimation_save_plan(body: EstSavePlanBody):
+    """Persist a hand-edited plan as the agreed estimate (a round) — stores exactly what the manager
+    edited (no AI re-run). Updates the thread's suggested_total + status=planning."""
+    db: Session = SessionLocal()
+    try:
+        t = db.query(TicketTracking).filter(TicketTracking.ticket_id == body.ticket_id).first()
+        member = body.qa_member or ((t.qc_tester or "").split(",")[0].strip() if t else "")
+        acts = body.activities or []
+        total = body.total if body.total is not None else round(
+            sum(float(a.get("suggested_hours") or 0) for a in acts) + float(body.buffer_hours or 0), 1)
+        breakdown = {"activities": acts, "recommended_total": total, "buffer_hours": body.buffer_hours,
+                     "approach_notes": body.approach_notes, "source": "manager", "submitted_total": None}
+        thread = _get_or_create_estimation(db, body.ticket_id, member)
+        thread.current_round = (thread.current_round or 0) + 1
+        thread.qa_member = member or thread.qa_member
+        thread.suggested_total = total
+        thread.status = "planning"
+        if not thread.test_type:
+            thread.test_type = _ticket_test_type((t.subdepartment if t else ""), getattr(t, "platform", None))
+        rnd = TicketEstimationRound(
+            ticket_id=body.ticket_id, round_no=thread.current_round, trigger=body.trigger or "manual",
+            submitted_activities=acts, submitted_total=None, claude_breakdown=breakdown,
+            suggested_total=total, reason=body.reason, created_by=member or "manager")
+        db.add(rnd)
+        db.commit()
+        return {"ticket_id": body.ticket_id, "round_no": thread.current_round, "round_id": rnd.id, "total": total}
+    finally:
+        db.close()
+
+
+@app.post("/qa-estimation/plan-excel")
+def qa_estimation_plan_excel(body: EstPlanExcelBody):
+    """Ordered plan Excel (Staging → Pre → Live), columns # · Activity · Environment · Hours · Why + total.
+    Reflects the current on-screen plan; empty activities → a blank format template. Blob download."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from io import BytesIO
+    acts = body.activities or []
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "QA Test Plan"
+    ws["A1"] = f"QA Test Plan — ticket #{body.ticket_id}"
+    ws["A1"].font = Font(bold=True, size=13)
+    ws["A2"] = "Execution order: Staging → Pre → Live. Data creation first in each environment."
+    ws["A2"].font = Font(italic=True, size=9, color="64748B")
+    ws.merge_cells("A1:E1")
+    ws.merge_cells("A2:E2")
+    ws.append([])
+    ws.append(["#", "Activity", "Environment", "Hours", "Why"])
+    hf = Font(bold=True, color="FFFFFF")
+    fill = PatternFill(start_color="14B8A6", end_color="14B8A6", fill_type="solid")
+    for c in ws[4]:
+        c.font = hf; c.fill = fill; c.alignment = Alignment(horizontal="center")
+    if acts:
+        for i, a in enumerate(acts, 1):
+            ws.append([a.get("seq", i), a.get("activity", ""), a.get("environment", ""),
+                       a.get("suggested_hours"), a.get("rationale", "")])
+        total = body.total if body.total is not None else round(
+            sum(float(a.get("suggested_hours") or 0) for a in acts), 1)
+        ws.append([])
+        ws.append(["", "TOTAL (incl. buffer)", "", total, ""])
+        for c in ws[ws.max_row]:
+            c.font = Font(bold=True)
+    else:
+        for r in [[1, "Data creation / setup", "Staging", 4, ""], [2, "Functional testing", "Staging", 6, ""],
+                  [3, "Regression", "Staging", 3, ""], [4, "Data creation / setup", "Pre", 2, ""],
+                  [5, "Functional testing", "Pre", 4, ""], [6, "Regression", "Pre", 3, ""],
+                  [7, "Bug retest", "Pre", 2, ""], [8, "Live sanity check", "Live", 1, ""]]:
+            ws.append(r)
+    ws.column_dimensions["A"].width = 5
+    ws.column_dimensions["B"].width = 34
+    ws.column_dimensions["C"].width = 14
+    ws.column_dimensions["D"].width = 9
+    ws.column_dimensions["E"].width = 52
+    out = BytesIO()
+    wb.save(out)
+    out.seek(0)
+    fn = f"QA_Plan_{body.ticket_id}.xlsx"
+    return StreamingResponse(
+        out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={fn}"})
+
+
+@app.post("/qa-estimation/mark-pushed")
+def qa_estimation_mark_pushed(body: EstMarkPushedBody):
+    """Record that the manager pushed a round's estimate to PM (bookkeeping)."""
+    db: Session = SessionLocal()
+    try:
+        rnd = (db.query(TicketEstimationRound)
+               .filter(TicketEstimationRound.id == body.round_id,
+                       TicketEstimationRound.ticket_id == body.ticket_id).first())
+        if not rnd:
+            raise HTTPException(status_code=404, detail="round not found")
+        rnd.pushed_to_pm = True
+        if body.pushed_estimate is not None:
+            rnd.pushed_estimate = body.pushed_estimate
+        db.commit()
+        return {"ticket_id": body.ticket_id, "round_id": rnd.id,
+                "pushed_to_pm": True, "pushed_estimate": rnd.pushed_estimate}
+    finally:
+        db.close()
+
+
+@app.post("/qa-estimation/review-recalc")
+def qa_estimation_review_recalc(body: EstReviewBody):
+    """Review stage: given the ACTUAL time + QA comments, Claude recalculates the ALLOWED time
+    (weighing planned + actual + comments). persist=True saves actuals + recalc and moves the thread
+    to 'in_review'. persist=False is a preview."""
+    import ticket_review as TR
+    db: Session = SessionLocal()
+    try:
+        thread = _get_or_create_estimation(db, body.ticket_id)
+        member = thread.qa_member or _resolve_qc_tester(db, body.ticket_id) or ""
+        sig = TR.get_ticket_review_signals(db, body.ticket_id, member)
+        actual = body.actual_hours if body.actual_hours is not None else _f_actual(sig)
+        bugrep = _bug_reporter_ticket_stats(db, body.ticket_id)
+        recalc = TR.suggest_review_recalc(sig, thread.suggested_total, actual,
+                                          qa_comments=body.qa_comments, use_ai=bool(body.use_ai), bugrep=bugrep)
+        result = {"ticket_id": body.ticket_id, "qa_member": member,
+                  "planned_total": thread.suggested_total, "actual_hours": actual,
+                  "qa_comments": body.qa_comments, "bug_reporter": bugrep, **recalc}
+        if body.persist:
+            thread.actual_hours = actual
+            thread.qa_comments = body.qa_comments
+            thread.recalc_total = recalc.get("allowed_total")
+            thread.recalc_breakdown = {**recalc, "bug_reporter": bugrep}
+            if thread.status in (None, "awaiting", "planning"):
+                thread.status = "in_review"
+            db.commit()
+        return result
+    finally:
+        db.close()
+
+
+@app.post("/qa-estimation/reopen")
+def qa_estimation_reopen(body: EstReopenBody):
+    """Reopen a reviewed (or any) ticket back to planning / in_review so it can be edited again."""
+    db: Session = SessionLocal()
+    try:
+        thread = db.query(TicketEstimation).filter(TicketEstimation.ticket_id == body.ticket_id).first()
+        if not thread:
+            raise HTTPException(status_code=404, detail="no estimation thread for this ticket")
+        to = body.to_status if body.to_status in ("planning", "in_review") else "planning"
+        thread.status = to
+        thread.reviewed_on = None
+        thread.reviewed_by = None
+        db.commit()
+        return {"ticket_id": body.ticket_id, "status": thread.status}
+    finally:
+        db.close()
+
+
+@app.post("/qa-estimation/complete")
+def qa_estimation_complete(body: EstCompleteBody):
+    """Mark the ticket reviewed & completed with the manager's comment. Accepted time = recalc'd
+    allowed (else explicit accepted, else suggested). Feeds the performance matrix the accepted QA
+    target (via WeeklyTicketReview.revised_estimate)."""
+    import ticket_review as TR
+    db: Session = SessionLocal()
+    try:
+        thread = _get_or_create_estimation(db, body.ticket_id)
+        if body.actual_hours is not None:
+            thread.actual_hours = body.actual_hours
+        if body.qa_comments is not None:
+            thread.qa_comments = body.qa_comments
+        accepted = (body.accepted_estimate if body.accepted_estimate is not None
+                    else (thread.recalc_total if thread.recalc_total is not None else thread.suggested_total))
+        thread.status = "reviewed"
+        thread.manager_comment = body.manager_comment
+        thread.reviewed_on = datetime.utcnow()
+        thread.reviewed_by = body.reviewer or "manager"
+        member = thread.qa_member or ""
+        fed = False
+        if member and accepted is not None:
+            first = (db.query(func.min(TicketStatusHistory.changed_on))
+                     .filter(TicketStatusHistory.ticket_id == body.ticket_id).scalar())
+            ws = _review_week_for(first) if first else _review_week_for(datetime.now())
+            r = _get_or_create_weekly_review(db, body.ticket_id, member, ws)
+            r.revised_estimate = accepted
+            if r.original_estimate is None:
+                r.original_estimate = thread.submitted_total
+            r.status = "reviewed"
+            r.reviewer_name = r.reviewer_name or (body.reviewer or "manager")
+            if r.signals_snapshot is None:
+                try:
+                    r.signals_snapshot = TR.get_ticket_review_signals(db, body.ticket_id, member)
+                except Exception:
+                    pass
+            fed = True
+        db.commit()
+        return {"ticket_id": body.ticket_id, "status": thread.status,
+                "accepted_estimate": accepted, "matrix_fed": fed}
+    finally:
+        db.close()
+
+
+@app.get("/qa-estimation/export-xlsx")
+def qa_estimation_export(period: str = Query("60d", regex="^(30d|60d|90d|180d|all)$"),
+                         qc_tester: Optional[str] = Query(None),
+                         module: Optional[str] = Query(None),
+                         status: str = Query("all", regex="^(all|awaiting|planning|reviewed)$")):
+    """Filtered QA-estimation report (.xlsx): one row per ticket + a rounds-detail sheet."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+    from io import BytesIO
+    board = qa_estimation_board(period=period, qc_tester=qc_tester, module=module, status=status, limit=3000)
+    db: Session = SessionLocal()
+    try:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Estimations"
+        hf = Font(bold=True, color="FFFFFF")
+        fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        cols = ["Ticket", "Title", "Module", "QC Tester", "Status", "Rounds",
+                "Submitted (h)", "Suggested (h)", "Automated cases", "Manual cases",
+                "Current status", "Reviewed on"]
+        ws.append(cols)
+        for c in ws[1]:
+            c.font = hf; c.fill = fill
+        rows_ws = wb.create_sheet("Rounds")
+        rows_ws.append(["Ticket", "Round", "Trigger", "Submitted (h)", "Suggested (h)",
+                        "Pushed to PM", "Pushed est (h)", "Verdict", "When", "Reason"])
+        for c in rows_ws[1]:
+            c.font = hf; c.fill = fill
+        for it in board["tickets"]:
+            ws.append([it["ticket_id"], it["title"], it["module"], ", ".join(it["qc_testers"]),
+                       it["est_status"], it["rounds"], it.get("submitted_total"), it.get("suggested_total"),
+                       it.get("automated_cases"), it.get("manual_cases"), it.get("current_status"),
+                       it.get("reviewed_on")])
+            for rnd in (db.query(TicketEstimationRound)
+                        .filter(TicketEstimationRound.ticket_id == it["ticket_id"])
+                        .order_by(TicketEstimationRound.round_no.asc()).all()):
+                bd = rnd.claude_breakdown or {}
+                rows_ws.append([rnd.ticket_id, rnd.round_no, rnd.trigger, rnd.submitted_total,
+                                rnd.suggested_total, "Yes" if rnd.pushed_to_pm else "No",
+                                rnd.pushed_estimate, bd.get("verdict"),
+                                rnd.created_on.strftime("%Y-%m-%d %H:%M") if rnd.created_on else "",
+                                (rnd.reason or "")[:200]])
+        out = BytesIO()
+        wb.save(out)
+        out.seek(0)
+        fn = f"QA_Estimation_{period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return StreamingResponse(
+            out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={fn}"})
+    finally:
+        db.close()
+
+
+@app.get("/qa-estimation/plan-template")
+def qa_estimation_plan_template(ticket_id: Optional[int] = Query(None)):
+    """Blank split-up time-entry template for a QA member to fill (Activity | Environment | Hours).
+    They fill one activity per row; the manager pastes the rows straight into the dashboard (the paste
+    box parses tab-separated Excel cells)."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    from io import BytesIO
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "QA Test Plan"
+    title = f"QA Test Plan — ticket #{ticket_id}" if ticket_id else "QA Test Plan"
+    ws["A1"] = title
+    ws["A1"].font = Font(bold=True, size=13)
+    ws["A2"] = ("Fill ONE activity per row, in column order. Environment = staging / pre / staging,pre / live / all. "
+                "Keep Hours as the last column. Send back or paste the rows into the dashboard.")
+    ws["A2"].font = Font(italic=True, size=9, color="64748B")
+    ws.merge_cells("A1:C1"); ws.merge_cells("A2:C2")
+    hdr = ["Activity", "Environment", "Hours"]
+    ws.append([])
+    ws.append(hdr)
+    hf = Font(bold=True, color="FFFFFF"); fill = PatternFill(start_color="14B8A6", end_color="14B8A6", fill_type="solid")
+    for c in ws[4]:
+        c.font = hf; c.fill = fill; c.alignment = Alignment(horizontal="center")
+    for row in [["Data generation / test data setup", "staging", 4],
+                ["Test case execution", "staging,pre", 10],
+                ["Regression", "pre", 3],
+                ["Bug retest", "pre", 2],
+                ["Live sanity check", "live", 1]]:
+        ws.append(row)
+    ws.column_dimensions["A"].width = 42
+    ws.column_dimensions["B"].width = 16
+    ws.column_dimensions["C"].width = 10
+    out = BytesIO(); wb.save(out); out.seek(0)
+    fn = f"QA_Plan_Template{('_' + str(ticket_id)) if ticket_id else ''}.xlsx"
+    return StreamingResponse(
+        out, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={fn}"})
+
+
+@app.get("/qa-estimation/{ticket_id}")
+def qa_estimation_detail(ticket_id: int):
+    """Full thread + round history + ALL relevant QA details (signals: expected/actual/time/diligence,
+    complexity, bugs, cycles, test-case history) for the planning/review panel."""
+    import ticket_review as TR
+    db: Session = SessionLocal()
+    try:
+        thread = db.query(TicketEstimation).filter(TicketEstimation.ticket_id == ticket_id).first()
+        rounds = (db.query(TicketEstimationRound)
+                  .filter(TicketEstimationRound.ticket_id == ticket_id)
+                  .order_by(TicketEstimationRound.round_no.asc()).all())
+        t = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+        member = (thread.qa_member if thread else None) or _resolve_qc_tester(db, ticket_id) or ""
+        try:
+            signals = TR.get_ticket_review_signals(db, ticket_id, member)
+        except Exception:
+            signals = None
+        try:
+            case_log, case_summary = _case_log_payload(db, ticket_id)
+        except Exception:
+            case_log, case_summary = [], None
+        mod = (t.subdepartment if t else "") or ""
+
+        # ---- TestRail detail (cases breakdown + manual/automated + plan url) ----
+        testrail = None
+        try:
+            from pm_live_data import _fetch_testrail_plans
+            _tr = (_fetch_testrail_plans() or {})
+            info = _tr.get(str(ticket_id)) or _tr.get(ticket_id)
+            if info:
+                man, auto = _ticket_automation_split(ticket_id)
+                url = None
+                try:
+                    _u, _h = _testrail_auth()
+                    if _u and info.get("plan_id"):
+                        url = f"{_u}/index.php?/plans/view/{info['plan_id']}"
+                except Exception:
+                    url = None
+                testrail = {"cases": info.get("cases"), "passed": info.get("passed"), "failed": info.get("failed"),
+                            "untested": info.get("untested"), "blocked": info.get("blocked"), "retest": info.get("retest"),
+                            "manual": man, "automated": auto, "plan_url": url}
+        except Exception:
+            testrail = None
+
+        # ---- Doc confidence (RN ↔ PR comparison) + composed summary ----
+        doc = None
+        try:
+            import doc_confidence
+            dc = (doc_confidence._load_cache() or {}).get(str(ticket_id)) or {}
+            if not dc:
+                dc = doc_confidence.compute(ticket_id, deep=False) or {}
+            flag = dc.get("flag")
+            unexpl = dc.get("unexplained") or []
+            ftot = dc.get("functional_total")
+            _summ = {
+                "ALIGNED": f"Release note covers all {ftot or ''} functional PR file(s).",
+                "THIN_RN": f"Release note omits {len(unexpl)} of {ftot or '?'} functional file(s) — undocumented changes; PR-delta cases needed.",
+                "RN_REVIEW": f"Release note omits {len(unexpl)} functional file(s) — review the PR delta.",
+                "PR_NO_RN": "PR present but no release note — scope unclear.",
+                "RN_NO_PR": "Release note present but no extractable PR link.",
+                "NO_PR_NO_RN": "No PR link and no release note — nothing to verify against.",
+                "UNKNOWN": "Doc confidence not yet computed.",
+            }.get(flag, "")
+            doc = {"flag": flag, "pr_present": dc.get("pr_present"), "rn_present": dc.get("rn_present"),
+                   "rn_thin_tier": dc.get("rn_thin_tier"), "unexplained": unexpl[:20],
+                   "functional_total": ftot, "summary": _summ}
+        except Exception:
+            doc = None
+
+        # ---- Redmine bug detail: by status / severity / environment ----
+        redmine = None
+        try:
+            bugs = db.query(Bug).filter(Bug.ticket_id == ticket_id).all()
+            by_status = defaultdict(int)
+            for b in bugs:
+                by_status[(b.status or "Unknown").strip() or "Unknown"] += 1
+            act = (signals or {}).get("actual") or {}
+            redmine = {"total": len(bugs), "by_status": dict(by_status),
+                       "by_severity": act.get("bugs_by_severity") or {}, "by_env": act.get("bugs_by_env") or {}}
+        except Exception:
+            redmine = None
+
+        pm = {"dev_estimate_hours": (t.dev_estimate_hours if t else None),
+              "actual_dev_hours": (t.actual_dev_hours if t else None),
+              "qa_estimate_hours": (t.qa_estimate_hours if t else None),
+              "qa_actual_hours": (t.actual_qa_hours if t else None),
+              "eta": (t.eta.isoformat() if (t and t.eta) else None),
+              "priority": (t.priority if t else None), "status": (t.status if t else None),
+              "current_assignee": (t.current_assignee if t else None),
+              "backend_developer": (t.backend_developer if t else None),
+              "frontend_developer": (t.frontend_developer if t else None)}
+
+        return {"ticket_id": ticket_id,
+                "title": (t.title if t else ""),
+                "current_status": (t.status if t else None),
+                "qc_tester": (t.qc_tester if t else None),
+                "module": mod, "priority": (t.priority if t else None),
+                "test_type": (thread.test_type if (thread and thread.test_type) else _ticket_test_type(mod, getattr(t, "platform", None))),
+                "qa_estimate_hours": (t.qa_estimate_hours if t else None),
+                "qa_actual_hours": (t.actual_qa_hours if t else None),
+                "pm": pm, "testrail": testrail, "doc": doc, "redmine": redmine,
+                "thread": _estimation_thread_dict(thread) if thread else None,
+                "rounds": [_estimation_round_dict(r) for r in rounds],
+                "signals": signals, "case_log": case_log, "case_summary": case_summary}
+    finally:
+        db.close()
 
 
 @app.get("/live/qa-activity-summary")
@@ -16185,55 +21038,79 @@ def live_qc_review_fail():
     return data.get('qc_failed', {'tickets': [], 'total': 0})
 
 
+def _parse_iso(s):
+    """Parse an ISO date (YYYY-MM-DD) for report endpoints, raising a 400 on bad input."""
+    try:
+        return date.fromisoformat(s)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="date must be ISO format YYYY-MM-DD")
+
+
 @app.get("/live/reports/weekly")
 def generate_weekly_report(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
-    """Generate and download QA Report Excel."""
-    import subprocess
-    script = os.path.join(os.path.dirname(__file__), 'generate_qa_reports.py')
-    cmd = ['python', script]
-    if start_date and end_date:
-        cmd += [f'--start={start_date}', f'--end={end_date}']
-    subprocess.run(cmd, cwd=os.path.dirname(__file__), timeout=30)
-    from datetime import date as d
-    report_date = end_date if end_date else d.today().strftime("%Y-%m-%d")
-    path = os.path.join(os.path.dirname(__file__), 'reports', f'QA_Report_{d.fromisoformat(report_date).strftime("%Y%m%d")}.xlsx')
-    if os.path.exists(path):
-        return FileResponse(path, filename=os.path.basename(path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    raise HTTPException(status_code=500, detail="Report generation failed")
+    """QA report — dark PDF. No params → this week (Mon–Fri); start only → that week; start+end →
+    custom range. Load chart auto-switches to per-week buckets for spans over ~8 days."""
+    db: Session = SessionLocal()
+    try:
+        today = datetime.now().date()
+        kind = "week"
+        if start_date and end_date:          # explicit start+end → custom range
+            ws = _parse_iso(start_date); we = _parse_iso(end_date); kind = "custom"
+        elif start_date:                     # start only → that week's Mon–Fri
+            ws = _parse_iso(start_date); we = ws + timedelta(days=4)
+        else:                                # default → this week's Mon–Fri
+            ws = today - timedelta(days=today.weekday()); we = ws + timedelta(days=4)
+        data = _build_qa_weekly_data(db, ws, we, period_kind=kind)
+        from qa_weekly_report import generate_pdf
+        path = generate_pdf(data)
+        return FileResponse(str(path), media_type="application/pdf", filename=path.name)
+    finally:
+        db.close()
 
 
 @app.get("/live/reports/monthly")
 def generate_monthly_report(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
-    """Generate and download QA Monthly Report Excel."""
-    import subprocess
-    script = os.path.join(os.path.dirname(__file__), 'generate_qa_reports.py')
-    cmd = ['python', script]
-    if start_date and end_date:
-        cmd += [f'--start={start_date}', f'--end={end_date}']
-    subprocess.run(cmd, cwd=os.path.dirname(__file__), timeout=30)
-    from datetime import date as d
-    report_date = end_date if end_date else d.today().strftime("%Y-%m-%d")
-    path = os.path.join(os.path.dirname(__file__), 'reports', f'QA_Report_{d.fromisoformat(report_date).strftime("%Y%m%d")}.xlsx')
-    if os.path.exists(path):
-        return FileResponse(path, filename=os.path.basename(path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    raise HTTPException(status_code=500, detail="Report generation failed")
+    """QA Monthly Report — dark-themed PDF (web manual team): load, movement and avg QA cycle
+    over the whole month, with per-week load buckets. Defaults to the current calendar month."""
+    db: Session = SessionLocal()
+    try:
+        today = datetime.now().date()
+        if start_date:
+            try:
+                ms = date.fromisoformat(start_date)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="start_date must be ISO date YYYY-MM-DD")
+        else:
+            ms = today.replace(day=1)  # first of the current month
+        if end_date:
+            try:
+                me = date.fromisoformat(end_date)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="end_date must be ISO date YYYY-MM-DD")
+        else:
+            nxt = (ms.replace(day=28) + timedelta(days=4)).replace(day=1)
+            me = nxt - timedelta(days=1)  # last day of ms's month
+        data = _build_qa_weekly_data(db, ms, me, period_kind="month")
+        from qa_weekly_report import generate_pdf
+        path = generate_pdf(data)
+        return FileResponse(str(path), media_type="application/pdf", filename=path.name)
+    finally:
+        db.close()
 
 
 @app.get("/live/reports/automation-weekly")
 def generate_automation_report(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
-    """Generate and download Automation Utilization Report PDF."""
-    import subprocess
-    script = os.path.join(os.path.dirname(__file__), 'generate_automation_pdf_report.py')
-    cmd = ['python', script]
-    if start_date and end_date:
-        cmd += [f'--start={start_date}', f'--end={end_date}']
-    subprocess.run(cmd, cwd=os.path.dirname(__file__), timeout=120)
-    from datetime import date as d
-    report_date = end_date if end_date else d.today().strftime("%Y-%m-%d")
-    path = os.path.join(os.path.dirname(__file__), 'reports', f'Automation_Utilization_Report_{d.fromisoformat(report_date).strftime("%Y%m%d")}.pdf')
-    if os.path.exists(path):
-        return FileResponse(path, filename=os.path.basename(path), media_type='application/pdf')
-    raise HTTPException(status_code=500, detail="Report generation failed")
+    """Download the Automation weekly card as a PDF — exact same data/UI as the dark card image
+    from the Automation module (/automation/weekly-card), rendered to a single-page PDF."""
+    from automation_weekly_card import generate_weekly_card
+    ws = None
+    if start_date:
+        try:
+            ws = date.fromisoformat(start_date)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="start_date must be ISO date YYYY-MM-DD")
+    path = generate_weekly_card(week_start=ws, fmt="pdf")
+    return FileResponse(str(path), media_type="application/pdf", filename=path.name)
 
 
 @app.get("/live/reports/module-ownership")
@@ -16247,34 +21124,54 @@ def generate_module_report():
 
 @app.get("/live/reports/dev-weekly")
 def generate_dev_weekly_report(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
-    """Generate and download Dev Report Excel."""
-    import subprocess
-    script = os.path.join(os.path.dirname(__file__), 'generate_dev_report.py')
-    cmd = ['python', script]
-    if start_date and end_date:
-        cmd += [f'--start={start_date}', f'--end={end_date}']
-    subprocess.run(cmd, cwd=os.path.dirname(__file__), timeout=30)
-    from datetime import date as d
-    path = os.path.join(os.path.dirname(__file__), 'reports', f'Dev_Report_{d.today().strftime("%Y%m%d")}.xlsx')
-    if os.path.exists(path):
-        return FileResponse(path, filename=os.path.basename(path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    raise HTTPException(status_code=500, detail="Report generation failed")
+    """Dev report — dark PDF. No params → this week (Mon–Fri); start only → that week; start+end →
+    custom range. Handoffs to QC, delivery to live, bugs fixed, lead time and dev effort."""
+    db: Session = SessionLocal()
+    try:
+        today = datetime.now().date()
+        kind = "week"
+        if start_date and end_date:
+            ws = _parse_iso(start_date); we = _parse_iso(end_date); kind = "custom"
+        elif start_date:
+            ws = _parse_iso(start_date); we = ws + timedelta(days=4)
+        else:
+            ws = today - timedelta(days=today.weekday()); we = ws + timedelta(days=4)
+        data = _build_dev_report_data(db, ws, we, period_kind=kind)
+        from dev_report import generate_pdf
+        path = generate_pdf(data)
+        return FileResponse(str(path), media_type="application/pdf", filename=path.name)
+    finally:
+        db.close()
 
 
 @app.get("/live/reports/dev-monthly")
 def generate_dev_monthly_report(start_date: Optional[str] = Query(None), end_date: Optional[str] = Query(None)):
-    """Generate and download Dev Report Excel."""
-    import subprocess
-    script = os.path.join(os.path.dirname(__file__), 'generate_dev_report.py')
-    cmd = ['python', script]
-    if start_date and end_date:
-        cmd += [f'--start={start_date}', f'--end={end_date}']
-    subprocess.run(cmd, cwd=os.path.dirname(__file__), timeout=30)
-    from datetime import date as d
-    path = os.path.join(os.path.dirname(__file__), 'reports', f'Dev_Report_{d.today().strftime("%Y%m%d")}.xlsx')
-    if os.path.exists(path):
-        return FileResponse(path, filename=os.path.basename(path), media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    raise HTTPException(status_code=500, detail="Report generation failed")
+    """Dev Monthly Report — dark-themed PDF (development team) over the whole month, per-week load
+    buckets. Defaults to the current calendar month."""
+    db: Session = SessionLocal()
+    try:
+        today = datetime.now().date()
+        if start_date:
+            try:
+                ms = date.fromisoformat(start_date)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="start_date must be ISO date YYYY-MM-DD")
+        else:
+            ms = today.replace(day=1)
+        if end_date:
+            try:
+                me = date.fromisoformat(end_date)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="end_date must be ISO date YYYY-MM-DD")
+        else:
+            nxt = (ms.replace(day=28) + timedelta(days=4)).replace(day=1)
+            me = nxt - timedelta(days=1)
+        data = _build_dev_report_data(db, ms, me, period_kind="month")
+        from dev_report import generate_pdf
+        path = generate_pdf(data)
+        return FileResponse(str(path), media_type="application/pdf", filename=path.name)
+    finally:
+        db.close()
 
 
 # ===== MODULE OWNERSHIP & RESOURCE PLANNING =====
@@ -16427,12 +21324,47 @@ def live_assign_to_summary():
     except Exception:
         dev_team = set()
 
+    # Compact-name index (strip parens, drop non-alphanumerics) so PM's spaced initials
+    # ("Vishnu C S (VCS)") match the employee record's joined form ("Vishnu CS"). Without this,
+    # such devs fall through to the 'BIS' bucket.
+    import re as _re_team
+    def _compact_name(n):
+        return _re_team.sub(r'[^a-z0-9]', '', _re_team.sub(r'\([^)]*\)', '', (n or '')).lower())
+    dev_team_compact = {_compact_name(d) for d in dev_team}
+    qa_team_compact = {_compact_name(q) for q in qa_team}
+
     DEV_STATUSES = {'Ready For Development', 'In Progress', 'Hold/Pending', 'Start Code Review',
         'Code Review Failed', 'Code Review Passed', 'Express Lane Review'}
     QA_STATUSES = {'QC Testing', 'QC Testing in Progress', 'QC Testing Hold', 'QC Review Fail'}
     BIS_STATUSES = {'BIS Testing', 'Approved for Live', 'Moved to Live'}
 
     CLOSED_STATUSES = {'Closed', 'Moved to Live', 'Cancelled', 'Rejected', 'Duplicate'}
+    # Refix (retest) info: durable per-ticket count from ticket_tracking.refix_count, plus the live
+    # "currently retesting" flag from the cycle tracker.
+    try:
+        from pm_live_data import _load_cycle_tracker, _load_refix_counts
+        cycle_tracker = _load_cycle_tracker() or {}
+        refix_counts = _load_refix_counts() or {}
+    except Exception:
+        cycle_tracker, refix_counts = {}, {}
+    # Bug counts per ticket (Open / Reopened / Fixed / Closed) for the standup view.
+    bug_map = {}
+    try:
+        bdb = SessionLocal()
+        for btid, bst in bdb.query(Bug.ticket_id, Bug.status).all():
+            stl = (bst or '').strip().lower()
+            bb = bug_map.setdefault(btid, {'open': 0, 'reopen': 0, 'fixed': 0, 'closed': 0})
+            if stl == 'reopened':
+                bb['reopen'] += 1
+            elif stl == 'fixed':
+                bb['fixed'] += 1
+            elif stl == 'closed':
+                bb['closed'] += 1
+            else:
+                bb['open'] += 1
+        bdb.close()
+    except Exception:
+        bug_map = {}
     persons = {}
     for t in all_tickets:
         if t['status'] in CLOSED_STATUSES:
@@ -16442,8 +21374,9 @@ def live_assign_to_summary():
             continue
         if assignee not in persons:
             # Determine team
-            team = 'Dev' if assignee in dev_team or any(assignee.lower() in d.lower() for d in dev_team) else \
-                   'QA' if assignee in qa_team or any(assignee.lower() in q.lower() for q in qa_team) else 'BIS'
+            _ac = _compact_name(assignee)
+            team = 'Dev' if assignee in dev_team or _ac in dev_team_compact or any(assignee.lower() in d.lower() for d in dev_team) else \
+                   'QA' if assignee in qa_team or _ac in qa_team_compact or any(assignee.lower() in q.lower() for q in qa_team) else 'BIS'
             persons[assignee] = {'name': assignee, 'team': team, 'dev': 0, 'qa': 0, 'bis': 0, 'other': 0, 'total': 0, 'tickets': []}
 
         s = t['status']
@@ -16459,11 +21392,25 @@ def live_assign_to_summary():
 
         persons[assignee]['tickets'].append({
             'ticket_id': t['ticket_id'], 'title': t['title'], 'status': s,
-            'priority': t['priority'], 'module': t.get('module', ''),
+            'priority': t['priority'], 'priority_order': t.get('priority_order'),
+            'module': t.get('module', ''),
             'platform': t.get('platform', ''), 'qc_tester': t.get('qc_tester', ''),
             'developers_str': t.get('developers_str', ''),
             'qa_estimate_hours': t.get('qa_estimate_hours', 0),
             'dev_estimate_hours': t.get('dev_estimate_hours', 0),
+            'qa_actual_hours': t.get('qa_actual_hours', 0),
+            'dev_actual_hours': t.get('actual_dev_hours', 0),
+            'eta': t.get('eta'), 'created_on': t.get('created_on'),
+            'follow_up_date': t.get('follow_up_date'),
+            'ticket_type': t.get('ticket_type', ''), 'reported_by': t.get('reported_by', ''),
+            'is_refix': bool(refix_counts.get(t['ticket_id'], 0)
+                             or (cycle_tracker.get(str(t['ticket_id'])) or {}).get('is_retesting')),
+            'cycle_count': max(refix_counts.get(t['ticket_id'], 0),
+                               (cycle_tracker.get(str(t['ticket_id'])) or {}).get('cycle_count', 0) or 0),
+            'bugs_open': (bug_map.get(t['ticket_id']) or {}).get('open', 0),
+            'bugs_reopen': (bug_map.get(t['ticket_id']) or {}).get('reopen', 0),
+            'bugs_fixed': (bug_map.get(t['ticket_id']) or {}).get('fixed', 0),
+            'bugs_closed': (bug_map.get(t['ticket_id']) or {}).get('closed', 0),
         })
 
     person_list = sorted(persons.values(), key=lambda p: -p['total'])
@@ -16618,7 +21565,14 @@ def live_module_matrix():
 @app.get("/live/dev-dashboard")
 def live_dev_dashboard():
     """Dev team pipeline insights: resource-wise, ticket-wise, module-wise."""
-    return get_live_dev_dashboard()
+    data = get_live_dev_dashboard()
+    # Widen complexity coverage: warm the dev ticket set too, so ratings appear on the Dev dashboard
+    # (and anywhere those tickets are listed) — not just QC-queue tickets.
+    try:
+        _kick_complexity_autowarm((data or {}).get("tickets") or [])
+    except Exception:
+        pass
+    return data
 
 
 @app.get("/live/module-tickets/{module_name}")
@@ -16956,15 +21910,22 @@ def get_ticket_speed(
     period: str = Query("month", regex="^(month|quarter|all)$"),
     offset: int = Query(0, ge=0, le=240),
     scope: str = Query("closed", regex="^(closed|active|all)$"),
+    from_date: Optional[str] = Query(None, description="Custom window start YYYY-MM-DD (overrides period)"),
+    to_date: Optional[str] = Query(None, description="Custom window end YYYY-MM-DD (overrides period)"),
 ):
     """Per-ticket movement speed across a scope of tickets, with summary and per-module / per-QC-tester
-    breakdowns. scope=closed → tickets closed in the period; active → currently open; all → both."""
+    breakdowns. scope=closed → tickets closed in the period; active → currently open; all → both.
+    Pass from_date+to_date for an exact window (e.g. past 7 days / 6 months / 1 year) — overrides period."""
     db: Session = SessionLocal()
     try:
         today = date.today()
         start = end = None
         label = "All time"
-        if period != "all":
+        if from_date and to_date:
+            start = datetime.combine(date.fromisoformat(from_date), datetime.min.time())
+            end = datetime.combine(date.fromisoformat(to_date), datetime.max.time())
+            label = f"{from_date} → {to_date}"
+        elif period != "all":
             start, end, label = get_period_range(period, offset)
 
         tickets, seen = [], set()
@@ -17086,6 +22047,212 @@ def get_ticket_speed(
         db.close()
 
 
+@app.get("/build-quality")
+def get_build_quality(
+    period: str = Query("month", regex="^(month|quarter|all)$"),
+    offset: int = Query(0, ge=0, le=240),
+    platform: str = Query("all", regex="^(all|web|mobile)$"),
+    module: Optional[str] = Query(None, description="Exact module to filter to"),
+    developer: Optional[str] = Query(None, description="Exact developer name to filter to"),
+    min_refix: int = Query(1, ge=1, le=20, description="Only tickets that failed QC at least this many times"),
+):
+    """Build-quality / QC-reject analysis. Tracks every ticket that entered 'QC Review Fail' at least
+    once — "how good are the builds dev hands to QA?". Returns First-Pass Yield & Reject Rate overall
+    and per developer/module, a most-failed ticket list, refix distribution and a 12-month trend.
+
+    A ticket "failed" if it has >=1 'QC Review Fail' transition (matches the durable refix_count).
+    "Reached QC" (the denominator) = entered a QC stage. The period window is applied to the fail
+    event's date (and to the first-QC-entry date for the denominator)."""
+    db: Session = SessionLocal()
+    try:
+        today = date.today()
+        start = end = None
+        label = "All time"
+        if period != "all":
+            start, end, label = get_period_range(period, offset)
+
+        def _is_fail(col):
+            return func.lower(col) == "qc review fail"
+
+        # ---- 1. Fail events in the selected window (source of truth for when/how often) ----
+        fq = db.query(TicketStatusHistory).filter(_is_fail(TicketStatusHistory.new_status))
+        if start:
+            fq = fq.filter(TicketStatusHistory.changed_on >= start, TicketStatusHistory.changed_on <= end)
+        fails_by_tid = defaultdict(list)
+        for h in fq.order_by(TicketStatusHistory.changed_on.asc()).all():
+            fails_by_tid[h.ticket_id].append(h)
+
+        # earliest captured transition — drives the honest "tracking since" caption
+        earliest = db.query(func.min(TicketStatusHistory.changed_on)).scalar()
+
+        # ---- 2. Denominator: tickets that reached a QC stage (windowed on first QC entry) ----
+        first_qc = dict(
+            db.query(TicketStatusHistory.ticket_id, func.min(TicketStatusHistory.changed_on))
+            .filter(TicketStatusHistory.new_status.in_(list(_QC_ENTRY_STATUSES)))
+            .group_by(TicketStatusHistory.ticket_id).all()
+        )
+        if start:
+            reached_ids = {tid for tid, fqc in first_qc.items() if fqc and start <= fqc <= end}
+        else:
+            reached_ids = set(first_qc.keys())
+        reached_ids |= set(fails_by_tid.keys())  # a fail in-window implies it reached QC
+
+        # ---- 3. Join to ticket_tracking for module / developers / title / current status ----
+        all_ids = reached_ids | set(fails_by_tid.keys())
+        tt_by_id = {}
+        if all_ids:
+            for t in db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(list(all_ids))).all():
+                tt_by_id[t.ticket_id] = t
+
+        def _module(t):
+            return ((t.subdepartment or "").strip() or "Unassigned") if t else "Unassigned"
+
+        def _platform(t):
+            sd = ((t.subdepartment or "").strip().lower()) if t else ""
+            return "Mobile" if sd == "mobile" else "Web"
+
+        def _devs(t):
+            if not t:
+                return []
+            out = []
+            for d in (t.backend_developer, t.frontend_developer):
+                nm = _strip_paren(d or "").strip()
+                if nm and nm.lower() not in ("not assigned", "unassigned"):
+                    out.append(nm)
+            return out
+
+        # Filters apply to BOTH numerator & denominator so the rates stay honest.
+        def _passes(tid):
+            t = tt_by_id.get(tid)
+            if platform != "all" and _platform(t).lower() != platform:
+                return False
+            if module and _module(t) != module:
+                return False
+            if developer and developer not in _devs(t):
+                return False
+            return True
+
+        reached_ids = {tid for tid in reached_ids if _passes(tid)}
+
+        # ---- Per-ticket failed records (apply min_refix) ----
+        tickets = []
+        for tid, hs in fails_by_tid.items():
+            if not _passes(tid):
+                continue
+            fail_events = len(hs)
+            if fail_events < min_refix:
+                continue
+            t = tt_by_id.get(tid)
+            tickets.append({
+                "ticket_id": tid,
+                "title": (t.title if t else "") or "",
+                "module": _module(t),
+                "platform": _platform(t),
+                "backend_developer": (_strip_paren((t.backend_developer if t else "") or "").strip() or None),
+                "frontend_developer": (_strip_paren((t.frontend_developer if t else "") or "").strip() or None),
+                "refix_count": (t.refix_count if (t and t.refix_count) else fail_events),
+                "fail_events": fail_events,
+                "current_status": (t.status if t else None),
+                "qc_tester": next((h.qc_tester for h in reversed(hs) if h.qc_tester), (t.qc_tester if t else None)),
+                "first_failed_on": hs[0].changed_on.isoformat() if hs[0].changed_on else None,
+                "last_failed_on": hs[-1].changed_on.isoformat() if hs[-1].changed_on else None,
+            })
+        tickets.sort(key=lambda r: (r["fail_events"], r["refix_count"]), reverse=True)
+
+        failed_ids = {r["ticket_id"] for r in tickets}
+        denom_ids = reached_ids | failed_ids
+        total_reached = len(denom_ids)
+        total_failed = len(failed_ids)
+        total_fail_events = sum(r["fail_events"] for r in tickets)
+        reject_pct = round(100 * total_failed / total_reached, 1) if total_reached else 0
+        summary = {
+            "window_label": label,
+            "period": {"kind": period, "offset": offset},
+            "tracking_since": earliest.date().isoformat() if earliest else None,
+            "reached_qc": total_reached,
+            "failed_tickets": total_failed,
+            "fail_events": total_fail_events,
+            "first_pass_yield_pct": round(100 - reject_pct, 1),
+            "reject_rate_pct": reject_pct,
+            "avg_refix_per_failed": round(total_fail_events / total_failed, 2) if total_failed else 0,
+            "repeat_offenders": sum(1 for r in tickets if r["fail_events"] >= 2),
+        }
+
+        # ---- Aggregations by developer (credit BOTH devs) and by module ----
+        def _agg(keyfn):
+            reached_k = defaultdict(set)
+            for tid in denom_ids:
+                for k in keyfn(tt_by_id.get(tid)):
+                    reached_k[k].add(tid)
+            failed_k = defaultdict(set)
+            events_k = defaultdict(int)
+            for r in tickets:
+                for k in keyfn(tt_by_id.get(r["ticket_id"])):
+                    failed_k[k].add(r["ticket_id"])
+                    events_k[k] += r["fail_events"]
+            out = []
+            for k, rset in reached_k.items():
+                if not k:
+                    continue
+                rc = len(rset)
+                fc = len(failed_k.get(k, ()))
+                rej = round(100 * fc / rc, 1) if rc else 0
+                out.append({"name": k, "reached_qc": rc, "failed": fc,
+                            "fail_events": events_k.get(k, 0),
+                            "reject_pct": rej, "fpy_pct": round(100 - rej, 1)})
+            out.sort(key=lambda x: (x["reject_pct"], x["failed"]), reverse=True)
+            return out
+
+        by_developer = _agg(lambda t: _devs(t) or ["Unassigned"])
+        by_module = _agg(lambda t: [_module(t)])
+
+        # ---- Refix distribution (1x / 2x / 3+x) over the failed tickets ----
+        refix_distribution = [
+            {"bucket": "1×", "count": sum(1 for r in tickets if r["fail_events"] == 1)},
+            {"bucket": "2×", "count": sum(1 for r in tickets if r["fail_events"] == 2)},
+            {"bucket": "3+×", "count": sum(1 for r in tickets if r["fail_events"] >= 3)},
+        ]
+
+        # ---- 12-month trend (reject rate by month) — respects the same filters ----
+        trend_start = get_period_range("month", 11)[0]
+        t_fail = (db.query(TicketStatusHistory.ticket_id, TicketStatusHistory.changed_on)
+                  .filter(_is_fail(TicketStatusHistory.new_status),
+                          TicketStatusHistory.changed_on >= trend_start).all())
+        t_reach = (db.query(TicketStatusHistory.ticket_id, TicketStatusHistory.changed_on)
+                   .filter(TicketStatusHistory.new_status.in_(list(_QC_ENTRY_STATUSES)),
+                           TicketStatusHistory.changed_on >= trend_start).all())
+        missing = ({tid for tid, _ in t_fail} | {tid for tid, _ in t_reach}) - set(tt_by_id.keys())
+        if missing:
+            for t in db.query(TicketTracking).filter(TicketTracking.ticket_id.in_(list(missing))).all():
+                tt_by_id[t.ticket_id] = t
+
+        def _mkey(dt):
+            return dt.strftime("%b %Y") if dt else None
+
+        order = [get_period_range("month", k)[0].strftime("%b %Y") for k in range(11, -1, -1)]
+        fail_tids_by_m = defaultdict(set)
+        fail_events_by_m = defaultdict(int)
+        for tid, dt in t_fail:
+            if _passes(tid):
+                fail_tids_by_m[_mkey(dt)].add(tid)
+                fail_events_by_m[_mkey(dt)] += 1
+        reach_tids_by_m = defaultdict(set)
+        for tid, dt in t_reach:
+            if _passes(tid):
+                reach_tids_by_m[_mkey(dt)].add(tid)
+        trend = []
+        for m in order:
+            f = len(fail_tids_by_m.get(m, ()))
+            r = len(reach_tids_by_m.get(m, set()) | fail_tids_by_m.get(m, set()))
+            trend.append({"label": m, "failed": f, "fail_events": fail_events_by_m.get(m, 0),
+                          "reject_pct": round(100 * f / r, 1) if r else 0})
+
+        return {"summary": summary, "by_developer": by_developer, "by_module": by_module,
+                "trend": trend, "refix_distribution": refix_distribution, "tickets": tickets}
+    finally:
+        db.close()
+
+
 @app.get("/qc-cycles/summary")
 def qc_cycles_summary():
     """
@@ -17137,14 +22304,20 @@ def ticket_flow_rate(
 
 
 @app.get("/analytics/bis-to-closed")
-def bis_to_closed():
+def bis_to_closed(
+    from_date: Optional[str] = Query(None, description="Restrict closed-ticket avg to this window start YYYY-MM-DD"),
+    to_date: Optional[str] = Query(None, description="Restrict closed-ticket avg to this window end YYYY-MM-DD"),
+):
     """
     Track duration from BIS Testing to Closed/Moved to Live for each ticket.
     Shows avg days, per-ticket breakdown, and tickets still pending in BIS.
+    Pass from_date+to_date to restrict the average to tickets closed in that window.
     """
     db: Session = SessionLocal()
     try:
-        return get_bis_to_closed_tracking(db)
+        s = date.fromisoformat(from_date) if from_date else None
+        e = date.fromisoformat(to_date) if to_date else None
+        return get_bis_to_closed_tracking(db, start=s, end=e)
     finally:
         db.close()
 
@@ -20963,6 +26136,1300 @@ def create_employee_name_mapping(mapping: NameMappingCreate):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         db.close()
+
+
+# ===========================================================================
+# BIS Bug Reporter — support endpoints for the standalone local bug-creation
+# utility (bug-reporter/). The tool runs on each tester's machine; it uses the
+# tester's own Redmine API key to CREATE bugs directly against Redmine. These
+# two endpoints exist only because (a) Redmine's custom-field listing needs an
+# admin/service key the testers don't have, and (b) the optional AI polish
+# needs the Claude LLM which lives only on this server.
+# ===========================================================================
+
+# Semantic name -> known Redmine custom-field name (matched case-insensitively).
+_BUG_FIELD_NAMES = {
+    "severity": "Severity",
+    "steps": "Steps to Reproduce",
+    "test_data": "Test Data",
+    "expected": "Expected Condition",
+    "actual": "Actual Behaviour",
+    "module": "Module",
+    "feature": "Feature",
+    "platform": "Platform",
+    "os": "OS",
+    "browser": "Browser",
+    "ticket_id": "Ticket ID",
+    "type": "Type",
+    "devices": "Devices",
+    "environment": "Environment",
+    "proof_links": "Proof of Bug (links)",
+    "proof_files": "Proof of Bug (files)",
+    "build_version": "Build Version",
+    "fix_version_mobile": "Fix Version (Mobile)",
+    "qc_tester": "QC Tester",
+}
+
+_BUG_META_CACHE = {"data": None, "ts": 0.0}
+_BUG_META_TTL = 1800  # 30 min — these rarely change
+
+
+def _redmine_meta(force=False):
+    """Discover Redmine create-time metadata using the service key. Cached."""
+    import time as _time
+    import requests as _rq
+    now = _time.time()
+    if not force and _BUG_META_CACHE["data"] and (now - _BUG_META_CACHE["ts"]) < _BUG_META_TTL:
+        return _BUG_META_CACHE["data"]
+
+    url = (os.getenv("REDMINE_URL", "https://redmine.bissafety.app") or "").rstrip("/")
+    key = os.getenv("REDMINE_API_KEY", "")
+    project_ident = [p.strip() for p in (os.getenv("REDMINE_PROJECT_IDS", "bis-web") or "bis-web").split(",") if p.strip()][0]
+    hdr = {"X-Redmine-API-Key": key}
+
+    def _get(path):
+        try:
+            r = _rq.get(f"{url}/{path}", headers=hdr, timeout=20)
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            return None
+        return None
+
+    cf = _get("custom_fields.json") or {}
+    fields = {}        # semantic_key -> {id, name, required, format, values}
+    by_name_lower = {}
+    for c in (cf.get("custom_fields") or []):
+        vals = [(v.get("value") if isinstance(v, dict) else v) for v in (c.get("possible_values") or [])]
+        by_name_lower[(c.get("name") or "").strip().lower()] = {
+            "id": c.get("id"),
+            "name": c.get("name"),
+            "required": bool(c.get("is_required")),
+            "format": c.get("field_format"),
+            "multiple": bool(c.get("multiple")),
+            "values": [v for v in vals if v is not None],
+        }
+    for skey, rname in _BUG_FIELD_NAMES.items():
+        info = by_name_lower.get(rname.strip().lower())
+        if info:
+            fields[skey] = info
+
+    # Tracker / status
+    trackers = _get("trackers.json") or {}
+    tracker_bug_id = None
+    for t in (trackers.get("trackers") or []):
+        if (t.get("name") or "").strip().lower() == "bug":
+            tracker_bug_id = t.get("id")
+            break
+    statuses = _get("issue_statuses.json") or {}
+    status_map = {}
+    status_new_id = None
+    for s in (statuses.get("issue_statuses") or []):
+        nm = (s.get("name") or "").strip()
+        status_map[nm] = s.get("id")
+        if nm.lower() == "new":
+            status_new_id = s.get("id")
+    # Statuses that mean "dev released a fix, QA must retest".
+    retest_status_ids = [v for k, v in status_map.items()
+                         if k.lower() in ("released to qa", "reopened")]
+
+    # Project numeric id (create accepts identifier too, but expose both)
+    project_id = None
+    projects = _get(f"projects/{project_ident}.json") or {}
+    if isinstance(projects, dict):
+        project_id = (projects.get("project") or {}).get("id")
+
+    # Assignable users (developers/leads) for the "Assign to" picker.
+    assignees = []
+    mem = _get(f"projects/{project_ident}/memberships.json?limit=100") or {}
+    for m in (mem.get("memberships") or []):
+        u = m.get("user")
+        if u and u.get("id"):
+            roles = [r.get("name") for r in (m.get("roles") or []) if r.get("name")]
+            assignees.append({"id": u["id"], "name": (u.get("name") or "").strip(), "role": (roles[0] if roles else "")})
+    assignees.sort(key=lambda a: a["name"].lower())
+
+    data = {
+        "redmine_url": url,
+        "project": {"identifier": project_ident, "id": project_id},
+        "tracker_bug_id": tracker_bug_id or 1,
+        "status_new_id": status_new_id or 1,
+        "status_map": status_map,
+        "retest_status_ids": retest_status_ids,
+        "assignees": assignees,
+        "fields": fields,
+        "required_keys": [k for k, v in fields.items() if v.get("required")],
+    }
+    _BUG_META_CACHE["data"] = data
+    _BUG_META_CACHE["ts"] = now
+    return data
+
+
+@app.get("/bug-meta")
+def bug_meta(refresh: bool = Query(False)):
+    """Redmine create-time metadata for the standalone bug-reporter tool:
+    custom-field id map, allowed list values, required flags, tracker/status/
+    project ids. Cached (service key). The tool fetches this once and caches
+    locally so its fast create path works even if this server is offline."""
+    try:
+        return _redmine_meta(force=refresh)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Redmine metadata unavailable: {e}")
+
+
+class BugDraftBody(BaseModel):
+    rough_note: str
+    ticket_id: Optional[int] = None
+    severity: Optional[str] = None
+    use_ai: bool = False           # default = rule-based prefill, NO Claude tokens
+    reporter: Optional[str] = None # tester's name — never auto-assigned the bug
+
+
+def _bug_gather(ticket_id):
+    """Ground a bug draft in the data we already capture: the local-DB ticket
+    analysis used for test-plan creation (scope/module/platform/priority/release
+    note via ticket_complexity._gather_signals) + TestRail case counts. No AI.
+    Returns (ctx_text, sig_dict, testrail_dict)."""
+    ctx, sig, tr = "", {}, {}
+    if not ticket_id:
+        return ctx, sig, tr
+    try:
+        import ticket_complexity as _tc
+        sig = _tc._gather_signals(ticket_id) or {}
+        bits = []
+        if sig.get("title"):
+            bits.append(f"Ticket #{ticket_id} title: {sig['title']}")
+        if sig.get("module"):
+            bits.append(f"Module: {sig['module']}")
+        if sig.get("platform"):
+            bits.append(f"Platform: {sig['platform']}")
+        if sig.get("priority"):
+            bits.append(f"Ticket priority: {sig['priority']}")
+        if sig.get("ticket_type"):
+            bits.append(f"Ticket type: {sig['ticket_type']}")
+        if sig.get("scope_text"):
+            bits.append("Scope:\n" + sig["scope_text"][:1500])
+        if sig.get("rn_text"):
+            bits.append("Release note:\n" + sig["rn_text"][:800])
+        ctx = "\n".join(bits)
+    except Exception:
+        sig = {}
+    if not ctx:   # fallback: lightweight DB title/area
+        db = SessionLocal()
+        try:
+            t = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+            if t:
+                sig = {"title": t.title, "module": t.subdepartment, "priority": t.priority,
+                       "platform": ("Mobile" if "mobile" in (t.subdepartment or "").lower() else "Web")}
+                bits = [b for b in [f"Ticket #{ticket_id} title: {t.title}" if t.title else "",
+                                    f"Area: {t.subdepartment}" if t.subdepartment else "",
+                                    f"Ticket priority: {t.priority}" if t.priority else ""] if b]
+                ctx = "\n".join(bits)
+        except Exception:
+            pass
+        finally:
+            db.close()
+    # TestRail case counts (best-effort)
+    try:
+        manual, automated = _ticket_automation_split(ticket_id)
+        if manual is not None or automated is not None:
+            tr = {"manual_cases": manual or 0, "automated_cases": automated or 0}
+            try:
+                from pm_live_data import _fetch_testrail_plans
+                info = (_fetch_testrail_plans() or {}).get(str(ticket_id)) or {}
+                if info.get("plan_url"):
+                    tr["plan_url"] = info["plan_url"]
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return ctx, sig, tr
+
+
+def _match_allowed(value, allowed):
+    """Return the allowed value matching `value` case-insensitively, else ''."""
+    if not value or not allowed:
+        return ""
+    v = str(value).strip().lower()
+    for a in allowed:
+        if str(a).strip().lower() == v:
+            return a
+    return ""
+
+
+def _guess_module(sig, module_values, text=""):
+    """Best-effort Redmine Module: exact/loose match of the ticket's module, else scan
+    the scope/title/note for a Module name that appears in them. '' if none."""
+    if not module_values:
+        return ""
+    # 1. exact match of the ticket's PM module
+    m = _match_allowed((sig or {}).get("module"), module_values)
+    if m:
+        return m
+    # 2. a Module value that literally appears in the scope/title/note (longest wins)
+    hay = " ".join([
+        text or "",
+        (sig or {}).get("scope_text") or "",
+        (sig or {}).get("title") or "",
+        (sig or {}).get("module") or "",
+    ]).lower()
+    best = ""
+    for mv in module_values:
+        mvl = str(mv).strip().lower()
+        if len(mvl) >= 4 and re.search(r"\b" + re.escape(mvl) + r"\b", hay) and len(mvl) > len(best):
+            best = mv
+    return best
+
+
+def _strip_ticket_ids(s):
+    """Remove ticket-id references ('#19305', 'ticket 19305', leading '19305 -') from text."""
+    s = s or ""
+    s = re.sub(r"(?i)\bticket\s*#?\s*\d{3,}\b", "", s)
+    s = re.sub(r"#\s*\d{3,}\b", "", s)
+    s = re.sub(r"^\s*\d{3,}\s*[-:|]\s*", "", s)
+    s = re.sub(r"\s{2,}", " ", s).strip(" -:|")
+    return s
+
+
+_UI_SEVERITY_WORDS = ("icon", "label", "alignment", "aligned", "align", "cosmetic", "colour", "color",
+                      "tooltip", "placeholder", "spacing", "padding", "margin", "font", "css",
+                      "typo", "spelling", "placement", "position", "overlap", "ui ", "ux ", "greyed")
+
+
+def _match_assignee(name, assignees):
+    """Match a developer name to a Redmine member ({id,name,role}); None if no match."""
+    if not name or not assignees:
+        return None
+    n = str(name).strip().lower()
+    if not n:
+        return None
+    for a in assignees:
+        if (a.get("name") or "").strip().lower() == n:
+            return a
+    for a in assignees:           # loose containment (handles trailing initials etc.)
+        an = (a.get("name") or "").strip().lower()
+        if an and (n in an or an in n):
+            return a
+    return None
+
+
+def _suggest_assignee_for_ticket(ticket_id, reporter=None):
+    """(assigned_to_id, name) of the ticket's DEVELOPER matched to a Redmine member, or (None, None).
+    Uses the backend/frontend/assigned developer — NOT current_assignee (during QC that's the tester).
+    Never returns the reporter (the tester filing the bug)."""
+    if not ticket_id:
+        return None, None
+    try:
+        assignees = _redmine_meta().get("assignees", [])
+    except Exception:
+        return None, None
+    devname = None
+    db = SessionLocal()
+    try:
+        t = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
+        if t:
+            # the developer who built it — explicitly NOT current_assignee (the QC tester)
+            devname = t.backend_developer or t.frontend_developer or t.developer_assigned
+    except Exception:
+        pass
+    finally:
+        db.close()
+    a = _match_assignee(devname, assignees)
+    if not a:
+        return None, None
+    if reporter and (a["name"] or "").strip().lower() == str(reporter).strip().lower():
+        return None, None   # never assign the bug to the person reporting it
+    return a["id"], a["name"]
+
+
+def _number_steps(text):
+    """Format reproduction steps as a numbered list (1., 2., …) if not already numbered."""
+    t = (text or "").strip()
+    if not t:
+        return ""
+    # split on newlines, ' then ', or ';' — keep meaningful parts
+    parts = [p.strip(" .;") for p in re.split(r"\n+|;|\bthen\b", t, flags=re.IGNORECASE) if p.strip(" .;")]
+    if len(parts) <= 1:
+        return t
+    if re.match(r"^\s*\d+[.)]", parts[0]):   # already numbered
+        return t
+    return "\n".join(f"{i+1}. {p}" for i, p in enumerate(parts))
+
+
+def _clean_bug_subject(first, area=None):
+    """House-style subject: no ticket id, sentence case, optional 'Area | ' prefix, <=120, no trailing period."""
+    subj = _strip_ticket_ids(first).strip(' "\'')
+    if subj:
+        subj = subj[0].upper() + subj[1:]
+    if area and area.strip().lower() not in ("unassigned", "web", "mobile", "general", "") and "|" not in subj:
+        subj = f"{area.strip()} | {subj}"
+    return (subj[:120] or "Bug").rstrip(".")
+
+
+_SYMPTOM_CUES = (" is not ", " are not ", " not working", " not having", " is missing", " missing ",
+                 " unable to", " does not ", " doesn't ", " did not ", " didn't ", " fails", " failed",
+                 " incorrect", " wrong", " cannot ", " can't ", " no longer", " instead of")
+
+
+def _symptom_clause(text):
+    """Pull the symptom clause from a descriptive sentence so the subject is concise
+    (e.g. '…is not having the icon at the end' -> 'not having the icon at the end')."""
+    t = (text or "").strip()
+    low = t.lower()
+    # take the LAST symptom cue — that's usually the concrete deviation
+    # (e.g. '…not working as expected as it is not having the icon' -> 'not having the icon…')
+    best = None
+    for kw in _SYMPTOM_CUES:
+        i = low.rfind(kw)
+        if i > 0 and (best is None or i > best):
+            best = i
+    if best is not None:
+        clause = t[best:].strip(" .,").strip()
+        clause = re.sub(r"^(is|are|was|were|do|does|did)\s+", "", clause, flags=re.IGNORECASE).strip()
+        return clause
+    # else first sentence
+    return re.split(r"(?<=[.!?])\s+", t)[0].strip()
+
+
+def _bug_rule_prefill(note, sig, testrail, fvals, severity_hint=None):
+    """Structure a bug WITHOUT AI, using the captured ticket analysis + TestRail +
+    light heuristics on the tester's note. Fills what it can confidently."""
+    text = (note or "").strip()
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    first = lines[0] if lines else ""
+    # House style subject: derive a concise SYMPTOM (not the whole sentence), no ticket id, 'Area | ' prefix.
+    seed = first if len(first) <= 80 else _symptom_clause(_strip_ticket_ids(first))
+    subject = _clean_bug_subject(seed, area=(sig.get("module") or "").strip())
+
+    # Actual = the full description (ticket id stripped). Expected only when there is an
+    # EXPLICIT cue (avoid matching the idiom 'as expected').
+    actual = _strip_ticket_ids(text)
+    expected = ""
+    mx = re.search(r"(?is)\bexpected\s*(?:result|behaviou?r|condition|outcome)?\s*[:\-]\s*(.+)", text)
+    if mx:
+        expected = mx.group(1).strip()
+        actual = _strip_ticket_ids(text[:mx.start()]).strip().rstrip(".") or actual
+    else:
+        ms = re.search(r"(?is)((?:it\s+)?should\b.+)", text)
+        if ms and not text[max(0, ms.start() - 3):ms.start()].lower().endswith("as "):
+            clause = ms.group(1).strip()
+            expected = clause if clause.lower().startswith("it ") else "It " + clause
+
+    # severity: explicit hint wins; UI/cosmetic notes are Minor; else guess from ticket priority
+    sev = _match_allowed(severity_hint, fvals.get("severity")) if severity_hint else ""
+    if not sev:
+        low = text.lower()
+        if any(w in low for w in _UI_SEVERITY_WORDS):
+            sev = _match_allowed("Minor", fvals.get("severity"))
+        else:
+            pr = (sig.get("priority") or "").lower()
+            if "urgent" in pr or "critical" in pr:
+                sev = _match_allowed("Critical", fvals.get("severity"))
+            elif "high" in pr:
+                sev = _match_allowed("Major", fvals.get("severity"))
+            else:
+                sev = _match_allowed("Minor", fvals.get("severity"))
+
+    is_ui = any(w in text.lower() for w in _UI_SEVERITY_WORDS)
+    type_guess = "UI / UX" if is_ui else "Functional / Logic"
+
+    # Only populate Steps when the note actually contains multiple step-like parts;
+    # a single descriptive sentence is a symptom (-> Actual), not steps.
+    numbered = _number_steps(actual or text)
+    steps = numbered if "\n" in numbered else ""
+
+    return {
+        "subject": subject,
+        "steps": steps,
+        "test_data": "",
+        "expected": expected,
+        "actual": actual,
+        "severity": sev or None,
+        "type": _match_allowed(type_guess, fvals.get("type")) or None,
+        "module": _guess_module(sig, fvals.get("module"), text) or None,
+        "platform": _match_allowed(sig.get("platform"), fvals.get("platform")) or None,
+        "environment": "",
+        "os": "",
+        "browser": "",
+        "testrail": testrail or {},
+        "ai": False,
+    }
+
+
+@app.post("/bug-draft")
+def bug_draft(body: BugDraftBody):
+    """Structure a tester's rough note into a bug draft (subject + Steps / Test Data
+    / Expected / Actual + severity/type/module/platform).
+
+    Default (use_ai=False): RULE-BASED prefill — NO Claude tokens. Pulls the ticket
+    analysis we already captured during test-plan creation (scope/module/platform/
+    priority) + TestRail case counts, plus light heuristics on the note.
+
+    use_ai=True: additionally refine the wording with Claude (on-demand; uses the
+    subscription CLI even when the broad complexity/perf kill switch is on). The AI
+    result is merged over the rule prefill so any field AI leaves blank stays filled."""
+    note = (body.rough_note or "").strip()
+    if not note:
+        raise HTTPException(status_code=400, detail="rough_note is required")
+
+    # If the tester didn't fill the Ticket ID field but mentioned it in the note,
+    # extract it so the ticket data is actually fetched (and the form fills it).
+    if not body.ticket_id:
+        m = re.search(r"(?i)ticket\s*#?\s*(\d{3,6})", note) or re.search(r"#(\d{3,6})\b", note)
+        if m:
+            body.ticket_id = int(m.group(1))
+
+    # Allowed Redmine values (for validating/matching list fields).
+    fvals = {"severity": ["Crash", "Critical", "Major", "Minor"]}
+    try:
+        f = _redmine_meta()["fields"]
+        for k in ("severity", "type", "environment", "platform", "os", "browser", "module"):
+            fvals[k] = (f.get(k) or {}).get("values") or fvals.get(k, [])
+    except Exception:
+        pass
+
+    ctx, sig, testrail = _bug_gather(body.ticket_id)
+    rule = _bug_rule_prefill(note, sig, testrail, fvals, severity_hint=body.severity)
+    if body.ticket_id:
+        rule["ticket_id"] = body.ticket_id
+    # suggest the ticket's developer as assignee (tester can change it)
+    aid, aname = _suggest_assignee_for_ticket(body.ticket_id, reporter=body.reporter)
+    if aid:
+        rule["assigned_to_id"] = aid
+        rule["assignee_name"] = aname
+
+    if not body.use_ai:
+        rule["source"] = "rules"
+        return rule
+
+    # --- optional AI refinement ---
+    try:
+        import llm_client
+        if not (llm_client.available() or llm_client.cli_available()):
+            rule["source"] = "rules"; rule["ai_unavailable"] = True
+            return rule
+    except Exception:
+        rule["source"] = "rules"; rule["ai_unavailable"] = True
+        return rule
+
+    sev_vals = fvals.get("severity") or ["Crash", "Critical", "Major", "Minor"]
+    type_vals = fvals.get("type") or []
+    env_vals = fvals.get("environment") or []
+    plat_vals = fvals.get("platform") or []
+    os_vals = fvals.get("os") or []
+    br_vals = fvals.get("browser") or []
+    mod_vals = fvals.get("module") or []
+
+    def _enum(vals, desc):
+        return {"type": "string", "enum": vals, "description": desc} if vals else {"type": "string", "description": desc}
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "subject": {"type": "string", "description": "Concise one-line bug title (<=120 chars), no trailing period"},
+            "steps": {"type": "string", "description": "Numbered steps to reproduce, one per line"},
+            "test_data": {"type": "string", "description": "Any specific test data / account / inputs used; empty if none"},
+            "expected": {"type": "string", "description": "Expected behaviour / condition"},
+            "actual": {"type": "string", "description": "Actual observed behaviour"},
+            "severity": _enum(sev_vals, "Suggested severity from impact"),
+            "type": _enum(type_vals, "Bug type/category"),
+            "module": _enum(mod_vals, "Affected module — ONLY if clearly stated/inferable, else empty"),
+            "environment": _enum(env_vals, "Environment if mentioned (e.g. staging/pre/prod), else best guess"),
+            "platform": _enum(plat_vals, "Web or Mobile if inferable"),
+            "os": _enum(os_vals, "OS if mentioned, else empty"),
+            "browser": _enum(br_vals, "Browser if mentioned, else empty"),
+        },
+        "required": ["subject", "steps", "expected", "actual", "severity", "type"],
+    }
+    sysmsg = (
+        "You are a senior QA engineer turning a tester's rough note into a complete, ready-to-file Redmine "
+        "bug report, following THIS TEAM'S house style (learned from existing bugs). Fill EVERY field you can "
+        "confidently infer. Rewrite the tester's words into proper QA English — do NOT echo the raw note verbatim.\n\n"
+        "SUBJECT STYLE (strict):\n"
+        "- A concise, specific problem statement describing the SYMPTOM, derived from expected-vs-actual. Sentence case.\n"
+        "- NEVER include any ticket id / ticket number / '#NNNNN' ANYWHERE in the subject.\n"
+        "- Optionally prefix with the affected area/feature + ' | ' (e.g. 'Search bar | Magnifying-glass icon is not "
+        "shown at the end of the field') ONLY when the area is clear from context.\n"
+        "- Do NOT prefix with 'Bug:' or the severity; no leading/trailing quotes; no trailing period.\n\n"
+        "STEPS: ALWAYS a numbered list ('1. …', '2. …'), short, imperative, reproducible — rewritten cleanly, "
+        "not copied from the note. TEST DATA: extract any concrete inputs/accounts/values/volumes mentioned (e.g. "
+        "'price = 0', 'a form holding 26,000 records', 'user without admin role') into test_data; empty if none. "
+        "EXPECTED: the correct behaviour as a clear statement ('The system should…'), grounded in the scope/"
+        "release note. ACTUAL: the observed wrong behaviour, concrete and specific.\n\n"
+        "SEVERITY (pick conservatively by impact — do NOT over-rate):\n"
+        "- Crash: app crashes/hangs, data loss, or feature completely unusable with NO workaround.\n"
+        "- Critical: core functionality broken, blocks testing, no workaround.\n"
+        "- Major: a function is broken but a workaround exists.\n"
+        "- Minor: cosmetic / UI placement / icon / label / alignment / text / minor UX. "
+        "(A misplaced or missing icon is Minor, NOT Crash.)\n"
+        "Set TYPE accordingly (icon/layout issues = 'UI / UX').\n\n"
+        "Use the ticket Context (scope, release note, module, platform) to derive module/platform and to phrase "
+        "Expected. Set environment/platform/os/browser only when the note or context implies them (otherwise leave "
+        "OS/browser blank — never guess). Do not invent details not implied by the note or context."
+    )
+    user = (("Context:\n" + ctx + "\n\n") if ctx else "") + "Tester's rough note:\n" + note
+    if body.severity:
+        user += f"\n\nTester's severity hint: {body.severity}"
+
+    # prefer the configured backend; if it's disabled (kill switch) fall back to CLI on-demand
+    fb = None if llm_client.available() else "cli"
+    ai = llm_client.complete_json(sysmsg, user, schema, tool_name="bug_draft", max_tokens=900, force_backend=fb)
+    if not ai:
+        # AI failed/timed out — return the rule prefill so the tester is never blocked
+        rule["source"] = "rules"; rule["ai_failed"] = True
+        return rule
+
+    # merge AI over the rule prefill: AI wins where present, rule fills any blanks
+    out = dict(rule)
+    for k, v in ai.items():
+        if v not in (None, ""):
+            out[k] = v
+    out["ai"] = True
+    out["source"] = "ai"
+    out["testrail"] = testrail or {}
+    return out
+
+
+def _html_to_steps(html):
+    """Convert TestRail rich-text (often <ol><li>..</li></ol>) into numbered plain lines."""
+    if not html:
+        return ""
+    import html as _h
+    s = str(html)
+    # list items -> newline-separated; paragraphs/breaks -> newlines
+    s = re.sub(r"(?i)</li\s*>", "\n", s)
+    s = re.sub(r"(?i)<li\s*>", "", s)
+    s = re.sub(r"(?i)<(br|/p|/div)\s*/?>", "\n", s)
+    s = re.sub(r"(?s)<[^>]+>", "", s)            # strip remaining tags
+    s = _h.unescape(s)
+    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
+    return "\n".join(lines)
+
+
+def _html_to_text(html):
+    if not html:
+        return ""
+    import html as _h
+    s = re.sub(r"(?i)<(br|/p|/div|/li)\s*/?>", "\n", str(html))
+    s = re.sub(r"(?s)<[^>]+>", "", s)
+    s = _h.unescape(s)
+    lines = [ln.strip() for ln in s.splitlines() if ln.strip()]
+    return "\n".join(lines)
+
+
+def _fetch_case_struct(case_id):
+    """Fetch + clean a TestRail case into bug-ready fields. Returns dict or None.
+    Raises HTTPException only for config errors (no creds)."""
+    import requests as _rq
+    U = (os.getenv("TESTRAIL_URL", "https://bistrainer.testrail.io") or "").rstrip("/")
+    E = os.getenv("TESTRAIL_EMAIL", "")
+    K = os.getenv("TESTRAIL_API_KEY", "")
+    if not (E and K):
+        raise HTTPException(status_code=503, detail="TestRail credentials are not configured on the server.")
+    try:
+        r = _rq.get(f"{U}/index.php?/api/v2/get_case/{case_id}", auth=(E, K), timeout=20)
+    except Exception:
+        return None
+    if r.status_code != 200:
+        return None
+    c = r.json()
+    steps = _html_to_steps(c.get("custom_steps"))
+    preconds = _html_to_text(c.get("custom_preconds"))
+    if preconds:
+        steps = ("Preconditions:\n" + preconds + ("\n\nSteps:\n" + steps if steps else "")).strip()
+    plat_id = c.get("custom_case_platform_type")
+    platform = "Mobile" if str(plat_id) == "2" else ("Web" if str(plat_id) == "1" else "")
+    tid = c.get("custom_case_ticket_id")
+    return {
+        "case_id": c.get("id"),
+        "title": c.get("title") or "",
+        "subject": (c.get("title") or "")[:120].rstrip("."),
+        "steps": steps,
+        "expected": _html_to_text(c.get("custom_expected")),
+        "test_data": _html_to_text(c.get("custom_case_testdata")),
+        "ticket_id": int(tid) if (tid and str(tid).isdigit()) else None,
+        "platform": platform,
+    }
+
+
+class BugFormatBody(BaseModel):
+    subject: str = ""
+    steps: str = ""
+    expected: str = ""
+    actual: str = ""
+
+
+@app.post("/bug-format")
+def bug_format(body: BugFormatBody):
+    """MINIMAL AI pass — only FORMATS already-extracted fields (numbers the steps, tidies the
+    subject, fixes grammar). Adds no new information. Tiny prompt → fast/cheap/reliable; rule-based
+    formatting fallback when the LLM is off. Used by the Jam flow on top of the rule extraction."""
+    base = {
+        "subject": _clean_bug_subject(body.subject or ""),
+        "steps": _number_steps(body.steps or ""),
+        "expected": (body.expected or "").strip(),
+        "actual": (body.actual or "").strip(),
+    }
+    try:
+        import llm_client
+        if not (llm_client.available() or llm_client.cli_available()):
+            base["ai"] = False
+            return base
+    except Exception:
+        base["ai"] = False
+        return base
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "subject": {"type": "string", "description": "One concise symptom line, sentence case, NO ticket id, no spoken filler"},
+            "steps": {"type": "string", "description": "Clean numbered reproduction steps (1. 2. 3.), derived from the raw steps + any steps implied in actual"},
+            "expected": {"type": "string", "description": "Tidied expected behaviour"},
+            "actual": {"type": "string", "description": "Tidied actual behaviour"},
+        },
+        "required": ["subject", "steps", "actual"],
+    }
+    sysmsg = (
+        "You are a QA copy-editor. CLEAN UP and FORMAT the given bug fields. Do NOT add facts that aren't "
+        "present. Rules: subject = one concise symptom line (sentence case, no ticket id, drop spoken filler "
+        "like 'yeah hi this is'); steps = a clear NUMBERED list of reproduction steps (use the raw steps and any "
+        "steps described in 'actual'); fix grammar in expected/actual but keep the meaning. Return only the four fields."
+    )
+    import json as _json
+    user = _json.dumps({k: base[k] for k in ("subject", "steps", "expected", "actual")})
+    fb = None if llm_client.available() else "cli"
+    ai = llm_client.complete_json(sysmsg, user, schema, tool_name="bug_format", max_tokens=600, force_backend=fb, timeout=90)
+    if not ai:
+        base["ai"] = False
+        return base
+    for k in ("subject", "steps", "expected", "actual"):
+        if ai.get(k):
+            base[k] = ai[k]
+    base["ai"] = True
+    return base
+
+
+@app.get("/bug-case")
+def bug_case(case_id: int = Query(...)):
+    """Fetch a TestRail case so a bug can be pre-filled from the CANONICAL test case
+    (title, steps, expected, test data) — no AI needed. Also returns the case's PM
+    Ticket ID and platform so those auto-fill too."""
+    out = _fetch_case_struct(case_id)
+    if not out:
+        raise HTTPException(status_code=404, detail=f"TestRail case {case_id} not found.")
+    return out
+
+
+@app.get("/live/testrail-plan-exists")
+def testrail_plan_exists(ticket_id: int = Query(...)):
+    """Authoritative LIVE check (not the cached test_cases count) for whether a TestRail plan already
+    exists for this ticket. The test-plan runner calls this BEFORE generating, to close the cache-race
+    that let refix/re-entry create duplicate plans."""
+    import requests as _rq
+    U = (os.getenv("TESTRAIL_URL", "https://bistrainer.testrail.io") or "").rstrip("/")
+    E = os.getenv("TESTRAIL_EMAIL", ""); K = os.getenv("TESTRAIL_API_KEY", "")
+    PROJ = os.getenv("TESTRAIL_PROJECT_ID", "18")
+    if not (E and K):
+        return {"exists": None, "reason": "no-testrail-creds"}
+    base = f"{U}/index.php?/api/v2"
+    found = None
+    offset = 0
+    try:
+        while offset <= 2000 and not found:
+            r = _rq.get(f"{base}/get_plans/{PROJ}&limit=250&offset={offset}", auth=(E, K), timeout=30)
+            if r.status_code != 200:
+                break
+            d = r.json()
+            plans = d.get("plans", d) if isinstance(d, dict) else d
+            if not plans:
+                break
+            for p in plans:
+                m = re.match(r"#?\s*(\d{3,6})", (p.get("name") or "").strip())
+                if m and int(m.group(1)) == ticket_id:
+                    found = p
+                    break
+            has_next = isinstance(d, dict) and (d.get("_links", {}) or {}).get("next")
+            if not has_next:
+                break
+            offset += 250
+    except Exception as e:
+        return {"exists": None, "reason": str(e)[:120]}
+    return {"exists": bool(found),
+            "plan_id": found.get("id") if found else None,
+            "plan_url": (f"{U}/index.php?/plans/view/{found['id']}" if found else None)}
+
+
+def _env_run_keyword(env):
+    """Map a bug Environment value to the run-name keyword we use (Staging / Pre / Live)."""
+    e = (env or "").lower()
+    if "stag" in e:
+        return "staging"
+    if "live" in e or e == "production":
+        return "live"
+    if "pre" in e:                      # 'pre' / 'pre-production'
+        return "pre"
+    return None
+
+
+class TestrailFailBody(BaseModel):
+    case_id: int
+    ticket_id: Optional[int] = None
+    environment: str = ""
+    run_ref: Optional[str] = None        # explicit run id or run/plan link (overrides env auto-resolve)
+    actual: Optional[str] = ""           # what failed
+    expected: Optional[str] = ""         # what was expected instead
+    testrail_email: Optional[str] = None    # per-user creds; falls back to the shared service key
+    testrail_api_key: Optional[str] = None
+
+
+@app.post("/testrail/fail-case")
+def testrail_fail_case(body: TestrailFailBody):
+    """Mark a TestRail case as Failed in the run matching the bug's environment (or an explicit run
+    ref), with a note linking the new bug. Uses the tester's own TestRail key when supplied, else the
+    shared service key. Best-effort: raises a clear error the caller can show; never creates the bug."""
+    import base64, requests as _rq, json as _json, re as _re
+    U = (os.getenv("TESTRAIL_URL", "https://bistrainer.testrail.io") or "").rstrip("/")
+    if body.testrail_email and body.testrail_api_key:
+        cred = base64.b64encode(f"{body.testrail_email}:{body.testrail_api_key}".encode()).decode()
+    else:
+        e = os.getenv("TESTRAIL_EMAIL", ""); k = os.getenv("TESTRAIL_API_KEY", "")
+        if not (e and k):
+            raise HTTPException(status_code=400, detail="No TestRail credentials — add yours in Settings.")
+        cred = base64.b64encode(f"{e}:{k}".encode()).decode()
+    H = {"Authorization": f"Basic {cred}", "Content-Type": "application/json"}
+    api = f"{U}/index.php?/api/v2"
+
+    def _tests_of(rid):
+        tg = _rq.get(f"{api}/get_tests/{rid}", headers=H, timeout=30)
+        if tg.status_code != 200:
+            return None
+        td = tg.json()
+        return td.get("tests", td) if isinstance(td, dict) else td
+
+    # 1+2) find the run + the test for this case. Priority:
+    #   a) explicit run id/link if given;
+    #   b) else the runs of the ticket's plan that ACTUALLY contain this case — if exactly one, use it
+    #      (no run link or env needed); if several (Staging/Pre/Live), the Environment picks one.
+    run_id = test = None
+    ref = (body.run_ref or "").strip()
+    if ref:
+        m = _re.search(r"/runs/view/(\d+)", ref)
+        run_id = int(m.group(1)) if m else (int(ref) if ref.isdigit() else None)
+        if not run_id:
+            raise HTTPException(status_code=400, detail="Couldn't read a run id from that reference.")
+        tests = _tests_of(run_id)
+        if tests is None:
+            raise HTTPException(status_code=502, detail=f"Could not read tests for run {run_id}.")
+        test = next((t for t in tests if t.get("case_id") == body.case_id), None)
+        if not test:
+            raise HTTPException(status_code=404, detail=f"Case {body.case_id} is not in run {run_id}.")
+    else:
+        plan_id = _plan_id_for(body.ticket_id) if body.ticket_id else None
+        if not plan_id:
+            raise HTTPException(status_code=404, detail="No TestRail plan found for this ticket — open the run and paste its id/link.")
+        pg = _rq.get(f"{api}/get_plan/{plan_id}", headers=H, timeout=30)
+        if pg.status_code != 200:
+            raise HTTPException(status_code=502, detail="Could not read the TestRail plan.")
+        plan = pg.json()
+        all_runs = [r for e in plan.get("entries", []) for r in e.get("runs", [])]
+        hits = []  # (run, test) for runs that contain this case
+        for r in all_runs:
+            t = next((x for x in (_tests_of(r["id"]) or []) if x.get("case_id") == body.case_id), None)
+            if t:
+                hits.append((r, t))
+        if not hits:
+            raise HTTPException(status_code=404, detail=f"Case {body.case_id} isn't in any run of this ticket's plan.")
+        if len(hits) == 1:
+            (run, test) = hits[0]
+            run_id = run["id"]
+        else:
+            kw = _env_run_keyword(body.environment)
+            env_hits = [(r, t) for (r, t) in hits
+                        if kw and (kw in (r.get("name") or "").lower()
+                                   or (kw == "live" and "prod" in (r.get("name") or "").lower()))]
+            if not env_hits:
+                names = ", ".join(r.get("name", "?") for r, _ in hits)
+                raise HTTPException(status_code=409, detail=f"Case {body.case_id} is in multiple runs ({names}); set the Environment to match one, or paste the run id/link.")
+
+            # Several runs can share an environment keyword (e.g. Staging_R1, Staging_R2). The bug
+            # belongs to the LATEST round, so rank by round number parsed from the run name and pick
+            # the max — tie-broken by created_on / id so the newest run wins deterministically.
+            def _round_num(r):
+                nm = (r.get("name") or "").lower()
+                m = _re.search(r"_r(\d+)", nm) or _re.search(r"round\s*(\d+)", nm)
+                return int(m.group(1)) if m else 0
+
+            (run, test) = max(env_hits, key=lambda rt: (_round_num(rt[0]),
+                                                         rt[0].get("created_on") or 0,
+                                                         rt[0].get("id") or 0))
+            run_id = run["id"]
+
+    # 3) post the Failed result + a concise note: what failed and what was expected
+    lines = []
+    if (body.actual or "").strip():
+        lines.append("Failed: " + body.actual.strip())
+    if (body.expected or "").strip():
+        lines.append("Expected: " + body.expected.strip())
+    comment = "\n".join(lines) if lines else "Failed (logged from BIS Bug Reporter)."
+    rr = _rq.post(f"{api}/add_result/{test['id']}", headers=H,
+                  data=_json.dumps({"status_id": 5, "comment": comment}), timeout=30)
+    if rr.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"TestRail add_result failed ({rr.status_code}): {rr.text[:160]}")
+    return {"ok": True, "run_id": run_id, "test_id": test["id"], "case_id": body.case_id,
+            "run_url": f"{U}/index.php?/runs/view/{run_id}"}
+
+
+# ===== BUG REPORTER — usage & time-saved tracking =====
+
+# Manual baselines (minutes) used to compute time saved; tune here if your team measures differently.
+BUGREP_MANUAL_BASELINE_MIN = 8.0     # writing one complete bug by hand
+BUGREP_TESTRAIL_BONUS_MIN = 1.7      # + failing/creating the matching TestRail case by hand
+BUGREP_DEFAULT_TOOL_MIN = 1.5        # assumed tool time when not measured/idle
+
+
+class BugEventBody(BaseModel):
+    reporter: Optional[str] = None
+    ticket_id: Optional[int] = None
+    bug_id: Optional[int] = None
+    source: Optional[str] = "manual"        # jam | case | notes | combo | bulk | manual
+    tracker: Optional[str] = "redmine"
+    tool_seconds: Optional[float] = None
+    testrail_failed: bool = False
+    testcase_created: bool = False
+
+
+@app.post("/bug-reporter/event")
+def bug_reporter_event(body: BugEventBody):
+    """Log one bug filed through the BIS Bug Reporter and compute the time it saved vs filing by hand.
+    Fire-and-forget from the tool; never blocks bug creation."""
+    ts = body.tool_seconds
+    tool_min = (ts / 60.0) if (ts and 0 < ts <= 1200) else BUGREP_DEFAULT_TOOL_MIN  # cap idle/outliers
+    baseline = BUGREP_MANUAL_BASELINE_MIN + (BUGREP_TESTRAIL_BONUS_MIN if (body.testrail_failed or body.testcase_created) else 0.0)
+    saved = round(max(0.0, baseline - tool_min), 2)
+    db: Session = SessionLocal()
+    try:
+        ev = BugReporterEvent(
+            reporter=(body.reporter or "").strip() or None, ticket_id=body.ticket_id, bug_id=body.bug_id,
+            source=(body.source or "manual"), tracker=(body.tracker or "redmine"),
+            tool_seconds=ts, saved_minutes=saved,
+            testrail_failed=bool(body.testrail_failed), testcase_created=bool(body.testcase_created))
+        db.add(ev)
+        db.commit()
+        return {"ok": True, "id": ev.id, "saved_minutes": saved}
+    finally:
+        db.close()
+
+
+@app.get("/bug-reporter/stats")
+def bug_reporter_stats(reporter: Optional[str] = Query(None)):
+    """Adoption + time-saved rollup: totals, per-tester, by week, by source, and this week/month."""
+    from collections import defaultdict
+    db: Session = SessionLocal()
+    try:
+        rows = db.query(BugReporterEvent).order_by(BugReporterEvent.created_on.asc()).all()
+        now = datetime.utcnow()
+        wk_start = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
+        mo_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        def hrs(mins):
+            return round((mins or 0) / 60.0, 1)
+
+        total_bugs = len(rows)
+        total_saved = sum(r.saved_minutes or 0 for r in rows)
+        by_rep = defaultdict(lambda: {"bugs": 0, "saved": 0.0})
+        by_src = defaultdict(int)
+        by_week = defaultdict(lambda: {"bugs": 0, "saved": 0.0})
+        wk_bugs = wk_saved = mo_bugs = mo_saved = 0
+        tool_times = []
+        for r in rows:
+            nm = r.reporter or "—"
+            by_rep[nm]["bugs"] += 1
+            by_rep[nm]["saved"] += (r.saved_minutes or 0)
+            by_src[r.source or "manual"] += 1
+            wkey = (r.created_on - timedelta(days=r.created_on.weekday())).strftime("%Y-%m-%d") if r.created_on else "?"
+            by_week[wkey]["bugs"] += 1
+            by_week[wkey]["saved"] += (r.saved_minutes or 0)
+            if r.created_on and r.created_on >= wk_start:
+                wk_bugs += 1; wk_saved += (r.saved_minutes or 0)
+            if r.created_on and r.created_on >= mo_start:
+                mo_bugs += 1; mo_saved += (r.saved_minutes or 0)
+            if r.tool_seconds and 0 < r.tool_seconds <= 1200:
+                tool_times.append(r.tool_seconds)
+        reps = sorted(({"name": n, "bugs": v["bugs"], "saved_hours": hrs(v["saved"])} for n, v in by_rep.items()),
+                      key=lambda x: -x["saved_hours"])
+        weeks = [{"week": w, "bugs": v["bugs"], "saved_hours": hrs(v["saved"])}
+                 for w, v in sorted(by_week.items())][-12:]
+        avg_tool_min = round((sum(tool_times) / len(tool_times) / 60.0), 1) if tool_times else None
+        if reporter:
+            mine = by_rep.get(reporter)
+            my = {"bugs": mine["bugs"], "saved_hours": hrs(mine["saved"])} if mine else {"bugs": 0, "saved_hours": 0.0}
+        else:
+            my = None
+        return {
+            "total_bugs": total_bugs, "total_saved_hours": hrs(total_saved),
+            "this_week": {"bugs": wk_bugs, "saved_hours": hrs(wk_saved)},
+            "this_month": {"bugs": mo_bugs, "saved_hours": hrs(mo_saved)},
+            "avg_tool_minutes": avg_tool_min,
+            "by_reporter": reps, "by_week": weeks, "by_source": dict(by_src),
+            "baseline_minutes": BUGREP_MANUAL_BASELINE_MIN, "me": my,
+        }
+    finally:
+        db.close()
+
+
+def _bug_reporter_ticket_stats(db, ticket_id):
+    """Per-ticket BIS Bug Reporter rollup used to TIGHTEN the QA estimation recalc: bug count, the avg
+    REAL measured fill->create tool time (min/bug), total minutes saved vs hand-filing, TestRail-coupled
+    count, and the reporters. Returns None when nothing was logged for the ticket (recalc then falls back
+    to the pre-tool reporting constant)."""
+    try:
+        tid = int(ticket_id)
+    except (TypeError, ValueError):
+        return None
+    rows = db.query(BugReporterEvent).filter(BugReporterEvent.ticket_id == tid).all()
+    if not rows:
+        return None
+    tool_times = [r.tool_seconds for r in rows if r.tool_seconds and 0 < r.tool_seconds <= 1200]
+    avg_tool_min = round(sum(tool_times) / len(tool_times) / 60.0, 2) if tool_times else None
+    saved = round(sum(r.saved_minutes or 0 for r in rows), 1)
+    coupled = sum(1 for r in rows if r.testrail_failed or r.testcase_created)
+    reporters = sorted({(r.reporter or "").strip() for r in rows if (r.reporter or "").strip()})
+    return {"bugs": len(rows), "avg_tool_minutes": avg_tool_min, "saved_minutes": saved,
+            "testrail_coupled": coupled, "reporters": reporters}
+
+
+class TestrailCreateCaseBody(BaseModel):
+    ticket_id: int
+    title: str
+    steps: Optional[str] = ""
+    expected: Optional[str] = ""
+    test_data: Optional[str] = ""
+    preconds: Optional[str] = ""
+    environment: str = ""
+    mark_failed: bool = True            # the case came from a bug -> also fail it in the env's run
+    bug_id: Optional[int] = None
+    bug_url: Optional[str] = None
+    testrail_email: Optional[str] = None
+    testrail_api_key: Optional[str] = None
+
+
+@app.post("/testrail/create-case")
+def testrail_create_case(body: TestrailCreateCaseBody):
+    """When a bug has NO matching TestRail case: create one from the bug's steps/expected/data, add it
+    to every run of the ticket's plan (so future runs include it), and (optionally) fail it in the run
+    for this bug's environment. Uses the tester's TestRail key when supplied, else the shared key."""
+    import base64, requests as _rq, json as _json
+    U = (os.getenv("TESTRAIL_URL", "https://bistrainer.testrail.io") or "").rstrip("/")
+    if body.testrail_email and body.testrail_api_key:
+        cred = base64.b64encode(f"{body.testrail_email}:{body.testrail_api_key}".encode()).decode()
+    else:
+        e = os.getenv("TESTRAIL_EMAIL", ""); k = os.getenv("TESTRAIL_API_KEY", "")
+        if not (e and k):
+            raise HTTPException(status_code=400, detail="No TestRail credentials — add yours in Settings.")
+        cred = base64.b64encode(f"{e}:{k}".encode()).decode()
+    H = {"Authorization": f"Basic {cred}", "Content-Type": "application/json"}
+    api = f"{U}/index.php?/api/v2"
+
+    def G(path):
+        return _rq.get(f"{api}/{path}", headers=H, timeout=30)
+
+    def P(path, payload):
+        return _rq.post(f"{api}/{path}", headers=H, data=_json.dumps(payload), timeout=30)
+
+    def _html(txt):
+        t = (txt or "").strip()
+        if not t:
+            return ""
+        return "".join(f"<p>{_html_escape(line)}</p>" for line in t.splitlines() if line.strip())
+
+    def _html_escape(s):
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    # 1) the ticket's plan + its suite
+    plan_id = _plan_id_for(body.ticket_id)
+    if not plan_id:
+        raise HTTPException(status_code=404, detail="No TestRail plan for this ticket yet — create the plan first, then add cases.")
+    pg = G(f"get_plan/{plan_id}")
+    if pg.status_code != 200:
+        raise HTTPException(status_code=502, detail="Could not read the TestRail plan.")
+    plan = pg.json()
+    entries = plan.get("entries", [])
+    if not entries:
+        raise HTTPException(status_code=404, detail="The plan has no runs to add the case to.")
+    suite_id = entries[0].get("suite_id")
+
+    # 2) find/create a section for this ticket in that suite
+    sec_name = f"#{body.ticket_id} - Bug-derived cases"
+    sg = G(f"get_sections/{os.getenv('TESTRAIL_PROJECT_ID','18')}&suite_id={suite_id}&limit=250")
+    sections = []
+    if sg.status_code == 200:
+        sd = sg.json(); sections = sd.get("sections", sd) if isinstance(sd, dict) else sd
+    section_id = next((s["id"] for s in (sections or []) if (s.get("name") or "") == sec_name), None)
+    if not section_id:
+        sr = P(f"add_section/{os.getenv('TESTRAIL_PROJECT_ID','18')}", {"suite_id": suite_id, "name": sec_name})
+        if sr.status_code == 200:
+            section_id = sr.json()["id"]
+        else:
+            # reconcile (benign races)
+            sg2 = G(f"get_sections/{os.getenv('TESTRAIL_PROJECT_ID','18')}&suite_id={suite_id}&limit=250")
+            sd2 = sg2.json(); secs2 = sd2.get("sections", sd2) if isinstance(sd2, dict) else sd2
+            section_id = next((s["id"] for s in (secs2 or []) if (s.get("name") or "") == sec_name), None)
+    if not section_id:
+        raise HTTPException(status_code=502, detail="Could not create a section for the case.")
+
+    # 3) create the case (Draft, Not Automated, linked to the ticket)
+    case_payload = {
+        "title": body.title.strip()[:250] or f"Bug-derived case for #{body.ticket_id}",
+        "template_id": 9, "type_id": 6, "priority_id": 3,
+        "custom_preconds": _html(body.preconds),
+        "custom_steps": _html(body.steps),
+        "custom_expected": _html(body.expected),
+        "custom_case_testdata": _html(body.test_data),
+        "custom_case_automated": 5, "custom_case_tc_review": 1,
+        "custom_case_ticket_id": str(body.ticket_id),
+    }
+    cr = P(f"add_case/{section_id}", case_payload)
+    case_id = cr.json().get("id") if cr.status_code == 200 else None
+    if not case_id:  # benign 500 -> reconcile by title
+        cg = G(f"get_cases/{os.getenv('TESTRAIL_PROJECT_ID','18')}&suite_id={suite_id}&section_id={section_id}&limit=250")
+        cd = cg.json(); cases = cd.get("cases", cd) if isinstance(cd, dict) else cd
+        case_id = next((c["id"] for c in (cases or []) if (c.get("title") or "") == case_payload["title"]), None)
+    if not case_id:
+        raise HTTPException(status_code=502, detail="Could not create the test case.")
+
+    # 4) add the new case to every run of the plan (same suite) so future runs include it
+    added_runs = []
+    for e in entries:
+        if e.get("suite_id") != suite_id:
+            continue
+        runs = e.get("runs", [])
+        cur = set()
+        for r in runs:
+            tg = G(f"get_tests/{r['id']}")
+            if tg.status_code == 200:
+                td = tg.json(); cur |= {t.get("case_id") for t in (td.get("tests", td) if isinstance(td, dict) else td)}
+        new_ids = sorted({c for c in cur if c} | {case_id})
+        ue = P(f"update_plan_entry/{plan_id}/{e['id']}", {"include_all": False, "case_ids": new_ids})
+        if ue.status_code == 200:
+            added_runs.extend(r.get("name") for r in runs)
+
+    # 5) optionally fail the new case in the env's run (it came from a bug)
+    failed_in = None
+    if body.mark_failed:
+        kw = _env_run_keyword(body.environment)
+        env_run = None
+        for e in entries:
+            for r in e.get("runs", []):
+                nm = (r.get("name") or "").lower()
+                if kw and (kw in nm or (kw == "live" and "prod" in nm)):
+                    env_run = r
+                    break
+            if env_run:
+                break
+        if env_run:
+            tg = G(f"get_tests/{env_run['id']}")
+            if tg.status_code == 200:
+                td = tg.json(); tests = td.get("tests", td) if isinstance(td, dict) else td
+                tst = next((t for t in tests if t.get("case_id") == case_id), None)
+                if tst:
+                    lines = []
+                    if (body.expected or "").strip():
+                        lines.append("Expected: " + body.expected.strip())
+                    note = ("Failed: " + (body.title or "").strip() + ("\n" + "\n".join(lines) if lines else "")) if body.title else "Failed (bug-derived case)."
+                    fr = P(f"add_result/{tst['id']}", {"status_id": 5, "comment": note})
+                    if fr.status_code == 200:
+                        failed_in = env_run.get("name")
+
+    return {"ok": True, "case_id": case_id,
+            "case_url": f"{U}/index.php?/cases/view/{case_id}",
+            "section": sec_name, "added_runs": sorted(set(added_runs)), "failed_in": failed_in}
+
+
+class BugBatchBody(BaseModel):
+    message: str
+    ticket_id: Optional[int] = None
+    use_ai: bool = True
+    max_bugs: Optional[int] = None
+    reporter: Optional[str] = None
+
+
+@app.post("/bug-batch")
+def bug_batch(body: BugBatchBody):
+    """Parse ONE free-text message describing possibly MULTIPLE bugs (with TestRail
+    case ids, a ticket id, counts like 'create 3 bugs', etc.) into a list of bug
+    drafts. Any referenced case id is enriched from the canonical TestRail case.
+    Needs AI to split the message; without AI, falls back to one draft per case id
+    (or a single draft from the whole message)."""
+    msg = (body.message or "").strip()
+    if not msg:
+        raise HTTPException(status_code=400, detail="message is required")
+
+    # default ticket id from the message ('ticket 19305' / '#19305') if not supplied
+    if not body.ticket_id:
+        m = re.search(r"(?i)ticket\s*#?\s*(\d{3,6})", msg) or re.search(r"#(\d{3,6})\b", msg)
+        if m:
+            body.ticket_id = int(m.group(1))
+
+    # allowed Redmine values for validation/matching
+    fvals = {"severity": ["Crash", "Critical", "Major", "Minor"]}
+    try:
+        f = _redmine_meta()["fields"]
+        for k in ("severity", "type", "environment", "platform", "os", "browser", "module"):
+            fvals[k] = (f.get(k) or {}).get("values") or fvals.get(k, [])
+    except Exception:
+        pass
+
+    # candidate TestRail case ids = 6+ digit numbers (ticket ids here are 5-digit)
+    cand_ids = []
+    for m in re.findall(r"\b(\d{6,})\b", msg):
+        if int(m) not in cand_ids:
+            cand_ids.append(int(m))
+    cases = {}
+    for cid in cand_ids[:8]:
+        try:
+            cs = _fetch_case_struct(cid)
+            if cs:
+                cases[cid] = cs
+        except HTTPException:
+            break
+        except Exception:
+            pass
+
+    def _finish(bug, base_case=None):
+        """Normalize one bug dict: house-style subject, case enrichment, ticket fallback."""
+        out = dict(bug)
+        cid = out.get("case_id")
+        cs = cases.get(int(cid)) if (cid and str(cid).isdigit() or isinstance(cid, int)) else None
+        cs = cs or base_case
+        if cs:
+            for fld in ("steps", "expected", "test_data"):
+                if not (out.get(fld) or "").strip():
+                    out[fld] = cs.get(fld) or ""
+            if not out.get("platform"):
+                out["platform"] = cs.get("platform") or ""
+            if not out.get("ticket_id") and cs.get("ticket_id"):
+                out["ticket_id"] = cs["ticket_id"]
+            if not (out.get("subject") or "").strip():
+                out["subject"] = cs.get("subject") or ""
+        if not out.get("ticket_id") and body.ticket_id:
+            out["ticket_id"] = body.ticket_id
+        # house style: strip ticket id (anywhere), sentence case
+        out["subject"] = _clean_bug_subject(out.get("subject") or "")
+        # suggest the developer for this bug's ticket
+        if not out.get("assigned_to_id") and out.get("ticket_id"):
+            aid, aname = _suggest_assignee_for_ticket(out["ticket_id"], reporter=body.reporter)
+            if aid:
+                out["assigned_to_id"] = aid
+                out["assignee_name"] = aname
+        # validate list fields against allowed values
+        for fld in ("severity", "type", "module", "environment", "platform"):
+            out[fld] = _match_allowed(out.get(fld), fvals.get(fld)) or (out.get(fld) if fld in ("severity",) else "")
+        # module fallback: scan the bug's own text for a Module name
+        if not out.get("module"):
+            btext = " ".join([out.get("subject") or "", out.get("actual") or "", out.get("steps") or ""])
+            out["module"] = _guess_module({}, fvals.get("module"), btext) or ""
+        out.setdefault("test_data", "")
+        out.setdefault("steps", "")
+        out.setdefault("expected", "")
+        out.setdefault("actual", "")
+        out.setdefault("jam_link", "")
+        return out
+
+    # ---- no-AI fallback: one draft per case id, else a single draft ----
+    use_ai = body.use_ai
+    if use_ai:
+        try:
+            import llm_client
+            if not (llm_client.available() or llm_client.cli_available()):
+                use_ai = False
+        except Exception:
+            use_ai = False
+
+    if not use_ai:
+        bugs = []
+        if cases:
+            for cid, cs in cases.items():
+                bugs.append(_finish({"subject": cs["subject"], "actual": "", "case_id": cid}, base_case=cs))
+        else:
+            bugs.append(_finish({"subject": msg.splitlines()[0] if msg else "Bug", "actual": msg}))
+        return {"count": len(bugs), "bugs": bugs, "source": "rules", "ai": False}
+
+    # ---- AI: split the message into bugs ----
+    import llm_client
+    sev_vals = fvals.get("severity") or ["Crash", "Critical", "Major", "Minor"]
+
+    def _enum(vals):
+        return {"type": "string", "enum": vals} if vals else {"type": "string"}
+
+    item = {
+        "type": "object",
+        "properties": {
+            "subject": {"type": "string", "description": "Concise symptom; NO ticket id; optional 'Area | ' prefix"},
+            "steps": {"type": "string", "description": "Numbered reproduction steps"},
+            "test_data": {"type": "string"},
+            "expected": {"type": "string", "description": "Correct behaviour ('The system should…')"},
+            "actual": {"type": "string", "description": "Observed wrong behaviour"},
+            "severity": _enum(sev_vals),
+            "type": _enum(fvals.get("type") or []),
+            "module": _enum(fvals.get("module") or []),
+            "environment": _enum(fvals.get("environment") or []),
+            "platform": _enum(fvals.get("platform") or []),
+            "case_id": {"type": "integer", "description": "TestRail case id this bug relates to, if mentioned"},
+            "ticket_id": {"type": "integer", "description": "PM ticket id for this bug, if mentioned"},
+            "jam_link": {"type": "string", "description": "Jam/proof link for THIS bug, if present"},
+        },
+        "required": ["subject", "actual", "severity"],
+    }
+    schema = {"type": "object", "properties": {"bugs": {"type": "array", "items": item}}, "required": ["bugs"]}
+
+    case_ctx = ""
+    if cases:
+        case_ctx = "Referenced TestRail cases:\n" + "\n".join(
+            f"- case {cid}: {cs['title']} (ticket {cs.get('ticket_id')})" for cid, cs in cases.items())
+    cnt_hint = f"The tester indicated {body.max_bugs} bug(s)." if body.max_bugs else \
+        "Produce exactly the number of distinct bugs the message describes (honour any count the tester states)."
+
+    sysmsg = (
+        "You are a senior QA engineer. The tester sent ONE message that may describe MULTIPLE bugs, and may "
+        "reference TestRail case ids and a PM ticket id. Split it into separate bug reports — one array entry per "
+        "distinct bug. " + cnt_hint + "\n\n"
+        "The message is OFTEN a spoken Jam-video transcript where the tester walks through several issues in "
+        "sequence. Treat verbal boundaries as bug separators: 'bug one/two/three', 'first/second/next/another/also', "
+        "'the next issue', 'moving on'. Each distinct issue = one array entry; do NOT merge two issues or invent extra "
+        "ones. Spoken transcripts are messy (fillers, repetition) — extract the real symptom and expected result.\n"
+        "If 'TestRail case ids ... in the order the bugs are described' are listed, map them positionally: the 1st id "
+        "to the 1st bug, the 2nd to the 2nd, etc. (unless the tester clearly states a different case id for a bug). "
+        "Set each bug's case_id accordingly (the server fills canonical steps/expected from TestRail).\n"
+        "Per bug, populate test_data with the concrete reproducible values mentioned for THAT bug (account/role, "
+        "record, file, values, dates). NEVER include a password or secret — omit it.\n"
+        "Follow this team's house style: subject = concise SYMPTOM, sentence case, NEVER the ticket id, optional "
+        "'Area | symptom' prefix when the area is clear. Steps numbered/imperative. Expected = 'The system "
+        "should…'. Actual = the observed wrong behaviour. Capture per-bug jam links if present.\n"
+        "SEVERITY (conservative, do NOT over-rate): Crash = crash/hang/data-loss/unusable-no-workaround; "
+        "Critical = core broken, no workaround; Major = broken but workaround exists; Minor = cosmetic/UI/icon/"
+        "label/alignment/text. A misplaced or missing icon is Minor, not Crash. Set type accordingly (UI issues "
+        "= 'UI / UX'). Do not invent details not implied by the message."
+    )
+    user = ((case_ctx + "\n\n") if case_ctx else "") + \
+        (f"PM ticket (default for all): {body.ticket_id}\n\n" if body.ticket_id else "") + \
+        "Tester's message:\n" + msg
+
+    fb = None if llm_client.available() else "cli"
+    ai = llm_client.complete_json(sysmsg, user, schema, tool_name="bug_batch", max_tokens=2000, force_backend=fb)
+    if not ai or not isinstance(ai.get("bugs"), list) or not ai["bugs"]:
+        # AI failed — fall back to case-based / single draft
+        bugs = []
+        if cases:
+            for cid, cs in cases.items():
+                bugs.append(_finish({"subject": cs["subject"], "actual": "", "case_id": cid}, base_case=cs))
+        else:
+            bugs.append(_finish({"subject": msg.splitlines()[0] if msg else "Bug", "actual": msg}))
+        return {"count": len(bugs), "bugs": bugs, "source": "rules", "ai": False, "ai_failed": True}
+
+    bugs = [_finish(b) for b in ai["bugs"]]
+    if body.max_bugs and len(bugs) > body.max_bugs:
+        bugs = bugs[:body.max_bugs]
+    return {"count": len(bugs), "bugs": bugs, "source": "ai", "ai": True}
 
 
 @app.delete("/employee-mappings/{mapping_id}")

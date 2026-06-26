@@ -1,0 +1,45 @@
+Subject: New QA tool — BIS Bug Reporter (file bugs in ~2 minutes)
+
+Hi team,
+
+We now have a desktop tool — the BIS Bug Reporter — that files complete,
+house-style Redmine bugs in about 1–2 minutes instead of 8–11. You paste a
+Jam video link, a TestRail case id, or a quick note (or any mix), it fills in
+the steps/expected/actual and all the fields, suggests the right developer,
+attaches the proof, and (optionally) marks or creates the matching TestRail
+case. There's also a Bulk mode (one video → many bugs) and a "My Pending
+Retests" tab.
+
+HOW TO LAUNCH
+1. Download and run (single file, no installation needed):
+   http://10.1.0.20/BIS-Bug-Reporter.exe
+   It opens in your browser at http://127.0.0.1:8765 — keep the small window
+   open while you use it.
+   If Windows shows "Windows protected your PC", click More info → Run anyway.
+
+2. First time only — click  Settings (gear icon)  and enter:
+   • Redmine API key  (Redmine → My account → API access key) — required.
+     Your name is detected automatically from the key.
+   • Jam token (optional) — only if you use "Load from Jam".
+   • TestRail email + API key (optional) — to fail/create cases under your name.
+   Then set your usual Platform / OS / Browser and "Save as my defaults".
+
+3. Stay on the company network — the AI fill, Bulk, and TestRail options use
+   the dashboard server. (Plain bug creation works offline too.)
+
+FILING A BUG
+Paste a Jam link / TestRail case id / note → click "Fill the bug" → review →
+"Create bug in Redmine". Optionally set a Parent task, and tick the TestRail
+option to fail an existing case or create a new one and add it to the plan.
+
+HELP
+Click the "User Guide" button inside the app, or open:
+   http://10.1.0.20/BIS-Bug-Reporter-User-Guide.pdf
+
+UPDATES are automatic — just re-download and run the latest exe; it replaces
+the old copy on the same URL.
+
+Please start using it for your bug reporting. Questions → reach out to me.
+
+Thanks,
+Vishnu

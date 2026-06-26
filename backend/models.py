@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, Float, Boolean, Date, Time, UniqueConstraint
+from sqlalchemy import Column, Integer, String, DateTime, Text, Float, Boolean, Date, Time, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
@@ -134,6 +134,9 @@ class TicketTracking(Base):
     # PM Tracker sync tracking - ensures counts match live PM data
     in_pm_tracker = Column(Boolean, default=True, nullable=False)  # False = ticket no longer exists in PM Tracker
     last_pm_sync = Column(DateTime, nullable=True)        # Last time this ticket was seen in PM API response
+    # Durable refix/retest counter — incremented each time the ticket enters 'QC Review Fail'. Persisted
+    # here (not the volatile JSON cycle tracker) so the count survives resets and feeds all metrics.
+    refix_count = Column(Integer, default=0, nullable=True)
 
 
 class QATicketFlag(Base):
@@ -1095,3 +1098,298 @@ class TicketMovementSnapshot(Base):
     payload = Column(JSONB)
     frozen = Column(Boolean, default=True)
     created_on = Column(DateTime, default=datetime.utcnow)
+
+
+# ===== AUTOMATION MODULE (rebuilt 2026-06) =====
+# Source: TestRail Project 18 (suite 137 Web, 847 Mobile). Catalog + executions + daily snapshot.
+
+class AutomationCase(Base):
+    """Catalog: one row per TestRail case (Project 18). Carries automation status + automated-by,
+    resolved module (via section), and app-observed first-seen planned/automated dates."""
+    __tablename__ = "automation_cases"
+
+    id = Column(Integer, primary_key=True)
+    case_id = Column(Integer, unique=True, index=True)          # TestRail case id
+    suite_id = Column(Integer, index=True)                      # 137 Web / 847 Mobile
+    suite_name = Column(String(20))                             # "Web" | "Mobile"
+    section_id = Column(Integer, index=True)
+    section_name = Column(String(200))
+    module = Column(String(100), index=True)                   # via section_to_module
+    title = Column(String(500))
+    priority = Column(String(50))
+    automation_status = Column(String(30), index=True)         # AUTOMATION_STATUS_MAP label
+    automation_status_id = Column(Integer)                     # raw 1..5
+    automatable = Column(Boolean, default=True, index=True)    # False when status_id == 4
+    automated_by = Column(String(120), index=True)            # resolved person name
+    automated_by_id = Column(Integer)                          # raw custom_case_automated_by dropdown id
+    planned_by = Column(String(120))
+    planned_on = Column(DateTime, index=True)                  # first-seen transition -> Planned
+    automated_on = Column(DateTime, index=True)                # first-seen transition -> Automated
+    manual_exec_minutes = Column(Integer)                      # optional per-case override of global
+    last_synced = Column(DateTime, index=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        Index("ix_autocase_module_status", "module", "automation_status"),
+    )
+
+
+class AutomationExecution(Base):
+    """One row per case-in-a-run (TestRail test). Drives utilization + reuse (same case_id across
+    many runs = many rows). executed_on = the day the row was first observed (history starts now)."""
+    __tablename__ = "automation_executions"
+
+    id = Column(Integer, primary_key=True)
+    test_id = Column(Integer, unique=True, index=True)         # TestRail test id (unique per run)
+    case_id = Column(Integer, index=True)
+    run_id = Column(Integer, index=True)
+    plan_id = Column(Integer, index=True)
+    ticket_id = Column(Integer, index=True)
+    module = Column(String(100), index=True)                  # denormalized from the case
+    suite_id = Column(Integer)
+    status_id = Column(Integer)                               # 1..5 run result
+    status_name = Column(String(20))
+    is_automated_case = Column(Boolean, default=False, index=True)
+    executed_on = Column(Date, index=True)                    # day first observed
+    run_created_on = Column(DateTime)
+    last_synced = Column(DateTime)
+    created_on = Column(DateTime, default=datetime.utcnow)
+
+
+class AutomationSnapshot(Base):
+    """Daily automation metrics snapshot (one row/day) — the only history for growth charts."""
+    __tablename__ = "automation_snapshots"
+
+    id = Column(Integer, primary_key=True)
+    snapshot_date = Column(Date, unique=True, index=True)
+    payload = Column(JSONB)
+    created_on = Column(DateTime, default=datetime.utcnow)
+
+
+class AppSetting(Base):
+    """Generic key/value settings (e.g. manual_minutes_per_case, discovered TestRail field keys)."""
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True)
+    key = Column(String(80), unique=True, index=True)
+    value = Column(String(255))
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TestPlanRequest(Base):
+    """Queue of tickets that need a manual test plan generated (auto-enqueued when a ticket first
+    enters QC Testing with no TestRail plan, or manually via the Generate button). A headless
+    runner consumes status='pending' and reports back; the row auto-closes to 'done' once a
+    TestRail plan for the ticket exists."""
+    __tablename__ = "test_plan_requests"
+
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, unique=True, index=True)
+    status = Column(String(20), default="pending", index=True)  # pending|generating|done|error
+    source = Column(String(20), default="auto")                 # auto|manual
+    attempts = Column(Integer, default=0)
+    error = Column(Text, nullable=True)
+    plan_url = Column(Text, nullable=True)
+    # --- human-gated review loop (TestRail custom_case_tc_review: Draft|Reviewed|Obsolete) ---
+    review_status = Column(String(20), default="Draft")          # Draft|Reviewed|Obsolete
+    review_action = Column(String(20), nullable=True)            # apply|sync_status (pending runner action)
+    review_loops = Column(Integer, default=0)                    # number of reviewed-Excel uploads received
+    review_error = Column(Text, nullable=True)
+    review_applied_on = Column(DateTime, nullable=True)          # when the runner reported the apply done
+    review_applied_loop = Column(Integer, nullable=True)         # which upload loop was last applied
+    pr_status = Column(String(20), nullable=True)                # ready|pre_release (PR/release-note presence)
+    # --- planned QA estimate (Claude's planned activity breakdown, generated at plan time; NOT pushed to PM) ---
+    planned_qa_estimate_hours = Column(Float, nullable=True)     # total planned QA hours (sum of phase breakdown)
+    planned_qa_breakdown = Column(JSONB, nullable=True)          # {phases:[{phase,recommended_hours,rationale}], recommended_total, source}
+    planned_estimate_on = Column(DateTime, nullable=True)        # when the planned estimate was computed
+    requested_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class WeeklyTicketReview(Base):
+    """Manager's weekly per-ticket QA review. One row per (ticket, reviewee, week). Drives the
+    Ticket Review module's pending list (status flips pending->reviewed and the item disappears) and
+    feeds the performance matrix the manager-revised QA time. signals_snapshot freezes the computed
+    expected/actual/time/diligence evidence at review time so the rating is reproducible."""
+    __tablename__ = "weekly_ticket_reviews"
+
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, index=True, nullable=False)
+    reviewee_name = Column(String(100), index=True, nullable=False)   # QA member who worked the ticket
+    reviewee_employee_id = Column(String(20), index=True, nullable=True)
+    reviewer_name = Column(String(100), nullable=True)                # manager who reviewed
+    week_start = Column(Date, index=True, nullable=False)             # Monday of the review week
+    week_end = Column(Date, nullable=True)
+    status = Column(String(20), default="pending", index=True)        # pending|reviewed
+
+    original_estimate = Column(Float, nullable=True)                  # qa_estimate (or 0.33*dev) at review time
+    suggested_estimate = Column(Float, nullable=True)                 # rule+AI suggested revised QA hours
+    revised_estimate = Column(Float, nullable=True)                   # manager-accepted value -> used by scoring
+    verdict = Column(String(20), nullable=True)                       # genuine|not_genuine|mixed
+    notes = Column(Text, nullable=True)                               # manager free text
+    ai_summary = Column(Text, nullable=True)                          # narrative: expected vs actual vs time
+    signals_snapshot = Column(JSONB, nullable=True)                   # frozen get_ticket_review_signals output
+
+    # BIS Time Validation: QA's requested additional time + the system's per-phase recommendation.
+    requested_estimate = Column(Float, nullable=True)                 # total hours QA asked for (parsed/entered)
+    requested_reason = Column(Text, nullable=True)                    # QA's stated reason for the request
+    phase_breakdown = Column(JSONB, nullable=True)                    # {phases:[...], recommended_total, verdict, ...}
+
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("ticket_id", "reviewee_name", "week_start", name="uq_weekly_ticket_review"),
+        Index("ix_wtr_reviewee_week_status", "reviewee_name", "week_start", "status"),
+    )
+
+
+class TicketEstimation(Base):
+    """QA Estimation thread — one row per ticket. Plan-first iterative estimation: the QA member
+    submits the activities + time they expect to need, Claude validates/suggests a balanced time
+    (full staging+pre, high-level live, minus automated cases, +10% buffer), the manager pushes it
+    to PM and re-estimates on scope/bug changes until close, then marks it reviewed & completed.
+    The thread tracks the LATEST round + status; full history lives in TicketEstimationRound."""
+    __tablename__ = "ticket_estimations"
+
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, unique=True, index=True, nullable=False)
+    qa_member = Column(String(100), index=True, nullable=True)        # QC tester being estimated
+    qa_employee_id = Column(String(20), nullable=True)
+    status = Column(String(20), default="planning", index=True)       # awaiting|planning|in_review|reviewed
+    test_type = Column(String(10), nullable=True, index=True)         # web|mobile (for the Web/Mobile tabs)
+    current_round = Column(Integer, default=0)                        # latest round number
+    submitted_total = Column(Float, nullable=True)                    # latest QA-submitted total hours
+    suggested_total = Column(Float, nullable=True)                    # latest Claude-suggested total hours
+    automated_cases = Column(Integer, nullable=True)                  # last known automated case count
+    manual_cases = Column(Integer, nullable=True)                     # last known manual case count
+    # --- review stage (after delivery / at BIS): actuals + Claude recalculation + manager sign-off ---
+    actual_hours = Column(Float, nullable=True)                       # actual time the QA member took
+    qa_comments = Column(Text, nullable=True)                         # QA member's comments at review
+    recalc_total = Column(Float, nullable=True)                       # Claude's recalculated allowed time
+    recalc_breakdown = Column(JSONB, nullable=True)                   # {allowed_total, verdict, summary, source, ...}
+    manager_comment = Column(Text, nullable=True)                     # manager's review comment
+    reviewed_on = Column(DateTime, nullable=True)
+    reviewed_by = Column(String(100), nullable=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class TicketEstimationRound(Base):
+    """Immutable history of every estimation round for a ticket (the time-change history). Each round
+    captures the QA-submitted activity plan, Claude's validated breakdown + suggested total, and
+    whether/what the manager pushed to PM. New round per re-estimate (scope change, more bugs, etc.)."""
+    __tablename__ = "ticket_estimation_rounds"
+
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, index=True, nullable=False)
+    round_no = Column(Integer, nullable=False)
+    trigger = Column(String(20), default="initial")                  # initial|scope_change|more_bugs|manual
+    submitted_activities = Column(JSONB, nullable=True)              # [{activity, environment, hours}]
+    submitted_total = Column(Float, nullable=True)
+    claude_breakdown = Column(JSONB, nullable=True)                  # {activities:[...], approach_notes, automation:{...}, buffer_hours, recommended_total, verdict, summary, source}
+    suggested_total = Column(Float, nullable=True)
+    pushed_to_pm = Column(Boolean, default=False)
+    pushed_estimate = Column(Float, nullable=True)
+    reason = Column(Text, nullable=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+    created_by = Column(String(100), nullable=True)
+
+    __table_args__ = (
+        Index("ix_ter_ticket_round", "ticket_id", "round_no"),
+    )
+
+
+class TestPlanCaseLog(Base):
+    """Per-ticket test-case COUNT history: how many cases existed initially and how they changed
+    (added/removed) after review comments or a regeneration (RN / scope change). Append-only; a new
+    row is written only when the total changes. reason: initial|review|regen|rn|scope|manual
+    (regen rows are relabelable to rn/scope by the manager)."""
+    __tablename__ = "test_plan_case_logs"
+
+    id = Column(Integer, primary_key=True)
+    ticket_id = Column(Integer, index=True, nullable=False)
+    total = Column(Integer, default=0)               # unique cases at this point
+    manual = Column(Integer, nullable=True)          # manual split (when known — from lookup)
+    automated = Column(Integer, nullable=True)       # automated split (when known)
+    delta = Column(Integer, default=0)               # change vs the previous row (0 for initial)
+    reason = Column(String(20), default="initial")   # initial|review|regen|rn|scope|manual
+    loop = Column(Integer, nullable=True)            # review_applied_loop in effect at this point
+    note = Column(Text, nullable=True)
+    recorded_on = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (Index("ix_tpcl_ticket_id", "ticket_id", "id"),)
+
+
+class PerformanceNote(Base):
+    """Manager comment/incident on an employee that feeds the performance rating (folded into the
+    Diligence metric). Positive (appreciation) or negative (e.g. a missed bug that crashed Live),
+    with a severity that maps to signed points. Multiple notes per employee; applied to whatever
+    leaderboard period window contains note_date."""
+    __tablename__ = "performance_notes"
+
+    id = Column(Integer, primary_key=True)
+    employee_id = Column(String(20), index=True, nullable=False)
+    employee_name = Column(String(100), nullable=True)
+    note_date = Column(Date, index=True, nullable=False)     # incident date → maps to the rating period
+    sentiment = Column(String(10), nullable=False)            # positive | negative
+    severity = Column(String(10), nullable=False)             # minor | major | critical
+    points = Column(Integer, nullable=False)                  # signed diligence impact (derived)
+    text = Column(Text, nullable=False)
+    created_by = Column(String(100), nullable=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+
+
+class PerformerRecord(Base):
+    """Hall-of-record for Performer of the Month / Quarter. One row per (period_type, period_key,
+    category) — e.g. quarter "Q2 2026" / category "qa". Holds the chosen person plus a citation-style
+    summary. `frozen` locks the record as the official, immutable result for that period; an unfrozen
+    row is a provisional draft (the current period can stay editable until it is finalized)."""
+    __tablename__ = "performer_records"
+    __table_args__ = (
+        UniqueConstraint('period_type', 'period_key', 'category', name='uq_performer_period_category'),
+    )
+
+    id = Column(Integer, primary_key=True)
+    period_type = Column(String(10), index=True, nullable=False)   # month | quarter
+    period_key = Column(String(40), index=True, nullable=False)    # canonical: "2026-06" | "2026-Q2"
+    period_label = Column(String(40), nullable=False)              # display: "June 2026" | "Q2 2026"
+    category = Column(String(20), index=True, nullable=False)      # qa | dev | mobile | overall
+
+    employee_id = Column(String(20), nullable=True)
+    employee_name = Column(String(100), nullable=False)
+    team = Column(String(40), nullable=True)
+    role = Column(String(80), nullable=True)
+    composite_score = Column(Float, nullable=True)
+    rank = Column(Integer, nullable=True)
+    team_size = Column(Integer, nullable=True)
+
+    summary = Column(Text, nullable=True)                          # citation-style write-up (editable)
+    metrics = Column(JSONB, nullable=True)                         # snapshot of raw_metrics at freeze time
+
+    frozen = Column(Boolean, default=False, index=True)
+    created_by = Column(String(100), nullable=True)
+    frozen_by = Column(String(100), nullable=True)
+    created_on = Column(DateTime, default=datetime.utcnow)
+    updated_on = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    frozen_on = Column(DateTime, nullable=True)
+
+
+class BugReporterEvent(Base):
+    """One row per bug filed through the BIS Bug Reporter — used to track adoption (how many bugs the
+    tool produced) and the time saved vs filing by hand. `tool_seconds` is the measured fill->create
+    elapsed on the client (capped/ignored when idle); `saved_minutes` is computed at write time."""
+    __tablename__ = "bug_reporter_events"
+
+    id = Column(Integer, primary_key=True)
+    created_on = Column(DateTime, default=datetime.utcnow, index=True)
+    reporter = Column(String(100), index=True, nullable=True)
+    ticket_id = Column(Integer, nullable=True, index=True)
+    bug_id = Column(Integer, nullable=True)            # tracker issue id (e.g. Redmine #)
+    source = Column(String(20), nullable=True)         # jam | case | notes | combo | bulk | manual
+    tracker = Column(String(20), default="redmine")
+    tool_seconds = Column(Float, nullable=True)        # measured time spent in the tool for this bug
+    saved_minutes = Column(Float, nullable=True)       # manual baseline - tool time
+    testrail_failed = Column(Boolean, default=False)   # whether it also failed the TestRail case
+    testcase_created = Column(Boolean, default=False)  # whether it also created a TestRail case

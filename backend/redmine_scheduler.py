@@ -35,6 +35,12 @@ def _scheduled_sync_job() -> None:
         logger.info("Starting scheduled Redmine sync...")
         # Use all_bugs=True to get accurate bug counts (includes closed bugs)
         processed, created, updated = sync_redmine_bugs(all_bugs=True)
+        # Reset the Redmine external cache + computed responses so new counts show immediately.
+        try:
+            from pm_live_data import clear_response_cache
+            clear_response_cache()
+        except Exception as ce:
+            logger.warning("Redmine scheduled sync: cache invalidation failed: %s", ce)
         _last_sync_result = {
             "success": True,
             "processed": processed,

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { API_BASE } from './api';
 import AppSidebar from './AppSidebar';
+import { useComplexityMap, ComplexityBadge } from './complexity';
 import './dashboard.css';
 
 const PERIOD_OPTIONS = [
@@ -141,6 +142,7 @@ function BISTableRow({ ticket, type }) {
 const CLOSED_STATUSES_SET = new Set(['Closed', 'Moved to Live']);
 
 function TicketTable({ tickets, SortTh }) {
+  const { entryOf } = useComplexityMap();
   if (tickets.length === 0) return <div className="qcq-empty" style={{ padding: '12px' }}>No tickets</div>;
   return (
     <div className="qcq-table-container">
@@ -149,6 +151,7 @@ function TicketTable({ tickets, SortTh }) {
           <tr>
             <SortTh field="ticket_id">Ticket</SortTh>
             <th>Title</th>
+            <th>Complexity</th>
             <SortTh field="current_status">Status</SortTh>
             <SortTh field="priority_order">Priority</SortTh>
             <SortTh field="platform">Platform</SortTh>
@@ -174,6 +177,7 @@ function TicketTable({ tickets, SortTh }) {
                 <a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noopener noreferrer">#{t.ticket_id}</a>
               </td>
               <td className="qcq-title">{t.title}</td>
+              <td style={{textAlign:'center'}}><ComplexityBadge {...entryOf(t)} size="sm" /></td>
               <td><StatusBadge status={t.current_status} /></td>
               <td className="qcq-priority">{t.priority}</td>
               <td><span className={`qcq-platform-badge qcq-platform-${(t.platform || 'Web').toLowerCase()}`}>{t.platform}</span></td>
@@ -341,9 +345,198 @@ function MemberStoryCard({ member, defaultExpanded }) {
   );
 }
 
-const PM_TICKET_URL = 'https://www.bissafety.app/pm/tickets#!/';
+const PM_TICKET_URL = 'https://pm.bissafety.app/tickets/';
+
+// Normalize a person name for matching across data sources (strip "(initials)", trim, lowercase).
+const normName = (s) => (s || '').replace(/\([^)]*\)/g, '').trim().toLowerCase();
+
+// Pop-out drawer: the full list of tickets currently in a person's Assign-To field, with filters + sort.
+const TEAM_COLORS = { Dev: 'var(--accent-blue)', QA: 'var(--accent-green)', BIS: 'var(--accent-purple, #8b5cf6)' };
+const priColor = (p) => {
+  const s = (p || '').toLowerCase();
+  if (s.includes('critical') || s.includes('level 1') || s.includes('urgent')) return 'var(--accent-red, #ef4444)';
+  if (s.includes('high')) return 'var(--accent-amber, #f59e0b)';
+  if (s.includes('medium')) return 'var(--accent-blue, #3b82f6)';
+  if (s.includes('low')) return 'var(--text-muted, #94a3b8)';
+  return 'var(--text-secondary, #cbd5e1)';
+};
+const fmtDate = (d) => { if (!d) return '-'; const dt = new Date(d); return isNaN(dt) ? '-' : dt.toLocaleDateString('en-US', { day: '2-digit', month: 'short' }); };
+const ageDays = (d) => { if (!d) return null; const dt = new Date(d); if (isNaN(dt)) return null; return Math.max(0, Math.floor((Date.now() - dt.getTime()) / 86400000)); };
+
+// priority rank for sorting (uses priority_order when present, else maps the priority text).
+const priRank = (t) => {
+  if (t.priority_order != null) return t.priority_order;
+  const s = (t.priority || '').toLowerCase();
+  if (s.includes('critical') || s.includes('level 1') || s.includes('urgent')) return 0;
+  if (s.includes('high')) return 1;
+  if (s.includes('medium')) return 2;
+  if (s.includes('low')) return 3;
+  return 9;
+};
+
+// Reusable rich, filterable, sortable ticket table with a ticket-ID/title search box. Used by BOTH the
+// Assign-To drawer and the Dev Team per-developer list. Field names are normalized so it works for both
+// payloads (dev hours: dev_actual_hours vs actual_dev_hours). Give it a `key` per person so its internal
+// filters + search reset automatically when a different person is selected.
+function RichTicketTable({ tickets, scrollMax = '70vh' }) {
+  const { entryOf } = useComplexityMap();
+  const [search, setSearch] = useState('');
+  const [sortField, setSortField] = useState('priority_order');
+  const [sortDir, setSortDir] = useState('asc');
+  const [fStatus, setFStatus] = useState('');
+  const [fPriority, setFPriority] = useState('');
+  const [fType, setFType] = useState('');
+  const [fModule, setFModule] = useState('');
+  const [fPlatform, setFPlatform] = useState('');
+  const [fRefix, setFRefix] = useState('');
+  const list = (tickets || []).map(t => { const e = entryOf(t); return { ...t, complexity: e.level, complexity_score: e.score, complexity_overridden: e.overridden }; });
+  const devAct = (t) => (t.dev_actual_hours != null ? t.dev_actual_hours : t.actual_dev_hours) || 0;
+  // Hide columns that carry no data in this context (e.g. the Dev Team list has no QA hours / type / age).
+  const hasType = list.some(t => t.ticket_type);
+  const hasAge = list.some(t => t.created_on);
+  const hasQa = list.some(t => t.qa_estimate_hours != null || t.qa_actual_hours != null);
+  const colCount = 13 + (hasType ? 1 : 0) + (hasAge ? 1 : 0) + (hasQa ? 1 : 0);
+  const distinct = (key, dflt) => [...new Set(list.map(t => t[key] || dflt).filter(Boolean))].sort();
+  const q = search.trim().toLowerCase();
+  const rows = list.filter(t =>
+    (!q || String(t.ticket_id).includes(q) || (t.title || '').toLowerCase().includes(q)) &&
+    (!fStatus || t.status === fStatus) &&
+    (!fPriority || t.priority === fPriority) &&
+    (!fType || (t.ticket_type || '') === fType) &&
+    (!fModule || (t.module || '') === fModule) &&
+    (!fPlatform || (t.platform || 'Web') === fPlatform) &&
+    (!fRefix || (fRefix === 'refix' ? t.is_refix : !t.is_refix)));
+  const sorted = [...rows].sort((a, b) => {
+    let av, bv;
+    if (sortField === 'priority_order') { av = priRank(a); bv = priRank(b); }
+    else if (sortField === 'dev_hrs') { av = a.dev_estimate_hours || 0; bv = b.dev_estimate_hours || 0; }
+    else if (sortField === 'qa_hrs') { av = a.qa_estimate_hours || 0; bv = b.qa_estimate_hours || 0; }
+    else if (sortField === 'age') { av = ageDays(a.created_on) ?? -1; bv = ageDays(b.created_on) ?? -1; }
+    else if (sortField === 'cycle_count') { av = a.is_refix ? (a.cycle_count || 1) : 0; bv = b.is_refix ? (b.cycle_count || 1) : 0; }
+    else if (sortField === 'eta') { av = a.eta ? new Date(a.eta).getTime() : Infinity; bv = b.eta ? new Date(b.eta).getTime() : Infinity; }
+    else if (sortField === 'bugs') { av = (a.bugs_open || 0) + (a.bugs_reopen || 0) + (a.bugs_fixed || 0) + (a.bugs_closed || 0); bv = (b.bugs_open || 0) + (b.bugs_reopen || 0) + (b.bugs_fixed || 0) + (b.bugs_closed || 0); }
+    else if (sortField === 'ticket_id') { av = a.ticket_id; bv = b.ticket_id; }
+    else if (sortField === 'complexity_score') { av = a.complexity_score || 0; bv = b.complexity_score || 0; }
+    else { av = (a[sortField] ?? '').toString().toLowerCase(); bv = (b[sortField] ?? '').toString().toLowerCase(); }
+    if (av < bv) return sortDir === 'asc' ? -1 : 1;
+    if (av > bv) return sortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+  const Th = ({ field, children, w, align, title }) => (
+    <th title={title} onClick={() => { if (sortField === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setSortField(field); setSortDir('asc'); } }}
+      style={{ position: 'sticky', top: 0, zIndex: 1, cursor: 'pointer', whiteSpace: 'nowrap', textAlign: align || 'left',
+        width: w, minWidth: w, padding: '8px 10px', background: 'var(--bg-tertiary, #1e293b)', borderBottom: '2px solid var(--border-color)', fontSize: '0.72rem', textTransform: 'uppercase', letterSpacing: '0.02em', color: 'var(--text-secondary)' }}>
+      {children}{sortField === field && <span style={{ color: 'var(--accent-teal,#14b8a6)' }}>{sortDir === 'asc' ? ' ▲' : ' ▼'}</span>}
+    </th>
+  );
+  const Sel = ({ value, set, opts, label }) => (
+    <select value={value} onChange={e => set(e.target.value)} className="qcq-search-input" style={{ width: 'auto', minWidth: 112, fontSize: '0.76rem' }}>
+      <option value="">{label}</option>{opts.map(o => <option key={o} value={o}>{o}</option>)}
+    </select>
+  );
+  const anyFilter = search || fStatus || fPriority || fType || fModule || fPlatform || fRefix;
+  const td = { padding: '7px 10px', whiteSpace: 'nowrap', verticalAlign: 'middle', borderBottom: '1px solid var(--border-color)' };
+  return (
+    <>
+      <div style={{ padding: '10px 4px', display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search ticket # or title…" className="qcq-search-input"
+          style={{ width: 200, fontSize: '0.78rem' }} />
+        <Sel value={fStatus} set={setFStatus} opts={distinct('status')} label="All status" />
+        <Sel value={fPriority} set={setFPriority} opts={distinct('priority')} label="All priority" />
+        <Sel value={fType} set={setFType} opts={distinct('ticket_type')} label="All types" />
+        <Sel value={fModule} set={setFModule} opts={distinct('module')} label="All modules" />
+        <Sel value={fPlatform} set={setFPlatform} opts={distinct('platform', 'Web')} label="All platforms" />
+        <select value={fRefix} onChange={e => setFRefix(e.target.value)} className="qcq-search-input" style={{ width: 'auto', minWidth: 112, fontSize: '0.76rem' }}>
+          <option value="">All (refix + first)</option>
+          <option value="refix">Refix only</option>
+          <option value="first">First-time only</option>
+        </select>
+        {anyFilter ? <button className="btn btn-sm btn-secondary" onClick={() => { setSearch(''); setFStatus(''); setFPriority(''); setFType(''); setFModule(''); setFPlatform(''); setFRefix(''); }}>Clear</button> : null}
+        <span style={{ marginLeft: 'auto', fontSize: '0.8rem', color: 'var(--text-muted)' }}>Showing <strong style={{ color: 'var(--text-secondary)' }}>{sorted.length}</strong> of {list.length}</span>
+      </div>
+      <div style={{ overflow: 'auto', maxHeight: scrollMax }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.79rem' }}>
+          <thead><tr>
+            <Th field="ticket_id" w={64} align="center">Ticket</Th>
+            <Th field="title" w={360}>Title</Th>
+            <Th field="complexity_score" w={96} align="center">Complexity</Th>
+            <Th field="cycle_count" w={84} align="center" title="Refix / retest — returned to QC after a fail">Refix</Th>
+            <Th field="status" w={150}>Status</Th>
+            <Th field="priority_order" w={120}>Priority</Th>
+            {hasType && <Th field="ticket_type" w={96}>Type</Th>}
+            <Th field="module" w={130}>Module</Th>
+            <Th field="platform" w={82} align="center">Platform</Th>
+            <Th field="qc_tester" w={120}>QC Tester</Th>
+            <Th field="developers_str" w={140}>Developer</Th>
+            <Th field="eta" w={84} align="center">ETA</Th>
+            {hasAge && <Th field="age" w={66} align="center">Age</Th>}
+            <Th field="dev_hrs" w={96} align="center" title="Dev hours — Estimated / Actual">Dev E/A</Th>
+            {hasQa && <Th field="qa_hrs" w={96} align="center" title="QA hours — Estimated / Actual">QA E/A</Th>}
+            <Th field="bugs" w={128} align="center" title="Bugs — Open / Reopened / Fixed / Closed">Bugs O/R/F/C</Th>
+          </tr></thead>
+          <tbody>
+            {sorted.length === 0 ? <tr><td colSpan={colCount} style={{ padding: 24, textAlign: 'center', color: 'var(--text-muted)' }}>No tickets match.</td></tr> :
+              sorted.map((t, i) => {
+                const age = ageDays(t.created_on);
+                return (
+                <tr key={t.ticket_id} style={{ background: i % 2 ? 'rgba(148,163,184,0.04)' : 'transparent' }}>
+                  <td style={{ ...td, textAlign: 'center' }}><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link" style={{ fontWeight: 600 }}>#{t.ticket_id}</a></td>
+                  <td style={{ ...td, width: 360, minWidth: 360, maxWidth: 360, whiteSpace: 'normal', wordBreak: 'break-word', verticalAlign: 'top', lineHeight: 1.35 }}>{t.title}</td>
+                  <td style={{ ...td, textAlign: 'center' }}><ComplexityBadge level={t.complexity} overridden={t.complexity_overridden} size="sm" /></td>
+                  <td style={{ ...td, textAlign: 'center' }}>{t.is_refix
+                    ? <span title={`Returned to QC after a fail${t.cycle_count > 0 ? ` — ${t.cycle_count}x` : ''}`} style={{ color: 'var(--accent-amber, #f59e0b)', fontWeight: 700, fontSize: '0.74rem', whiteSpace: 'nowrap' }}>⟳ {t.cycle_count > 0 ? `r${t.cycle_count}` : 'Refix'}</span>
+                    : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+                  <td style={td}><span className="qcq-status-badge" style={{ whiteSpace: 'nowrap' }}>{t.status}</span></td>
+                  <td style={td}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 600, color: priColor(t.priority) }}><span style={{ width: 7, height: 7, borderRadius: '50%', background: priColor(t.priority) }} />{t.priority || '-'}</span></td>
+                  {hasType && <td style={{ ...td, color: 'var(--text-secondary)' }}>{t.ticket_type || '-'}</td>}
+                  <td style={{ ...td, color: 'var(--text-secondary)' }}>{t.module || '-'}</td>
+                  <td style={{ ...td, textAlign: 'center' }}>{t.platform || '-'}</td>
+                  <td style={td}>{t.qc_tester || '-'}</td>
+                  <td style={{ ...td, fontSize: '0.74rem', color: 'var(--text-secondary)' }}>{t.developers_str && t.developers_str !== 'Not Assigned' ? t.developers_str : (t.current_assignee || '-')}</td>
+                  <td style={{ ...td, textAlign: 'center' }}>{fmtDate(t.eta)}</td>
+                  {hasAge && <td style={{ ...td, textAlign: 'center', color: age != null && age > 14 ? 'var(--accent-amber)' : 'var(--text-muted)', fontWeight: age != null && age > 14 ? 700 : 400 }}>{age != null ? `${age}d` : '-'}</td>}
+                  <td style={{ ...td, textAlign: 'center', fontSize: '0.74rem' }} title="Dev Estimated / Actual">{(t.dev_estimate_hours || 0) || '-'} / {devAct(t) || '-'}</td>
+                  {hasQa && <td style={{ ...td, textAlign: 'center', fontSize: '0.74rem' }} title="QA Estimated / Actual">{(t.qa_estimate_hours || 0) || '-'} / {(t.qa_actual_hours || 0) || '-'}</td>}
+                  <td style={{ ...td, textAlign: 'center' }} title="Open / Reopened / Fixed / Closed">{(() => {
+                    const o = t.bugs_open || 0, r = t.bugs_reopen || 0, f = t.bugs_fixed || 0, c = t.bugs_closed || 0;
+                    if (!(o || r || f || c)) return <span style={{ color: 'var(--text-muted)' }}>—</span>;
+                    const C = (n, col) => <span style={{ color: n > 0 ? col : 'var(--text-muted)', fontWeight: n > 0 ? 700 : 400, fontSize: '0.74rem' }}>{n}</span>;
+                    return <span style={{ display: 'inline-flex', gap: 6 }}>{C(o, 'var(--accent-red,#ef4444)')}<span style={{ color: 'var(--border-color)' }}>/</span>{C(r, 'var(--accent-amber,#f59e0b)')}<span style={{ color: 'var(--border-color)' }}>/</span>{C(f, 'var(--accent-blue,#3b82f6)')}<span style={{ color: 'var(--border-color)' }}>/</span>{C(c, 'var(--accent-green,#22c55e)')}</span>;
+                  })()}</td>
+                </tr>
+                );
+              })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+function AssignDrawer({ person, onClose }) {
+  if (!person) return null;
+  const tickets = person.tickets || [];
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', justifyContent: 'flex-end' }}>
+      <div onClick={e => e.stopPropagation()} style={{ width: 'min(1280px, 96vw)', height: '100%', background: 'var(--bg-primary, #0f172a)', borderLeft: '1px solid var(--border-color)', boxShadow: '-12px 0 32px rgba(0,0,0,0.5)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', background: 'var(--bg-secondary, #1e293b)' }}>
+          <span style={{ width: 12, height: 12, borderRadius: '50%', background: TEAM_COLORS[person.team] || 'var(--text-muted)' }} />
+          <strong style={{ fontSize: '1.05rem' }}>{person.name}</strong>
+          {person.team && <span style={{ fontSize: '0.7rem', padding: '2px 8px', borderRadius: 4, background: `${TEAM_COLORS[person.team] || 'var(--text-muted)'}22`, color: TEAM_COLORS[person.team] || 'var(--text-muted)', fontWeight: 700 }}>{person.team}</span>}
+          <span style={{ fontSize: '0.82rem', color: 'var(--text-muted)' }}>Assigned to (active):</span>
+          <span style={{ fontWeight: 800, fontSize: '1.05rem', color: 'var(--accent-teal, #14b8a6)' }}>{tickets.length}</span>
+          <button onClick={onClose} className="btn btn-sm btn-secondary" style={{ marginLeft: 'auto' }}>✕ Close</button>
+        </div>
+        <div style={{ padding: '4px 20px 16px', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <RichTicketTable tickets={tickets} scrollMax="calc(100vh - 150px)" key={person.name} />
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function QAActivitySummary() {
+  const { entryOf: cxOf } = useComplexityMap();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [period, setPeriod] = useState('past_5_days');
@@ -368,6 +561,7 @@ export default function QAActivitySummary() {
   const [assignTeamFilter, setAssignTeamFilter] = useState('all');
   const [assignExpanded, setAssignExpanded] = useState(null);
   const [assignStatusFilter, setAssignStatusFilter] = useState('');
+  const [assignDrawer, setAssignDrawer] = useState(null); // Dev Team tab: Assign-To drill-down person
 
   const safeFetch = async (url) => {
     try { return await fetch(url.startsWith('http') ? url : `${API_BASE}${url}`); } catch { return null; }
@@ -413,7 +607,7 @@ export default function QAActivitySummary() {
       await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
       setExpandedModStatus(null); setModTickets([]);
       setDevExpandedName(null); setDevStatusFilter(''); setDevFlagFilter('');
-      setAssignExpanded(null); setAssignStatusFilter('');
+      setAssignExpanded(null); setAssignStatusFilter(''); setAssignDrawer(null);
       await fetchData();
     } finally { setSyncing(false); }
   };
@@ -631,13 +825,14 @@ export default function QAActivitySummary() {
                       {loadingModTickets ? <p style={{ color: 'var(--text-muted)' }}>Loading...</p> : (
                         <table className="qcq-table" style={{ fontSize: '0.78rem' }}>
                           <thead>
-                            <tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>QC Tester</th><th>Developer</th><th>Age</th><th>Est</th><th>Actual</th></tr>
+                            <tr><th>Ticket</th><th>Title</th><th>Complexity</th><th>Status</th><th>Priority</th><th>QC Tester</th><th>Developer</th><th>Age</th><th>Est</th><th>Actual</th></tr>
                           </thead>
                           <tbody>
                             {modTickets.map(t => (
                               <tr key={t.ticket_id} className="qcq-row">
-                                <td><a href={`https://www.bissafety.app/pm/tickets#!/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
+                                <td><a href={`https://pm.bissafety.app/tickets/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
                                 <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.title}>{t.title}</td>
+                                <td style={{ textAlign: 'center' }}><ComplexityBadge {...cxOf(t)} size="sm" /></td>
                                 <td><span className="qcq-status-badge">{t.status}</span></td>
                                 <td>{t.priority}</td>
                                 <td>
@@ -782,13 +977,14 @@ export default function QAActivitySummary() {
                       {loadingModTickets ? <p style={{ color: 'var(--text-muted)' }}>Loading...</p> : (
                         <table className="qcq-table" style={{ fontSize: '0.78rem' }}>
                           <thead>
-                            <tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Developer</th><th>QC Tester</th><th>Est Hrs</th><th>Actual Hrs</th><th>ETA</th></tr>
+                            <tr><th>Ticket</th><th>Title</th><th>Complexity</th><th>Status</th><th>Priority</th><th>Developer</th><th>QC Tester</th><th>Est Hrs</th><th>Actual Hrs</th><th>ETA</th></tr>
                           </thead>
                           <tbody>
                             {modTickets.map(t => (
                               <tr key={t.ticket_id} className="qcq-row">
-                                <td style={{textAlign:'center'}}><a href={`https://www.bissafety.app/pm/tickets#!/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
+                                <td style={{textAlign:'center'}}><a href={`https://pm.bissafety.app/tickets/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
                                 <td style={{ maxWidth: '220px', wordBreak: 'break-word', whiteSpace: 'normal', textAlign: 'left' }}>{t.title}</td>
+                                <td style={{ textAlign: 'center' }}><ComplexityBadge {...cxOf(t)} size="sm" /></td>
                                 <td style={{textAlign:'center'}}><span className="qcq-status-badge">{t.status}</span></td>
                                 <td style={{textAlign:'center'}}>{t.priority}</td>
                                 <td style={{textAlign:'center', fontSize:'0.72rem'}}>{t.developers_str || '-'}</td>
@@ -900,12 +1096,13 @@ export default function QAActivitySummary() {
                           <div key={status} style={{ marginTop: '8px' }}>
                             <h4 style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>{status} ({tix.length})</h4>
                             <table className="qcq-table" style={{ fontSize: '0.76rem' }}>
-                              <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Platform</th><th>Module</th><th>QC Tester</th><th>Developer</th><th>Est Hrs</th></tr></thead>
+                              <thead><tr><th>Ticket</th><th>Title</th><th>Complexity</th><th>Status</th><th>Priority</th><th>Platform</th><th>Module</th><th>QC Tester</th><th>Developer</th><th>Est Hrs</th></tr></thead>
                               <tbody>
                                 {tix.map(t => (
                                   <tr key={t.ticket_id} className="qcq-row">
                                     <td style={{textAlign:'center'}}><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
                                     <td style={{ maxWidth: '220px', wordBreak: 'break-word', whiteSpace: 'normal', textAlign: 'left' }}>{t.title}</td>
+                                <td style={{ textAlign: 'center' }}><ComplexityBadge {...cxOf(t)} size="sm" /></td>
                                     <td style={{textAlign:'center'}}><span className="qcq-status-badge">{t.status}</span></td>
                                     <td style={{textAlign:'center'}}>{t.priority}</td>
                                     <td style={{textAlign:'center'}}>{t.platform || '-'}</td>
@@ -950,6 +1147,10 @@ export default function QAActivitySummary() {
           const allDevs = (devData.developers || []).map(d => ({ ...d, _flag: getFlag(d) }));
           const flagCounts = {};
           allDevs.forEach(d => { flagCounts[d._flag] = (flagCounts[d._flag] || 0) + 1; });
+          // Assign-To lens: tickets currently in each person's "Assign To" field (active), from
+          // /live/assign-to-summary, matched to the dev by normalized name.
+          const assignByName = {};
+          (assignData?.persons || []).forEach(p => { assignByName[normName(p.name)] = p; });
 
           // Developers have no single platform field — derive it from the plurality of
           // their active tickets so Web devs can be grouped above Mobile devs.
@@ -1060,8 +1261,24 @@ export default function QAActivitySummary() {
                       {tickets.length > 0 && <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{isExpanded ? '\u25B2' : '\u25BC'}</span>}
                     </div>
 
-                    {/* Ticket count */}
+                    {/* Ticket count (as Developer — active workload) */}
                     <span style={{ fontWeight: 700, color: 'var(--text-secondary)', fontSize: '0.82rem' }}>{tickets.length} tickets</span>
+
+                    {/* Assign-To count (tickets currently in this person's Assign To field, active) → drawer */}
+                    {(() => {
+                      const ap = assignByName[normName(dev.name)];
+                      const an = ap ? (ap.tickets || []).length : 0;
+                      return (
+                        <span onClick={(e) => { e.stopPropagation(); if (an > 0) setAssignDrawer(ap); }}
+                          title="Tickets currently in this person's Assign To field (active). Click for the full filterable/sortable list."
+                          style={{ padding: '2px 9px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 700, cursor: an > 0 ? 'pointer' : 'default',
+                            background: an > 0 ? 'rgba(20,184,166,0.14)' : 'rgba(100,116,139,0.10)',
+                            color: an > 0 ? 'var(--accent-teal, #14b8a6)' : 'var(--text-muted)',
+                            border: `1px solid ${an > 0 ? 'var(--accent-teal, #14b8a6)' : 'var(--border-color)'}` }}>
+                          Assigned: {an}{an > 0 ? ' ↗' : ''}
+                        </span>
+                      );
+                    })()}
 
                     {/* Allocation bucket badges (Fully / Partially / Not Utilised) */}
                     {[
@@ -1114,89 +1331,13 @@ export default function QAActivitySummary() {
                   {isExpanded && (
                     <div style={{ padding: '0 14px 12px', borderTop: '1px solid var(--border-color)' }}>
                       {(() => {
-                        // Determine base set based on top-level filter
+                        // The allocation badges (Fully / Partially / Not Utilised / refix) pre-filter the set;
+                        // the rich table below adds search + per-column filters + sort + bug counts.
                         let baseTickets = tickets;
                         if (devStatusFilter === 'fully' || devStatusFilter === 'partial' || devStatusFilter === 'notutil') baseTickets = tickets.filter(t => devBucket(t.status) === devStatusFilter);
                         else if (devStatusFilter === 'refix') baseTickets = tickets.filter(t => t.is_refix);
                         else if (devStatusFilter && statusToActual[devStatusFilter]) baseTickets = tickets.filter(t => (statusToActual[devStatusFilter] || []).includes(t.status));
-
-                        // Count per status within the base set
-                        const statusCounts = {};
-                        baseTickets.forEach(t => { statusCounts[t.status] = (statusCounts[t.status] || 0) + 1; });
-
-                        const statusColors = {
-                          'In Progress': 'var(--accent-green)', 'Hold/Pending': 'var(--accent-amber)',
-                          'Start Code Review': 'var(--accent-blue)', 'Code Review Failed': 'var(--accent-red)',
-                          'Code Review Passed': 'var(--accent-teal)', 'Express Lane Review': 'var(--accent-blue)',
-                          'Ready For Development': 'var(--text-muted)',
-                          'QC Testing': 'var(--accent-purple, #8b5cf6)', 'QC Testing in Progress': 'var(--accent-green)',
-                          'QC Review Fail': 'var(--accent-red)', 'Tested - Awaiting Fixes': 'var(--accent-amber)',
-                          'BIS Testing': 'var(--accent-purple, #8b5cf6)', 'Approved for Live': 'var(--accent-teal)',
-                        };
-
-                        // Sub-status filter within the expanded view
-                        const [subFilter, setSubFilter] = [
-                          expandedModStatus?.module === dev.name ? expandedModStatus?.status : null,
-                          (s) => setExpandedModStatus(s ? { module: dev.name, status: s } : null)
-                        ];
-
-                        const filteredTickets = subFilter
-                          ? baseTickets.filter(t => t.status === subFilter)
-                          : baseTickets;
-
-                        // Group for display
-                        const displayGroups = {};
-                        filteredTickets.forEach(t => {
-                          const s = t.status; if (!displayGroups[s]) displayGroups[s] = []; displayGroups[s].push(t);
-                        });
-                        const statusOrder = ['In Progress', 'Hold/Pending', 'Start Code Review', 'Code Review Failed', 'Code Review Passed', 'Express Lane Review', 'Ready For Development', 'QC Testing', 'QC Testing in Progress', 'QC Review Fail', 'Tested - Awaiting Fixes', 'BIS Testing', 'Approved for Live'];
-                        const ordered = statusOrder.filter(s => displayGroups[s] || statusCounts[s]);
-                        const other = Object.keys(displayGroups).filter(s => !statusOrder.includes(s));
-
-                        return (<>
-                        {/* Clickable status cards — only show statuses within the filtered set */}
-                        {Object.keys(statusCounts).length >= 1 && (
-                          <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap', margin: '8px 0' }}>
-                            {statusOrder.filter(s => statusCounts[s]).map(s => {
-                              const isActive = subFilter === s;
-                              const color = statusColors[s] || 'var(--text-secondary)';
-                              return (
-                                <span key={s} onClick={() => setSubFilter(isActive ? null : s)}
-                                  style={{ padding: '3px 10px', borderRadius: '4px', fontSize: '0.72rem', fontWeight: 600, cursor: 'pointer',
-                                    background: isActive ? color : `${color}15`, color: isActive ? '#fff' : color,
-                                    border: `1px solid ${color}` }}>
-                                  {s}: {statusCounts[s]}
-                                </span>
-                              );
-                            })}
-                            {subFilter && <span onClick={() => setSubFilter(null)} style={{ fontSize: '0.7rem', color: 'var(--text-muted)', cursor: 'pointer', padding: '3px 6px' }}>Clear</span>}
-                          </div>
-                        )}
-                        {[...ordered, ...other].filter(s => displayGroups[s]).map(s => (
-                          <div key={s} style={{ marginTop: '8px' }}>
-                            <h4 style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', marginBottom: '4px' }}>{s} ({displayGroups[s].length})</h4>
-                            <table className="qcq-table" style={{ fontSize: '0.76rem' }}>
-                              <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Module</th><th>QC Tester</th><th>Type</th><th>Dev Est</th><th>Dev Actual</th><th>ETA</th></tr></thead>
-                              <tbody>
-                                {displayGroups[s].map(t => (
-                                  <tr key={t.ticket_id} className="qcq-row">
-                                    <td><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
-                                    <td style={{ maxWidth: '250px', wordBreak: 'break-word', whiteSpace: 'normal', textAlign: 'left' }}>{t.title}</td>
-                                    <td style={{textAlign:'center'}}><span className="qcq-status-badge">{t.status}</span></td>
-                                    <td style={{textAlign:'center'}}>{t.priority}</td>
-                                    <td style={{textAlign:'center'}}>{t.module || '-'}</td>
-                                    <td style={{textAlign:'center'}}>{t.qc_tester || '-'}</td>
-                                    <td style={{textAlign:'center'}}>{t.is_refix ? <span className="qcq-fail">{t.cycle_count > 0 ? `${t.cycle_count}x` : 'Refix'}</span> : '-'}</td>
-                                    <td style={{textAlign:'center'}}>{t.dev_estimate_hours || '-'}</td>
-                                    <td style={{textAlign:'center'}}>{t.actual_dev_hours || '-'}</td>
-                                    <td style={{textAlign:'center'}}>{t.eta || '-'}</td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        ))}
-                        </>);
+                        return <RichTicketTable tickets={baseTickets} scrollMax="60vh" key={dev.name} />;
                       })()}
                     </div>
                   )}
@@ -1264,6 +1405,7 @@ export default function QAActivitySummary() {
           </div>
         )}
       </main>
+      {assignDrawer && <AssignDrawer person={assignDrawer} onClose={() => setAssignDrawer(null)} />}
     </div>
   );
 }

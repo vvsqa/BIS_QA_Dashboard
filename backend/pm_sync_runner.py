@@ -66,6 +66,14 @@ def run_pm_api_sync(
             health.record_failure(api_message, duration)
             return False, api_message, {}, "api"
 
+        # Refresh the developer id->name map (v2 returns dev fields as numeric ids) before mapping,
+        # so map_api_fields resolves them to names. Cheap (TTL-guarded), never raises.
+        try:
+            import pm_user_map
+            pm_user_map.rebuild(db, tickets)
+        except Exception as e:
+            logger.warning("pm_user_map rebuild during sync failed: %s", e)
+
         mapped_tickets = client.map_api_fields(tickets)
         active = [t for t in mapped_tickets if not _is_closed_status(t.get("status"))]
         closed = [t for t in mapped_tickets if _is_closed_status(t.get("status"))]

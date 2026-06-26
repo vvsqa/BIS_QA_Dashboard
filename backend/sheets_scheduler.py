@@ -109,6 +109,13 @@ class SheetsSyncScheduler:
                     logger.error(f"Sync failed for {team}: {e}", exc_info=True)
                     results[team] = {'error': str(e)}
             
+            # Clear computed responses so freshly-synced timesheet data shows immediately.
+            try:
+                from pm_live_data import clear_response_cache
+                clear_response_cache()
+            except Exception as ce:
+                logger.warning(f"Sheets scheduled sync: cache invalidation failed: {ce}")
+
             self.last_sync_time = datetime.utcnow()
             self.last_sync_status = {
                 'success': True,

@@ -16930,6 +16930,19 @@ a.qcq-plan-tag-ok:hover { background: rgba(34, 197, 94, 0.22); }
   margin-right: 6px;
 }
 
+/* Complexity factor breakdown table (expanded row) */
+.qcq-cx-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+.qcq-cx-table td {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-color, #334155);
+  vertical-align: middle;
+}
+.qcq-cx-table tr:last-child td { border-bottom: none; }
+
 /* Charts row */
 .qcq-charts-row {
   display: grid;
@@ -18045,6 +18058,16 @@ a.qcq-plan-tag-ok:hover { background: rgba(34, 197, 94, 0.22); }
 }
 .tspd-chart-body { height: 220px; position: relative; }
 
+/* ---- Build Quality module ---- */
+.bq-delta { font-size: 0.66rem; font-weight: 600; margin-top: 3px; }
+.bq-delta-good { color: var(--accent-green); }
+.bq-delta-bad { color: var(--accent-red); }
+.bq-delta-flat { color: var(--text-muted); }
+.bq-refix-badge {
+  display: inline-block; min-width: 26px; padding: 1px 7px; border-radius: 10px;
+  color: #fff; font-weight: 700; font-size: 0.72rem;
+}
+
 .tspd-heatmap-wrap {
   background: var(--bg-secondary, rgba(100,116,139,0.06));
   border: 1px solid var(--border-color, rgba(148,163,184,0.18));
@@ -18152,3 +18175,108 @@ a.qcq-plan-tag-ok:hover { background: rgba(34, 197, 94, 0.22); }
 .emp-period-badge.emp-live { background: rgba(34,197,94,0.16); color: var(--accent-green); }
 .emp-period-badge.emp-final { background: rgba(100,116,139,0.18); color: var(--text-secondary); }
 
+
+/* ===== Performance Export ===== */
+.pexp-grid{display:grid;grid-template-columns:minmax(320px,1fr) minmax(300px,420px);gap:20px;padding:24px;align-items:start}
+@media (max-width:900px){.pexp-grid{grid-template-columns:1fr}}
+.pexp-card{background:var(--bg-card);border:1px solid var(--border-color);border-radius:14px;padding:18px}
+.pexp-card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+.pexp-card-head h3{font-size:15px;font-weight:600;color:var(--text-primary)}
+.pexp-count{font-size:12px;color:var(--accent-teal);font-weight:600}
+.pexp-search{width:100%;margin-bottom:12px}
+.pexp-emp-list{max-height:420px;overflow-y:auto;border:1px solid var(--border-color);border-radius:10px;padding:8px}
+.pexp-group{margin-bottom:10px}
+.pexp-group-head{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--text-muted);font-weight:700;padding:4px 6px;position:sticky;top:0;background:var(--bg-secondary)}
+.pexp-emp{display:flex;align-items:center;gap:8px;padding:5px 6px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--text-secondary)}
+.pexp-emp:hover{background:var(--bg-glass)}
+.pexp-emp input{cursor:pointer;accent-color:var(--accent-teal)}
+.pexp-emp-name{flex:1}
+.pexp-emp-id{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--text-muted)}
+.pexp-muted{color:var(--text-muted);font-size:12px;margin-top:6px}
+.pexp-warn{color:var(--accent-amber);font-size:12px;margin-top:8px}
+.pexp-clear{margin-top:10px}
+.pexp-dates{display:flex;gap:12px;margin-top:12px}
+.pexp-dates label{display:flex;flex-direction:column;gap:4px;font-size:12px;color:var(--text-muted);flex:1}
+.pexp-metrics-note{margin:16px 0;padding:12px;background:var(--bg-glass);border-radius:10px;font-size:12px;color:var(--text-secondary);line-height:1.5}
+.pexp-download{width:100%;margin-top:4px}
+
+/* ===== Automation Dashboard ===== */
+.auto-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;padding:0 0 16px}
+.auto-kpi{background:var(--bg-card);border:1px solid var(--border-color);border-top:3px solid var(--accent-teal);border-radius:12px;padding:14px 16px}
+.auto-kpi-val{font-size:24px;font-weight:700;color:var(--text-primary);line-height:1.1}
+.auto-kpi-lbl{font-size:12px;color:var(--text-muted);margin-top:4px}
+.auto-grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+@media (max-width:1000px){.auto-grid2{grid-template-columns:1fr}}
+.auto-table{width:100%;border-collapse:collapse;font-size:13px}
+.auto-table th{text-align:left;color:var(--text-muted);font-weight:600;padding:7px 10px;border-bottom:1px solid var(--border-color);position:sticky;top:0;background:var(--bg-secondary)}
+.auto-table td{padding:6px 10px;border-bottom:1px solid var(--border-color);color:var(--text-secondary)}
+.auto-table tr:hover td{background:var(--bg-glass)}
+.auto-muted{color:var(--text-muted);font-size:12px}
+.auto-banner{background:rgba(20,184,166,0.12);border:1px solid var(--accent-teal);color:var(--text-secondary);padding:10px 14px;border-radius:10px;margin-bottom:12px;font-size:13px}
+.auto-actions{display:flex;justify-content:flex-end;margin-bottom:12px}
+
+/* ===== Ticket Movement: QA Load band ===== */
+.tm-qa-load{display:flex;align-items:stretch;gap:10px;flex-wrap:wrap}
+.tm-qa-tile{flex:1;min-width:170px;background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;padding:14px 16px;border-left:4px solid var(--accent-blue)}
+.tm-qa-in{border-left-color:#3b82f6}
+.tm-qa-bis{border-left-color:#a855f7}
+.tm-qa-closed{border-left-color:#22c55e}
+.tm-qa-val{font-size:30px;font-weight:700;color:var(--text-primary);line-height:1}
+.tm-qa-lbl{font-size:13px;font-weight:600;color:var(--text-secondary);margin-top:6px}
+.tm-qa-sub{font-size:11px;color:var(--text-muted);margin-top:3px}
+.tm-qa-cyc{font-size:12px;color:var(--accent-teal);font-weight:600;margin-top:8px}
+.tm-qa-arrow{display:flex;align-items:center;color:var(--text-muted);font-size:22px;font-weight:700}
+@media (max-width:760px){.tm-qa-arrow{display:none}}
+.tm-qa-excl{font-size:11px;color:var(--text-muted);margin-top:3px;font-style:italic}
+.tm-qa-cycrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.tm-qa-chip{font-size:11px;font-weight:600;padding:2px 7px;border-radius:10px;border:1px solid var(--border-color)}
+.tm-qa-chip-qa{color:#14b8a6;border-color:rgba(20,184,166,.4)}
+.tm-qa-chip-bis{color:#f59e0b;border-color:rgba(245,158,11,.4)}
+.tm-qa-chip-tot{color:#a78bfa;border-color:rgba(167,139,250,.4)}
+.tm-cycle-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-top:8px}
+.tm-cyc-kpis{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.tm-cyc-kpi{background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;padding:12px 16px;min-width:150px}
+.tm-cyc-val{font-size:24px;font-weight:700;color:var(--text-primary)}
+.tm-cyc-lbl{font-size:12px;color:var(--text-muted);margin-top:3px}
+.tm-cyc-delta{font-size:12px;font-weight:600;margin-top:6px}
+.tm-cyc-delta.good{color:#22c55e}
+.tm-cyc-delta.bad{color:#ef4444}
+
+/* ===== Automation Team: member cards ===== */
+.tm-mem-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:16px;margin-bottom:18px}
+.tm-mem-card{background:var(--bg-card);border:1px solid var(--border-color);border-radius:16px;padding:18px;position:relative;overflow:hidden;transition:transform .15s ease,box-shadow .15s ease}
+.tm-mem-card:hover{transform:translateY(-2px);box-shadow:0 12px 30px -12px rgba(0,0,0,.5)}
+.tm-mem-card::before{content:"";position:absolute;top:0;left:0;right:0;height:4px;background:var(--c)}
+.tm-mem-head{display:flex;align-items:center;gap:12px;margin-bottom:14px}
+.tm-mem-avatar{width:44px;height:44px;border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:15px;flex-shrink:0;box-shadow:0 4px 12px -4px var(--c)}
+.tm-mem-name{font-weight:600;color:var(--text-primary);font-size:15px}
+.tm-mem-sub{font-size:12px;color:var(--text-muted);margin-top:2px}
+.tm-mem-big{font-size:42px;font-weight:800;color:var(--text-primary);line-height:1;display:flex;align-items:baseline;gap:8px;letter-spacing:-1px}
+.tm-mem-unit{font-size:12px;font-weight:500;color:var(--text-muted);letter-spacing:0}
+.tm-mem-spark{height:48px;margin-top:14px}
+.tm-spark-empty{height:48px;display:flex;align-items:center;color:var(--text-muted);font-size:11px;font-style:italic}
+.tm-plan-bar{height:8px;border-radius:6px;background:var(--bg-glass);overflow:hidden;margin-top:14px}
+.tm-plan-fill{height:100%;border-radius:6px;transition:width .3s ease}
+.tm-chip{display:inline-block;padding:2px 9px;border-radius:10px;background:var(--bg-glass);border:1px solid var(--border-color);font-size:11px;color:var(--text-secondary);white-space:nowrap}
+
+/* ===== Automation Overview / Modules redesign ===== */
+.auto-donut-center{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none}
+.auto-donut-val{font-size:36px;font-weight:800;color:var(--text-primary);line-height:1;letter-spacing:-1px}
+.auto-donut-lbl{font-size:12px;color:var(--text-muted);margin-top:3px;text-transform:uppercase;letter-spacing:.5px}
+.auto-util-legend{display:flex;justify-content:center;gap:26px;margin-top:12px;font-size:13px;color:var(--text-secondary)}
+.auto-util-legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:7px;vertical-align:middle}
+.auto-util-legend b{color:var(--text-primary)}
+
+.auto-tbl{width:100%;border-collapse:collapse;font-size:13px}
+.auto-tbl th{color:var(--text-muted);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;padding:11px 14px;border-bottom:2px solid var(--border-color);text-align:left;position:sticky;top:0;background:var(--bg-secondary);white-space:nowrap}
+.auto-tbl th.num{text-align:right}
+.auto-tbl td{padding:11px 14px;border-bottom:1px solid var(--border-color);color:var(--text-secondary)}
+.auto-tbl td.num{text-align:right;font-variant-numeric:tabular-nums}
+.auto-tbl td.mod{font-weight:600;color:var(--text-primary)}
+.auto-tbl td.strong{font-weight:700;color:var(--accent-teal)}
+.auto-tbl tbody tr{transition:background .12s ease}
+.auto-tbl tbody tr:hover td{background:var(--bg-glass)}
+.cov{display:flex;align-items:center;gap:9px;min-width:130px}
+.cov-bar{flex:1;height:7px;border-radius:5px;background:var(--bg-glass);overflow:hidden}
+.cov-fill{height:100%;border-radius:5px;background:linear-gradient(90deg,#14b8a6,#22c55e)}
+.cov-pct{font-variant-numeric:tabular-nums;font-size:12px;color:var(--text-secondary);min-width:44px;text-align:right}

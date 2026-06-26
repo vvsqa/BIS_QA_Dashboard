@@ -1507,12 +1507,16 @@ BIS_STATUS = 'BIS Testing'
 BIS_EXIT_STATUSES = ['Closed', 'Moved to Live', 'Completed']
 
 
-def get_bis_to_closed_tracking(db: Session, today: Optional[date] = None) -> Dict:
+def get_bis_to_closed_tracking(db: Session, today: Optional[date] = None,
+                               start: Optional[date] = None, end: Optional[date] = None) -> Dict:
     """
     Track tickets from BIS Testing through every subsequent status until Closed.
     Each status leg (BIS Testing → Approved for Live → Moved to Live → Closed) is
     tracked separately with its own duration, giving full visibility into the
     post-QC journey.
+
+    When start/end are given, the closed-ticket average is restricted to tickets whose
+    close event falls inside that window (so the metric respects the dashboard period).
     """
     today = today or date.today()
 
@@ -1607,6 +1611,9 @@ def get_bis_to_closed_tracking(db: Session, today: Optional[date] = None) -> Dic
 
         if is_closed and close_event_dt:
             close_d = close_event_dt.date() if isinstance(close_event_dt, datetime) else close_event_dt
+            # Restrict to the selected window (by close date) so the average follows the dashboard period.
+            if (start and close_d < start) or (end and close_d > end):
+                continue
             total_leg_days = max(0, (close_d - bis_d).days)
             total_days += total_leg_days
             closed_count += 1

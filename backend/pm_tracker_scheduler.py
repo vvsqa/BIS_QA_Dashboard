@@ -47,6 +47,12 @@ def _scheduled_sync_job() -> None:
     db = SessionLocal()
     try:
         run_pm_api_sync(db, start_time=time.time())
+        # Drop the live caches so the dashboard reflects the just-synced DB immediately.
+        try:
+            from pm_live_data import invalidate_pm_cache
+            invalidate_pm_cache()
+        except Exception as e:
+            logger.warning("PM scheduled sync: cache invalidation failed: %s", e)
     except Exception as e:
         logger.exception("PM scheduled sync failed: %s", e)
         health.record_failure(str(e))

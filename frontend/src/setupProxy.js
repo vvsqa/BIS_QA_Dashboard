@@ -42,6 +42,10 @@ const apiPaths = [
   '/qa-flow',
   '/ticket-movement',
   '/ticket-speed',
+  '/build-quality',
+  '/reviews',
+  '/qa-estimation',
+  '/performers',
 ];
 
 function isApiPath(pathname) {

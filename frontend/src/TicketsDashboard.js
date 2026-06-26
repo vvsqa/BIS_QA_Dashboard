@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Bar, Doughnut } from "react-chartjs-2";
 import { useTableSort, SortableHeader } from "./useTableSort";
+import { useComplexityMap, ComplexityBadge } from "./complexity";
 import { formatDisplayDate, formatDisplayDateTime, formatDisplayDateWithDay } from "./dateUtils";
 import { TicketExternalLink } from "./ticketUtils";
 import { apiFetch, API_BASE } from "./api";
@@ -768,30 +769,33 @@ function TicketsDashboard() {
   };
 
   // Table sorting for ETA alerts
-  const { sortedData: sortedOverdue, sortConfig: overdueSortConfig, handleSort: handleOverdueSort } = useTableSort(etaAlerts?.overdue || [], {
+  // Complexity ratings — merged into every ticket list by ticket_id so the column sorts/filters natively.
+  const { withComplexity } = useComplexityMap();
+
+  const { sortedData: sortedOverdue, sortConfig: overdueSortConfig, handleSort: handleOverdueSort } = useTableSort(withComplexity(etaAlerts?.overdue || []), {
     defaultSortKey: 'days_overdue',
     defaultSortDirection: 'desc'
   });
 
-  const { sortedData: sortedDueThisWeek, sortConfig: dueThisWeekSortConfig, handleSort: handleDueThisWeekSort } = useTableSort(etaAlerts?.due_this_week || [], {
+  const { sortedData: sortedDueThisWeek, sortConfig: dueThisWeekSortConfig, handleSort: handleDueThisWeekSort } = useTableSort(withComplexity(etaAlerts?.due_this_week || []), {
     defaultSortKey: 'days_until_eta',
     defaultSortDirection: 'asc'
   });
 
   // Table sorting for team details
-  const { sortedData: sortedTeamTickets, sortConfig: teamSortConfig, handleSort: handleTeamSort } = useTableSort(teamDetails?.tickets || [], {
+  const { sortedData: sortedTeamTickets, sortConfig: teamSortConfig, handleSort: handleTeamSort } = useTableSort(withComplexity(teamDetails?.tickets || []), {
     defaultSortKey: 'ticket_id',
     defaultSortDirection: 'desc'
   });
 
   // Table sorting for assignee details
-  const { sortedData: sortedAssigneeTickets, sortConfig: assigneeSortConfig, handleSort: handleAssigneeSort } = useTableSort(assigneeDetails?.tickets || [], {
+  const { sortedData: sortedAssigneeTickets, sortConfig: assigneeSortConfig, handleSort: handleAssigneeSort } = useTableSort(withComplexity(assigneeDetails?.tickets || []), {
     defaultSortKey: 'ticket_id',
     defaultSortDirection: 'desc'
   });
 
   // Table sorting for filtered tickets list
-  const { sortedData: sortedFilteredTickets, sortConfig: filteredSortConfig, handleSort: handleFilteredSort } = useTableSort(filteredTickets, {
+  const { sortedData: sortedFilteredTickets, sortConfig: filteredSortConfig, handleSort: handleFilteredSort } = useTableSort(withComplexity(filteredTickets), {
     defaultSortKey: 'ticket_id',
     defaultSortDirection: 'desc'
   });
@@ -1402,6 +1406,7 @@ function TicketsDashboard() {
                           <tr>
                             <SortableHeader columnKey="ticket_id" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Ticket</SortableHeader>
                             <th>Title</th>
+                            <SortableHeader columnKey="complexity_score" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Complexity</SortableHeader>
                             <SortableHeader columnKey="status" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Status</SortableHeader>
                             <SortableHeader columnKey="priority" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Priority</SortableHeader>
                             <SortableHeader columnKey="team" onSort={handleOverdueSort} sortConfig={overdueSortConfig}>Team</SortableHeader>
@@ -1420,6 +1425,7 @@ function TicketsDashboard() {
                                 <TicketExternalLink ticketId={ticket.ticket_id} />
                               </td>
                               <td className="ticket-title-cell" title={ticket.title || ''}>{ticket.title ? (ticket.title.length > 50 ? ticket.title.slice(0, 50) + '…' : ticket.title) : '—'}</td>
+                              <td style={{textAlign:'center'}}><ComplexityBadge level={ticket.complexity} overridden={ticket.complexity_overridden} title={ticket.complexity_score != null ? `Complexity ${ticket.complexity_score}/100` : ''} size="sm" /></td>
                               <td><span className="status-badge">{ticket.status}</span></td>
                               <td>
                                 <span className="priority-badge" title={ticket.priority_changes_count > 0 ? `Priority changed ${ticket.priority_changes_count} time(s)` : ''}>
@@ -1452,6 +1458,7 @@ function TicketsDashboard() {
                           <tr>
                             <SortableHeader columnKey="ticket_id" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Ticket</SortableHeader>
                             <th>Title</th>
+                            <SortableHeader columnKey="complexity_score" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Complexity</SortableHeader>
                             <SortableHeader columnKey="status" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Status</SortableHeader>
                             <SortableHeader columnKey="priority" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Priority</SortableHeader>
                             <SortableHeader columnKey="team" onSort={handleDueThisWeekSort} sortConfig={dueThisWeekSortConfig}>Team</SortableHeader>
@@ -1470,6 +1477,7 @@ function TicketsDashboard() {
                                 <TicketExternalLink ticketId={ticket.ticket_id} />
                               </td>
                               <td className="ticket-title-cell" title={ticket.title || ''}>{ticket.title ? (ticket.title.length > 50 ? ticket.title.slice(0, 50) + '…' : ticket.title) : '—'}</td>
+                              <td style={{textAlign:'center'}}><ComplexityBadge level={ticket.complexity} overridden={ticket.complexity_overridden} title={ticket.complexity_score != null ? `Complexity ${ticket.complexity_score}/100` : ''} size="sm" /></td>
                               <td><span className="status-badge">{ticket.status}</span></td>
                               <td>
                                 <span className="priority-badge" title={ticket.priority_changes_count > 0 ? `Priority changed ${ticket.priority_changes_count} time(s)` : ''}>
@@ -1620,6 +1628,7 @@ function TicketsDashboard() {
                     <tr>
                       <SortableHeader columnKey="ticket_id" onSort={handleTeamSort} sortConfig={teamSortConfig}>Ticket ID</SortableHeader>
                       <th>Title</th>
+                      <SortableHeader columnKey="complexity_score" onSort={handleTeamSort} sortConfig={teamSortConfig}>Complexity</SortableHeader>
                       <SortableHeader columnKey="status" onSort={handleTeamSort} sortConfig={teamSortConfig}>Status</SortableHeader>
                       <SortableHeader columnKey="priority" onSort={handleTeamSort} sortConfig={teamSortConfig}>Priority</SortableHeader>
                       <SortableHeader columnKey="assignee" onSort={handleTeamSort} sortConfig={teamSortConfig}>Assignee</SortableHeader>
@@ -1641,6 +1650,7 @@ function TicketsDashboard() {
                           <TicketExternalLink ticketId={ticket.ticket_id} />
                         </td>
                         <td className="ticket-title-cell" title={ticket.title || ''}>{ticket.title ? (ticket.title.length > 50 ? ticket.title.slice(0, 50) + '…' : ticket.title) : '—'}</td>
+                        <td style={{textAlign:'center'}}><ComplexityBadge level={ticket.complexity} overridden={ticket.complexity_overridden} title={ticket.complexity_score != null ? `Complexity ${ticket.complexity_score}/100` : ''} size="sm" /></td>
                         <td><span className="status-badge">{ticket.status}</span></td>
                         <td>
                           <span className="priority-badge" title={ticket.priority_changes_count > 0 ? `Priority changed ${ticket.priority_changes_count} time(s)` : ''}>
@@ -1732,6 +1742,7 @@ function TicketsDashboard() {
                     <tr>
                       <SortableHeader columnKey="ticket_id" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Ticket ID</SortableHeader>
                       <th>Title</th>
+                      <SortableHeader columnKey="complexity_score" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Complexity</SortableHeader>
                       <SortableHeader columnKey="status" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Status</SortableHeader>
                       <SortableHeader columnKey="priority" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Priority</SortableHeader>
                       <SortableHeader columnKey="team" onSort={handleAssigneeSort} sortConfig={assigneeSortConfig}>Team</SortableHeader>
@@ -1753,6 +1764,7 @@ function TicketsDashboard() {
                           <TicketExternalLink ticketId={ticket.ticket_id} />
                         </td>
                         <td className="ticket-title-cell" title={ticket.title || ''}>{ticket.title ? (ticket.title.length > 50 ? ticket.title.slice(0, 50) + '…' : ticket.title) : '—'}</td>
+                        <td style={{textAlign:'center'}}><ComplexityBadge level={ticket.complexity} overridden={ticket.complexity_overridden} title={ticket.complexity_score != null ? `Complexity ${ticket.complexity_score}/100` : ''} size="sm" /></td>
                         <td><span className="status-badge">{ticket.status}</span></td>
                         <td>
                           <span className="priority-badge" title={ticket.priority_changes_count > 0 ? `Priority changed ${ticket.priority_changes_count} time(s)` : ''}>
@@ -1794,6 +1806,7 @@ function TicketsDashboard() {
                   <tr>
                     <SortableHeader columnKey="ticket_id" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Ticket ID</SortableHeader>
                     <th>Title</th>
+                    <SortableHeader columnKey="complexity_score" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Complexity</SortableHeader>
                     <SortableHeader columnKey="status" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Status</SortableHeader>
                     <SortableHeader columnKey="priority" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Priority</SortableHeader>
                     <SortableHeader columnKey="team" onSort={handleFilteredSort} sortConfig={filteredSortConfig}>Team</SortableHeader>
@@ -1823,6 +1836,7 @@ function TicketsDashboard() {
                           <TicketExternalLink ticketId={ticket.ticket_id} />
                         </td>
                         <td className="ticket-title-cell" title={ticket.title || ''}>{ticket.title ? (ticket.title.length > 50 ? ticket.title.slice(0, 50) + '…' : ticket.title) : '—'}</td>
+                        <td style={{textAlign:'center'}}><ComplexityBadge level={ticket.complexity} overridden={ticket.complexity_overridden} title={ticket.complexity_score != null ? `Complexity ${ticket.complexity_score}/100` : ''} size="sm" /></td>
                         <td><span className="status-badge">{ticket.status}</span></td>
                         <td>
                           <span className="priority-badge" title={ticket.priority_changes_count > 0 ? `Priority changed ${ticket.priority_changes_count} time(s)` : (ticket.priority || 'Unspecified')}>

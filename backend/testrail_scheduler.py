@@ -103,6 +103,13 @@ def _scheduled_sync_job() -> None:
     _last_sync_result = result
     if result.get("success"):
         logger.info("Scheduled TestRail sync completed successfully")
+        # Refresh the TestRail plan map + clear computed responses so synced plans show now.
+        try:
+            from pm_live_data import force_refresh_testrail, clear_response_cache
+            clear_response_cache()
+            force_refresh_testrail()
+        except Exception as e:
+            logger.warning("TestRail scheduled sync: cache invalidation failed: %s", e)
     else:
         logger.warning("Scheduled TestRail sync failed: %s", result.get("error"))
 

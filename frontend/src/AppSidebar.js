@@ -9,10 +9,7 @@ export default function AppSidebar() {
   const [theme, setTheme] = useTheme();
   const toggleTheme = () => setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   const path = location.pathname;
-  const [generating, setGenerating] = useState(null);
   const [syncing, setSyncing] = useState(false);
-  const [customStart, setCustomStart] = useState('');
-  const [customEnd, setCustomEnd] = useState('');
 
   const globalRefresh = async () => {
     setSyncing(true);
@@ -22,30 +19,6 @@ export default function AppSidebar() {
     } catch (err) {
       console.error('Refresh failed:', err);
       setSyncing(false);
-    }
-  };
-
-  const downloadReport = async (type) => {
-    setGenerating(type);
-    try {
-      let url = `${API_BASE}/live/reports/${type}`;
-      if (customStart && customEnd) {
-        url += `?start_date=${customStart}&end_date=${customEnd}`;
-      }
-      const res = await fetch(url);
-      if (res.ok) {
-        const blob = await res.blob();
-        const blobUrl = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = blobUrl;
-        a.download = (res.headers.get('content-disposition')?.split('filename=')[1] || `${type}_report.xlsx`).replace(/"/g, '');
-        a.click();
-        window.URL.revokeObjectURL(blobUrl);
-      }
-    } catch (err) {
-      console.error('Report download failed:', err);
-    } finally {
-      setGenerating(null);
     }
   };
 
@@ -133,11 +106,25 @@ export default function AppSidebar() {
           <span className="nav-label">Employee Performance</span>
         </Link>
 
+        <Link to="/qa-estimation" className={`nav-item ${path === '/qa-estimation' ? 'active' : ''}`} title="QA Planning & Review">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M9 7h6M9 11h6M9 15h4" /><rect x="4" y="3" width="16" height="18" rx="2" /><path d="M16 17l2 2 3-3" />
+          </svg>
+          <span className="nav-label">QA Planning &amp; Review</span>
+        </Link>
+
         <Link to="/ticket-speed" className={`nav-item ${path === '/ticket-speed' ? 'active' : ''}`} title="Ticket Speed">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
           </svg>
           <span className="nav-label">Ticket Speed</span>
+        </Link>
+
+        <Link to="/build-quality" className={`nav-item ${path === '/build-quality' ? 'active' : ''}`} title="Build Quality">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9 12l2 2 4-4" />
+          </svg>
+          <span className="nav-label">Build Quality</span>
         </Link>
 
         <Link to="/ticket-calendar" className={`nav-item ${path === '/ticket-calendar' ? 'active' : ''}`} title="Ticket Calendar">
@@ -165,49 +152,15 @@ export default function AppSidebar() {
           <span className="nav-label">Calendar</span>
         </Link>
 
-        <div className="sidebar-section-label">Reports</div>
-        <div className="sidebar-reports" style={{ padding: '4px 12px 8px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          {/* Date pickers */}
-          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-            <input type="date" value={customStart} onChange={e => setCustomStart(e.target.value)}
-              className="qcq-search-input" style={{ fontSize: '0.7rem', padding: '3px 4px', flex: 1 }} />
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.7rem' }}>to</span>
-            <input type="date" value={customEnd} onChange={e => setCustomEnd(e.target.value)}
-              className="qcq-search-input" style={{ fontSize: '0.7rem', padding: '3px 4px', flex: 1 }} />
-          </div>
-          {/* Quick presets */}
-          <div style={{ display: 'flex', gap: '3px' }}>
-            <button className="btn btn-sm btn-secondary" style={{ flex: 1, fontSize: '0.68rem', padding: '3px' }}
-              onClick={() => { const t = new Date(); const f = new Date(t); f.setDate(f.getDate() - 7); setCustomStart(f.toISOString().split('T')[0]); setCustomEnd(t.toISOString().split('T')[0]); }}>
-              Past 7 days
-            </button>
-            <button className="btn btn-sm btn-secondary" style={{ flex: 1, fontSize: '0.68rem', padding: '3px' }}
-              onClick={() => { const t = new Date(); const f = new Date(t); f.setDate(f.getDate() - 30); setCustomStart(f.toISOString().split('T')[0]); setCustomEnd(t.toISOString().split('T')[0]); }}>
-              Past 30 days
-            </button>
-          </div>
-          {/* Download buttons */}
-          <div style={{ display: 'flex', gap: '3px' }}>
-            <button className="btn btn-sm btn-primary" style={{ flex: 1, fontSize: '0.72rem', padding: '5px' }}
-              onClick={() => downloadReport('weekly')} disabled={!!generating}>
-              {generating === 'weekly' ? 'Generating...' : 'QA Report'}
-            </button>
-            <button className="btn btn-sm btn-primary" style={{ flex: 1, fontSize: '0.72rem', padding: '5px' }}
-              onClick={() => downloadReport('dev-weekly')} disabled={!!generating}>
-              {generating === 'dev-weekly' ? 'Generating...' : 'Dev Report'}
-            </button>
-          </div>
-          <div style={{ display: 'flex', gap: '3px' }}>
-            <button className="btn btn-sm btn-primary" style={{ flex: 1, fontSize: '0.72rem', padding: '5px', background: 'var(--accent-teal, #14b8a6)' }}
-              onClick={() => downloadReport('automation-weekly')} disabled={!!generating}>
-              {generating === 'automation-weekly' ? 'Generating...' : 'Automation Report'}
-            </button>
-          </div>
-          {customStart && customEnd
-            ? <span style={{ fontSize: '0.65rem', color: 'var(--accent-teal)' }}>{customStart} to {customEnd}</span>
-            : <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>Select dates or use presets</span>
-          }
-        </div>
+        <Link to="/reports-center" className={`nav-item ${path === '/reports-center' ? 'active' : ''}`} title="Reports — QA, Dev & Automation (weekly / monthly / custom)">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+            <line x1="8" y1="13" x2="16" y2="13" />
+            <line x1="8" y1="17" x2="16" y2="17" />
+          </svg>
+          <span className="nav-label">Reports</span>
+        </Link>
       </nav>
     </aside>
   );

@@ -5,6 +5,7 @@ import {
 } from 'chart.js';
 import { API_BASE } from './api';
 import AppSidebar from './AppSidebar';
+import { useComplexityMap, ComplexityBadge, ComplexityFilter } from './complexity';
 import './dashboard.css';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend);
@@ -33,7 +34,7 @@ const heatBg = (v, max, invert = false) => {
   return `hsla(${hue}, 68%, 45%, ${0.18 + 0.55 * t})`;
 };
 
-const PM_TICKET_URL = 'https://www.bissafety.app/pm/tickets#!/';
+const PM_TICKET_URL = 'https://pm.bissafety.app/tickets/';
 
 const PERIOD_KINDS = [
   { value: 'month', label: 'Month' },
@@ -70,7 +71,7 @@ const dayColor = (d) => (d >= 7 ? 'var(--accent-red)' : d >= 3 ? 'var(--accent-a
 const fmt = (v, suffix = '') => (v === null || v === undefined ? '–' : `${v}${suffix}`);
 
 // Expanded per-ticket journey (lazy-loaded)
-function TicketJourney({ ticketId }) {
+export function TicketJourney({ ticketId }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
@@ -133,6 +134,7 @@ function SpeedRow({ row }) {
       <tr className="qcq-row" style={{ cursor: 'pointer' }} onClick={() => setOpen(o => !o)}>
         <td style={{ textAlign: 'center' }}><a href={`${PM_TICKET_URL}${row.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link" onClick={e => e.stopPropagation()}>#{row.ticket_id}</a></td>
         <td style={{ maxWidth: '240px', whiteSpace: 'normal', textAlign: 'left' }}>{row.title} <span style={{ color: 'var(--text-muted)', fontSize: '0.65rem' }}>{open ? '▲' : '▼'}</span></td>
+        <td style={{ textAlign: 'center' }}><ComplexityBadge level={row.complexity} overridden={row.complexity_overridden} title={row.complexity_score != null ? `Complexity ${row.complexity_score}/100` : ''} size="sm" /></td>
         <td style={{ textAlign: 'center' }}>{row.module}</td>
         <td style={{ textAlign: 'center' }}>{row.qc_tester}</td>
         <td style={{ textAlign: 'center' }}>{row.current_status}</td>
@@ -143,15 +145,16 @@ function SpeedRow({ row }) {
         <td style={{ textAlign: 'center', color: dayColor(row.current_stage_age || 0) }}>{fmt(row.current_stage_age)}</td>
       </tr>
       {open && (
-        <tr className="qcq-expand-row"><td colSpan={10} style={{ padding: '8px 14px' }}><TicketJourney ticketId={row.ticket_id} /></td></tr>
+        <tr className="qcq-expand-row"><td colSpan={11} style={{ padding: '8px 14px' }}><TicketJourney ticketId={row.ticket_id} /></td></tr>
       )}
     </React.Fragment>
   );
 }
 
-// Pictorial status flow for a single ticket (the "Ticket Flow" tab)
+// Pictorial status flow for a single ticket (the "Ticket Flow" tab).
+// Exported so the QC Queue ticket-lookup card can embed the same status-flow visual.
 const DELAY_DAYS = 5;
-function TicketFlow({ ticketId }) {
+export function TicketFlow({ ticketId }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState(null);
@@ -294,6 +297,8 @@ export default function TicketSpeed() {
   const [modFilter, setModFilter] = useState('');
   const [qcFilter, setQcFilter] = useState('');
   const [search, setSearch] = useState('');
+  const [cxFilter, setCxFilter] = useState('');
+  const { withComplexity } = useComplexityMap();
   const [sortKey, setSortKey] = useState('lead_time_days');
   const [sortDir, setSortDir] = useState('desc');
   const [view, setView] = useState('overview');   // 'overview' | 'flow'
@@ -311,11 +316,12 @@ export default function TicketSpeed() {
   }, [kind, offset, scope]);
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  const rowsAll = data?.rows || [];
+  const rowsAll = withComplexity(data?.rows || []);
   const modules = [...new Set(rowsAll.map(r => r.module))].sort();
   const testers = [...new Set(rowsAll.map(r => r.qc_tester))].sort();
   let rows = rowsAll.filter(r =>
     (!modFilter || r.module === modFilter) && (!qcFilter || r.qc_tester === qcFilter) &&
+    (!cxFilter || (r.complexity || '') === cxFilter) &&
     (!search || String(r.ticket_id).includes(search) || (r.title || '').toLowerCase().includes(search.toLowerCase()))
   );
   rows = [...rows].sort((a, b) => {
@@ -539,6 +545,7 @@ export default function TicketSpeed() {
               <input className="qcq-search-input" placeholder="Search ticket / title…" value={search} onChange={e => setSearch(e.target.value)} style={{ minWidth: '180px' }} />
               <select className="qcq-search-input" value={modFilter} onChange={e => setModFilter(e.target.value)}><option value="">All modules</option>{modules.map(m => <option key={m} value={m}>{m}</option>)}</select>
               <select className="qcq-search-input" value={qcFilter} onChange={e => setQcFilter(e.target.value)}><option value="">All QC testers</option>{testers.map(t => <option key={t} value={t}>{t}</option>)}</select>
+              <ComplexityFilter value={cxFilter} onChange={setCxFilter} />
               <span style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{rows.length} of {rowsAll.length}</span>
               <button className="btn btn-sm btn-primary" onClick={exportExcel} disabled={rows.length === 0} style={{ marginLeft: 'auto' }}>Export to Excel</button>
             </div>
@@ -548,6 +555,7 @@ export default function TicketSpeed() {
                 <thead><tr>
                   <Th k="ticket_id">Ticket</Th>
                   <th style={{ textAlign: 'left' }}>Title</th>
+                  <Th k="complexity_score">Complexity</Th>
                   <Th k="module">Module</Th>
                   <Th k="qc_tester">QC Tester</Th>
                   <Th k="current_status">Status</Th>

@@ -223,6 +223,10 @@ def upsert_tickets(
                     )
                     db.add(status_history)
                     logger.debug(f"Status change tracked for ticket {ticket_id}: {old_status} -> {new_status} ({duration_hours}h)")
+                    # Durable refix counter: entering 'QC Review Fail' is one more retest cycle. Stored on
+                    # the ticket so the count persists across JSON-tracker resets and feeds every metric.
+                    if (new_status or '').strip().lower() == 'qc review fail':
+                        existing.refix_count = (getattr(existing, 'refix_count', 0) or 0) + 1
 
                 # Track priority change if priority changed
                 new_priority = parsed_data.get('priority')

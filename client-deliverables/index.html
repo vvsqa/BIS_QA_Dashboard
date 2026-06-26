@@ -1,0 +1,1227 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>QA Live Metrics — PM Tool Dashboard (Prototype)</title>
+<!--
+  ============================================================================
+  QA LIVE METRICS DASHBOARD — CLIENT PROTOTYPE
+  ----------------------------------------------------------------------------
+  PURPOSE
+    A self-contained, high-fidelity prototype of the QA dashboard the client
+    will build INSIDE their own PM tool. It (1) demonstrates the target UI with
+    realistic SAMPLE data, and (2) documents the exact DATA-PROCESSING LOGIC
+    (see the Appendix at the bottom) so the client's developers can reproduce
+    every tile and chart natively in the PM tool.
+
+  DATA OWNERSHIP
+    - Sections 1 & 2 (ticket movement + team members) are computed entirely from
+      data the PM tool ALREADY OWNS: the per-ticket status-change history
+      (previous_status, new_status, changed_on), the QA assignee, and bug counts.
+      Nothing needs to be exported.
+    - Section 3 (automation) is the ONLY data brought in from outside — TestRail
+      (case automation status + execution records). Test-cases-executed counts in
+      Section 2 also originate from TestRail.
+
+  MODE
+    - SAMPLE (default): baked-in data, no network. Always demos perfectly.
+    - LIVE: fetches the existing backend endpoints (set API_BASE + token below).
+      Sample objects are shaped IDENTICALLY to the live payloads, so swapping
+      SAMPLE -> LIVE needs no change to any render function.
+  ============================================================================
+-->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ===== Theme (mirrors frontend/src/dashboard.css :root) ===== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg-primary:#0f172a; --bg-secondary:#1e293b; --bg-tertiary:#334155;
+  --bg-card:rgba(30,41,59,0.9); --bg-glass:rgba(51,65,85,0.6);
+  --text-primary:#f1f5f9; --text-secondary:#e2e8f0; --text-muted:#94a3b8;
+  --accent-purple:#8b5cf6; --accent-blue:#3b82f6; --accent-teal:#14b8a6;
+  --accent-cyan:#06b6d4; --accent-green:#22c55e; --accent-amber:#f59e0b; --accent-red:#ef4444;
+  --dev-accent:#60a5fa; --qa-accent:#a78bfa;
+  --border-color:#334155; --shadow-lg:0 25px 50px -12px rgba(0,0,0,.5);
+  --shadow-glow:0 0 40px rgba(20,184,166,.15);
+  --radius-sm:8px; --radius-md:12px; --radius-lg:16px; --radius-xl:24px;
+}
+[data-theme="light"]{
+  --bg-primary:#f0f4f8; --bg-secondary:#f8fafc; --bg-tertiary:#e2e8f0;
+  --bg-card:rgba(255,255,255,0.92); --bg-glass:rgba(248,250,252,0.98);
+  --text-primary:#1e293b; --text-secondary:#475569; --text-muted:#64748b;
+  --accent-purple:#7c3aed; --accent-blue:#2563eb; --accent-teal:#0d9488;
+  --accent-cyan:#0891b2; --accent-green:#16a34a; --accent-amber:#d97706; --accent-red:#dc2626;
+  --dev-accent:#2563eb; --qa-accent:#7c3aed;
+  --border-color:rgba(203,213,225,.8); --shadow-lg:0 10px 40px -10px rgba(0,0,0,.12);
+  --shadow-glow:0 0 30px rgba(20,184,166,.1);
+}
+body{
+  font-family:'Inter',system-ui,sans-serif; background:var(--bg-primary);
+  color:var(--text-primary); line-height:1.5; min-height:100vh;
+  background-image:radial-gradient(900px 500px at 80% -10%,rgba(139,92,246,.10),transparent),
+                   radial-gradient(700px 500px at -10% 10%,rgba(20,184,166,.10),transparent);
+  background-attachment:fixed;
+}
+.mono{font-family:'JetBrains Mono',monospace}
+
+/* ===== Header / controls ===== */
+header.app{
+  position:sticky; top:0; z-index:50; backdrop-filter:blur(14px);
+  background:linear-gradient(180deg,rgba(15,23,42,.92),rgba(15,23,42,.72));
+  border-bottom:1px solid var(--border-color); padding:14px 26px;
+}
+[data-theme="light"] header.app{background:linear-gradient(180deg,rgba(248,250,252,.95),rgba(248,250,252,.8))}
+.header-row{display:flex; align-items:center; gap:18px; flex-wrap:wrap}
+.brand{display:flex; align-items:center; gap:12px}
+.brand .logo{width:42px;height:42px;border-radius:12px;
+  background:linear-gradient(135deg,var(--accent-purple),var(--accent-teal));
+  display:grid;place-items:center;font-weight:800;font-size:18px;color:#fff;box-shadow:var(--shadow-glow)}
+.brand h1{font-size:18px;font-weight:700;letter-spacing:-.2px}
+.brand p{font-size:11.5px;color:var(--text-muted);font-weight:500}
+.controls{margin-left:auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.seg{display:inline-flex;background:var(--bg-tertiary);border-radius:999px;padding:3px;gap:2px}
+.seg button{border:0;background:transparent;color:var(--text-muted);padding:6px 12px;border-radius:999px;
+  font-size:12.5px;font-weight:600;cursor:pointer;transition:all .18s}
+.seg button.active{background:var(--bg-primary);color:var(--text-primary);box-shadow:0 1px 6px rgba(0,0,0,.3)}
+[data-theme="light"] .seg button.active{background:#fff;color:var(--accent-purple)}
+.icon-btn{border:1px solid var(--border-color);background:var(--bg-card);color:var(--text-secondary);
+  width:38px;height:38px;border-radius:10px;cursor:pointer;font-size:16px;transition:all .18s}
+.icon-btn:hover{transform:translateY(-1px);border-color:var(--accent-purple)}
+.period-bar{display:flex;gap:6px;flex-wrap:wrap;margin-top:12px}
+.period-bar button{border:1px solid var(--border-color);background:var(--bg-card);color:var(--text-muted);
+  padding:7px 14px;border-radius:10px;font-size:12.5px;font-weight:600;cursor:pointer;transition:all .18s}
+.period-bar button:hover{color:var(--text-primary);border-color:var(--accent-teal)}
+.period-bar button.active{background:linear-gradient(135deg,var(--accent-purple),var(--accent-blue));
+  color:#fff;border-color:transparent;box-shadow:0 4px 14px rgba(139,92,246,.35)}
+.mode-pill{display:inline-flex;align-items:center;gap:7px;font-size:11.5px;font-weight:700;
+  padding:6px 12px;border-radius:999px;border:1px solid var(--border-color)}
+.mode-pill .dot{width:8px;height:8px;border-radius:50%;background:var(--accent-amber);box-shadow:0 0 10px var(--accent-amber)}
+.mode-pill.live .dot{background:var(--accent-green);box-shadow:0 0 10px var(--accent-green);animation:pulse 1.6s infinite}
+
+/* ===== Live settings panel ===== */
+.cfg-panel{position:absolute;right:0;top:46px;width:320px;background:var(--bg-secondary);
+  border:1px solid var(--border-color);border-radius:14px;box-shadow:var(--shadow-lg);padding:16px;z-index:60;display:none}
+.cfg-panel.open{display:block;animation:fadeInUp .2s ease both}
+.cfg-panel h4{font-size:13px;font-weight:700;margin-bottom:12px}
+.cfg-panel label{display:block;font-size:11px;color:var(--text-muted);font-weight:600;margin:10px 0 5px}
+.cfg-panel label span{font-weight:400;text-transform:none}
+.cfg-panel code{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--accent-cyan)}
+.cfg-panel input{width:100%;background:var(--bg-primary);border:1px solid var(--border-color);border-radius:8px;
+  padding:8px 10px;color:var(--text-primary);font-size:12.5px;font-family:'JetBrains Mono',monospace}
+.cfg-panel input:focus{outline:none;border-color:var(--accent-purple)}
+.cfg-actions{display:flex;gap:8px;margin-top:14px}
+.cfg-save{flex:1;border:0;border-radius:8px;padding:9px;font-weight:700;font-size:12.5px;cursor:pointer;color:#fff;
+  background:linear-gradient(135deg,var(--accent-purple),var(--accent-blue))}
+.cfg-clear{border:1px solid var(--border-color);background:transparent;color:var(--text-muted);border-radius:8px;padding:9px 12px;font-size:12.5px;cursor:pointer}
+.cfg-note{font-size:10.5px;color:var(--text-muted);margin-top:10px}
+
+/* ===== Section nav ===== */
+.sectionnav{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.sectionnav a{text-decoration:none;font-size:12.5px;font-weight:600;color:var(--text-muted);
+  padding:6px 13px;border-radius:8px;border:1px solid transparent;transition:all .18s}
+.sectionnav a:hover{color:var(--text-primary);background:var(--bg-glass)}
+
+/* ===== Layout ===== */
+main{max-width:1320px;margin:0 auto;padding:30px 26px 80px}
+.section{margin-bottom:46px;opacity:0;transform:translateY(22px);transition:opacity .6s ease,transform .6s ease}
+.section.in{opacity:1;transform:none}
+.section-head{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+.section-num{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-weight:800;color:#fff;
+  background:linear-gradient(135deg,var(--accent-purple),var(--accent-teal))}
+.section-head h2{font-size:20px;font-weight:700;letter-spacing:-.3px}
+.section-head .sub{font-size:12.5px;color:var(--text-muted)}
+.src-tag{margin-left:auto;font-size:11px;font-weight:700;letter-spacing:.4px;padding:5px 11px;border-radius:999px;
+  border:1px solid var(--border-color);color:var(--text-muted);text-transform:uppercase}
+.src-tag.pm{color:var(--accent-teal);border-color:rgba(20,184,166,.4)}
+.src-tag.tr{color:var(--accent-amber);border-color:rgba(245,158,11,.4)}
+
+/* ===== Cards / tiles ===== */
+.grid{display:grid;gap:16px}
+.tiles4{grid-template-columns:repeat(4,1fr)}
+.tiles5{grid-template-columns:repeat(5,1fr)}
+.cols2{grid-template-columns:1fr 1fr}
+.cols3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:1050px){.tiles4,.tiles5,.cols2,.cols3{grid-template-columns:1fr 1fr}}
+@media(max-width:640px){.tiles4,.tiles5,.cols2,.cols3{grid-template-columns:1fr}}
+.card{background:var(--bg-card);border:1px solid var(--border-color);border-radius:var(--radius-lg);
+  padding:18px;box-shadow:var(--shadow-lg);transition:transform .2s,box-shadow .2s,border-color .2s}
+.card:hover{transform:translateY(-3px);border-color:rgba(139,92,246,.35)}
+.tile{position:relative;overflow:hidden}
+.tile::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--tile-accent,var(--accent-purple))}
+.tile .label{font-size:12px;color:var(--text-muted);font-weight:600;display:flex;align-items:center;gap:6px}
+.tile .value{font-size:34px;font-weight:800;letter-spacing:-1px;margin-top:8px;line-height:1}
+.tile .value small{font-size:15px;font-weight:600;color:var(--text-muted);letter-spacing:0}
+.tile .meta{font-size:11.5px;color:var(--text-muted);margin-top:9px;display:flex;align-items:center;gap:6px}
+.trend-up{color:var(--accent-red)} .trend-down{color:var(--accent-green)}
+.info{cursor:help;width:15px;height:15px;border-radius:50%;border:1px solid var(--text-muted);color:var(--text-muted);
+  font-size:10px;display:inline-grid;place-items:center;font-weight:700;text-decoration:none}
+.info:hover{border-color:var(--accent-purple);color:var(--accent-purple)}
+.card h3{font-size:13.5px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.chart-wrap{position:relative;height:260px}
+.chart-wrap.tall{height:320px}
+
+/* ===== Spike panel ===== */
+.spike{border:1px solid rgba(239,68,68,.35);background:linear-gradient(180deg,rgba(239,68,68,.08),transparent)}
+.spike.ok{border-color:rgba(34,197,94,.3);background:linear-gradient(180deg,rgba(34,197,94,.06),transparent)}
+.spike-badge{display:inline-flex;align-items:center;gap:7px;font-size:12px;font-weight:800;color:#fff;
+  background:var(--accent-red);padding:5px 12px;border-radius:999px;animation:pulse 1.8s infinite}
+.spike-badge.ok{background:var(--accent-green);animation:none}
+.drivers{display:flex;flex-direction:column;gap:10px;margin:16px 0}
+.driver{display:grid;grid-template-columns:170px 1fr 54px;align-items:center;gap:12px;font-size:12.5px}
+.driver .bar{height:10px;border-radius:999px;background:var(--bg-tertiary);overflow:hidden}
+.driver .bar span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent-amber),var(--accent-red));
+  width:0;transition:width 1s ease}
+.driver.lead .bar span{background:linear-gradient(90deg,var(--accent-purple),var(--accent-red))}
+.driver .pct{text-align:right;font-weight:700;font-family:'JetBrains Mono',monospace}
+table.t{width:100%;border-collapse:collapse;font-size:12.5px}
+table.t th{text-align:left;color:var(--text-muted);font-weight:600;padding:9px 10px;border-bottom:1px solid var(--border-color);position:sticky;top:0;background:var(--bg-card)}
+table.t td{padding:9px 10px;border-bottom:1px solid rgba(148,163,184,.12)}
+table.t tr:hover td{background:var(--bg-glass)}
+.tlink{color:var(--accent-cyan);text-decoration:none;font-weight:600}
+.tlink:hover{text-decoration:underline}
+.tbl-scroll{max-height:340px;overflow:auto}
+.pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:700}
+.pill.h{background:rgba(239,68,68,.16);color:var(--accent-red)}
+.pill.m{background:rgba(245,158,11,.16);color:var(--accent-amber)}
+.pill.l{background:rgba(34,197,94,.16);color:var(--accent-green)}
+.cxbar{display:inline-flex;height:8px;width:96px;border-radius:999px;overflow:hidden;vertical-align:middle;background:var(--bg-tertiary)}
+.cxbar i{display:block;height:100%}
+.cxbar .h{background:var(--accent-red)} .cxbar .m{background:var(--accent-amber)} .cxbar .l{background:var(--accent-green)}
+.expand-btn{cursor:pointer;color:var(--accent-purple);font-weight:700;font-size:11.5px;border:0;background:none}
+.member-detail{font-size:12px;color:var(--text-secondary)}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:4px 10px;border-radius:8px;
+  background:var(--bg-glass);border:1px solid var(--border-color);margin:3px 4px 0 0}
+
+/* ===== Appendix ===== */
+.appendix{border-top:2px dashed var(--border-color);padding-top:30px}
+.formula{background:var(--bg-secondary);border:1px solid var(--border-color);border-left:3px solid var(--accent-teal);
+  border-radius:10px;padding:14px 16px;margin:10px 0;font-family:'JetBrains Mono',monospace;font-size:12px;
+  color:var(--text-secondary);white-space:pre-wrap;overflow-x:auto}
+.appendix details{background:var(--bg-card);border:1px solid var(--border-color);border-radius:12px;margin-bottom:12px;padding:4px 18px}
+.appendix summary{cursor:pointer;font-weight:700;font-size:14px;padding:12px 0;list-style:none}
+.appendix summary::before{content:"▸ ";color:var(--accent-purple)}
+.appendix details[open] summary::before{content:"▾ "}
+.appendix p{font-size:13px;color:var(--text-secondary);margin:8px 0}
+.prov{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+.prov th,.prov td{border:1px solid var(--border-color);padding:8px 10px;text-align:left}
+.prov th{background:var(--bg-secondary);color:var(--text-muted)}
+.badge-pm{color:var(--accent-teal);font-weight:700} .badge-tr{color:var(--accent-amber);font-weight:700}
+footer{text-align:center;color:var(--text-muted);font-size:12px;padding:30px 0 10px}
+
+/* ===== Per-member table (redesigned: one clean row per member) ===== */
+table.members{width:100%;border-collapse:separate;border-spacing:0 8px;font-size:12.5px}
+table.members thead th{text-align:left;color:var(--text-muted);font-weight:600;font-size:11px;
+  text-transform:uppercase;letter-spacing:.4px;padding:0 14px 4px}
+table.members thead th.num{text-align:center}
+table.members tbody tr{background:var(--bg-glass);transition:transform .15s,box-shadow .15s}
+table.members tbody tr:hover{transform:translateY(-1px);box-shadow:0 6px 18px rgba(0,0,0,.25)}
+table.members td{padding:12px 14px;border-top:1px solid var(--border-color);border-bottom:1px solid var(--border-color);vertical-align:middle}
+table.members td:first-child{border-left:1px solid var(--border-color);border-radius:12px 0 0 12px}
+table.members td:last-child{border-right:1px solid var(--border-color);border-radius:0 12px 12px 0}
+.who{display:flex;align-items:center;gap:11px}
+.avatar{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-weight:700;font-size:12.5px;color:#fff;flex:0 0 auto}
+.who .nm{font-weight:700;font-size:13px;line-height:1.2}
+.who .rk{font-size:10.5px;color:var(--text-muted)}
+.flow{display:flex;align-items:center;gap:6px;font-family:'JetBrains Mono',monospace}
+.flow .step{text-align:center;min-width:30px}
+.flow .step b{display:block;font-size:14px;font-weight:700}
+.flow .step span{font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px}
+.flow .arr{color:var(--text-muted);font-size:13px}
+.statnum{text-align:center}
+.statnum b{display:block;font-size:15px;font-weight:700;font-family:'JetBrains Mono',monospace}
+.statnum span{font-size:9px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.3px}
+.cyc-pill{display:inline-block;padding:3px 10px;border-radius:999px;font-weight:700;font-family:'JetBrains Mono',monospace;font-size:12px}
+.cyc-pill.good{background:rgba(34,197,94,.16);color:var(--accent-green)}
+.cyc-pill.mid{background:rgba(245,158,11,.16);color:var(--accent-amber)}
+.cyc-pill.bad{background:rgba(239,68,68,.16);color:var(--accent-red)}
+.velcell{min-width:130px}
+.velcell .top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px}
+.velcell .v{font-size:17px;font-weight:800;color:var(--accent-teal);font-family:'JetBrains Mono',monospace}
+.velcell .w{font-size:9.5px;color:var(--text-muted)}
+.velbar{height:7px;border-radius:999px;background:var(--bg-tertiary);overflow:hidden}
+.velbar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent-blue),var(--accent-teal));width:0;transition:width .9s ease}
+.cxwrap{min-width:120px}
+.cxwrap .cxbar{width:100%;height:9px}
+.cxwrap .lbl{font-size:10px;color:var(--text-muted);margin-top:4px;font-family:'JetBrains Mono',monospace}
+
+/* tooltip */
+.tip{position:fixed;z-index:100;max-width:320px;background:#0b1220;color:#e2e8f0;border:1px solid var(--accent-purple);
+  border-radius:10px;padding:11px 13px;font-size:12px;line-height:1.5;box-shadow:var(--shadow-lg);display:none;pointer-events:none}
+[data-theme="light"] .tip{background:#fff;color:#1e293b}
+
+/* PDF export: flatten reveal animations + hide interactive chrome so the capture is clean */
+body.exporting .cfg-panel,body.exporting #tip{display:none!important}
+body.exporting .section{opacity:1!important;transform:none!important}
+body.exporting .sectionnav{display:none}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+@keyframes fadeInUp{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.fab{animation:fadeInUp .5s ease both}
+</style>
+</head>
+<body>
+
+<header class="app">
+  <div class="header-row">
+    <div class="brand">
+      <div class="logo">Q</div>
+      <div>
+        <h1>QA Live Metrics Dashboard</h1>
+        <p>Ticket Movement Speed · Team Performance · Automation</p>
+      </div>
+    </div>
+    <div class="controls">
+      <span id="modePill" class="mode-pill"><span class="dot"></span><span id="modeLabel">SAMPLE DATA</span></span>
+      <div class="seg" id="modeSeg">
+        <button data-mode="SAMPLE" class="active">Sample</button>
+        <button data-mode="LIVE">Live</button>
+      </div>
+      <div style="position:relative">
+        <button class="icon-btn" id="cfgBtn" title="Live connection settings">⚙️</button>
+        <div class="cfg-panel" id="cfgPanel">
+          <h4>Live data connection</h4>
+          <label>Backend URL</label>
+          <input id="cfgUrl" type="text" placeholder="http://10.1.0.20:8000" />
+          <label>API token <span>(from the app: F12 → Console → <code>localStorage.getItem('qa_dashboard_token')</code>)</span></label>
+          <input id="cfgToken" type="password" placeholder="paste token…" />
+          <div class="cfg-actions">
+            <button id="cfgSave" class="cfg-save">Save &amp; go Live</button>
+            <button id="cfgClear" class="cfg-clear">Clear</button>
+          </div>
+          <p class="cfg-note">Stored only in this browser. Sample mode needs none of this.</p>
+        </div>
+      </div>
+      <button class="icon-btn" id="pdfBtn" title="Download as PDF (share with client)">⬇️</button>
+      <button class="icon-btn" id="themeBtn" title="Toggle theme">🌙</button>
+    </div>
+  </div>
+  <div class="period-bar" id="periodBar">
+    <button data-p="7d">Past 7 days</button>
+    <button data-p="month" class="active">Current month</button>
+    <button data-p="past_month">Past month</button>
+    <button data-p="quarter">Past quarter</button>
+    <button data-p="6mo">6 months</button>
+    <button data-p="1yr">1 year</button>
+  </div>
+  <nav class="sectionnav">
+    <a href="#sec1">① Ticket Movement Speed</a>
+    <a href="#sec2">② Team Members</a>
+    <a href="#sec3">③ Automation Utilisation</a>
+    <a href="#appendix">④ Data Processing Logic</a>
+  </nav>
+</header>
+
+<main>
+  <!-- ============ SECTION 1 ============ -->
+  <section class="section" id="sec1">
+    <div class="section-head">
+      <div class="section-num">1</div>
+      <div>
+        <h2>Ticket Movement Speed</h2>
+        <div class="sub" id="s1period">Average movement and cycle times for the selected period</div>
+      </div>
+      <span class="src-tag pm">From PM Tool</span>
+    </div>
+
+    <div class="grid tiles4" id="s1tiles"></div>
+
+    <div class="grid cols2" style="margin-top:16px">
+      <div class="card"><h3>⏱ Average Days per QC Status <a class="info" data-tip="Average time tickets spend in each QC status. Highlights where testing time is concentrated.">i</a></h3><div class="chart-wrap"><canvas id="stageChart"></canvas></div></div>
+      <div class="card"><h3>📈 Cycle-Time Trend <span id="trendWin" style="color:var(--text-muted);font-weight:500;font-size:12px"></span> <a class="info" data-tip="Monthly average QC time, BIS wait, and total lead time. The window scales to the selected period; for short periods it shows the last 3 months as recent context.">i</a></h3><div class="chart-wrap"><canvas id="trendChart"></canvas></div></div>
+    </div>
+
+    <div class="grid cols2" style="margin-top:16px">
+      <div class="card"><h3>🔁 First-Time Tests vs Retests <span id="retestWin" style="color:var(--text-muted);font-weight:500;font-size:12px"></span> <a class="info" data-tip="First-time tests compared with retests — tickets that returned for re-testing after a QC review failure. Window scales to the selected period.">i</a></h3><div class="chart-wrap"><canvas id="retestChart"></canvas></div></div>
+      <div class="card spike" id="spikeCard">
+        <h3>🚨 Spike Analysis <a class="info" data-tip="A period is flagged as a spike when its value rises well above the recent average, or jumps 50% or more over the previous period. The likely cause is the factor that increased the most.">i</a></h3>
+        <div id="spikeBody"></div>
+      </div>
+    </div>
+
+    <div class="card" id="offendersCard" style="margin-top:16px">
+      <h3>🎫 Tickets Driving the Spike <span id="offTitle" style="color:var(--text-muted);font-weight:500"></span></h3>
+      <div class="tbl-scroll">
+        <table class="t" id="offTable"></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ SECTION 2 ============ -->
+  <section class="section" id="sec2">
+    <div class="section-head">
+      <div class="section-num">2</div>
+      <div>
+        <h2>QA Team Performance</h2>
+        <div class="sub">Per-member workload and velocity for the selected period</div>
+      </div>
+      <span class="src-tag pm">PM Tool + <span style="color:var(--accent-amber)">TestRail</span></span>
+    </div>
+
+    <div class="card">
+      <h3>🧑‍💻 Per-Member Profile <a class="info" data-tip="Each member's work for the period — tickets attended, handed to BIS, closed, test cases executed, bugs reported, and retests — with a complexity breakdown (High / Medium / Low).">i</a></h3>
+      <div class="tbl-scroll" style="max-height:none">
+        <table class="t" id="memberTable"></table>
+      </div>
+    </div>
+
+    <div class="grid cols2" style="margin-top:16px">
+      <div class="card"><h3>⚖️ Volume vs Velocity <a class="info" data-tip="Bars show tickets closed (volume). The line shows velocity — complexity points delivered per week — so a member working fewer but harder tickets still scores well.">i</a></h3><div class="chart-wrap"><canvas id="velChart"></canvas></div></div>
+      <div class="card"><h3>🧩 Complexity Mix per Member</h3><div class="chart-wrap"><canvas id="cxChart"></canvas></div></div>
+    </div>
+
+    <div class="grid cols2" style="margin-top:16px">
+      <div class="card"><h3>⏱ Average Cycle Time per Member</h3><div class="chart-wrap"><canvas id="memCycleChart"></canvas></div></div>
+      <div class="card"><h3>🐞 Bugs Reported &amp; Cases Executed</h3><div class="chart-wrap"><canvas id="bugTestChart"></canvas></div></div>
+    </div>
+  </section>
+
+  <!-- ============ SECTION 3 ============ -->
+  <section class="section" id="sec3">
+    <div class="section-head">
+      <div class="section-num">3</div>
+      <div>
+        <h2>Automation Utilisation</h2>
+        <div class="sub">Coverage, utilisation, and time saved by module</div>
+      </div>
+      <span class="src-tag tr">TestRail data</span>
+    </div>
+
+    <div class="grid tiles5" id="s3tiles"></div>
+
+    <div class="grid cols3" style="margin-top:16px">
+      <div class="card"><h3>🤖 Automation coverage <a class="info" data-tip="Automated cases ÷ automatable cases. 'Not automatable' cases are excluded from the denominator.">i</a></h3><div class="chart-wrap" style="height:220px"><canvas id="covChart"></canvas></div></div>
+      <div class="card"><h3>♻️ Execution utilisation <a class="info" data-tip="Automated executions ÷ total executions — how much of the actual test-run volume was carried by automation.">i</a></h3><div class="chart-wrap" style="height:220px"><canvas id="utilChart"></canvas></div></div>
+      <div class="card"><h3>📦 Status mix</h3><div class="chart-wrap" style="height:220px"><canvas id="mixChart"></canvas></div></div>
+    </div>
+
+    <div class="grid cols2" style="margin-top:16px">
+      <div class="card"><h3>🗂 Module coverage vs utilisation</h3><div class="chart-wrap tall"><canvas id="modChart"></canvas></div></div>
+      <div class="card"><h3>⏳ Time saved by module (hrs)</h3><div class="chart-wrap tall"><canvas id="savedChart"></canvas></div></div>
+    </div>
+
+    <div class="card" style="margin-top:16px">
+      <h3>📋 Module breakdown</h3>
+      <div class="tbl-scroll"><table class="t" id="modTable"></table></div>
+    </div>
+  </section>
+
+  <!-- ============ APPENDIX ============ -->
+  <section class="section appendix" id="appendix">
+    <div class="section-head">
+      <div class="section-num">4</div>
+      <div>
+        <h2>Data Processing Logic</h2>
+        <div class="sub">How each metric is computed — the implementation guide for building this in the PM tool</div>
+      </div>
+    </div>
+
+    <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px">
+      Every metric below is derived from the PM tool's own <strong>per-ticket status-change history</strong> —
+      a log of <span class="mono">(previous_status, new_status, changed_on, assignee)</span> rows — except automation
+      and test-execution counts, which come from <span class="badge-tr">TestRail</span>. Status vocabulary:
+      <span class="mono">QC = {QC Testing, QC Testing in Progress, QC Testing Hold}</span>,
+      <span class="mono">QC Review Fail</span>, <span class="mono">BIS Testing</span>,
+      <span class="mono">CLOSED = {Closed, Moved to Live}</span>.
+    </p>
+
+    <details open>
+      <summary>1 · Average QC cycle time (QC → BIS)</summary>
+      <p>Per ticket, the calendar time from the first entry into any QC status to the first time it reaches BIS Testing. The tile shows the mean over tickets in the period.</p>
+      <div class="formula">qc_to_bis_days(ticket) =
+    first( change where new_status == "BIS Testing" ).changed_on
+  − first( change where new_status ∈ QC ).changed_on
+
+Avg QC cycle time = mean( qc_to_bis_days ) over period tickets</div>
+    </details>
+
+    <details>
+      <summary>2 · Average QC Testing Time (First Pass)</summary>
+      <p>Total days a ticket spends across the three QC statuses, counted <strong>only for its first time in QA testing</strong> (excludes Approved-for-Live, the BIS approval wait, and any rework).</p>
+      <div class="formula">qc_wait(ticket) = Σ days in {QC Testing, QC Testing in Progress, QC Testing Hold}
+
+A QC entry is FIRST-TIME when:
+    new_status ∈ QC  AND  previous_status ∉ QC
+    AND prior_qc_entries(ticket) == 0
+    AND previous_status ∉ REWORK
+where REWORK = {QC Review Fail, Code Review Failed, Tested - Awaiting Fixes, BIS Testing}
+
+Avg first-time QC wait = mean( qc_wait ) over first-time tickets</div>
+    </details>
+
+    <details>
+      <summary>3 · Retests (Tracked Separately)</summary>
+      <p>When a ticket fails a QC review (<span class="mono">QC Review Fail</span>) it goes back for fixes, then returns to QC as a <strong>retest</strong>. Retests are tracked separately so rework never inflates the first-pass testing time. Retest count per ticket = number of QC review failures.</p>
+      <div class="formula">A QC entry is a RETEST when:
+    new_status ∈ QC AND previous_status ∉ QC
+    AND ( prior_qc_entries(ticket) > 0  OR  previous_status ∈ REWORK )
+
+Retest count   = number of retest entries in the period
+Avg retest wait = mean QC dwell measured over retest legs only</div>
+    </details>
+
+    <details>
+      <summary>4 · Average Moved-to-Live → Closed wait</summary>
+      <p>Calendar days from the ticket reaching <span class="mono">Moved to Live</span> until it is finally <span class="mono">Closed</span>.</p>
+      <div class="formula">mtl_to_closed(ticket) = closed_on − first(new_status == "Moved to Live").changed_on
+Avg = mean( mtl_to_closed ) over tickets closed in period</div>
+    </details>
+
+    <details>
+      <summary>5 · Spike detection &amp; cause attribution</summary>
+      <p>Run over the monthly trend series. A point is a <strong>negative spike</strong> (worse) when it breaks either threshold. The cause is the driver whose standardised increase over the baseline is largest; the offending-ticket list is the worst individual contributors in that month.</p>
+      <div class="formula">For metric M over the trend:
+  μ, σ = mean & stdev of the trailing 6 points (excluding current)
+  SPIKE if  M_current > μ + 2σ   OR   M_current ≥ 1.5 × M_previous
+
+Cause drivers (ranked by standardised delta vs baseline):
+  • longer testing time → rise in avg QC days at flat volume
+  • more bugs reported  → rise in bug count
+  • more retest cycles  → rise in retest re-entries / avg cycles
+
+Offending tickets = tickets in the spike month whose own metric
+  exceeds (per-ticket μ + 2σ), sorted desc, top 10.</div>
+    </details>
+
+    <details>
+      <summary>6 · Team-member velocity profile</summary>
+      <p>Velocity is shown as a <strong>full work profile</strong>, not a single number — so a member handling fewer but harder tickets is not read as low output. Each figure is broken down by ticket complexity (High / Medium / Low). The single velocity number (complexity points per week) is used only for the Volume vs Velocity chart.</p>
+      <div class="formula">Per member, per period:
+  attended        = tickets handled (delivered + in-progress + awaiting)
+  handed_to_bis   = tickets moved to BIS Testing
+  closed          = tickets closed (Moved to Live) in period
+  tests_executed  = TestRail executions attributed to the member
+  bugs_reported   = bugs the member raised
+  retested        = retest re-entries on the member's tickets
+  complexity mix  = count of High / Medium / Low among those tickets
+
+Complexity multiplier:  High = 1.9, Medium = 1.0, Low = 0.7
+Composite velocity = Σ( complexity_multiplier over closed tickets ) / weeks_in_period</div>
+    </details>
+
+    <details>
+      <summary>7 · Automation utilisation (TestRail)</summary>
+      <p>From TestRail: each case has an automation status; each execution row records whether an automated case ran. Module is resolved from the TestRail section via the module-ownership mapping.</p>
+      <div class="formula">coverage%    = automated_cases / automatable_cases × 100
+utilisation% = automated_executions / total_executions × 100
+reuse_ratio  = automated_executions / automated_cases
+time_saved_h = automated_executions × manual_minutes_per_case / 60
+(all of the above also computed per module)</div>
+    </details>
+
+    <details>
+      <summary>8 · Field provenance — where each input comes from</summary>
+      <table class="prov">
+        <tr><th>Metric</th><th>Source</th><th>Fields / endpoint</th></tr>
+        <tr><td>QC cycle time, QC wait, retest, MTL→Closed</td><td class="badge-pm">PM-native</td><td>status-change history: previous_status, new_status, changed_on</td></tr>
+        <tr><td>First-time vs retest classification</td><td class="badge-pm">PM-native</td><td>transition predicate + REWORK set; durable refix counter</td></tr>
+        <tr><td>Member attended / BIS / closed</td><td class="badge-pm">PM-native</td><td>QA assignee name + status history</td></tr>
+        <tr><td>Bugs reported</td><td class="badge-pm">PM-native</td><td>bug author = QA member</td></tr>
+        <tr><td>Test cases executed</td><td class="badge-tr">TestRail</td><td>execution records attributed by qc_tester</td></tr>
+        <tr><td>Ticket complexity (H/M/L)</td><td class="badge-pm">Derived</td><td>complexity engine (priority, scope, PR breadth, retests…)</td></tr>
+        <tr><td>Automation coverage / utilisation / time saved</td><td class="badge-tr">TestRail</td><td>automation_cases + automation_executions, module mapping</td></tr>
+      </table>
+      <p style="margin-top:14px;color:var(--text-muted)">In <strong>LIVE</strong> mode this prototype reads the same numbers from the existing backend:
+        <span class="mono">/ticket-speed</span>, <span class="mono">/ticket-movement</span>,
+        <span class="mono">/employees/performance/leaderboard?team=qa</span>,
+        <span class="mono">/analytics/bis-to-closed</span>, <span class="mono">/automation/overview</span>.</p>
+    </details>
+  </section>
+
+  <footer>
+    QA Live Metrics Dashboard — Prototype · <span id="ftMode">SAMPLE</span> data
+  </footer>
+</main>
+
+<div class="tip" id="tip"></div>
+
+<script>
+/* ===========================================================================
+   CONFIG
+   =========================================================================== */
+// Defaults; overridable at runtime via the ⚙ settings panel (persisted in localStorage).
+let API_BASE = localStorage.getItem('qalm_api_base') || "http://10.1.0.20:8000";
+let API_TOKEN = localStorage.getItem('qalm_api_token') || "";
+let MODE = "SAMPLE";
+let PERIOD = "month";
+const charts = {};
+
+/* QA roster + modules used by the sample generator */
+const QA = ["Anjaly Dominic","Reshma Madhavan Nair","Amala A","Julie Varghese","Kavyagayathry S","Gautham Krishna KP","Arya U S","Amalraj R"];
+const MODULES = ["Forms","Online Course","User Management","Classroom Calendar","Billing","Reporting","Notifications","Assessment"];
+const PRIORITIES = ["Urgent","High (Bugs)","High","Medium","Low"];
+const CXLVL = ["high","medium","low"];
+const CX_MULT = {high:1.9, medium:1.0, low:0.7};
+// How many trailing months the trend/retest/spike graphs span per period (min 3 to stay meaningful).
+const TREND_MONTHS = {"7d":3,"month":3,"past_month":3,"quarter":3,"6mo":6,"1yr":12};
+// Periods whose trend window is wider than the period itself → shown as recent context.
+const CONTEXT_PERIODS = new Set(["7d","month","past_month"]);
+const PERIOD_LABEL = {"7d":"Past 7 days","month":"Current month (June 2026)","past_month":"May 2026",
+  "quarter":"Q2 2026 (Apr–Jun)","6mo":"Last 6 months","1yr":"Last 12 months"};
+/* ticket volume + weeks per period — drives realistic scaling */
+const PERIOD_CFG = {
+  "7d":        {seed:101, tickets:18,  weeks:1,    base:2.4},
+  "month":     {seed:202, tickets:84,  weeks:4.3,  base:2.7},
+  "past_month":{seed:303, tickets:79,  weeks:4.3,  base:3.1},
+  "quarter":   {seed:404, tickets:233, weeks:13,   base:2.9},
+  "6mo":       {seed:505, tickets:470, weeks:26,   base:3.0},
+  "1yr":       {seed:606, tickets:910, weeks:52,   base:3.2},
+};
+
+/* ===========================================================================
+   DETERMINISTIC PRNG  (seeded so the demo is identical every load)
+   =========================================================================== */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const pick=(rng,arr)=>arr[Math.floor(rng()*arr.length)];
+const rint=(rng,lo,hi)=>lo+Math.floor(rng()*(hi-lo+1));
+const r1=(rng,lo,hi)=>Math.round((lo+rng()*(hi-lo))*10)/10;
+const mean=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
+const round1=x=>Math.round(x*10)/10;
+
+/* ===========================================================================
+   SAMPLE DATA FACTORY — every object mirrors the live endpoint payload.
+   (See the comment above each block for its source endpoint.)
+   =========================================================================== */
+function genRows(cfg){
+  const rng = mulberry32(cfg.seed);
+  const rows = [];
+  for(let i=0;i<cfg.tickets;i++){
+    const cx = rng()<0.22?"high":(rng()<0.55?"medium":"low");
+    const isRetest = rng() < (cx==="high"?0.34:cx==="medium"?0.2:0.1);
+    const baseQc = cfg.base*(cx==="high"?2.1:cx==="medium"?1.15:0.7);
+    const qc_days = round1(Math.max(0.4, baseQc + (rng()-0.5)*cfg.base));
+    const hold_days = round1(rng()<0.3?rng()*1.5:0);
+    const cycles = isRetest? rint(rng,2,4) : (rng()<0.78?1:2);
+    const qc_to_bis = round1(qc_days + (cycles-1)*cfg.base*0.8 + rng()*1.2);
+    rows.push({
+      ticket_id: 48000 + cfg.seed%900 + i,
+      title: pick(rng,["Fix validation on ","Refactor ","New report for ","Bug: crash in ","Enhance ","Migrate "]) + pick(rng,MODULES).toLowerCase(),
+      module: pick(rng,MODULES),
+      qc_tester: pick(rng,QA),
+      developer: pick(rng,["A. Roy","S. Kurian","N. Das","P. Varma","K. Iyer"]),
+      priority: pick(rng,PRIORITIES),
+      current_status: pick(rng,["Closed","Moved to Live","BIS Testing","Approved for Live"]),
+      lead_time_days: round1(qc_to_bis + rint(rng,3,12)),
+      qc_days, hold_days, cycles,
+      first_pass: cycles===1,
+      dev_to_qc_days: rint(rng,1,9),
+      qc_to_bis_days: qc_to_bis,
+      current_stage_age: rint(rng,0,5),
+      mtl_to_closed_days: round1(0.5 + rng()*3),
+      _cx: cx, _retest: isRetest,
+      _bugs: cx==="high"?rint(rng,3,9):cx==="medium"?rint(rng,1,5):rint(rng,0,2),
+      _tests: cx==="high"?rint(rng,18,42):cx==="medium"?rint(rng,8,22):rint(rng,3,12),
+    });
+  }
+  return rows;
+}
+function groupBy(rows,key){
+  const g={}; rows.forEach(r=>{(g[r[key]]=g[r[key]]||[]).push(r)});
+  return Object.entries(g).map(([k,rs])=>({[key]:k,tickets:rs.length,
+    avg_lead_time_days:round1(mean(rs.map(r=>r.lead_time_days))),
+    avg_qc_days:round1(mean(rs.map(r=>r.qc_days))),
+    avg_cycles:round1(mean(rs.filter(r=>r.cycles>0).map(r=>r.cycles)))}))
+    .sort((a,b)=>b.tickets-a.tickets);
+}
+function stageDurations(rows,cfg){
+  const rng=mulberry32(cfg.seed+7);
+  const QORDER=["QC Testing","QC Testing in Progress","QC Testing Hold","QC Review Fail","BIS Testing","Approved for Live"];
+  const base={"QC Testing":cfg.base*0.7,"QC Testing in Progress":cfg.base*1.3,"QC Testing Hold":cfg.base*0.6,
+    "QC Review Fail":cfg.base*0.9,"BIS Testing":cfg.base*1.0,"Approved for Live":cfg.base*0.8};
+  return {qa:QORDER.map(s=>({status:s,avg_days:round1(base[s]+rng()*0.8),tickets:rint(rng,8,rows.length)})), dev:[]};
+}
+function summarize(rows,period,offset,label){
+  const cyc=rows.filter(r=>r.cycles>0);
+  return {period:{kind:period,offset:offset||0,label},scope:"closed",tickets:rows.length,truncated:false,
+    avg_lead_time_days:round1(mean(rows.map(r=>r.lead_time_days))),
+    median_lead_time_days:round1(rows.map(r=>r.lead_time_days).sort((a,b)=>a-b)[Math.floor(rows.length/2)]||0),
+    avg_qc_days:round1(mean(rows.map(r=>r.qc_days))),
+    avg_cycles:round1(mean(cyc.map(r=>r.cycles))),
+    first_pass_rate:round1(100*cyc.filter(r=>r.first_pass).length/(cyc.length||1))};
+}
+/* mirrors GET /ticket-movement (the parts we use) */
+function movement(rows){
+  const firstTime=rows.filter(r=>!r._retest), retest=rows.filter(r=>r._retest);
+  const mk=r=>({ticket_id:r.ticket_id,title:r.title,module:r.module,qc_tester:r.qc_tester,
+    refix_count:r._retest?r.cycles-1:0,date:"2026-06-0"+((r.ticket_id%9)+1)});
+  return {
+    new_to_qc:{count:firstTime.length,tickets:firstTime.map(mk)},
+    refix_to_qc:{count:retest.length,tickets:retest.map(mk)},
+    to_bis:{count:Math.round(rows.length*0.62),tickets:[]},
+    approved_for_live:{count:Math.round(rows.length*0.5),tickets:[]},
+    closed:{count:rows.length,tickets:rows.map(mk)},
+    qa_summary:{received:{count:rows.length,first_time:firstTime.length,retest:retest.length},
+      delivered_to_bis:{count:Math.round(rows.length*0.62)},
+      closed:{count:rows.length,qa_avg_days:round1(mean(rows.map(r=>r.qc_days))),
+        bis_avg_days:round1(mean(rows.map(r=>r.mtl_to_closed_days))+1),
+        total_avg_days:round1(mean(rows.map(r=>r.lead_time_days)))}}
+  };
+}
+/* mirrors GET /analytics/bis-to-closed (subset) */
+function bisToClosed(rows){
+  return {avg_days:round1(mean(rows.map(r=>r.mtl_to_closed_days))),count:rows.length};
+}
+/* mirrors GET /employees/performance/leaderboard?team=qa (per-member subset) */
+function leaderboard(rows,cfg){
+  const byT={}; rows.forEach(r=>{(byT[r.qc_tester]=byT[r.qc_tester]||[]).push(r)});
+  const qa=Object.entries(byT).map(([name,rs])=>{
+    const cx={high:0,medium:0,low:0};
+    rs.forEach(r=>cx[r._cx]++);
+    const closed=rs.length;
+    const delivered_cwv=round1(rs.reduce((s,r)=>s+CX_MULT[r._cx],0));
+    const velocity=round1(delivered_cwv/cfg.weeks);
+    return {name,
+      metrics:{tickets:{count:closed},bugs:{total:rs.reduce((s,r)=>s+r._bugs,0)},
+        tests:{total_executed:rs.reduce((s,r)=>s+r._tests,0)}},
+      attended:closed+Math.round(closed*0.25),
+      handed_to_bis:Math.round(closed*0.7),
+      closed,
+      retested:rs.filter(r=>r._retest).length,
+      cx_counts:{high:cx.high,medium:cx.medium,low:cx.low,unrated:0},
+      avg_qc_days:round1(mean(rs.map(r=>r.qc_to_bis_days))),
+      delivered_cwv, velocity};
+  }).sort((a,b)=>b.velocity-a.velocity);
+  return {label:PERIOD_LABEL[PERIOD],qa};
+}
+function buildPeriod(key){
+  const cfg=PERIOD_CFG[key];
+  const offset=key==="past_month"?1:0;
+  const rows=genRows(cfg);
+  return {
+    ticketSpeed:{summary:summarize(rows,"month",offset,PERIOD_LABEL[key]),rows,
+      stage_durations:stageDurations(rows,cfg),by_module:groupBy(rows,"module"),by_qc_tester:groupBy(rows,"qc_tester")},
+    movement:movement(rows),
+    bisToClosed:bisToClosed(rows),
+    leaderboard:leaderboard(rows,cfg),
+  };
+}
+
+/* 12-month cycle trend with ONE engineered negative spike (shared across views).
+   Mirrors the cycle_trend array from GET /ticket-movement, plus bugs/retests
+   per month so the spike cause can be attributed. */
+const TREND12 = (()=>{
+  const labels=["Jul 25","Aug 25","Sep 25","Oct 25","Nov 25","Dec 25","Jan 26","Feb 26","Mar 26","Apr 26","May 26","Jun 26"];
+  const rng=mulberry32(999);
+  const pts=labels.map((label,i)=>{
+    const qa=round1(2.6+rng()*0.8), bis=round1(1.8+rng()*0.7);
+    return {label,qa,bis,total:round1(qa+bis+8+rng()*2),closed:rint(rng,55,90),
+      bugs:rint(rng,30,55),retests:rint(rng,8,18)};
+  });
+  // Engineer a spike at index 9 (Apr 26): testing time + retests + bugs all jump.
+  pts[9]={label:"Apr 26",qa:6.9,bis:2.4,total:18.7,closed:61,bugs:96,retests:33};
+  return pts;
+})();
+/* offending tickets behind the Apr-26 spike (mirrors /ticket-speed rows[] subset) */
+const SPIKE_OFFENDERS = (()=>{
+  const rng=mulberry32(770);
+  return Array.from({length:10}).map((_,i)=>({
+    ticket_id:47100+i, title:pick(rng,["Bulk import ","Refactor billing ","Migrate ","Crash: ","Assessment "])+pick(rng,MODULES).toLowerCase(),
+    module:pick(rng,MODULES), qc_tester:pick(rng,QA),
+    qc_days:round1(8+rng()*9), qc_to_bis_days:round1(14+rng()*12), cycles:rint(rng,3,6),
+    bugs:rint(rng,7,16), cx:pick(rng,["high","high","medium"])
+  })).sort((a,b)=>b.qc_to_bis_days-a.qc_to_bis_days);
+})();
+
+/* Automation — mirrors GET /automation/overview (TestRail). Period-independent. */
+const AUTOMATION = (()=>{
+  const rng=mulberry32(42);
+  const modules=MODULES.map(m=>{
+    const total=rint(rng,120,460), automatable=Math.round(total*(0.78+rng()*0.18));
+    const automated=Math.round(automatable*(0.55+rng()*0.4));
+    const total_exec=rint(rng,800,2600), auto_exec=Math.round(total_exec*(0.45+rng()*0.45));
+    const M=5;
+    return {module:m,total_cases:total,automatable_cases:automatable,automated_cases:automated,planned_cases:Math.round((automatable-automated)*0.6),
+      total_executions:total_exec,automated_executions:auto_exec,
+      coverage_pct:round1(automated/automatable*100),
+      utilization_pct:round1(auto_exec/total_exec*100),
+      reuse_ratio:round1(auto_exec/automated),
+      time_saved_hours:round1(auto_exec*M/60)};
+  }).sort((a,b)=>b.time_saved_hours-a.time_saved_hours);
+  const sum=k=>modules.reduce((s,m)=>s+m[k],0);
+  const total_automatable=sum("automatable_cases"),total_automated=sum("automated_cases");
+  const total_exec=sum("total_executions"),auto_exec=sum("automated_executions");
+  const top=[...modules].sort((a,b)=>b.utilization_pct-a.utilization_pct)[0];
+  return {overview:{total_cases:sum("total_cases"),automated_cases:total_automated,automatable_cases:total_automatable,
+    coverage_pct:round1(total_automated/total_automatable*100),
+    total_executions:total_exec,automated_executions:auto_exec,manual_executions:total_exec-auto_exec,
+    utilization_pct:round1(auto_exec/total_exec*100),time_saved_hours:round1(auto_exec*5/60),
+    manual_minutes_per_case:5,top_module:top.module,top_module_utilization:top.utilization_pct,
+    status_mix:{Automated:total_automated,Planned:sum("planned_cases"),"Not Automatable":sum("total_cases")-total_automatable}},
+    modules,tickets:[]};
+})();
+
+/* ===========================================================================
+   DATA SOURCE RESOLVER — the single swap point (SAMPLE vs LIVE)
+   =========================================================================== */
+async function fetchLive(path){
+  const headers={}; if(API_TOKEN) headers.Authorization="Bearer "+API_TOKEN;
+  const res=await fetch(API_BASE+path,{headers});
+  if(!res.ok) throw new Error(path+" → "+res.status);
+  return res.json();
+}
+// Real calendar windows for LIVE mode — every period maps to an exact from/to date range.
+function periodWindow(key){
+  // Local-date ISO (NOT toISOString, which shifts to UTC and breaks month boundaries off-IST).
+  const iso=d=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const now=new Date();
+  const back=n=>{const x=new Date(now);x.setDate(x.getDate()-n);return x;};
+  const to=iso(now);
+  switch(key){
+    case "7d":         return {from:iso(back(6)), to};
+    case "month":      return {from:iso(new Date(now.getFullYear(),now.getMonth(),1)), to};
+    case "past_month": return {from:iso(new Date(now.getFullYear(),now.getMonth()-1,1)),
+                               to:iso(new Date(now.getFullYear(),now.getMonth(),0))};
+    case "quarter":    return {from:iso(back(90)), to};
+    case "6mo":        return {from:iso(back(182)), to};
+    case "1yr":        return {from:iso(back(364)), to};
+    default:           return {from:iso(back(30)), to};
+  }
+}
+async function getData(){
+  if(MODE==="SAMPLE") return buildPeriod(PERIOD);
+  // LIVE: every block fetched over the SAME exact date window (real 7d / 6mo / 1yr, not approximations).
+  const w=periodWindow(PERIOD);
+  const rng=`from_date=${w.from}&to_date=${w.to}`;
+  const [ticketSpeed,movementD,leaderboardD,bisRaw]=await Promise.all([
+    fetchLive(`/ticket-speed?${rng}&scope=closed`),
+    fetchLive(`/ticket-movement?offset=0&trend=12`),
+    fetchLive(`/employees/performance/leaderboard?team=qa&${rng}`),
+    fetchLive(`/analytics/bis-to-closed?${rng}`).catch(()=>({summary:{}})),
+  ]);
+  // Live payload is {summary:{avg_days_bis_to_closed,total_closed}} — map to the tile's {avg_days,count}.
+  const bisToClosedD={avg_days:(bisRaw.summary&&bisRaw.summary.avg_days_bis_to_closed)||0,
+                      count:(bisRaw.summary&&bisRaw.summary.total_closed)||0};
+  // Adapter: derive the profile fields Section 2 needs from the live leaderboard + per-tester cycle.
+  const cycleBy={}; (ticketSpeed.by_qc_tester||[]).forEach(x=>cycleBy[x.qc_tester]=x.avg_qc_days);
+  const weeks=Math.max(1,(new Date(w.to)-new Date(w.from))/(7*864e5));
+  const qa=(leaderboardD.qa||[]).map(m=>{
+    const cx=m.cx_counts||{high:0,medium:0,low:0,unrated:0};
+    const closed=(m.metrics&&m.metrics.tickets&&m.metrics.tickets.count)||0;
+    const cwv=m.delivered_cwv||(cx.high*1.9+cx.medium*1.0+cx.low*0.7);
+    return {name:m.name,
+      metrics:{tickets:{count:closed},
+        bugs:{total:(m.metrics&&m.metrics.bugs&&m.metrics.bugs.total)||0},
+        tests:{total_executed:(m.metrics&&m.metrics.tests&&m.metrics.tests.total_executed)||0}},
+      attended:closed+(m.awaiting_n||0)+(m.in_progress||0),
+      handed_to_bis:m.awaiting_n||Math.round(closed*0.7),
+      closed,
+      retested:m.retested||0,
+      cx_counts:cx,
+      avg_qc_days:round1(cycleBy[m.name]||0),
+      delivered_cwv:round1(cwv), velocity:round1(cwv/weeks)};
+  });
+  return {ticketSpeed, movement:movementD, leaderboard:{label:leaderboardD.label||PERIOD_LABEL[PERIOD],qa}, bisToClosed:bisToClosedD};
+}
+async function getAutomation(){
+  if(MODE==="SAMPLE") return AUTOMATION;
+  try{ return await fetchLive(`/automation/overview`); }catch(e){ console.warn("automation live failed, using sample",e); return AUTOMATION; }
+}
+
+/* ===========================================================================
+   RENDER HELPERS
+   =========================================================================== */
+const $=id=>document.getElementById(id);
+const css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+function animateValue(el,end,dec,suffix){
+  const start=0,dur=850,t0=performance.now();
+  function step(t){const k=Math.min(1,(t-t0)/dur);const e=1-Math.pow(1-k,3);
+    el.textContent=(end*e).toFixed(dec)+(suffix||"");
+    if(k<1)requestAnimationFrame(step);else el.textContent=end.toFixed(dec)+(suffix||"");}
+  requestAnimationFrame(step);
+}
+function tile(label,value,dec,suffix,sub,accent,tipNum){
+  return `<div class="tile card fab" style="--tile-accent:${accent}">
+    <div class="label">${label} <a class="info" href="#appendix" title="See logic #${tipNum}">i</a></div>
+    <div class="value"><span data-count="${value}" data-dec="${dec}" data-suf="${suffix||''}">0</span></div>
+    <div class="meta">${sub||""}</div></div>`;
+}
+function runCounts(scope){ (scope||document).querySelectorAll('[data-count]').forEach(el=>{
+  animateValue(el,parseFloat(el.dataset.count),parseInt(el.dataset.dec),el.dataset.suf);});}
+function destroy(k){ if(charts[k]){charts[k].destroy(); delete charts[k];} }
+// Register the datalabels plugin so values show directly on the graphs.
+if (window.ChartDataLabels) Chart.register(window.ChartDataLabels);
+// Smart default: show values on bars/points, auto-hide ones that would overlap (keeps lines/stacks tidy),
+// hide zeros, and trim decimals.
+const DL_DEFAULT={
+  color:css('--text-secondary'), font:{size:10,weight:'600'}, display:'auto', clamp:true,
+  formatter:v=>(v===0||v==null)?'':(typeof v==='number'?(Number.isInteger(v)?v:v.toFixed(1)):v),
+};
+const CHART_BASE={responsive:true,maintainAspectRatio:false,layout:{padding:{top:18,right:14}},
+  plugins:{legend:{labels:{color:css('--text-muted'),font:{size:11},boxWidth:12}},
+    datalabels:DL_DEFAULT,
+    tooltip:{backgroundColor:'#0b1220',borderColor:css('--accent-purple'),borderWidth:1,titleColor:'#fff',bodyColor:'#e2e8f0'}},
+  scales:{x:{ticks:{color:css('--text-muted'),font:{size:10}},grid:{color:'rgba(148,163,184,.10)'}},
+    y:{ticks:{color:css('--text-muted'),font:{size:10}},grid:{color:'rgba(148,163,184,.10)'},beginAtZero:true}}};
+// Doughnuts: always show the value in white, centred on each slice.
+const noScale={responsive:true,maintainAspectRatio:false,plugins:{...CHART_BASE.plugins,
+  datalabels:{...DL_DEFAULT,color:'#fff',display:true,formatter:v=>(v==null?'':v)}}};
+
+/* ===========================================================================
+   SECTION 1
+   =========================================================================== */
+function renderSection1(d){
+  const s=d.ticketSpeed.summary, mv=d.movement, b2c=d.bisToClosed;
+  const rows=d.ticketSpeed.rows||[];
+  const qcToBis=rows.filter(r=>r.qc_to_bis_days!=null).map(r=>r.qc_to_bis_days);
+  const avgCycle=round1(mean(qcToBis));
+  const firstTimeQc=round1(mean(rows.filter(r=>!r._retest&&r.qc_days!=null).map(r=>r.qc_days))) || (mv.qa_summary&&mv.qa_summary.closed.qa_avg_days) || s.avg_qc_days;
+  const retestRows=rows.filter(r=>r._retest);
+  const retestWait=round1(mean(retestRows.map(r=>r.qc_days))) || 0;
+  $('s1period').textContent = `${PERIOD_LABEL[PERIOD]} · ${s.tickets} tickets`;
+
+  $('s1tiles').innerHTML =
+    tile("Average QC Cycle Time", avgCycle,1," d",
+       `QC Testing → BIS Testing · ≈ ${Math.round(avgCycle*24)} hrs`,css('--accent-purple'),1) +
+    tile("Average QC Testing Time", firstTimeQc,1," d",
+       `First pass · ${(mv.qa_summary&&mv.qa_summary.received.first_time)||mv.new_to_qc.count} tickets`,css('--accent-teal'),2) +
+    tile("Retests", mv.refix_to_qc.count,0,"",
+       `Returned after QC review · average wait ${retestWait} d`,css('--accent-red'),3) +
+    tile("Average Closure Time", b2c.avg_days,1," d",
+       `Moved to Live → Closed · ${b2c.count} tickets`,css('--accent-amber'),4);
+  runCounts($('s1tiles'));
+
+  // stage durations
+  const sd=d.ticketSpeed.stage_durations.qa;
+  destroy('stage'); charts.stage=new Chart($('stageChart'),{type:'bar',
+    data:{labels:sd.map(x=>x.status),datasets:[{label:'Avg days',data:sd.map(x=>x.avg_days),
+      backgroundColor:sd.map(x=>x.status.includes('Fail')?css('--accent-red'):css('--accent-cyan')),borderRadius:6}]},
+    options:{...CHART_BASE,indexAxis:'y',plugins:{...CHART_BASE.plugins,legend:{display:false}}}});
+
+  // Trend + spike source: LIVE movement data when available, else the illustrative sample series.
+  const liveMv=(MODE==='LIVE' && d.movement && Array.isArray(d.movement.cycle_trend) && d.movement.cycle_trend.length)?d.movement:null;
+  let TR, flowFull, offenders;
+  if(liveMv){
+    const reBy={}; (d.movement.trend||[]).forEach(r=>reBy[r.label]={first:r.new_to_qc||0,re:r.refix_to_qc||0});
+    TR=d.movement.cycle_trend.map(p=>({label:p.label,qa:+p.qa||0,bis:+p.bis||0,total:+p.total||0,
+      closed:(reBy[p.label]||{}).first||0,retests:(reBy[p.label]||{}).re||0,bugs:0}));
+    flowFull=(d.movement.trend||[]).map(r=>({label:r.label,first:r.new_to_qc||0,re:r.refix_to_qc||0}));
+    offenders=(d.ticketSpeed.rows||[]).slice().sort((a,b)=>(b.qc_to_bis_days||0)-(a.qc_to_bis_days||0)).slice(0,10)
+      .map(r=>({ticket_id:r.ticket_id,title:r.title,module:r.module,qc_tester:r.qc_tester,
+        qc_days:r.qc_days,qc_to_bis_days:r.qc_to_bis_days,cycles:r.cycles,bugs:'—',cx:(r._cx||'medium')}));
+  } else {
+    TR=TREND12;
+    flowFull=TREND12.map(p=>({label:p.label,first:p.closed,re:p.retests}));
+    offenders=SPIKE_OFFENDERS;
+  }
+  // Scale the trend window to the selected period (min 3 months so a trend/spike is still meaningful).
+  const n=TREND_MONTHS[PERIOD]||12;
+  const isContext=CONTEXT_PERIODS.has(PERIOD);  // window is wider than the period → label as recent context
+  const trendSlice=TR.slice(-n), flowSlice=flowFull.slice(-n);
+  $('trendWin').textContent = isContext ? `· last ${n} months (recent context)` : `· ${n} months`;
+  $('retestWin').textContent = isContext ? `· last ${n} months` : `· ${n} months`;
+
+  // cycle-time trend (scaled to period)
+  destroy('trend'); charts.trend=new Chart($('trendChart'),{type:'line',
+    data:{labels:trendSlice.map(p=>p.label),datasets:[
+      {label:'QA days',data:trendSlice.map(p=>p.qa),borderColor:css('--accent-teal'),backgroundColor:'transparent',tension:.35,pointRadius:3},
+      {label:'BIS wait',data:trendSlice.map(p=>p.bis),borderColor:css('--accent-amber'),backgroundColor:'transparent',tension:.35,pointRadius:3},
+      {label:'Total lead',data:trendSlice.map(p=>p.total),borderColor:css('--accent-purple'),backgroundColor:'transparent',tension:.35,pointRadius:3,yAxisID:'y1'}]},
+    options:{...CHART_BASE,scales:{...CHART_BASE.scales,
+      y1:{position:'right',ticks:{color:css('--text-muted'),font:{size:10}},grid:{drawOnChartArea:false}}}}});
+
+  // first-time vs retest (scaled to period)
+  destroy('retest'); charts.retest=new Chart($('retestChart'),{type:'bar',
+    data:{labels:flowSlice.map(p=>p.label),datasets:[
+      {label:'First-time tests',data:flowSlice.map(p=>p.first),backgroundColor:css('--accent-teal'),borderRadius:5,stack:'a'},
+      {label:'Retests',data:flowSlice.map(p=>p.re),backgroundColor:css('--accent-red'),borderRadius:5,stack:'a'}]},
+    options:{...CHART_BASE,scales:{...CHART_BASE.scales,x:{...CHART_BASE.scales.x,stacked:true},y:{...CHART_BASE.scales.y,stacked:true}}}});
+
+  renderSpike(trendSlice, offenders);
+}
+
+/* spike detection on the 12-month trend (metric = total lead time) */
+function detectSpike(series,valKey){
+  for(let i=series.length-1;i>=2;i--){
+    const window=series.slice(Math.max(0,i-6),i).map(p=>p[valKey]);
+    if(window.filter(v=>v>0).length<3) continue; // not enough history to call a spike
+    const mu=mean(window), sd=Math.sqrt(mean(window.map(v=>(v-mu)**2)))||0.001;
+    const cur=series[i][valKey], prev=series[i-1][valKey];
+    if(cur>mu+2*sd || cur>=1.5*prev){
+      return {idx:i,point:series[i],mu:round1(mu),sd:round1(sd),prev};
+    }
+  }
+  return null;
+}
+function renderSpike(series, offenders){
+  series=series||TREND12; offenders=offenders||SPIKE_OFFENDERS;
+  const sp=detectSpike(series,'total');
+  const card=$('spikeCard'), body=$('spikeBody');
+  if(!sp){
+    card.classList.add('ok');
+    body.innerHTML=`<span class="spike-badge ok">✓ No spike detected</span>
+      <p style="margin-top:12px;font-size:12.5px;color:var(--text-muted)">Cycle times stayed within the normal range for the available history.</p>`;
+    $('offendersCard').style.display='none'; return;
+  }
+  card.classList.remove('ok'); $('offendersCard').style.display='';
+  const p=sp.point, base=series.slice(Math.max(0,sp.idx-6),sp.idx);
+  // driver deltas vs baseline (safe divide — baseline mean may be 0 with sparse history)
+  const sdiv=(cur,arr)=>{const mu=mean(arr); return mu?(cur-mu)/mu:0;};
+  const dQa=sdiv(p.qa,base.map(x=>x.qa));
+  const dBug=sdiv(p.bugs,base.map(x=>x.bugs));
+  const dRe=sdiv(p.retests,base.map(x=>x.retests));
+  const drivers=[
+    {name:"Longer testing time",cls:"lead",val:dQa},
+    {name:"More bugs reported",cls:"",val:dBug},
+    {name:"More retest cycles",cls:"",val:dRe}].sort((a,b)=>b.val-a.val);
+  const maxV=Math.max(...drivers.map(d=>d.val),0.001);
+  const top=drivers[0];
+  body.innerHTML=`
+    <div style="display:flex;align-items:center;gap:12px;margin:6px 0 4px">
+      <span class="spike-badge">▲ SPIKE · ${p.label}</span>
+      <span style="font-size:12.5px;color:var(--text-muted)">total lead <b style="color:var(--accent-red)">${p.total}d</b> vs baseline ${sp.mu}d (μ+2σ = ${round1(sp.mu+2*sp.sd)}d)</span>
+    </div>
+    <p style="font-size:12.5px;margin:8px 0 4px">Primary cause: <b style="color:var(--accent-red)">${top.name}</b> (+${Math.round(top.val*100)}% vs baseline). Contribution of each candidate driver:</p>
+    <div class="drivers">${drivers.map(dv=>`
+      <div class="driver ${dv.cls}">
+        <span>${dv.name}</span>
+        <span class="bar"><span data-w="${Math.max(4,Math.round(dv.val/maxV*100))}"></span></span>
+        <span class="pct">+${Math.round(dv.val*100)}%</span>
+      </div>`).join("")}</div>`;
+  // animate driver bars
+  requestAnimationFrame(()=>body.querySelectorAll('.driver .bar span').forEach(s=>s.style.width=s.dataset.w+'%'));
+  // offenders
+  $('offTitle').textContent=`· ${p.label} · ranked by QC Testing → BIS Testing time`;
+  $('offTable').innerHTML=`<thead><tr><th>Ticket</th><th>Title</th><th>Module</th><th>QA</th><th>Complexity</th>
+    <th>QC days</th><th>QC→BIS</th><th>Cycles</th><th>Bugs</th></tr></thead><tbody>${
+    offenders.map(t=>`<tr>
+      <td><a class="tlink" href="https://pm.bissafety.app/tickets/${t.ticket_id}" target="_blank">#${t.ticket_id}</a></td>
+      <td>${t.title}</td><td>${t.module}</td><td>${t.qc_tester}</td>
+      <td><span class="pill ${t.cx[0]}">${t.cx.toUpperCase()}</span></td>
+      <td class="mono">${t.qc_days}</td><td class="mono">${t.qc_to_bis_days}</td><td class="mono">${t.cycles}</td><td class="mono">${t.bugs}</td>
+    </tr>`).join("")}</tbody>`;
+}
+
+/* ===========================================================================
+   SECTION 2
+   =========================================================================== */
+function renderSection2(d){
+  const members=d.leaderboard.qa;
+  // member table — one clean row per member
+  const AV=['#8b5cf6','#14b8a6','#3b82f6','#f59e0b','#06b6d4','#22c55e','#a78bfa','#ef4444'];
+  const initials=n=>n.split(/\s+/).filter(Boolean).slice(0,2).map(x=>x[0]).join('').toUpperCase();
+  const maxVel=Math.max(...members.map(m=>m.velocity),0.001);
+  const medal=i=>i===0?'🥇':i===1?'🥈':i===2?'🥉':('#'+(i+1));
+  const cycClass=v=>v<=4?'good':v<=7?'mid':'bad';
+  const rowsHtml=members.map((m,i)=>{
+    const cx=m.cx_counts, tot=cx.high+cx.medium+cx.low||1;
+    const cxbar=`<span class="cxbar"><i class="h" style="width:${cx.high/tot*100}%"></i><i class="m" style="width:${cx.medium/tot*100}%"></i><i class="l" style="width:${cx.low/tot*100}%"></i></span>`;
+    return `<tr>
+      <td>
+        <div class="who">
+          <span class="avatar" style="background:${AV[i%AV.length]}">${initials(m.name)}</span>
+          <span><span class="nm">${m.name}</span><br><span class="rk">${medal(i)} · ${m.delivered_cwv} complexity pts</span></span>
+        </div>
+      </td>
+      <td>
+        <div class="flow">
+          <span class="step"><b>${m.attended}</b><span>attend</span></span><span class="arr">▸</span>
+          <span class="step"><b>${m.handed_to_bis}</b><span>to BIS</span></span><span class="arr">▸</span>
+          <span class="step"><b>${m.closed}</b><span>closed</span></span>
+        </div>
+      </td>
+      <td class="statnum"><b>${m.metrics.tests.total_executed}</b><span>cases</span></td>
+      <td class="statnum"><b>${m.metrics.bugs.total}</b><span>bugs</span></td>
+      <td class="statnum"><b>${m.retested}</b><span>retests</span></td>
+      <td class="cxwrap">${cxbar}<div class="lbl">H ${cx.high} · M ${cx.medium} · L ${cx.low}</div></td>
+      <td style="text-align:center"><span class="cyc-pill ${cycClass(m.avg_qc_days)}">${m.avg_qc_days}d</span></td>
+      <td class="velcell">
+        <div class="top"><span class="v">${m.velocity}</span><span class="w">pts / week</span></div>
+        <div class="velbar"><i data-w="${Math.round(m.velocity/maxVel*100)}"></i></div>
+      </td>
+    </tr>`;
+  }).join("");
+  $('memberTable').className='members';
+  $('memberTable').innerHTML=`<thead><tr>
+    <th>QA Member</th><th>Attended → To BIS → Closed</th><th class="num">Cases</th><th class="num">Bugs</th>
+    <th class="num">Retests</th><th>Complexity Mix</th><th class="num">Avg Cycle</th>
+    <th>Velocity <a class="info" data-tip="Velocity = complexity points delivered per week. Each ticket is worth points by complexity (High 1.9, Medium 1.0, Low 0.7), so harder work counts for more.">i</a></th></tr></thead><tbody>${rowsHtml}</tbody>`;
+  // animate the velocity bars
+  requestAnimationFrame(()=>document.querySelectorAll('#memberTable .velbar i').forEach(b=>b.style.width=b.dataset.w+'%'));
+
+  const names=members.map(m=>m.name.split(" ")[0]+" "+(m.name.split(" ")[1]||"").charAt(0));
+  // volume vs velocity combo
+  destroy('vel'); charts.vel=new Chart($('velChart'),{
+    data:{labels:names,datasets:[
+      {type:'bar',label:'Tickets closed',data:members.map(m=>m.closed),backgroundColor:css('--accent-blue'),borderRadius:6,yAxisID:'y'},
+      {type:'line',label:'Velocity (pts / week)',data:members.map(m=>m.velocity),borderColor:css('--accent-teal'),backgroundColor:'transparent',tension:.35,pointRadius:4,yAxisID:'y1'}]},
+    options:{...CHART_BASE,scales:{...CHART_BASE.scales,
+      y1:{position:'right',ticks:{color:css('--accent-teal'),font:{size:10}},grid:{drawOnChartArea:false},beginAtZero:true}}}});
+
+  // complexity mix
+  destroy('cx'); charts.cx=new Chart($('cxChart'),{type:'bar',
+    data:{labels:names,datasets:[
+      {label:'High',data:members.map(m=>m.cx_counts.high),backgroundColor:css('--accent-red'),borderRadius:4,stack:'s'},
+      {label:'Medium',data:members.map(m=>m.cx_counts.medium),backgroundColor:css('--accent-amber'),borderRadius:4,stack:'s'},
+      {label:'Low',data:members.map(m=>m.cx_counts.low),backgroundColor:css('--accent-green'),borderRadius:4,stack:'s'}]},
+    options:{...CHART_BASE,indexAxis:'y',scales:{...CHART_BASE.scales,x:{...CHART_BASE.scales.x,stacked:true},y:{...CHART_BASE.scales.y,stacked:true}}}});
+
+  // avg cycle per member
+  destroy('memCycle'); charts.memCycle=new Chart($('memCycleChart'),{type:'bar',
+    data:{labels:names,datasets:[{label:'Avg QC→BIS days',data:members.map(m=>m.avg_qc_days),
+      backgroundColor:css('--accent-purple'),borderRadius:6}]},
+    options:{...CHART_BASE,plugins:{...CHART_BASE.plugins,legend:{display:false}}}});
+
+  // bugs & tests
+  destroy('bugTest'); charts.bugTest=new Chart($('bugTestChart'),{
+    data:{labels:names,datasets:[
+      {type:'bar',label:'Cases executed',data:members.map(m=>m.metrics.tests.total_executed),backgroundColor:css('--accent-cyan'),borderRadius:6,yAxisID:'y'},
+      {type:'bar',label:'Bugs reported',data:members.map(m=>m.metrics.bugs.total),backgroundColor:css('--accent-amber'),borderRadius:6,yAxisID:'y1'}]},
+    options:{...CHART_BASE,scales:{...CHART_BASE.scales,
+      y1:{position:'right',ticks:{color:css('--accent-amber'),font:{size:10}},grid:{drawOnChartArea:false},beginAtZero:true}}}});
+}
+
+/* ===========================================================================
+   SECTION 3
+   =========================================================================== */
+function renderSection3(a){
+  const o=a.overview;
+  $('s3tiles').innerHTML =
+    tile("Total cases",o.total_cases,0,"","across all modules",css('--accent-blue'),7)+
+    tile("Automated",o.automated_cases,0,"",`of ${o.automatable_cases} automatable`,css('--accent-teal'),7)+
+    tile("Coverage",o.coverage_pct,1," %","automated ÷ automatable",css('--accent-green'),7)+
+    tile("Utilisation",o.utilization_pct,1," %","automated runs ÷ total runs",css('--accent-purple'),7)+
+    tile("Time saved",o.time_saved_hours,1," h",`@ ${o.manual_minutes_per_case} min/manual case`,css('--accent-amber'),7);
+  runCounts($('s3tiles'));
+
+  destroy('cov'); charts.cov=new Chart($('covChart'),{type:'doughnut',
+    data:{labels:['Automated','Not yet automated'],datasets:[{data:[o.automated_cases,o.automatable_cases-o.automated_cases],
+      backgroundColor:[css('--accent-teal'),css('--bg-tertiary')],borderWidth:0}]},
+    options:{...noScale,cutout:'68%'}});
+  destroy('util'); charts.util=new Chart($('utilChart'),{type:'doughnut',
+    data:{labels:['Automated runs','Manual runs'],datasets:[{data:[o.automated_executions,o.manual_executions],
+      backgroundColor:[css('--accent-purple'),css('--bg-tertiary')],borderWidth:0}]},
+    options:{...noScale,cutout:'68%'}});
+  const mix=o.status_mix||{};
+  destroy('mix'); charts.mix=new Chart($('mixChart'),{type:'doughnut',
+    data:{labels:Object.keys(mix),datasets:[{data:Object.values(mix),
+      backgroundColor:[css('--accent-green'),css('--accent-amber'),css('--bg-tertiary')],borderWidth:0}]},
+    options:{...noScale,cutout:'55%'}});
+
+  const mods=a.modules.slice(0,8);
+  destroy('mod'); charts.mod=new Chart($('modChart'),{type:'bar',
+    data:{labels:mods.map(m=>m.module),datasets:[
+      {label:'Coverage %',data:mods.map(m=>m.coverage_pct),backgroundColor:css('--accent-teal'),borderRadius:5},
+      {label:'Utilisation %',data:mods.map(m=>m.utilization_pct),backgroundColor:css('--accent-purple'),borderRadius:5}]},
+    options:{...CHART_BASE}});
+  destroy('saved'); charts.saved=new Chart($('savedChart'),{type:'bar',
+    data:{labels:mods.map(m=>m.module),datasets:[{label:'Hours saved',data:mods.map(m=>m.time_saved_hours),
+      backgroundColor:css('--accent-amber'),borderRadius:5}]},
+    options:{...CHART_BASE,indexAxis:'y',plugins:{...CHART_BASE.plugins,legend:{display:false}}}});
+
+  $('modTable').innerHTML=`<thead><tr><th>Module</th><th>Total</th><th>Automated</th><th>Coverage</th><th>Utilisation</th><th>Reuse ×</th><th>Time saved</th></tr></thead>
+    <tbody>${a.modules.map(m=>`<tr><td><b>${m.module}</b></td><td class="mono">${m.total_cases}</td><td class="mono">${m.automated_cases}</td>
+      <td class="mono">${m.coverage_pct}%</td><td class="mono">${m.utilization_pct}%</td><td class="mono">${m.reuse_ratio}</td>
+      <td class="mono">${m.time_saved_hours} h</td></tr>`).join("")}</tbody>`;
+}
+
+/* ===========================================================================
+   ORCHESTRATION
+   =========================================================================== */
+async function renderAll(){
+  try{
+    const [d,a]=await Promise.all([getData(),getAutomation()]);
+    renderSection1(d);
+    renderSection2(d);
+    renderSection3(a);
+  }catch(e){
+    console.error(e);
+    alert("LIVE fetch failed ("+e.message+"). Falling back to SAMPLE. Check API_BASE / token / CORS.");
+    MODE="SAMPLE"; setModeUI(); renderAll();
+  }
+}
+function setModeUI(){
+  $('modeLabel').textContent = MODE==="LIVE"?"LIVE DATA":"SAMPLE DATA";
+  $('modePill').classList.toggle('live',MODE==="LIVE");
+  $('ftMode').textContent=MODE;
+  document.querySelectorAll('#modeSeg button').forEach(b=>b.classList.toggle('active',b.dataset.mode===MODE));
+}
+
+/* events */
+$('periodBar').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+  PERIOD=b.dataset.p;document.querySelectorAll('#periodBar button').forEach(x=>x.classList.toggle('active',x===b));renderAll();});
+$('modeSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+  MODE=b.dataset.mode;setModeUI();renderAll();});
+$('themeBtn').addEventListener('click',()=>{
+  const cur=document.documentElement.getAttribute('data-theme');
+  const next=cur==='dark'?'light':'dark';
+  document.documentElement.setAttribute('data-theme',next);
+  $('themeBtn').textContent=next==='dark'?'🌙':'☀️';
+  renderAll(); // re-read CSS vars for chart colours
+});
+
+/* ⬇ Export the exact dashboard to a multi-page PDF (to share with the client off-network) */
+$('pdfBtn').addEventListener('click',exportPDF);
+async function exportPDF(){
+  if(!window.html2canvas||!window.jspdf){alert("PDF libraries not loaded (needs internet for the CDN).");return;}
+  const btn=$('pdfBtn'), old=btn.textContent; btn.textContent='⏳'; btn.disabled=true;
+  document.body.classList.add('exporting');
+  document.querySelectorAll('.section').forEach(s=>s.classList.add('in'));
+  window.scrollTo(0,0);
+  await new Promise(r=>setTimeout(r,950)); // let count-ups + chart animations settle
+  try{
+    const bg=getComputedStyle(document.body).backgroundColor;
+    const canvas=await html2canvas(document.body,{scale:1.5,backgroundColor:bg,useCORS:true,
+      windowWidth:document.documentElement.scrollWidth,windowHeight:document.body.scrollHeight});
+    const {jsPDF}=window.jspdf;
+    const pdf=new jsPDF('l','mm','a4');
+    const pageW=pdf.internal.pageSize.getWidth(), pageH=pdf.internal.pageSize.getHeight();
+    const pxPerMm=canvas.width/pageW, pageHpx=Math.floor(pageH*pxPerMm);
+    let y=0, first=true;
+    while(y<canvas.height){
+      const sliceH=Math.min(pageHpx,canvas.height-y);
+      const tmp=document.createElement('canvas'); tmp.width=canvas.width; tmp.height=sliceH;
+      const ctx=tmp.getContext('2d'); ctx.fillStyle=bg; ctx.fillRect(0,0,tmp.width,sliceH);
+      ctx.drawImage(canvas,0,y,canvas.width,sliceH,0,0,canvas.width,sliceH);
+      if(!first) pdf.addPage();
+      pdf.addImage(tmp.toDataURL('image/jpeg',0.92),'JPEG',0,0,pageW,sliceH/pxPerMm);
+      y+=sliceH; first=false;
+    }
+    const tag=(MODE==='LIVE'?'live':'sample');
+    pdf.save(`QA-Live-Metrics-Dashboard-${PERIOD}-${tag}.pdf`);
+  }catch(e){console.error(e);alert("PDF export failed: "+e.message);}
+  document.body.classList.remove('exporting');
+  btn.textContent=old; btn.disabled=false;
+}
+
+/* ⚙ Live connection settings */
+$('cfgBtn').addEventListener('click',e=>{e.stopPropagation();
+  $('cfgUrl').value=API_BASE; $('cfgToken').value=API_TOKEN;
+  $('cfgPanel').classList.toggle('open');});
+$('cfgPanel').addEventListener('click',e=>e.stopPropagation());
+document.addEventListener('click',()=>$('cfgPanel').classList.remove('open'));
+$('cfgSave').addEventListener('click',()=>{
+  API_BASE=$('cfgUrl').value.trim().replace(/\/$/,'')||API_BASE;
+  API_TOKEN=$('cfgToken').value.trim();
+  localStorage.setItem('qalm_api_base',API_BASE);
+  localStorage.setItem('qalm_api_token',API_TOKEN);
+  $('cfgPanel').classList.remove('open');
+  MODE="LIVE"; setModeUI(); renderAll();
+});
+$('cfgClear').addEventListener('click',()=>{
+  localStorage.removeItem('qalm_api_token'); API_TOKEN="";
+  $('cfgToken').value="";
+  MODE="SAMPLE"; setModeUI(); renderAll();
+});
+
+/* tooltip for [data-tip] */
+const tip=$('tip');
+document.addEventListener('mouseover',e=>{const t=e.target.closest('[data-tip]');if(!t)return;
+  tip.textContent=t.getAttribute('data-tip');tip.style.display='block';
+  const r=t.getBoundingClientRect();tip.style.left=Math.min(r.left,window.innerWidth-340)+'px';tip.style.top=(r.bottom+8)+'px';});
+document.addEventListener('mouseout',e=>{if(e.target.closest('[data-tip]'))tip.style.display='none';});
+
+/* reveal sections on scroll */
+const io=new IntersectionObserver(es=>es.forEach(x=>{if(x.isIntersecting)x.target.classList.add('in');}),{threshold:.08});
+document.querySelectorAll('.section').forEach(s=>io.observe(s));
+
+/* boot */
+setModeUI();
+renderAll();
+</script>
+</body>
+</html>

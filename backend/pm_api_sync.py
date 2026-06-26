@@ -292,13 +292,22 @@ class PMApiClient:
                         mapped['eta'] = val
                         break
             
+            # v2 returns developer fields as numeric user IDs — resolve to names.
+            try:
+                import pm_user_map
+                for _df in ('backend_developer', 'frontend_developer'):
+                    if mapped.get(_df) not in (None, ''):
+                        mapped[_df] = pm_user_map.resolve(mapped[_df])
+            except Exception:
+                pass
+
             if mapped:
                 mapped_tickets.append(mapped)
             else:
                 # Keep original data if no fields matched
                 logger.warning(f"Could not map fields for ticket: {ticket}")
                 mapped_tickets.append(ticket)
-        
+
         return mapped_tickets
     
     def test_connection(self) -> Tuple[bool, str]:

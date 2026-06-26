@@ -1,0 +1,68 @@
+BIS - DUPLICATE Test-Plan link comments to delete manually (keep the earlier one, delete the newer)
+
+PM ticket: https://pm.bissafety.app/tickets#!/<ticket>
+
+TICKET   QC TESTER              PLAN    KEEP cmt     DELETE cmt  
+--------------------------------------------------------------------
+20429    Julie Varghese         3962    140944       141574      
+20433    Aravind K V            4101    140914       141517      
+20436    Vincy JP               4389    140591       141551      
+20444    Kavyagayathry S        4057    140936       141573      
+20455    —                      4470    141081       141518      
+20477    Julie Varghese         4133    140915       141562      
+20511    Reshma R               4033    141318       141561      
+20517    Reshma Madhavan Nair   4428    140879       141535      
+20524    Reshma Madhavan Nair   4139    139678       141572      
+20543    Sariga KA              4352    140453       141496      
+20552    —                      4518    141158       141530      
+20627    —                      4431    140880       141519      
+20659    Vincy JP               4434    140883       141545      
+20660    —                      4578    141369       141499      
+20680    Nandana TR             4464    140975       141520      
+20697    Nandana TR             4346    140439       141531      
+20698    —                      3957    140257       141540      
+20702    Vincy JP               4318    140269       141548      
+20705    —                      4526    141167       141546      
+20707    Sariga KA              4259    139841       141486      
+20708    Kavyagayathry S        4179    140920       141571      
+20734    —                      4422    140869       141500      
+20737    Aravind K V            4392    140592       141570      
+20744    Aravind K V            4437    140884       141521      
+20749    Sariga KA              4211    139689       141501      
+20751    —                      4542    141292       141489      
+20770    Nandana TR             4238    139719       141560      
+20848    Vincy JP               4153    140905       141490      
+20849    —                      4567    141321       141502      
+20863    Kavyagayathry S        4321    140271       141569      
+20875    Anjaly Dominic         4324    140272       141550      
+20882    Suby Baby              4327    140274       141547      
+20902    Arya U S               4473    141085       141524      
+20907    Reshma Madhavan Nair   4522    141160       141493      
+20912    Suby Baby              4395    140593       141494      
+20923    Sariga KA              4330    140278       141568      
+20929    Jonathan Aruliah       4530    141173       141485      
+20937    Aravind K V            4425    140870       141495      
+20953    Aswin Sanjith          4481    141108       141532      
+20969    Anna Job               4446    140925       141522      
+20974    —                      4553    141304       141541      
+21003    —                      4559    141309       141549      
+21010    Julie Varghese         4476    141104       141523      
+
+Total: 43 duplicate comments across 43 tickets.
+
+=== Grouped by QC tester (to assign deletions) ===
+  Anjaly Dominic         : 20875
+  Anna Job               : 20969
+  Aravind K V            : 20433, 20737, 20744, 20937
+  Arya U S               : 20902
+  Aswin Sanjith          : 20953
+  Jonathan Aruliah       : 20929
+  Julie Varghese         : 20429, 20477, 21010
+  Kavyagayathry S        : 20444, 20708, 20863
+  Nandana TR             : 20680, 20697, 20770
+  Reshma Madhavan Nair   : 20517, 20524, 20907
+  Reshma R               : 20511
+  Sariga KA              : 20543, 20707, 20749, 20923
+  Suby Baby              : 20882, 20912
+  Vincy JP               : 20436, 20659, 20702, 20848
+  —                      : 20455, 20552, 20627, 20660, 20698, 20705, 20734, 20751, 20849, 20974, 21003

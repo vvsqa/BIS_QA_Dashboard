@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { API_BASE } from './api';
 import AppSidebar from './AppSidebar';
+import { useComplexityMap, ComplexityBadge } from './complexity';
 import './dashboard.css';
 
-const PM_TICKET_URL = 'https://www.bissafety.app/pm/tickets#!/';
+const PM_TICKET_URL = 'https://pm.bissafety.app/tickets/';
 
 const STATUS_COLORS = {
   busy: 'var(--accent-red)',
@@ -17,6 +18,7 @@ const STATUS_LABELS = {
 };
 
 export default function ResourcePlanner() {
+  const { entryOf } = useComplexityMap();
   const [activeTab, setActiveTab] = useState('team_queue');
   const [loading, setLoading] = useState(true);
   const [teamQueue, setTeamQueue] = useState(null);
@@ -216,12 +218,13 @@ export default function ResourcePlanner() {
                 <div style={{ marginTop: '10px' }}>
                   <h4 style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', marginBottom: '6px' }}>Current Tickets ({m.total_tickets}) {(() => { const rc = (m.current_tickets||[]).filter(t=>t.is_refix).length; return rc > 0 ? <span style={{color:'var(--accent-red)'}}> — {rc} refix</span> : null; })()}</h4>
                   <table className="qcq-table" style={{ fontSize: '0.8rem' }}>
-                    <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Module</th><th>Est</th><th>Actual</th><th>Refix</th></tr></thead>
+                    <thead><tr><th>Ticket</th><th>Title</th><th>Complexity</th><th>Status</th><th>Priority</th><th>Module</th><th>Est</th><th>Actual</th><th>Refix</th></tr></thead>
                     <tbody>
                       {m.current_tickets.map(t => (
                         <tr key={t.ticket_id} className="qcq-row">
                           <td><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
                           <td style={{ maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.title}>{t.title}</td>
+                          <td style={{ textAlign: 'center' }}><ComplexityBadge {...entryOf(t)} size="sm" /></td>
                           <td><span className="qcq-status-badge">{t.status}</span></td>
                           <td>{t.priority}</td>
                           <td>{t.module || '-'}</td>
@@ -240,12 +243,13 @@ export default function ResourcePlanner() {
                 <div style={{ marginTop: '12px' }}>
                   <h4 style={{ fontSize: '0.8rem', color: 'var(--accent-green)', marginBottom: '6px' }}>Suggested Next Tickets</h4>
                   <table className="qcq-table" style={{ fontSize: '0.8rem' }}>
-                    <thead><tr><th>Ticket</th><th>Title</th><th>Module</th><th>Priority</th><th>Est Hrs</th><th>Type</th><th>Score</th><th>Why</th></tr></thead>
+                    <thead><tr><th>Ticket</th><th>Title</th><th>Complexity</th><th>Module</th><th>Priority</th><th>Est Hrs</th><th>Type</th><th>Score</th><th>Why</th></tr></thead>
                     <tbody>
                       {m.next_suggested.map(t => (
                         <tr key={t.ticket_id} className="qcq-row">
                           <td><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
                           <td style={{ maxWidth: '250px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.title}>{t.title}</td>
+                          <td style={{ textAlign: 'center' }}><ComplexityBadge {...entryOf(t)} size="sm" /></td>
                           <td>{t.module}</td>
                           <td>{t.priority}</td>
                           <td style={{ textAlign: 'center' }}>{t.qa_estimate_hours || '-'}</td>
@@ -440,14 +444,15 @@ export default function ResourcePlanner() {
                         </div>
                         {loadingTickets ? <div style={{ padding: '16px', textAlign: 'center', color: 'var(--text-muted)' }}>Loading...</div> : (
                           <table className="qcq-table" style={{ fontSize: '0.82rem' }}>
-                            <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Platform</th><th>QC Tester</th><th>Developer</th><th>Est Hrs</th><th>Actual Hrs</th><th>ETA</th></tr></thead>
+                            <thead><tr><th>Ticket</th><th>Title</th><th>Complexity</th><th>Status</th><th>Priority</th><th>Platform</th><th>QC Tester</th><th>Developer</th><th>Est Hrs</th><th>Actual Hrs</th><th>ETA</th></tr></thead>
                             <tbody>
                               {(expandedModule.tickets || []).length === 0 ? (
-                                <tr><td colSpan="10" className="qcq-empty">No tickets</td></tr>
+                                <tr><td colSpan="11" className="qcq-empty">No tickets</td></tr>
                               ) : (expandedModule.tickets || []).map(t => (
                                 <tr key={t.ticket_id} className="qcq-row">
                                   <td><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noopener noreferrer">#{t.ticket_id}</a></td>
                                   <td className="qcq-title">{t.title}</td>
+                                  <td style={{ textAlign: 'center' }}><ComplexityBadge {...entryOf(t)} size="sm" /></td>
                                   <td><span className="qcq-status-badge">{t.status}</span></td>
                                   <td>{t.priority}</td>
                                   <td>{t.platform}</td>

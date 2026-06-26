@@ -1,9 +1,85 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Line, Bar } from 'react-chartjs-2';
+import {
+  Chart as ChartJS, CategoryScale, LinearScale, BarElement, PointElement, LineElement, Title, Tooltip, Legend,
+} from 'chart.js';
 import { API_BASE } from './api';
 import AppSidebar from './AppSidebar';
+import { useComplexityMap, ComplexityBadge } from './complexity';
 import './dashboard.css';
 
-const PM_TICKET_URL = 'https://www.bissafety.app/pm/tickets#!/';
+ChartJS.register(CategoryScale, LinearScale, BarElement, PointElement, LineElement, Title, Tooltip, Legend);
+
+const AXIS = 'rgba(148,163,184,0.85)';
+const GRID = 'rgba(148,163,184,0.12)';
+const cycleOpts = () => ({
+  responsive: true, maintainAspectRatio: false,
+  plugins: {
+    legend: { display: false },
+    tooltip: { backgroundColor: 'rgba(15,23,42,0.95)', titleColor: '#fff', bodyColor: '#e2e8f0', borderColor: GRID, borderWidth: 1, padding: 8 },
+  },
+  scales: {
+    x: { ticks: { color: AXIS, font: { size: 10 } }, grid: { color: GRID } },
+    y: { beginAtZero: true, ticks: { color: AXIS, font: { size: 10 } }, grid: { color: GRID } },
+  },
+});
+
+// "Cycle Time" tab — monthly trend of QA cycle and total cycle for closed tickets (BIS avg not shown).
+function CycleTimeView({ mv }) {
+  const data = (mv.cycle_trend || []).filter(c => c.total != null || c.qa != null).slice(-12);
+  if (data.length === 0) {
+    return <p style={{ color: 'var(--text-muted)', padding: '12px' }}>
+      No cycle-time data yet — it accumulates each month going forward (status history began late May 2026).
+    </p>;
+  }
+  const labels = data.map(c => c.label);
+  const line = (vals, color) => ({ labels, datasets: [{ data: vals, borderColor: color, backgroundColor: color, pointRadius: 4, tension: 0.3 }] });
+  const latest = data[data.length - 1];
+  const prev = data.length > 1 ? data[data.length - 2] : null;
+  const delta = (k) => (prev && prev[k] != null && latest[k] != null) ? Math.round((latest[k] - prev[k]) * 10) / 10 : null;
+  const Trend = ({ label, k, unit }) => {
+    const d = delta(k);
+    return (
+      <div className="tm-cyc-kpi">
+        <div className="tm-cyc-val">{latest[k]}{unit}</div>
+        <div className="tm-cyc-lbl">{label} — {latest.label}</div>
+        {d != null && <div className={`tm-cyc-delta ${d <= 0 ? 'good' : 'bad'}`}>{d <= 0 ? '▼' : '▲'} {Math.abs(d)}{unit} vs prev</div>}
+      </div>
+    );
+  };
+  return (
+    <div className="qcq-section">
+      <h3 className="qcq-section-title" style={{ marginTop: 0 }}>Cycle time trend (closed tickets)</h3>
+      <p className="auto-muted" style={{ marginTop: 0 }}>Lower is better — a downward trend means faster QA turnaround.</p>
+      <div className="tm-cyc-kpis">
+        <Trend label="QA cycle" k="qa" unit="d" />
+        <Trend label="Total cycle" k="total" unit="d" />
+        <Trend label="Closed" k="closed" unit="" />
+      </div>
+      <div className="tm-cycle-charts">
+        <div className="qcq-card">
+          <h4 style={{ marginTop: 0 }}>QA cycle time (days)</h4>
+          <div style={{ height: 230 }}><Line data={line(data.map(c => c.qa), '#14b8a6')} options={cycleOpts()} /></div>
+        </div>
+        <div className="qcq-card">
+          <h4 style={{ marginTop: 0 }}>Total cycle time (days)</h4>
+          <div style={{ height: 230 }}><Line data={line(data.map(c => c.total), '#a78bfa')} options={cycleOpts()} /></div>
+        </div>
+        <div className="qcq-card">
+          <h4 style={{ marginTop: 0 }}>Closed tickets / month</h4>
+          <div style={{ height: 230 }}><Bar data={{ labels, datasets: [{ data: data.map(c => c.closed), backgroundColor: '#22c55e' }] }} options={cycleOpts()} /></div>
+        </div>
+      </div>
+      <table className="auto-table" style={{ maxWidth: 480, marginTop: 14 }}>
+        <thead><tr><th>Month</th><th>Closed</th><th>QA avg (d)</th><th>Total avg (d)</th></tr></thead>
+        <tbody>{data.map(c => <tr key={c.label}><td>{c.label}</td><td>{c.closed}</td><td>{c.qa}</td><td>{c.total}</td></tr>)}</tbody>
+      </table>
+      <p className="auto-muted" style={{ fontSize: '0.72rem', marginTop: '6px' }}>QA cycle = days in QC Testing / In Progress / Hold. Total = created → closed. Builds up monthly.</p>
+    </div>
+  );
+}
+
+const PM_TICKET_URL = 'https://pm.bissafety.app/tickets/';
 
 const STATUS_COLORS = {
   'In Progress': '#f59e0b', 'Hold/Pending': '#f59e0b',
@@ -37,6 +113,8 @@ function TicketMovementSection({ year, month }) {
   const [search, setSearch] = useState('');
   const [sortKey, setSortKey] = useState('date');
   const [sortDir, setSortDir] = useState('desc');
+  const { withComplexity } = useComplexityMap();
+  const [tmTab, setTmTab] = useState('movement');
 
   useEffect(() => {
     const now = new Date();
@@ -55,7 +133,7 @@ function TicketMovementSection({ year, month }) {
   const card = mv[sel] || { count: 0, tickets: [] };
   const modules = [...new Set((card.tickets || []).map(t => t.module))].sort();
   const testers = [...new Set((card.tickets || []).map(t => t.qc_tester))].sort();
-  let rows = (card.tickets || []).filter(t =>
+  let rows = withComplexity(card.tickets || []).filter(t =>
     (!modFilter || t.module === modFilter) &&
     (!qcFilter || t.qc_tester === qcFilter) &&
     (!search || String(t.ticket_id).includes(search) || (t.title || '').toLowerCase().includes(search.toLowerCase()))
@@ -102,6 +180,14 @@ function TicketMovementSection({ year, month }) {
         <span className={`emp-period-badge ${mv.period?.frozen ? 'emp-final' : 'emp-live'}`}>{mv.period?.frozen ? 'Final' : 'Live'}</span>
       </div>
 
+      <div className="qcq-tabs" style={{ marginBottom: '12px' }}>
+        <button className={`qcq-tab ${tmTab === 'movement' ? 'active' : ''}`} onClick={() => setTmTab('movement')}>Ticket Movement</button>
+        <button className={`qcq-tab ${tmTab === 'cycle' ? 'active' : ''}`} onClick={() => setTmTab('cycle')}>Cycle Time</button>
+      </div>
+
+      {tmTab === 'cycle' && <CycleTimeView mv={mv} />}
+
+      {tmTab === 'movement' && (<>
       <div className="qcq-status-cards" style={{ marginBottom: '14px' }}>
         {MOVE_CARDS.map(c => (
           <div key={c.key} onClick={() => { setSel(c.key); setModFilter(''); setQcFilter(''); setSearch(''); setSortKey('date'); setSortDir('desc'); }}
@@ -112,6 +198,42 @@ function TicketMovementSection({ year, month }) {
           </div>
         ))}
       </div>
+
+      {mv.qa_summary && (
+        <div className="qcq-section" style={{ marginBottom: '14px' }}>
+          <h3 className="qcq-section-title" style={{ marginTop: 0 }}>QA Load — {mv.period?.label}</h3>
+          <div className="tm-qa-load">
+            <div className="tm-qa-tile tm-qa-in">
+              <div className="tm-qa-val">{mv.qa_summary.received.count}</div>
+              <div className="tm-qa-lbl">Received into QC</div>
+              <div className="tm-qa-sub">{mv.qa_summary.received.first_time} first-time + {mv.qa_summary.received.retest} retest</div>
+            </div>
+            <div className="tm-qa-arrow">→</div>
+            <div className="tm-qa-tile tm-qa-bis">
+              <div className="tm-qa-val">{mv.qa_summary.delivered_to_bis.count}</div>
+              <div className="tm-qa-lbl">Delivered to BIS</div>
+              <div className="tm-qa-sub">Load cleared to BIS</div>
+            </div>
+            <div className="tm-qa-arrow">→</div>
+            <div className="tm-qa-tile tm-qa-closed">
+              <div className="tm-qa-val">{mv.qa_summary.closed.count}</div>
+              <div className="tm-qa-lbl">Closed</div>
+              <div className="tm-qa-sub">Fully cleared (post-BIS approval) · {mv.qa_summary.closed.tickets} with history</div>
+              <div className="tm-qa-cycrow">
+                <span className="tm-qa-chip tm-qa-chip-qa">QA avg {mv.qa_summary.closed.qa_avg_days}d</span>
+                <span className="tm-qa-chip tm-qa-chip-tot">Total avg {mv.qa_summary.closed.total_avg_days}d</span>
+              </div>
+            </div>
+          </div>
+          <div style={{ color: 'var(--text-muted)', fontSize: '0.72rem', marginTop: '6px' }}>
+            <b>How it&apos;s calculated</b> (closed tickets this month):
+            <ul style={{ margin: '4px 0 0 0', paddingLeft: 18 }}>
+              <li><b>QA avg</b> — {mv.qa_summary.methodology?.qa}</li>
+              <li><b>Total avg</b> — {mv.qa_summary.methodology?.total}</li>
+            </ul>
+          </div>
+        </div>
+      )}
 
       {(() => {
         const SERIES = [
@@ -174,6 +296,7 @@ function TicketMovementSection({ year, month }) {
           <thead><tr>
             <Th k="ticket_id">Ticket</Th>
             <th style={{ textAlign: 'left' }}>Title</th>
+            <Th k="complexity_score">Complexity</Th>
             <Th k="module">Module</Th>
             <Th k="priority">Priority</Th>
             <Th k="qc_tester">QC Tester</Th>
@@ -190,6 +313,7 @@ function TicketMovementSection({ year, month }) {
               <tr key={`${t.ticket_id}-${t.date}`} className="qcq-row">
                 <td style={{ textAlign: 'center' }}><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
                 <td style={{ maxWidth: '260px', whiteSpace: 'normal', textAlign: 'left' }}>{t.title}</td>
+                <td style={{ textAlign: 'center' }}><ComplexityBadge level={t.complexity} overridden={t.complexity_overridden} size="sm" /></td>
                 <td style={{ textAlign: 'center' }}>{t.module}</td>
                 <td style={{ textAlign: 'center' }}>{t.priority}</td>
                 <td style={{ textAlign: 'center' }}>{t.qc_tester}</td>
@@ -206,11 +330,13 @@ function TicketMovementSection({ year, month }) {
         </table>
       </div>
       {rows.length === 0 && <p style={{ color: 'var(--text-muted)', padding: '8px' }}>No tickets.</p>}
+      </>)}
     </div>
   );
 }
 
 export default function TicketCalendar() {
+  const { withComplexity: withCx } = useComplexityMap();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
   const [selectedDay, setSelectedDay] = useState(null);
@@ -276,7 +402,7 @@ export default function TicketCalendar() {
     return Object.values(dayData.statuses || {}).flatMap(s => s.tickets || []);
   };
 
-  const selectedTickets = getSelectedTickets();
+  const selectedTickets = withCx(getSelectedTickets());
 
   // Month totals
   const monthDays = [];
@@ -401,13 +527,14 @@ export default function TicketCalendar() {
               <div className="qcq-table-container">
                 <table className="qcq-table" style={{ fontSize: '0.78rem' }}>
                   <thead>
-                    <tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Module</th><th>Developer</th><th>QC Tester</th></tr>
+                    <tr><th>Ticket</th><th>Title</th><th>Complexity</th><th>Status</th><th>Priority</th><th>Module</th><th>Developer</th><th>QC Tester</th></tr>
                   </thead>
                   <tbody>
                     {selectedTickets.map(t => (
                       <tr key={t.ticket_id} className="qcq-row">
                         <td style={{ textAlign: 'center' }}><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
                         <td style={{ maxWidth: '250px', wordBreak: 'break-word', whiteSpace: 'normal', textAlign: 'left' }}>{t.title}</td>
+                        <td style={{ textAlign: 'center' }}><ComplexityBadge level={t.complexity} overridden={t.complexity_overridden} size="sm" /></td>
                         <td style={{ textAlign: 'center' }}><span className="qcq-status-badge" style={{ background: `${STATUS_COLORS[t.status] || '#64748b'}20`, color: STATUS_COLORS[t.status] || '#64748b' }}>{t.status}</span></td>
                         <td style={{ textAlign: 'center' }}>{t.priority}</td>
                         <td style={{ textAlign: 'center' }}>{t.module || '-'}</td>

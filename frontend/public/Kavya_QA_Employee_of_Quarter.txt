@@ -1,0 +1,51 @@
+QA EMPLOYEE OF THE QUARTER - Q2 2026
+Nominee: Kavyagayathry S
+========================================
+
+
+--- 30-SECOND CEREMONY VERSION (read aloud) ---
+
+It is my honour to present the QA Employee of the Quarter for Q2 2026 to Kavyagayathry S.
+
+This quarter, Kavya ranked first across our entire QA team - delivering twenty-six tickets to production across ten modules, uncovering fifty defects, and completing her testing with rare thoroughness. What sets her apart is her consistency: high output, high quality, and dependable focus in equal measure.
+
+For the standard of excellence she sets for us all, congratulations, Kavya. This is richly deserved.
+
+
+--- LONGER CEREMONY VERSION (about 60 seconds) ---
+
+Ladies and gentlemen, it is my privilege to present the QA Employee of the Quarter for the second quarter of 2026 to Kavyagayathry S.
+
+This quarter, Kavya stood first among our entire twelve-member QA team - not by leading in any single number, but by excelling in every dimension that defines outstanding quality engineering. She delivered twenty-six tickets to production across ten different modules, identified fifty defects that protected our releases, and completed nearly ninety percent of her assigned test execution - among the most thorough on the team.
+
+What truly sets Kavya apart is her consistency. She pairs high output with high quality, broad coverage with sharp focus, and reliability that her colleagues and managers can plan around with confidence. She is, quite simply, the most well-rounded performer our QA team has produced this quarter.
+
+For her dedication, her discipline, and the standard of excellence she sets for us all, it is my honour to recognise Kavyagayathry S as our QA Employee of the Quarter. Congratulations, Kavya - this is richly deserved.
+
+
+--- FULL WRITTEN RECOMMENDATION (first version - for email / write-up) ---
+
+Nomination: Kavyagayathry S - QA Employee of the Quarter (Q2 2026)
+
+I'd like to nominate Kavya for QA Employee of the Quarter. On our balanced performance leaderboard for Q2 2026 (Apr-Jun), Kavya ranks #1 across the entire QA team of 12, with a composite score of 81.2 - and what stands out is how she got there: not by spiking a single number, but by being the most consistently strong performer across every dimension that matters.
+
+What she delivered this quarter:
+- 26 tickets shipped to live (plus 7 more handed off and awaiting BIS review) across 10 different modules - Reporting Dashboard, Forms, Reporting, Classroom Calendar, Assets, Online Course, and more - showing she can pick up and own quality anywhere.
+- 50 bugs found and reported, protecting our releases.
+- 1,323 of 1,494 test cases executed (88.6% execution completeness) - she finishes what she starts rather than leaving runs half-done.
+- 85.4% quality score and 88.6% estimate accuracy - among the best on the team, meaning her testing is both thorough and dependable to plan around.
+- 98.4% ticket focus (409 productive hours on tickets) - the highest on the team; her time goes straight into the work that ships.
+
+Why her, over equally busy peers: several teammates logged more raw tickets or bugs in one area, but Kavya is the rare tester who is simultaneously high-throughput, high-quality, high-coverage, and highly focused. She's reliable across modules, accurate in her estimates, and disciplined in completing test execution - the well-rounded profile we most want to recognize and hold up as the standard.
+
+Kavya has been a steady, dependable anchor for QA this quarter, and I strongly recommend her for the award.
+
+
+--- KEY STATS (for reference / Q&A) ---
+
+- Rank #1 of 12 on the QA team (composite score 81.2), Q2 2026
+- 26 tickets delivered to live (+7 awaiting review) across 10 modules
+- 50 bugs found and reported
+- 1,323 of 1,494 test cases executed (88.6% completeness)
+- 85.4% quality score; 88.6% estimate accuracy
+- 98.4% ticket focus (highest on the team)

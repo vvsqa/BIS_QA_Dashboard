@@ -1,4 +1,4 @@
-export const TICKET_TRACKING_BASE_URL = 'https://www.bissafety.app/pm/tickets#!/';
+export const TICKET_TRACKING_BASE_URL = 'https://pm.bissafety.app/tickets/';
 
 export const isNumericTicketId = (ticketId) => {
   if (ticketId === null || ticketId === undefined) return false;

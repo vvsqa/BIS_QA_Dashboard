@@ -37,13 +37,37 @@ def clear_response_cache():
     _response_cache.clear()
     # Reset external cache timestamps so TestRail/Redmine re-fetch on next page load
     _testrail_cache['timestamp'] = 0
+    _testrail_mobile_cache['timestamp'] = 0
     _redmine_cache['timestamp'] = 0
+
+
+def invalidate_pm_cache():
+    """Drop the 5-min PM ticket cache AND the computed response cache so the dashboard reflects a
+    just-completed DB sync immediately (otherwise stale `_ticket_cache` is served for up to 5 min).
+    Call this right after a manual or scheduled PM-Tracker sync commits."""
+    _ticket_cache['timestamp'] = 0
+    _ticket_cache['data'] = None
+    _response_cache.clear()
+
+
+def force_refresh_testrail():
+    """Refresh TestRail so a just-created plan shows immediately after a manual sync.
+
+    Only the PLAN map is refreshed SYNCHRONOUSLY (fast, ~2s) — that covers named test plans like the
+    QC-queue flag. The heavy mobile-suite case scan (~15s) is only marked stale so it refreshes in the
+    background; doing it synchronously here previously tied up a worker and could hang the app."""
+    _testrail_cache['timestamp'] = 0
+    _testrail_mobile_cache['timestamp'] = 0  # background refresh on next page load
+    try:
+        _fetch_testrail_plans()
+    except Exception as e:
+        logger.error(f'force_refresh_testrail error: {e}')
 
 
 # Simple in-memory cache for PM API results (avoids hitting API on every page load)
 _PM_DISK_CACHE = os.path.join(os.path.dirname(__file__), 'data', 'pm_tickets_cache.json')
 _ticket_cache = {'data': None, 'timestamp': 0}
-_CACHE_TTL = 300  # seconds - refresh from PM API at most once per 5 minutes
+_CACHE_TTL = 120  # seconds - aligned with the 2-min PM auto-sync so live data never lags a sync cycle
 
 import json as _json
 
@@ -68,6 +92,20 @@ def _load_cycle_tracker() -> Dict:
         with open(_CYCLE_FILE, 'r') as f:
             return _json.load(f)
     except (FileNotFoundError, _json.JSONDecodeError):
+        return {}
+
+
+def _load_refix_counts() -> Dict:
+    """{ticket_id(int): refix_count} from the durable ticket_tracking.refix_count column — the single
+    source of truth for how many times a ticket failed QC and was retested. Survives tracker resets."""
+    try:
+        from database import SessionLocal as _SL
+        from models import TicketTracking as _TT
+        _db = _SL()
+        out = {tid: (rc or 0) for tid, rc in _db.query(_TT.ticket_id, _TT.refix_count).all()}
+        _db.close()
+        return out
+    except Exception:
         return {}
 
 
@@ -185,7 +223,10 @@ PRIORITY_ORDER = {
 
 
 def _get_pm_client() -> PMApiClient:
-    return PMApiClient(api_key=os.environ.get('PM_API_KEY'))
+    # Use PMApiClient's own defaults so it honors PM_API_V2 (v2 URL + Bearer PM_API_KEY_V2). Forcing
+    # api_key=PM_API_KEY here used to send the v1 key as a v2 Bearer token → 401 → stale disk cache,
+    # so the live frontend lagged even when the DB sync (which uses PMApiClient()) was healthy.
+    return PMApiClient()
 
 
 def _parse_date(val) -> Optional[date]:
@@ -216,13 +257,21 @@ def _parse_float(val) -> float:
         return 0.0
 
 
+def _clean_str(v) -> str:
+    """Stripped string for a PM field, tolerant of non-string values. The v2 API returns some
+    fields (e.g. BackendDeveloper) as integer user IDs, so a plain `.strip()` would crash."""
+    if v is None:
+        return ''
+    return str(v).strip()
+
+
 def _normalize_ticket(raw: Dict) -> Dict:
     """Map PM API PascalCase fields to normalized dict."""
     ticket_id = raw.get('TicketNumber') or raw.get('ticket_id') or raw.get('id')
-    status = (raw.get('Status') or '').strip()
-    qc_tester = (raw.get('QCTester') or '').strip()
-    priority = (raw.get('Priority') or '').strip()
-    platform = (raw.get('Subdepartment') or '').strip()
+    status = _clean_str(raw.get('Status'))
+    qc_tester = _clean_str(raw.get('QCTester'))
+    priority = _clean_str(raw.get('Priority'))
+    platform = _clean_str(raw.get('Subdepartment'))
     if platform.lower() == 'mobile':
         platform = 'Mobile'
     elif platform:
@@ -237,8 +286,10 @@ def _normalize_ticket(raw: Dict) -> Dict:
     created = _parse_date(raw.get('TicketCreatedDate'))
     closed = _parse_date(raw.get('TicketClosedDate'))
 
-    backend_dev = (raw.get('BackendDeveloper') or '').strip()
-    frontend_dev = (raw.get('FrontendDeveloper') or '').strip()
+    # v2 returns developer fields as numeric user IDs — resolve to names via pm_user_map.
+    import pm_user_map
+    backend_dev = pm_user_map.resolve(raw.get('BackendDeveloper'))
+    frontend_dev = pm_user_map.resolve(raw.get('FrontendDeveloper'))
     developers = []
     if backend_dev:
         developers.append(backend_dev)
@@ -247,7 +298,7 @@ def _normalize_ticket(raw: Dict) -> Dict:
 
     return {
         'ticket_id': int(ticket_id) if ticket_id else 0,
-        'title': (raw.get('TicketTitle') or '').strip(),
+        'title': _clean_str(raw.get('TicketTitle')),
         'status': status,
         'priority': priority or 'Unspecified',
         'priority_order': PRIORITY_ORDER.get(priority, 99),
@@ -265,9 +316,9 @@ def _normalize_ticket(raw: Dict) -> Dict:
         'frontend_developer': frontend_dev,
         'developers': developers,
         'developers_str': ', '.join(developers) if developers else 'Not Assigned',
-        'current_assignee': (raw.get('CurrentAssignee') or '').strip(),
-        'reported_by': (raw.get('ReportedBy') or '').strip(),
-        'ticket_type': (raw.get('Type') or '').strip(),
+        'current_assignee': _clean_str(raw.get('CurrentAssignee')),
+        'reported_by': _clean_str(raw.get('ReportedBy')),
+        'ticket_type': _clean_str(raw.get('Type')),
         'billable': raw.get('Billable'),
         'follow_up_date': raw.get('FollowUpDate'),
     }
@@ -386,13 +437,28 @@ def _fetch_testrail_plans() -> Dict[int, Dict]:
         headers = {'Authorization': f'Basic {cred}', 'Content-Type': 'application/json'}
         project_id = int(os.environ.get('TESTRAIL_AUTOMATION_PROJECT_ID', '18'))
 
-        # Fetch all plans
+        # Fetch all plans. On a 429 (TestRail rate limit) retry with backoff; on any unrecovered
+        # error abort WITHOUT caching the partial result (a half-fetched page would otherwise
+        # overwrite the good cache and make counts drop).
         all_plans = []
         offset = 0
         while True:
             resp = requests.get(f'{api_base}/get_plans/{project_id}', headers=headers, params={'limit': 250, 'offset': offset}, timeout=30)
+            if resp.status_code == 429:
+                ok = False
+                for attempt in range(3):
+                    wait = float(resp.headers.get('Retry-After', 1 << attempt))
+                    time.sleep(min(wait, 8))
+                    resp = requests.get(f'{api_base}/get_plans/{project_id}', headers=headers, params={'limit': 250, 'offset': offset}, timeout=30)
+                    if resp.status_code == 200:
+                        ok = True
+                        break
+                if not ok:
+                    logger.warning('TestRail plans: rate-limited; serving cached data (no partial overwrite)')
+                    return _testrail_cache.get('data') or {}
             if resp.status_code != 200:
-                break
+                logger.warning(f'TestRail plans: HTTP {resp.status_code}; serving cached data')
+                return _testrail_cache.get('data') or {}
             data = resp.json()
             plans = data.get('plans', data) if isinstance(data, dict) else data
             if not plans:
@@ -791,6 +857,12 @@ def fetch_live_tickets(force_refresh: bool = False) -> Tuple[bool, List[Dict], s
         if _ticket_cache['data'] is not None:
             return True, _ticket_cache['data'], 'From stale cache (API failed)'
         return False, [], msg
+    # Keep the developer id->name map fresh (cold-start: sync so names show on first load).
+    try:
+        import pm_user_map
+        pm_user_map.maybe_rebuild_async(raw_tickets)
+    except Exception:
+        pass
     # Exclude Initiative type tickets from all counts
     EXCLUDED_TYPES = {'Initiative'}
     normalized = [_normalize_ticket(t) for t in raw_tickets if t.get('Type', '') not in EXCLUDED_TYPES]
@@ -931,6 +1003,7 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
 
     # Track QC cycles (retesting detection)
     cycle_tracker = _update_cycle_tracker(all_tickets, today)
+    refix_counts = _load_refix_counts()  # durable refix count per ticket (ticket_tracking.refix_count)
 
     # Score and enrich — ageing tracked from first seen in status
     for t in qc_tickets:
@@ -947,7 +1020,7 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
 
         # Cycle tracking
         ct = cycle_tracker.get(str(t['ticket_id']), {})
-        t['retest_cycle_count'] = ct.get('cycle_count', 0)
+        t['retest_cycle_count'] = max(refix_counts.get(t['ticket_id'], 0), ct.get('cycle_count', 0))
         t['is_retesting'] = ct.get('is_retesting', False)
 
         # Activity type with hold duration and retesting info
@@ -986,7 +1059,7 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
         t['activity_type'] = 'qc_failed'
         t['activity_label'] = f'QC Review Fail (cycle {ct.get("cycle_count", 0) + 1})'
         t['open_bugs_count'] = 0
-        t['retest_cycle_count'] = ct.get('cycle_count', 0)
+        t['retest_cycle_count'] = max(refix_counts.get(t['ticket_id'], 0), ct.get('cycle_count', 0))
         t['is_retesting'] = False
         t['qa_lead'] = ''
 
@@ -1015,7 +1088,7 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
             t['activity_label'] = f'Approved for Live ({t["days_in_qc"]}d)' if t['days_in_qc'] > 0 else 'Approved for Live — verify in prod'
         _enrich_external(t)
         ct = cycle_tracker.get(str(t['ticket_id']), {})
-        t['retest_cycle_count'] = ct.get('cycle_count', 0)
+        t['retest_cycle_count'] = max(refix_counts.get(t['ticket_id'], 0), ct.get('cycle_count', 0))
         t['is_retesting'] = False
         t['qa_lead'] = ''
 
@@ -1129,6 +1202,7 @@ def _compute_qc_queue(today: Optional[date] = None) -> Dict:
             'ticket_id': t['ticket_id'], 'title': t['title'], 'status': t['status'],
             'priority': t['priority'], 'module': mod, 'platform': t.get('platform', ''),
             'developers_str': t.get('developers_str', ''), 'qc_tester': t.get('qc_tester', ''),
+            'current_assignee': t.get('current_assignee', ''),
             'is_refix': is_refix, 'eta': t.get('eta'),
             'dev_estimate_hours': t.get('dev_estimate_hours', 0), 'actual_dev_hours': t.get('actual_dev_hours', 0),
         })
@@ -2237,6 +2311,10 @@ QA_RELEVANT_STATUSES = {
     'Approved for Live', 'Moved to Live',
 }
 ALL_RELEVANT_STATUSES = DEV_RELEVANT_STATUSES | QA_RELEVANT_STATUSES
+# Statuses where a ticket has BOUNCED BACK to a developer to fix — the backend/frontend developer
+# field still holds the ORIGINAL dev, but the person now working it is the CURRENT ASSIGNEE. Credit
+# the assignee too so the dev list shows the ticket under whoever is actually fixing it.
+REFIX_TO_DEV_STATUSES = {'QC Review Fail', 'Tested - Awaiting Fixes', 'Code Review Failed', 'Re-opened'}
 
 # Keep old DEV_ALL_STATUSES for backward compat
 DEV_ALL_STATUSES = DEV_RELEVANT_STATUSES
@@ -2442,6 +2520,73 @@ def _compute_build_quality() -> Dict:
     }
 
 
+# Statuses where the CURRENT ASSIGNEE is the developer actively working the ticket, so the assignee
+# (an authoritative PM name) — not the id-resolved, often-stale BackendDeveloper field — is the right
+# owner for the dev-team grouping. (Refix states are handled separately: there we credit BOTH the
+# original developer and the assignee fixing it.)
+ACTIVE_ASSIGNEE_DEV_STATUSES = {'In Progress', 'Hold/Pending'}
+
+
+def _build_our_dev_matcher():
+    """(our_dev_names, is_our_dev) — recognize our DEVELOPMENT employees by their PM display names,
+    tolerating initial-spacing ("Vishnu C S" vs "Vishnu CS") and known PM aliases. When the employee
+    table is unavailable, is_our_dev accepts everything (caller keeps the raw list)."""
+    try:
+        from database import SessionLocal as _SL
+        from models import Employee as _Emp
+        _db = _SL()
+        our_dev_names = set(e.name for e in _db.query(_Emp).filter(_Emp.is_active == True, _Emp.team == 'DEVELOPMENT').all())
+        _db.close()
+    except Exception:
+        our_dev_names = set()
+    if not our_dev_names:
+        return our_dev_names, (lambda pm_name: True)
+
+    import re as _re
+    our_lookup = set()
+    for n in our_dev_names:
+        normalized = _re.sub(r'\s+', ' ', n.lower().strip())
+        our_lookup.add(normalized)
+        parts = normalized.split()
+        if len(parts) >= 2:
+            our_lookup.add(f'{parts[0]} {parts[-1]}')
+            if len(parts) >= 3:
+                concat = ''.join(p[0] for p in parts[1:])
+                our_lookup.add(f'{parts[0]} {concat}')
+                our_lookup.add(f'{parts[0]} {"".join(parts[1:])}')
+    pm_aliases = {
+        'abhijai kp': True, 'adarsh us': True, 'anoop ben': True,
+        'binoy dominic': True, 'gosal ram': True, 'ranimol kr': True,
+        'sabareesh rs': True, 'sam isaac': True, 'shyamsundar ps': True,
+        'vishnu pramod': True, 'vishnu cs': True, 'midhun gopi': True,
+    }
+    our_lookup.update(pm_aliases.keys())
+
+    def _is_our_dev(pm_name):
+        for part in (pm_name or '').split(','):
+            clean = part.strip().split('(')[0].strip().lower()
+            clean = _re.sub(r'\s+', ' ', clean).strip()
+            if not clean:
+                continue
+            if clean in our_lookup:
+                return True
+            cparts = clean.split()
+            if len(cparts) >= 2 and f'{cparts[0]} {cparts[-1]}' in our_lookup:
+                return True
+            if len(cparts) >= 3:
+                initials = ''.join(p[0] for p in cparts[1:])
+                if f'{cparts[0]} {initials}' in our_lookup or f'{cparts[0]} {"".join(cparts[1:])}' in our_lookup:
+                    return True
+            if len(cparts) >= 1 and any(clean.startswith(k.split()[0]) and len(clean) > 3 for k in our_lookup if ' ' in k):
+                for k in our_lookup:
+                    kp = k.split()
+                    if len(kp) >= 2 and len(cparts) >= 2 and kp[0] == cparts[0] and cparts[1][:2] == kp[1][:2]:
+                        return True
+        return False
+
+    return our_dev_names, _is_our_dev
+
+
 def get_live_dev_dashboard(today: Optional[date] = None) -> Dict:
     return _cached_response('dev_dashboard', lambda: _compute_dev_dashboard(today))
 
@@ -2459,6 +2604,7 @@ def _compute_dev_dashboard(today: Optional[date] = None) -> Dict:
     testrail_data = _testrail_cache.get('data') or {}
     redmine_data = _redmine_cache.get('data') or {}
     cycle_tracker = _update_cycle_tracker(all_tickets, today)
+    refix_counts = _load_refix_counts()  # durable refix count per ticket (ticket_tracking.refix_count)
     ageing_tracker = _load_ageing_tracker()
 
     # ONLY relevant statuses — no Planning, Technical Review, NEW, DRAFT, etc.
@@ -2527,19 +2673,65 @@ def _compute_dev_dashboard(today: Optional[date] = None) -> Dict:
     refix_count = sum(1 for t in dev_tickets if t['is_refix'])
     dev_overrun_count = sum(1 for t in dev_tickets if t['is_dev_overrun'])
 
+    # Bug counts per ticket (Open / Reopened / Fixed / Closed) for the standup view.
+    bug_map = {}
+    try:
+        from database import SessionLocal as _SL
+        from models import Bug as _Bug
+        _bdb = _SL()
+        for _btid, _bst in _bdb.query(_Bug.ticket_id, _Bug.status).all():
+            _stl = (_bst or '').strip().lower()
+            _bb = bug_map.setdefault(_btid, {'open': 0, 'reopen': 0, 'fixed': 0, 'closed': 0})
+            if _stl == 'reopened':
+                _bb['reopen'] += 1
+            elif _stl == 'fixed':
+                _bb['fixed'] += 1
+            elif _stl == 'closed':
+                _bb['closed'] += 1
+            else:
+                _bb['open'] += 1
+        _bdb.close()
+    except Exception:
+        bug_map = {}
+    refix_counts = _load_refix_counts()  # durable refix/retest count per ticket
+
+    # Recognize our own developers up front — used both to attribute active tickets to the person
+    # actually working them and to filter client names out of the final dev list.
+    our_dev_names, _is_our_dev = _build_our_dev_matcher()
+
+    def _split_names(s):
+        s = (s or '').strip()
+        return [p.strip() for p in (s.split(',') if ',' in s else [s]) if p.strip()]
+
     # Developer-wise — use ALL relevant tickets, de-duplicate per developer
     dev_map = {}
     for t in all_relevant:
         # De-duplicate developers per ticket (backend_dev == frontend_dev)
         # Split comma-separated names (PM sometimes has "Name1, Name2" as one entry)
         seen_devs = set()
-        raw_devs = []
-        for d in t.get('developers', []):
-            if not d: continue
-            if ',' in d:
-                raw_devs.extend(part.strip() for part in d.split(',') if part.strip())
-            else:
-                raw_devs.append(d)
+        status = t.get('status')
+        ca = (t.get('current_assignee') or '').strip()
+        # On actively-developed tickets (In Progress / Hold/Pending) the CurrentAssignee IS the
+        # developer. The BackendDeveloper field is a numeric id resolved heuristically and is often
+        # stale on older/reassigned tickets (a former dev's id, or two ids that collapse to one
+        # name) — which used to pile several devs' tickets under the wrong person. So when the live
+        # assignee is one of our developers, attribute the ticket to them instead of the resolved id.
+        ca_our_devs = [p for p in _split_names(ca) if _is_our_dev(p)]
+        if status in ACTIVE_ASSIGNEE_DEV_STATUSES and ca_our_devs:
+            raw_devs = list(ca_our_devs)
+        else:
+            raw_devs = []
+            for d in t.get('developers', []):
+                if not d: continue
+                if ',' in d:
+                    raw_devs.extend(part.strip() for part in d.split(',') if part.strip())
+                else:
+                    raw_devs.append(d)
+            # Ticket bounced back to a dev (QC/code-review failure, reopen): credit the current
+            # assignee too — the dev field holds the original developer, but the assignee is the one
+            # fixing it now. (_is_our_dev filtering below drops the assignee if they're not a dev.)
+            if status in REFIX_TO_DEV_STATUSES:
+                raw_devs.extend(_split_names(ca))
         for d in raw_devs:
             if not d or d in seen_devs:
                 continue
@@ -2555,12 +2747,17 @@ def _compute_dev_dashboard(today: Optional[date] = None) -> Dict:
                 'ticket_id': t['ticket_id'], 'title': t['title'], 'status': t['status'],
                 'stage': t['stage'], 'stage_label': t['stage_label'], 'priority': t['priority'],
                 'module': t.get('module', ''), 'platform': t.get('platform', 'Web'),
-                'qc_tester': t.get('qc_tester', ''), 'is_refix': t['is_refix'],
-                'cycle_count': t.get('cycle_count', 0),
+                'qc_tester': t.get('qc_tester', ''),
+                'is_refix': (refix_counts.get(t['ticket_id'], 0) > 0) or t['is_refix'],
+                'cycle_count': refix_counts.get(t['ticket_id'], 0),
                 'current_assignee': t.get('current_assignee', ''),
                 'dev_estimate_hours': t.get('dev_estimate_hours', 0),
                 'actual_dev_hours': t.get('actual_dev_hours', 0),
                 'eta': t.get('eta'),
+                'bugs_open': (bug_map.get(t['ticket_id']) or {}).get('open', 0),
+                'bugs_reopen': (bug_map.get(t['ticket_id']) or {}).get('reopen', 0),
+                'bugs_fixed': (bug_map.get(t['ticket_id']) or {}).get('fixed', 0),
+                'bugs_closed': (bug_map.get(t['ticket_id']) or {}).get('closed', 0),
             })
             dev_map[d]['modules'].add(t.get('module', ''))
             dev_map[d]['stages'][t['status']] = dev_map[d]['stages'].get(t['status'], 0) + 1
@@ -2653,59 +2850,10 @@ def _compute_dev_dashboard(today: Optional[date] = None) -> Dict:
         }
 
     ticket_list = [_ticket_item(t) for t in all_relevant]
-    # Filter to only our dev team employees (exclude client names)
-    try:
-        from database import SessionLocal as _SL
-        from models import Employee as _Emp
-        _db = _SL()
-        our_dev_names = set(e.name for e in _db.query(_Emp).filter(_Emp.is_active == True, _Emp.team == 'DEVELOPMENT').all())
-        _db.close()
-    except Exception:
-        our_dev_names = set()
-
+    # Filter to only our dev team employees (exclude client names). our_dev_names / _is_our_dev were
+    # built once at the top of this function (also used for active-ticket attribution above).
     all_devs_raw = sorted(set(d for t in all_relevant for d in t.get('developers', []) if d))
     if our_dev_names:
-        import re as _re
-        # Build lookup with exact names + known PM aliases
-        our_lookup = set()
-        for n in our_dev_names:
-            normalized = _re.sub(r'\s+', ' ', n.lower().strip())
-            our_lookup.add(normalized)
-            parts = normalized.split()
-            if len(parts) >= 2:
-                our_lookup.add(f'{parts[0]} {parts[-1]}')
-                # Handle "X Y Z" -> "X Yz" (PM concatenates initials)
-                if len(parts) >= 3:
-                    concat = ''.join(p[0] for p in parts[1:])
-                    our_lookup.add(f'{parts[0]} {concat}')
-                    our_lookup.add(f'{parts[0]} {"".join(parts[1:])}')
-
-        # Explicit PM name aliases for known mismatches
-        pm_aliases = {
-            'abhijai kp': True, 'adarsh us': True, 'anoop ben': True,
-            'binoy dominic': True, 'gosal ram': True, 'ranimol kr': True,
-            'sabareesh rs': True, 'sam isaac': True, 'shyamsundar ps': True,
-            'vishnu pramod': True, 'vishnu cs': True, 'midhun gopi': True,
-        }
-        our_lookup.update(pm_aliases.keys())
-
-        def _is_our_dev(pm_name):
-            for part in pm_name.split(','):
-                clean = part.strip().split('(')[0].strip().lower()
-                clean = _re.sub(r'\s+', ' ', clean).strip()
-                if clean in our_lookup:
-                    return True
-                cparts = clean.split()
-                if len(cparts) >= 2 and f'{cparts[0]} {cparts[-1]}' in our_lookup:
-                    return True
-                # First name only match for single-word PM names
-                if len(cparts) >= 1 and any(clean.startswith(k.split()[0]) and len(clean) > 3 for k in our_lookup if ' ' in k):
-                    # Verify second part overlaps
-                    for k in our_lookup:
-                        kp = k.split()
-                        if len(kp) >= 2 and len(cparts) >= 2 and kp[0] == cparts[0] and cparts[1][:2] == kp[1][:2]:
-                            return True
-            return False
         all_devs = [d for d in all_devs_raw if _is_our_dev(d)]
         developers = [d for d in developers if _is_our_dev(d['name'])]
         # Add team members with 0 tickets (skip only if their PM name is already in the list)

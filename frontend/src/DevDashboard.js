@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE } from './api';
 import AppSidebar from './AppSidebar';
+import { useComplexityMap, ComplexityBadge, ComplexityFilter } from './complexity';
 import './dashboard.css';
 
-const PM_TICKET_URL = 'https://www.bissafety.app/pm/tickets#!/';
+const PM_TICKET_URL = 'https://pm.bissafety.app/tickets/';
 
 const STAGE_COLORS = {
   early: 'var(--text-muted)', ready: 'var(--accent-blue)', active: 'var(--accent-green)',
@@ -17,6 +18,29 @@ const STAGE_LABELS = {
 function StatusBadge({ status }) {
   const s = (status || '').toLowerCase().replace(/\s+/g, '-');
   return <span className={`qcq-status qcq-status-${s}`}>{status}</span>;
+}
+
+const DOC_FLAG_ORDER = ['NO_PR_NO_RN', 'THIN_RN', 'RN_REVIEW', 'PR_NO_RN', 'RN_NO_PR', 'ALIGNED', 'UNKNOWN'];
+const DOC_RISK = { NO_PR_NO_RN: 0, THIN_RN: 1, RN_REVIEW: 2, PR_NO_RN: 3, RN_NO_PR: 4, ALIGNED: 5, UNKNOWN: 6 };
+// Build the Docs-Health rollup from the QC queue when the dedicated summary endpoint isn't available.
+function buildDocSummaryFromQueue(qdata) {
+  const sec = qdata?.queue;
+  const ts = Array.isArray(sec) ? sec : (sec?.tickets || []);
+  const counts = {}; DOC_FLAG_ORDER.forEach(f => { counts[f] = 0; });
+  const tickets = [];
+  (ts || []).forEach(t => {
+    const flag = t.doc_confidence || 'UNKNOWN';
+    counts[flag] = (counts[flag] || 0) + 1;
+    tickets.push({
+      ticket_id: t.ticket_id, flag, rn_thin_tier: t.doc_rn_thin_tier,
+      unexplained_count: t.doc_unexplained_count ?? null, unexplained: t.doc_unexplained || [],
+      title: t.title || '', module: t.module || '', status: t.status || '',
+      qc_tester: t.qc_tester || null, has_test_plan: !!t.has_test_plan,
+    });
+  });
+  tickets.sort((a, b) => (DOC_RISK[a.flag] ?? 9) - (DOC_RISK[b.flag] ?? 9) || (b.unexplained_count || 0) - (a.unexplained_count || 0));
+  const weak = ['NO_PR_NO_RN', 'THIN_RN', 'RN_REVIEW', 'PR_NO_RN', 'RN_NO_PR'].reduce((s, f) => s + (counts[f] || 0), 0);
+  return { counts, order: DOC_FLAG_ORDER, total: tickets.length, weak, tickets };
 }
 
 function HoursCell({ est, actual }) {
@@ -51,6 +75,10 @@ export default function DevDashboard() {
   const [sortField, setSortField] = useState('ticket_count');
   const [sortDir, setSortDir] = useState('desc');
   const cardListRef = useRef(null);
+  const [docSummary, setDocSummary] = useState(null);     // doc-confidence rollup
+  const [docFlagFilter, setDocFlagFilter] = useState(''); // '' = all flags
+  const [cxLevelFilter, setCxLevelFilter] = useState(''); // '' = all complexity
+  const { withComplexity } = useComplexityMap();
 
   const safeFetch = async (url) => {
     try { return await fetch(url.startsWith('http') ? url : `${API_BASE}${url}`); } catch { return null; }
@@ -59,12 +87,23 @@ export default function DevDashboard() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [res, bqRes] = await Promise.all([
+      const [res, bqRes, docRes, qRes] = await Promise.all([
         safeFetch('/live/dev-dashboard'),
         safeFetch('/live/build-quality'),
+        safeFetch('/live/doc-confidence/summary'),
+        safeFetch('/live/qc-queue'),
       ]);
       if (res?.ok) setData(await res.json());
       if (bqRes?.ok) setBuildQuality(await bqRes.json());
+      // Prefer the dedicated summary endpoint (richer: unexplained file lists). If it's not available
+      // (e.g. backend not yet restarted), derive the same rollup from the QC queue, which already
+      // carries doc_confidence per row — so the tab works regardless.
+      let docData = null;
+      if (docRes?.ok) { try { docData = await docRes.json(); } catch { /* ignore */ } }
+      if ((!docData || !(docData.tickets || []).length) && qRes?.ok) {
+        try { docData = buildDocSummaryFromQueue(await qRes.json()); } catch { /* ignore */ }
+      }
+      if (docData) setDocSummary(docData);
     } finally { setLoading(false); }
   }, []);
 
@@ -105,7 +144,7 @@ export default function DevDashboard() {
 
   const summary = data?.summary || {};
   const stages = summary.by_stage || {};
-  const allTickets = data?.tickets || [];
+  const allTickets = withComplexity(data?.tickets || []);
   const developers = data?.developers || [];
   const modules = data?.modules || [];
 
@@ -126,6 +165,7 @@ export default function DevDashboard() {
       else if (!['refix','dev_overrun','dev','qa'].includes(cardFilter) && !cardFilter?.startsWith('first_time_') && t.status !== cardFilter) return false;
     }
     if (stageFilter && t.status !== stageFilter) return false;
+    if (cxLevelFilter && (t.complexity || '') !== cxLevelFilter) return false;
     if (assigneeFilter && t.current_assignee !== assigneeFilter) return false;
     if (moduleFilter && t.module !== moduleFilter) return false;
     if (developerFilter && !(t.developers_str || '').includes(developerFilter)) return false;
@@ -164,6 +204,7 @@ export default function DevDashboard() {
     <tr className={`qcq-row ${t.is_dev_overrun ? 'rp-overrun-row' : ''}`}>
       <td className="qcq-ticket-id"><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noopener noreferrer">#{t.ticket_id}</a></td>
       <td className="qcq-title">{t.title}</td>
+      <td style={{textAlign:'center'}}><ComplexityBadge level={t.complexity} overridden={t.complexity_overridden} title={t.complexity_score != null ? `Complexity ${t.complexity_score}/100` : ''} size="sm" /></td>
       <td><span className={`qcq-status qcq-status-${(t.status||'').toLowerCase().replace(/\s+/g,'-')}`}>{t.status}</span></td>
       <td className="qcq-priority">{t.priority}</td>
       <td><span className={`qcq-platform-badge qcq-platform-${(t.platform||'Web').toLowerCase()}`}>{t.platform}</span></td>
@@ -230,13 +271,14 @@ export default function DevDashboard() {
                   <tr className="qcq-expand-row"><td colSpan="15" style={{padding:0}}>
                     <div style={{padding:'12px',background:'var(--bg-secondary)',borderTop:'2px solid var(--accent-teal)'}}>
                       <table className="qcq-table" style={{fontSize:'0.82rem'}}>
-                        <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Module</th><th>Assign To</th><th>Est Hrs</th><th>Actual Hrs</th><th>Deviation</th><th>Bugs</th><th>Open</th><th>Rel. to QA</th><th>Closed</th><th>ETA</th></tr></thead>
+                        <thead><tr><th>Ticket</th><th>Title</th><th>Complexity</th><th>Status</th><th>Priority</th><th>Module</th><th>Assign To</th><th>Est Hrs</th><th>Actual Hrs</th><th>Deviation</th><th>Bugs</th><th>Open</th><th>Rel. to QA</th><th>Closed</th><th>ETA</th></tr></thead>
                         <tbody>{(d.tickets||[]).map(t=>{
                           const bug = allTickets.find(x=>x.ticket_id===t.ticket_id)||{};
                           return (
                           <tr key={t.ticket_id} className={`qcq-row ${t.is_refix?'rp-overrun-row':''}`}>
                             <td className="qcq-ticket-id"><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noopener noreferrer">#{t.ticket_id}</a></td>
                             <td className="qcq-title">{t.title}</td>
+                            <td style={{textAlign:'center'}}><ComplexityBadge level={bug.complexity} overridden={bug.complexity_overridden} size="sm" /></td>
                             <td><span className={`qcq-status qcq-status-${(t.status||'').toLowerCase().replace(/\s+/g,'-')}`}>{t.status}</span></td>
                             <td className="qcq-priority">{t.priority}</td><td>{t.module||'-'}</td>
                             <td>{bug.current_assignee||t.current_assignee||'-'}</td>
@@ -262,10 +304,10 @@ export default function DevDashboard() {
   // Export the currently filtered + sorted ticket list (respects the active card and all filters)
   const exportTicketsCSV = () => {
     const rows = doSort(filteredTickets);
-    const headers = ['Ticket', 'Title', 'Status', 'Priority', 'Platform', 'Module', 'Developer', 'Assign To', 'QC Tester', 'Est Hrs', 'Actual Hrs', 'Deviation', 'Cycles', 'Bugs', 'Open', 'Released to QA', 'Closed', 'Age (days)', 'ETA'];
+    const headers = ['Ticket', 'Title', 'Complexity', 'Status', 'Priority', 'Platform', 'Module', 'Developer', 'Assign To', 'QC Tester', 'Est Hrs', 'Actual Hrs', 'Deviation', 'Cycles', 'Bugs', 'Open', 'Released to QA', 'Closed', 'Age (days)', 'ETA'];
     const esc = (v) => { const s = v == null ? '' : String(v); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s; };
     const lines = rows.map(t => [
-      t.ticket_id, t.title, t.status, t.priority, t.platform || 'Web', t.module || '', t.developers_str || '', t.current_assignee || '', t.qc_tester || '',
+      t.ticket_id, t.title, t.complexity || '', t.status, t.priority, t.platform || 'Web', t.module || '', t.developers_str || '', t.current_assignee || '', t.qc_tester || '',
       t.dev_estimate_hours ?? '', t.actual_dev_hours ?? '',
       (t.dev_estimate_hours != null && t.actual_dev_hours != null) ? (Number(t.actual_dev_hours) - Number(t.dev_estimate_hours)).toFixed(1) : '',
       t.cycle_count || 0, t.bugs_total || 0, t.bugs_open || 0, t.bugs_released_to_qa || 0, t.bugs_closed || 0, t.ageing_days || 0,
@@ -293,6 +335,7 @@ export default function DevDashboard() {
           <option value="">All Modules</option>
           {[...new Set(allTickets.map(t=>t.module).filter(Boolean))].sort().map(m=><option key={m} value={m}>{m}</option>)}
         </select>
+        <ComplexityFilter value={cxLevelFilter} onChange={setCxLevelFilter} />
         <select className="qcq-search-input" style={{width:'160px'}} value={developerFilter} onChange={e=>setDeveloperFilter(e.target.value)}>
           <option value="">All Developers</option>
           {[...new Set(allTickets.flatMap(t=>[t.backend_developer,t.frontend_developer]).filter(Boolean).filter(v=>v!=='-'&&v!==''))].sort().map(d=><option key={d} value={d}>{d}</option>)}
@@ -301,9 +344,9 @@ export default function DevDashboard() {
           <option value="">All Assign To</option>
           {[...new Set(allTickets.map(t=>t.current_assignee).filter(Boolean).filter(v=>v!=='-'&&v!==''))].sort().map(t=><option key={t} value={t}>{t}</option>)}
         </select>
-        {(cardFilter || stageFilter || searchFilter || assigneeFilter || moduleFilter || developerFilter) && (
+        {(cardFilter || stageFilter || searchFilter || assigneeFilter || moduleFilter || developerFilter || cxLevelFilter) && (
           <button className="btn btn-sm btn-secondary" onClick={() => {
-            setCardFilter(null); setStageFilter(''); setSearchFilter(''); setAssigneeFilter(''); setModuleFilter(''); setDeveloperFilter('');
+            setCardFilter(null); setStageFilter(''); setSearchFilter(''); setAssigneeFilter(''); setModuleFilter(''); setDeveloperFilter(''); setCxLevelFilter('');
           }}>Clear All Filters</button>
         )}
         <button className="btn btn-sm btn-primary" onClick={exportTicketsCSV} disabled={filteredTickets.length === 0} style={{marginLeft:'auto'}}>
@@ -314,14 +357,14 @@ export default function DevDashboard() {
       <div className="qcq-table-container">
         <table className="qcq-table">
           <thead><tr>
-            <SortTh field="ticket_id">Ticket</SortTh><th>Title</th><SortTh field="status">Status</SortTh>
+            <SortTh field="ticket_id">Ticket</SortTh><th>Title</th><SortTh field="complexity_score">Complexity</SortTh><SortTh field="status">Status</SortTh>
             <SortTh field="priority_order">Priority</SortTh><th>Platform</th><SortTh field="module">Module</SortTh>
             <th>Developer</th><th>Assign To</th><th>QC Tester</th><th>Est Hrs</th><th>Actual Hrs</th><th>Deviation</th>
             <th>Cycles</th><th>Bugs</th><th>Open</th><th>Released to QA</th><th>Closed</th>
             <th>Age</th><SortTh field="eta">ETA</SortTh>
           </tr></thead>
           <tbody>
-            {filteredTickets.length === 0 ? <tr><td colSpan="16" className="qcq-empty">No tickets match filter</td></tr> :
+            {filteredTickets.length === 0 ? <tr><td colSpan="20" className="qcq-empty">No tickets match filter</td></tr> :
               doSort(filteredTickets).map(t => <TicketRow key={t.ticket_id} t={t} />)}
           </tbody>
         </table>
@@ -362,11 +405,12 @@ export default function DevDashboard() {
                 <tr className="qcq-expand-row"><td colSpan="13" style={{padding:0}}>
                   <div style={{padding:'12px',background:'var(--bg-secondary)',borderTop:'2px solid var(--accent-teal)'}}>
                     <table className="qcq-table" style={{fontSize:'0.82rem'}}>
-                      <thead><tr><th>Ticket</th><th>Title</th><th>Status</th><th>Priority</th><th>Developer</th><th>Assign To</th><th>Est Hrs</th><th>Actual Hrs</th><th>Deviation</th><th>Bugs</th><th>Open</th><th>Rel. to QA</th><th>Closed</th><th>ETA</th></tr></thead>
+                      <thead><tr><th>Ticket</th><th>Title</th><th>Complexity</th><th>Status</th><th>Priority</th><th>Developer</th><th>Assign To</th><th>Est Hrs</th><th>Actual Hrs</th><th>Deviation</th><th>Bugs</th><th>Open</th><th>Rel. to QA</th><th>Closed</th><th>ETA</th></tr></thead>
                       <tbody>{allTickets.filter(t=>t.module===m.module&&t.category==='dev').map(t=>(
                         <tr key={t.ticket_id} className={`qcq-row ${t.is_refix?'rp-overrun-row':''}`}>
                           <td className="qcq-ticket-id"><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noopener noreferrer">#{t.ticket_id}</a></td>
                           <td className="qcq-title">{t.title}</td>
+                          <td style={{textAlign:'center'}}><ComplexityBadge level={t.complexity} overridden={t.complexity_overridden} size="sm" /></td>
                           <td><span className={`qcq-status qcq-status-${(t.status||'').toLowerCase().replace(/\s+/g,'-')}`}>{t.status}</span></td>
                           <td className="qcq-priority">{t.priority}</td>
                           <td className="qcq-secondary">{t.developers_str||'-'}</td>
@@ -388,6 +432,74 @@ export default function DevDashboard() {
       </div>
     </div>
   );
+
+  // ── Docs Health (Scope ⇄ Release Note ⇄ PR reconciliation) ─────────────────
+  const DOC_FLAGS = {
+    NO_PR_NO_RN: { label: 'No PR / Release Note', color: 'var(--accent-red)',    icon: '🚩', desc: 'No PR link and no release note — nothing to verify the build against.' },
+    THIN_RN:     { label: 'Thin Release Note',    color: 'var(--accent-red)',    icon: '📝', desc: 'PR changed functional areas the release note never mentions (>30%).' },
+    RN_REVIEW:   { label: 'RN Incomplete',        color: 'var(--accent-amber)',  icon: '🔍', desc: 'Release note omits ≥1 functional PR file (minor).' },
+    PR_NO_RN:    { label: 'PR, No Release Note',  color: 'var(--accent-amber)',  icon: '⚠', desc: 'PR present but no release note.' },
+    RN_NO_PR:    { label: 'RN, No PR Link',       color: 'var(--accent-amber)',  icon: '⚠', desc: 'Release note present but no extractable PR link.' },
+    ALIGNED:     { label: 'Aligned',              color: 'var(--accent-green)',  icon: '✓', desc: 'Release note covers every functional file the PR changed.' },
+    UNKNOWN:     { label: 'Not Analysed',         color: 'var(--text-muted)',    icon: '–', desc: 'Not yet reconciled (warm the cache / open the ticket lookup).' },
+  };
+  const renderDocsHealth = () => {
+    const ds = docSummary || { counts: {}, tickets: [], total: 0, weak: 0, order: Object.keys(DOC_FLAGS) };
+    const order = ds.order || Object.keys(DOC_FLAGS);
+    const list = (ds.tickets || []).filter(t => !docFlagFilter || t.flag === docFlagFilter);
+    return (
+      <div ref={cardListRef}>
+        <div style={{ fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px', margin: '0 0 6px 4px' }}>
+          Documentation Confidence — {ds.weak || 0} of {ds.total || 0} tickets have a documentation gap
+        </div>
+        <div className="qcq-status-cards">
+          <div className={`qcq-card qcq-card-clickable ${!docFlagFilter ? 'qcq-card-active' : ''}`} style={{ borderTop: '3px solid var(--accent-blue)', cursor: 'pointer' }} onClick={() => setDocFlagFilter('')}>
+            <div className="qcq-card-value">{ds.total || 0}</div>
+            <div className="qcq-card-label">All Tickets</div>
+          </div>
+          {order.map(f => {
+            const meta = DOC_FLAGS[f] || {}; const v = (ds.counts || {})[f] || 0;
+            if (!v) return null;
+            return (
+              <div key={f} className={`qcq-card qcq-card-clickable ${docFlagFilter === f ? 'qcq-card-active' : ''}`}
+                style={{ borderTop: `3px solid ${meta.color}`, cursor: 'pointer' }} title={meta.desc}
+                onClick={() => setDocFlagFilter(docFlagFilter === f ? '' : f)}>
+                <div className="qcq-card-value" style={v > 0 ? { color: meta.color } : {}}>{v}</div>
+                <div className="qcq-card-label">{meta.icon} {meta.label}</div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="qcq-table-container" style={{ marginTop: 12 }}>
+          <table className="qcq-table">
+            <thead><tr>
+              <th>Ticket</th><th>Title</th><th>Status</th><th>Module</th><th>QC Tester</th>
+              <th>Documentation</th><th style={{ textAlign: 'center' }}>Unexplained PR files</th><th>Plan</th>
+            </tr></thead>
+            <tbody>
+              {list.length === 0 ? <tr><td colSpan="8" className="qcq-empty">No tickets{docFlagFilter ? ' for this flag' : ''}.</td></tr> :
+                list.map(t => {
+                  const meta = DOC_FLAGS[t.flag] || DOC_FLAGS.UNKNOWN;
+                  return (
+                    <tr key={t.ticket_id} className="qcq-row">
+                      <td className="qcq-ticket-id"><a href={`${PM_TICKET_URL}${t.ticket_id}`} target="_blank" rel="noopener noreferrer">#{t.ticket_id}</a></td>
+                      <td className="qcq-title">{t.title}</td>
+                      <td><span className={`qcq-status qcq-status-${(t.status||'').toLowerCase().replace(/\s+/g,'-')}`}>{t.status}</span></td>
+                      <td>{t.module || '-'}</td>
+                      <td>{t.qc_tester || '-'}</td>
+                      <td><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, color: meta.color, fontWeight: 600, fontSize: '0.82rem' }} title={meta.desc}>{meta.icon} {meta.label}</span></td>
+                      <td style={{ textAlign: 'center', fontWeight: t.unexplained_count > 5 ? 700 : 400, color: t.unexplained_count > 5 ? 'var(--accent-red)' : undefined }}
+                        title={(t.unexplained || []).join('\n')}>{t.unexplained_count || '-'}</td>
+                      <td>{t.has_test_plan ? <span className="qcq-pass">✓ Plan</span> : <span style={{ color: 'var(--text-muted)' }}>—</span>}</td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="dashboard">
@@ -441,8 +553,10 @@ export default function DevDashboard() {
           <button className={`qcq-tab ${activeTab==='tickets'?'active':''}`} onClick={()=>setActiveTab('tickets')}>All Tickets ({allTickets.length})</button>
           <button className={`qcq-tab ${activeTab==='modules'?'active':''}`} onClick={()=>{setActiveTab('modules');setCardFilter(null);}}>Modules ({modules.length})</button>
           <button className={`qcq-tab ${activeTab==='quality'?'active':''}`} onClick={()=>setActiveTab('quality')} style={{color: activeTab==='quality' ? 'var(--accent-red)' : ''}}>Build Quality</button>
+          <button className={`qcq-tab ${activeTab==='docs'?'active':''}`} onClick={()=>setActiveTab('docs')} style={{color: activeTab==='docs' && (docSummary?.weak||0) > 0 ? 'var(--accent-red)' : ''}}>Docs Health{(docSummary?.weak||0) > 0 ? ` (${docSummary.weak})` : ''}</button>
         </div>
 
+        {activeTab === 'docs' && renderDocsHealth()}
         {activeTab === 'resources' && renderResources()}
         {activeTab === 'tickets' && renderTickets()}
         {activeTab === 'modules' && renderModules()}
@@ -604,7 +718,7 @@ export default function DevDashboard() {
                     <tbody>
                       {(bq.current_failures||[]).map(t => (
                         <tr key={t.ticket_id} className="qcq-row">
-                          <td><a href={`https://www.bissafety.app/pm/tickets#!/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
+                          <td><a href={`https://pm.bissafety.app/tickets/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
                           <td style={{maxWidth:'200px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}} title={t.title}>{t.title}</td>
                           <td>{t.module}</td>
                           <td>{t.priority}</td>
@@ -677,7 +791,7 @@ export default function DevDashboard() {
                     <tbody>
                       {filtered.map(t => (
                         <tr key={t.ticket_id} className="qcq-row" style={{background: t.verdict.includes('Critical') ? 'rgba(239,68,68,0.06)' : t.verdict.includes('Poor') ? 'rgba(245,158,11,0.04)' : ''}}>
-                          <td><a href={`https://www.bissafety.app/pm/tickets#!/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
+                          <td><a href={`https://pm.bissafety.app/tickets/${t.ticket_id}`} target="_blank" rel="noreferrer" className="qcq-ticket-link">#{t.ticket_id}</a></td>
                           <td>{t.module}</td>
                           <td style={{fontSize:'0.75rem'}}>{(t.developers_str || '').split(',')[0] || '-'}</td>
                           <td style={{textAlign:'center',fontWeight:700,color: t.qa_hours_before_fail < 1 ? 'var(--accent-red)' : t.qa_hours_before_fail < 2 ? 'var(--accent-amber)' : 'var(--text-primary)'}}>{t.qa_hours_before_fail}h</td>

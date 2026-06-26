@@ -1,0 +1,122 @@
+"""Test-plan generation queue scheduler.
+
+Auto-enqueues tickets that have entered QC Testing FOR THE FIRST TIME with no TestRail plan yet
+(so a headless runner — or manual generation — can create the plan), and auto-closes queue rows
+once a TestRail plan for the ticket exists. Reuses the live QC queue which already carries
+`has_test_plan`, `is_retesting` and `retest_cycle_count` per ticket.
+"""
+import os
+import logging
+import threading
+from typing import Optional
+
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+
+from database import SessionLocal
+from models import TestPlanRequest
+
+logger = logging.getLogger(__name__)
+
+TPQ_INTERVAL_MINUTES = int(os.getenv("TEST_PLAN_QUEUE_INTERVAL_MINUTES", "10"))
+TPQ_ENABLED = os.getenv("TEST_PLAN_QUEUE_AUTO", "true").lower() == "true"
+TPQ_MAX_RETRY = int(os.getenv("TEST_PLAN_QUEUE_MAX_RETRY", "3"))  # auto-retry errored tickets up to N attempts
+
+_scheduler: Optional[BackgroundScheduler] = None
+
+
+def _is_first_time(t) -> bool:
+    """First-time in QC = not a retest/refix re-entry (same signal as the row's Refix badge:
+    a tracked re-entry OR prior QA actual hours)."""
+    return not (t.get("is_retesting") or (t.get("retest_cycle_count") or 0) > 0
+                or (t.get("qa_actual_hours") or 0) > 0)
+
+
+def sync_test_plan_queue(db) -> dict:
+    """Enqueue first-time, no-plan QC tickets; auto-close rows whose TestRail plan now exists."""
+    from pm_live_data import get_live_qc_queue
+    data = get_live_qc_queue() or {}
+    section = data.get("queue")
+    tickets = section.get("tickets") if isinstance(section, dict) else (section or [])
+
+    by_id = {}
+    for t in tickets or []:
+        try:
+            by_id[int(t.get("ticket_id"))] = t
+        except (TypeError, ValueError):
+            continue
+
+    existing = {r.ticket_id: r for r in db.query(TestPlanRequest).all()}
+    enqueued = closed = retried = 0
+
+    # 0) auto-retry: errored tickets (still no plan) go back to pending until the attempt cap.
+    for tid, r in existing.items():
+        if r.status == "error" and (r.attempts or 0) < TPQ_MAX_RETRY and not (by_id.get(tid) or {}).get("has_test_plan"):
+            r.status = "pending"
+            r.error = None
+            retried += 1
+
+    # 1) enqueue tickets needing a plan: exact 'QC Testing' status, not a refix re-entry, and no
+    #    TestRail plan. Includes both Unplanned (no tester) AND Assigned-Not-Started (tester set) —
+    #    any first-time QC ticket without a plan should get one.
+    for tid, t in by_id.items():
+        if (t.get("status") or "") != "QC Testing":
+            continue
+        if t.get("has_test_plan") or not _is_first_time(t) or tid in existing:
+            continue
+        db.add(TestPlanRequest(ticket_id=tid, status="pending", source="auto"))
+        enqueued += 1
+
+    # 2) auto-close rows whose plan now exists in TestRail
+    for tid, r in existing.items():
+        if r.status == "done":
+            continue
+        t = by_id.get(tid)
+        if t and t.get("has_test_plan"):
+            r.status = "done"
+            r.plan_url = t.get("testrail_plan_url") or r.plan_url
+            closed += 1
+
+    db.commit()
+    return {"enqueued": enqueued, "closed": closed, "retried": retried, "checked": len(by_id)}
+
+
+def _job() -> None:
+    db = SessionLocal()
+    try:
+        res = sync_test_plan_queue(db)
+        logger.info("Test-plan queue sync: %s", res)
+    except Exception as e:
+        logger.exception("Test-plan queue sync failed: %s", e)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def start_test_plan_queue_scheduler(interval_minutes: Optional[int] = None) -> bool:
+    """Start the test-plan queue scheduler (run once on start, then every interval)."""
+    global _scheduler
+    if not TPQ_ENABLED:
+        logger.info("Test-plan queue auto is disabled (set TEST_PLAN_QUEUE_AUTO=true to enable)")
+        return False
+    if _scheduler is not None:
+        return False
+    interval = interval_minutes if interval_minutes is not None else TPQ_INTERVAL_MINUTES
+    interval = max(2, min(interval, 1440))
+    _scheduler = BackgroundScheduler()
+    _scheduler.start()
+    _scheduler.add_job(
+        func=_job, trigger=IntervalTrigger(minutes=interval),
+        id="test_plan_queue_sync", name="Test Plan Queue Sync",
+        replace_existing=True, max_instances=1,
+    )
+    threading.Thread(target=_job, daemon=True).start()
+    logger.info("Test-plan queue scheduler started (every %s minutes)", interval)
+    return True
+
+
+def stop_test_plan_queue_scheduler() -> None:
+    global _scheduler
+    if _scheduler is not None:
+        _scheduler.shutdown(wait=False)
+        _scheduler = None

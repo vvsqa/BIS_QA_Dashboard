@@ -1,0 +1,51 @@
+============================================================
+  BIS Bug Reporter — now available for the QA team
+============================================================
+
+Hi team,
+
+We have a new tool that files complete, house-style Redmine bugs in
+about 1–2 minutes instead of 8–11 — pulling the real reproduction from
+a Jam video, the steps from a TestRail case, polishing with AI,
+assigning the right developer, and (optionally) failing or creating the
+matching TestRail case. There's also a Bulk mode (one video → many bugs)
+and a "My Pending Retests" tab.
+
+------------------------------------------------------------
+GET STARTED (3 steps)
+------------------------------------------------------------
+1. Download and run:
+   http://10.1.0.20/BIS-Bug-Reporter.exe
+   (Single file — no install. It opens in your browser at
+   http://127.0.0.1:8765. Keep the small window open while you use it.)
+   If Windows shows "Windows protected your PC" → More info → Run anyway.
+
+2. Click  ⚙ Settings  (one time) and add:
+   • Redmine API key   (Redmine → My account → API access key) — required.
+     Your name is detected automatically from the key.
+   • Jam token (PAT)   — optional, only for "Load from Jam".
+   • TestRail email + API key — optional, to fail/create cases under your name.
+   Then set your usual Platform / OS / Browser and "Save as my defaults".
+
+3. Be on the company network. The AI polish, Bulk split, and the TestRail
+   fail/create options talk to the dashboard server (10.1.0.20:8000).
+   Plain bug creation works offline too.
+
+------------------------------------------------------------
+HOW TO FILE A BUG
+------------------------------------------------------------
+• Paste a Jam link, a TestRail Case ID, or type a note (or any combo)
+  → click  ⚡ Fill the bug  → review → Create bug in Redmine.
+• Optional: tick "mark the TestRail case Failed", or — if there's no
+  case — "Create one in TestRail & add it to the plan".
+• Optional: set a Parent task so the bug nests under it in Redmine.
+
+Several bugs in one recording? Use the Bulk tab.
+Need help? Click the  📖 User Guide  button in the app, or open
+http://10.1.0.20/BIS-Bug-Reporter-User-Guide.pdf
+
+Updates are automatic — just re-download and run the latest exe;
+it replaces the old copy on the same URL.
+
+Questions → reach out to Vishnu / QA Tooling.
+============================================================
