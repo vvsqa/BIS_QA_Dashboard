@@ -8,7 +8,8 @@ python -m pip install -r requirements.txt || goto :err
 python -m pip install pyinstaller || goto :err
 
 echo === Building EXE ===
-pyinstaller --noconfirm --onefile --name BIS-Bug-Reporter ^
+REM use `python -m PyInstaller` so it works even when the pyinstaller script dir isn't on PATH
+python -m PyInstaller --noconfirm --onefile --name BIS-Bug-Reporter ^
   --hidden-import page ^
   --collect-submodules uvicorn ^
   --add-data "BIS-Bug-Reporter-User-Guide.pdf;." ^
