@@ -418,14 +418,50 @@ _testrail_cache = {'data': _testrail_disk, 'timestamp': time.time() if _testrail
 _redmine_cache = {'data': _redmine_disk, 'timestamp': time.time() if _redmine_disk else 0}
 
 
+def _get_plans_for_project(api_base, headers, project_id):
+    """Paginated get_plans for one project. Returns the plan list, or None on an unrecovered error
+    (429 after retries / non-200) so the caller can serve cache without a partial overwrite."""
+    import requests
+    out = []
+    offset = 0
+    while True:
+        resp = requests.get(f'{api_base}/get_plans/{project_id}', headers=headers, params={'limit': 250, 'offset': offset}, timeout=30)
+        if resp.status_code == 429:
+            ok = False
+            for attempt in range(3):
+                wait = float(resp.headers.get('Retry-After', 1 << attempt))
+                time.sleep(min(wait, 8))
+                resp = requests.get(f'{api_base}/get_plans/{project_id}', headers=headers, params={'limit': 250, 'offset': offset}, timeout=30)
+                if resp.status_code == 200:
+                    ok = True
+                    break
+            if not ok:
+                logger.warning(f'TestRail plans (project {project_id}): rate-limited; serving cached data')
+                return None
+        if resp.status_code != 200:
+            logger.warning(f'TestRail plans (project {project_id}): HTTP {resp.status_code}; serving cached data')
+            return None
+        data = resp.json()
+        plans = data.get('plans', data) if isinstance(data, dict) else data
+        if not plans:
+            break
+        out.extend(plans)
+        offset += len(plans)
+        if len(plans) < 250:
+            break
+    return out
+
+
 def _fetch_testrail_plans() -> Dict[int, Dict]:
-    """Fetch all TestRail plans for project 18, return {ticket_id: {cases, passed, failed, untested, plan_id}}."""
+    """Fetch named TestRail plans for the Web project (18) AND the Mobile project (14, SafeTapp — where
+    mobile test plans now live), returning {ticket_id: {cases, passed, failed, untested, plan_id}}.
+    Plan name carries the ticket id, so the same name→ticket mapping covers both projects."""
     now = time.time()
     if _testrail_cache['data'] is not None and (now - _testrail_cache['timestamp']) < _EXTERNAL_CACHE_TTL:
         return _testrail_cache['data']
 
     try:
-        import requests, base64, re
+        import base64, re
         testrail_url = os.environ.get('TESTRAIL_URL', 'https://bistrainer.testrail.io')
         email = os.environ.get('TESTRAIL_EMAIL', '')
         key = os.environ.get('TESTRAIL_API_KEY', '')
@@ -435,38 +471,17 @@ def _fetch_testrail_plans() -> Dict[int, Dict]:
         api_base = f'{testrail_url}/index.php?/api/v2'
         cred = base64.b64encode(f'{email}:{key}'.encode()).decode()
         headers = {'Authorization': f'Basic {cred}', 'Content-Type': 'application/json'}
-        project_id = int(os.environ.get('TESTRAIL_AUTOMATION_PROJECT_ID', '18'))
+        web_pid = int(os.environ.get('TESTRAIL_AUTOMATION_PROJECT_ID', '18'))
+        mobile_pid = int(os.environ.get('TESTRAIL_MOBILE_PROJECT_ID', '14'))
 
-        # Fetch all plans. On a 429 (TestRail rate limit) retry with backoff; on any unrecovered
-        # error abort WITHOUT caching the partial result (a half-fetched page would otherwise
-        # overwrite the good cache and make counts drop).
+        # Fetch plans for both projects. On any unrecovered error abort WITHOUT caching the partial
+        # result (a half-fetched set would otherwise overwrite the good cache and make counts drop).
         all_plans = []
-        offset = 0
-        while True:
-            resp = requests.get(f'{api_base}/get_plans/{project_id}', headers=headers, params={'limit': 250, 'offset': offset}, timeout=30)
-            if resp.status_code == 429:
-                ok = False
-                for attempt in range(3):
-                    wait = float(resp.headers.get('Retry-After', 1 << attempt))
-                    time.sleep(min(wait, 8))
-                    resp = requests.get(f'{api_base}/get_plans/{project_id}', headers=headers, params={'limit': 250, 'offset': offset}, timeout=30)
-                    if resp.status_code == 200:
-                        ok = True
-                        break
-                if not ok:
-                    logger.warning('TestRail plans: rate-limited; serving cached data (no partial overwrite)')
-                    return _testrail_cache.get('data') or {}
-            if resp.status_code != 200:
-                logger.warning(f'TestRail plans: HTTP {resp.status_code}; serving cached data')
+        for pid in dict.fromkeys([web_pid, mobile_pid]):     # dedupe, keep order
+            plans = _get_plans_for_project(api_base, headers, pid)
+            if plans is None:
                 return _testrail_cache.get('data') or {}
-            data = resp.json()
-            plans = data.get('plans', data) if isinstance(data, dict) else data
-            if not plans:
-                break
             all_plans.extend(plans)
-            offset += len(plans)
-            if len(plans) < 250:
-                break
 
         # Map ticket_id -> plan summary (from list view - has counts).
         # Plan names come in two forms: "20468 ..." and "#20270 — Title" — handle both.
