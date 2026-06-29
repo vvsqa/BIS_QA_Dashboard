@@ -20357,6 +20357,14 @@ class EstReviewBody(BaseModel):
     persist: Optional[bool] = False                      # False = preview; True = save actuals + recalc
 
 
+class EstAllocateBody(BaseModel):
+    ticket_id: int
+    raw_text: Optional[str] = None                        # tester's pasted activity + time log (raw)
+    qa_comments: Optional[str] = None
+    use_ai: Optional[bool] = True
+    persist: Optional[bool] = False                      # False = preview; True = save actuals + allocation
+
+
 class EstCompleteBody(BaseModel):
     ticket_id: int
     manager_comment: Optional[str] = None
@@ -20364,6 +20372,7 @@ class EstCompleteBody(BaseModel):
     accepted_estimate: Optional[float] = None            # defaults to recalc_total, else suggested_total
     actual_hours: Optional[float] = None                 # optional: collect actuals at submit time
     qa_comments: Optional[str] = None
+    allocation: Optional[List[dict]] = None              # per-activity [{activity, actual_hours, allowed_hours, rationale}]
 
 
 class EstReopenBody(BaseModel):
@@ -20747,6 +20756,36 @@ def qa_estimation_review_recalc(body: EstReviewBody):
         db.close()
 
 
+@app.post("/qa-estimation/review-allocate")
+def qa_estimation_review_allocate(body: EstAllocateBody):
+    """Review stage: parse the tester's RAW activity+time log into a per-activity MAX-ALLOWED table
+    (+ total allowed) via Claude. persist=True stores the actuals + allocation and moves to 'in_review'.
+    persist=False is a preview the manager can edit before saving."""
+    import ticket_review as TR
+    db: Session = SessionLocal()
+    try:
+        thread = _get_or_create_estimation(db, body.ticket_id)
+        member = thread.qa_member or _resolve_qc_tester(db, body.ticket_id) or ""
+        sig = TR.get_ticket_review_signals(db, body.ticket_id, member)
+        bugrep = _bug_reporter_ticket_stats(db, body.ticket_id)
+        alloc = TR.suggest_review_allocation(sig, thread.suggested_total, body.raw_text,
+                                             qa_comments=body.qa_comments, use_ai=bool(body.use_ai), bugrep=bugrep)
+        result = {"ticket_id": body.ticket_id, "qa_member": member,
+                  "planned_total": thread.suggested_total, "qa_comments": body.qa_comments,
+                  "raw_text": body.raw_text, "bug_reporter": bugrep, **alloc}
+        if body.persist:
+            thread.actual_hours = alloc.get("actual_total")
+            thread.qa_comments = body.raw_text or body.qa_comments
+            thread.recalc_total = alloc.get("allowed_total")
+            thread.recalc_breakdown = {**alloc, "bug_reporter": bugrep, "raw_text": body.raw_text}
+            if thread.status in (None, "awaiting", "planning"):
+                thread.status = "in_review"
+            db.commit()
+        return result
+    finally:
+        db.close()
+
+
 @app.post("/qa-estimation/reopen")
 def qa_estimation_reopen(body: EstReopenBody):
     """Reopen a reviewed (or any) ticket back to planning / in_review so it can be edited again."""
@@ -20778,6 +20817,13 @@ def qa_estimation_complete(body: EstCompleteBody):
             thread.actual_hours = body.actual_hours
         if body.qa_comments is not None:
             thread.qa_comments = body.qa_comments
+        # If the manager edited a per-activity allowed allocation, persist it and let it drive the accepted total.
+        if body.allocation is not None:
+            alloc_total = round(sum(float(a.get("allowed_hours") or 0) for a in body.allocation), 1)
+            base = thread.recalc_breakdown if isinstance(thread.recalc_breakdown, dict) else {}
+            thread.recalc_breakdown = {**base, "activities": body.allocation, "allowed_total": alloc_total,
+                                       "actual_total": round(sum(float(a.get("actual_hours") or 0) for a in body.allocation), 1)}
+            thread.recalc_total = alloc_total
         accepted = (body.accepted_estimate if body.accepted_estimate is not None
                     else (thread.recalc_total if thread.recalc_total is not None else thread.suggested_total))
         thread.status = "reviewed"

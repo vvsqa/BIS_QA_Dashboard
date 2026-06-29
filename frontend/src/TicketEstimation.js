@@ -332,17 +332,21 @@ const pmPlanComment = (tid, plan, ticket) => {
 };
 
 // Short justification to paste into PM at REVIEW (edit #2 — only when the plan wasn't met).
-const pmReviewComment = (tid, planned, actual, allowed, qaComments) => {
-  const p = round1(planned || 0);
-  const a = (actual != null && actual !== '') ? round1(actual) : null;
-  const al = (allowed != null) ? round1(allowed) : null;
-  if (a == null) return `QA review #${tid}: planned ${p}h.`;
-  if (a <= p + 0.1) {
-    return `QA review #${tid}: delivered within the planned ${p}h (actual ${a}h) — initial estimate achieved, no time change required.`;
-  }
-  let s = `QA review #${tid}: planned ${p}h, actual ${a}h${al != null ? `, reviewed/allowed ${al}h` : ''}.`;
-  s += ` Added time: ${(qaComments || '').trim() || 'additional retest/refix cycles & bug verification beyond the initial scope'}.`;
-  return s;
+// PM time-edit justification built from the reviewed per-activity allocation (aligned, paste-ready).
+const pmAllocComment = (tid, alloc) => {
+  const acts = (alloc && alloc.activities) || [];
+  if (!acts.length) return `QA review #${tid}: no activity breakdown.`;
+  const allowed = round1(acts.reduce((s, a) => s + (parseFloat(a.allowed_hours) || 0), 0));
+  const actual = round1(acts.reduce((s, a) => s + (parseFloat(a.actual_hours) || 0), 0));
+  const W = Math.min(46, Math.max(16, ...acts.map(a => (a.activity || '').length)) + 2);
+  const leader = (label, h) => {
+    label = (label || '').trim();
+    return `${label} ${'.'.repeat(Math.max(2, W - label.length))} ${`${(+h || 0).toFixed(1)}h`.padStart(6)}`;
+  };
+  const out = [`QA review #${tid}: allowed ${allowed}h (actual ${actual}h) — per-activity max-allowed:`];
+  acts.forEach(a => out.push('  ' + leader(a.activity, a.allowed_hours)));
+  out.push('  ' + '─'.repeat(W + 7), '  ' + leader('TOTAL ALLOWED', allowed));
+  return out.join('\n');
 };
 
 // ------------------------------------------------------------------ Detail modal
@@ -357,6 +361,8 @@ function DetailPanel({ ticket, onChanged }) {
   const [reason, setReason] = useState('');
   const [testerResult, setTesterResult] = useState(null);
   const [review, setReview] = useState(null);
+  const [alloc, setAlloc] = useState(null);          // per-activity review allocation {activities, allowed_total, ...}
+  const [rawText, setRawText] = useState('');        // tester's pasted activity + time log
   const [actual, setActual] = useState('');
   const [qaComments, setQaComments] = useState('');
   const [comment, setComment] = useState('');
@@ -376,14 +382,18 @@ function DetailPanel({ ticket, onChanged }) {
       setComment(th?.manager_comment || '');
       setActual(th?.actual_hours != null ? String(th.actual_hours) : '');
       setQaComments(th?.qa_comments || '');
-      if (th?.recalc_breakdown) setReview(th.recalc_breakdown);
+      if (th?.recalc_breakdown) {
+        setReview(th.recalc_breakdown);
+        if (Array.isArray(th.recalc_breakdown.activities)) setAlloc(th.recalc_breakdown);
+        if (th.recalc_breakdown.raw_text) setRawText(th.recalc_breakdown.raw_text);
+      }
       // load latest saved plan from the last round
       const last = (d?.rounds || []).slice(-1)[0];
       if (last?.claude_breakdown?.activities) setPlan(last.claude_breakdown);
     } catch { setDetail(null); }
     setLoading(false);
   }, [tid]);
-  useEffect(() => { setPlan(null); setTesterResult(null); load(); }, [load]);
+  useEffect(() => { setPlan(null); setTesterResult(null); setAlloc(null); setRawText(''); load(); }, [load]);
 
   const genBaseline = async () => {
     setBusy('baseline');
@@ -440,23 +450,38 @@ function DetailPanel({ ticket, onChanged }) {
     } catch { /* ignore */ }
     setBusy('');
   };
-  const recalc = async () => {
+  // Review: parse the tester's raw activity+time log into a per-activity max-allowed table (Claude).
+  const allocate = async () => {
+    if (!rawText.trim()) return;
     setBusy('recalc');
     try {
-      const r = await fetch(`${API_BASE}/qa-estimation/review-recalc`, {
+      const r = await fetch(`${API_BASE}/qa-estimation/review-allocate`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticket_id: tid, actual_hours: actual ? parseFloat(actual) : null, qa_comments: qaComments, use_ai: useAi, persist: true }) });
-      const d = r.ok ? await r.json() : null; setReview(d);
-      if (d) { await load(); onChanged && onChanged(); }
+        body: JSON.stringify({ ticket_id: tid, raw_text: rawText, qa_comments: qaComments, use_ai: useAi, persist: true }) });
+      const d = r.ok ? await r.json() : null;
+      if (d) { setAlloc(d); setReview(d); setActual(d.actual_total != null ? String(d.actual_total) : ''); await load(); onChanged && onChanged(); }
     } catch { /* ignore */ }
     setBusy('');
   };
-  const complete = async () => {
+  // Edit one activity's allowed hours; total allowed recomputes from the edited rows.
+  const setAllowed = (i, v) => setAlloc(prev => {
+    if (!prev) return prev;
+    const activities = prev.activities.map((a, j) => j === i ? { ...a, allowed_hours: v } : a);
+    const allowed_total = round1(activities.reduce((s, a) => s + (parseFloat(a.allowed_hours) || 0), 0));
+    return { ...prev, activities, allowed_total };
+  });
+  const allocAllowedTotal = alloc ? round1((alloc.activities || []).reduce((s, a) => s + (parseFloat(a.allowed_hours) || 0), 0)) : null;
+  // Save the final plan AND submit as reviewed in one action (per design).
+  const saveFinal = async () => {
     setBusy('complete');
     try {
       await fetch(`${API_BASE}/qa-estimation/complete`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ticket_id: tid, manager_comment: comment, actual_hours: actual ? parseFloat(actual) : null, qa_comments: qaComments, accepted_estimate: accepted ? parseFloat(accepted) : null }) });
+        body: JSON.stringify({ ticket_id: tid, manager_comment: comment,
+          actual_hours: alloc?.actual_total ?? (actual ? parseFloat(actual) : null),
+          qa_comments: rawText || qaComments,
+          accepted_estimate: accepted ? parseFloat(accepted) : allocAllowedTotal,
+          allocation: alloc?.activities || null }) });
       await load(); onChanged && onChanged();
     } catch { /* ignore */ }
     setBusy('');
@@ -486,8 +511,8 @@ function DetailPanel({ ticket, onChanged }) {
   const rounds = detail.rounds || [];
   const status = th.status || 'awaiting';
   const planned = th.suggested_total;
-  const actualH = th.actual_hours != null ? th.actual_hours : (tm.effort_hours || 0);
-  const allowed = review?.allowed_total ?? th.recalc_total;
+  const actualH = alloc?.actual_total ?? (th.actual_hours != null ? th.actual_hours : (tm.effort_hours || 0));
+  const allowed = allocAllowedTotal ?? review?.allowed_total ?? th.recalc_total;
   const ringMax = Math.max(planned || 0, actualH || 0, allowed || 0, 1);
   const rv = review?.verdict ? VERDICT[review.verdict] : null;
   const tv = testerResult?.verdict ? VERDICT[testerResult.verdict] : null;
@@ -663,13 +688,48 @@ function DetailPanel({ ticket, onChanged }) {
       {/* REVIEW */}
       <div className="qcq-section" style={{ padding: 12, ...SEC }}>
         <h4 style={H4}>③ Review — actuals & recalculation</h4>
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
-          <input style={{ ...inp, width: 130 }} type="number" step="0.5" placeholder={`Actual hrs (${fmtH(tm.effort_hours)})`} value={actual} onChange={e => setActual(e.target.value)} />
-          <input style={{ ...inp, flex: 1, minWidth: 180 }} placeholder="Tester's comments (scope grew, blockers…)" value={qaComments} onChange={e => setQaComments(e.target.value)} />
-          <button className="btn btn-sm btn-secondary" disabled={busy === 'recalc'} onClick={recalc}>{busy === 'recalc' ? '…' : '↻ Recalculate (Claude)'}</button>
-          <button className="btn btn-sm btn-secondary" title="Short justification to paste in PM at review (only if the plan wasn't met)"
-            onClick={() => copyText(pmReviewComment(tid, planned, actual, (review?.allowed_total ?? th.recalc_total), qaComments), 'review')}>{copiedPm === 'review' ? '✓ Copied' : '⧉ PM time comment'}</button>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
+          <textarea style={{ ...inp, width: '100%', minHeight: 78 }}
+            placeholder="Paste the tester's actual activities & time split (raw — e.g. 'Functional testing 4h, Regression 2.5h, Bug retest 45min…'). Claude splits it and sets a max-allowed per activity."
+            value={rawText} onChange={e => setRawText(e.target.value)} />
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input style={{ ...inp, flex: 1, minWidth: 160 }} placeholder="Optional note (scope grew, blockers…)" value={qaComments} onChange={e => setQaComments(e.target.value)} />
+            <button className="btn btn-sm btn-secondary" disabled={busy === 'recalc' || !rawText.trim()} onClick={allocate}>{busy === 'recalc' ? '…' : '✨ Analyze activities (Claude)'}</button>
+            <button className="btn btn-sm btn-secondary" disabled={!alloc || !(alloc.activities || []).length} title="Per-activity time-edit justification to paste in PM"
+              onClick={() => copyText(pmAllocComment(tid, alloc), 'review')}>{copiedPm === 'review' ? '✓ Copied' : '⧉ PM time comment'}</button>
+          </div>
         </div>
+        {alloc && (alloc.activities || []).length > 0 && (
+          <div className="qae-pop" style={{ marginBottom: 8 }}>
+            <table style={{ width: '100%', fontSize: '0.78rem', borderCollapse: 'collapse' }}>
+              <thead><tr style={{ color: 'var(--text-muted)', textAlign: 'left' }}>
+                <th style={{ padding: '4px 6px' }}>Activity</th>
+                <th style={{ padding: '4px 6px', width: 70, textAlign: 'right' }}>Actual</th>
+                <th style={{ padding: '4px 6px', width: 100, textAlign: 'right' }}>Max allowed</th>
+                <th style={{ padding: '4px 6px' }}>Why</th>
+              </tr></thead>
+              <tbody>
+                {alloc.activities.map((a, i) => (
+                  <tr key={i} style={{ borderTop: '1px solid var(--border-color)' }}>
+                    <td style={{ padding: '4px 6px' }}>{a.activity}</td>
+                    <td style={{ padding: '4px 6px', textAlign: 'right', color: 'var(--text-muted)' }}>{fmtH(a.actual_hours)}</td>
+                    <td style={{ padding: '4px 6px', textAlign: 'right' }}>
+                      <input type="number" step="0.1" value={a.allowed_hours} onChange={e => setAllowed(i, e.target.value)}
+                        style={{ ...inp, width: 66, textAlign: 'right', padding: '2px 6px' }} /></td>
+                    <td style={{ padding: '4px 6px', color: 'var(--text-muted)', fontSize: '0.72rem' }}>{a.rationale}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot><tr style={{ borderTop: '2px solid var(--border-color)', fontWeight: 700 }}>
+                <td style={{ padding: '4px 6px' }}>Total</td>
+                <td style={{ padding: '4px 6px', textAlign: 'right' }}>{fmtH(alloc.actual_total)}</td>
+                <td style={{ padding: '4px 6px', textAlign: 'right', color: 'var(--accent-green)' }}>{fmtH(allocAllowedTotal)}</td>
+                <td />
+              </tr></tfoot>
+            </table>
+            {alloc.source === 'rule' && <div style={{ fontSize: '0.66rem', color: 'var(--text-muted)', marginTop: 4 }}>Parsed without AI — review the allowed values.</div>}
+          </div>
+        )}
         {review && (
           <div className="qae-pop">
             <div style={{ display: 'flex', justifyContent: 'center', gap: 22 }}>
@@ -716,9 +776,9 @@ function DetailPanel({ ticket, onChanged }) {
           <>
             <textarea style={{ ...inp, width: '100%', minHeight: 52 }} placeholder="Manager review comment" value={comment} onChange={e => setComment(e.target.value)} />
             <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 8, flexWrap: 'wrap' }}>
-              <input style={{ ...inp, width: 160 }} type="number" step="0.5" placeholder={`Accepted hrs (${fmtH(allowed ?? planned)})`} value={accepted} onChange={e => setAccepted(e.target.value)} />
-              <button className="btn btn-sm btn-primary" disabled={busy === 'complete'} onClick={complete}>✓ Submit as reviewed</button>
-              <span style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>feeds the performance matrix · reopenable anytime</span>
+              <input style={{ ...inp, width: 160 }} type="number" step="0.5" placeholder={`Accepted hrs (${fmtH(allocAllowedTotal ?? allowed ?? planned)})`} value={accepted} onChange={e => setAccepted(e.target.value)} />
+              <button className="btn btn-sm btn-primary" disabled={busy === 'complete'} onClick={saveFinal}>{busy === 'complete' ? '…' : '💾 Save final plan & submit reviewed'}</button>
+              <span style={{ fontSize: '0.66rem', color: 'var(--text-muted)' }}>saves the per-activity allowed + feeds the performance matrix · reopenable anytime</span>
             </div>
           </>
         )}

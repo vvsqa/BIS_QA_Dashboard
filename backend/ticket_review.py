@@ -997,6 +997,134 @@ def suggest_review_recalc(sig, planned_total, actual_hours, qa_comments=None, us
     return out
 
 
+# --------------------------------------------------------------------------- review allocation (per-activity allowed)
+_ALLOC_SCHEMA = {
+    "type": "object", "additionalProperties": False,
+    "required": ["activities", "allowed_total", "summary"],
+    "properties": {
+        "activities": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False,
+            "required": ["activity", "actual_hours", "allowed_hours"],
+            "properties": {
+                "activity": {"type": "string"},
+                "actual_hours": {"type": "number"},
+                "allowed_hours": {"type": "number"},
+                "rationale": {"type": "string"},
+            }}},
+        "allowed_total": {"type": "number"},
+        "verdict": {"type": "string", "enum": ["within_allowed", "slight_overrun", "over_allowed"]},
+        "summary": {"type": "string"},
+    },
+}
+
+_ALLOC_SYS = (
+    "You are a QA manager reviewing a tester's RAW activity-and-time log for a finished ticket. "
+    "First PARSE the raw text into discrete QA activities, each with the ACTUAL hours the tester spent "
+    "(convert any minutes to hours; merge obvious duplicates; ignore non-activity chatter). Then for EACH "
+    "activity decide the MAXIMUM ALLOWABLE QA time — the time a competent tester should reasonably need — "
+    "considering the planned baseline, the ticket complexity/target, and that bug REPORTING is done via the "
+    "BIS Bug Reporter so reporting time must stay tight. allowed_hours may be at, below, or modestly above "
+    "actual; do NOT rubber-stamp inflated entries, and never exceed ~1.5x an activity's fair time. Give a "
+    "short rationale per activity. allowed_total = the sum of allowed_hours (round to 0.1). Also return a "
+    "verdict comparing the tester's total actual vs allowed and a 1-2 sentence summary. Emit via the tool."
+)
+
+_ALLOC_UNIT_RE = re.compile(r'(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b', re.I)
+_ALLOC_BARE_RE = re.compile(r'(\d+(?:\.\d+)?)')
+
+
+def _line_hours(text):
+    """Return (hours, time_token_start) for one line. Prefers numbers that carry an explicit time unit
+    (summing composites like '1h 15m'); only falls back to a bare trailing number — as hours — when no
+    unit is present, so counts like '(8 bugs)' aren't mistaken for time."""
+    units = list(_ALLOC_UNIT_RE.finditer(text))
+    if units:
+        total = 0.0
+        for m in units:
+            v = float(m.group(1))
+            total += v / 60.0 if m.group(2).lower().startswith("m") else v
+        return round(total, 2), units[0].start()
+    bares = list(_ALLOC_BARE_RE.finditer(text))
+    if bares:
+        return round(float(bares[-1].group(1)), 2), bares[-1].start()
+    return None, None
+
+
+def _parse_activity_lines(raw):
+    """Best-effort parse of a pasted 'activity — time' log into [(label, hours)]. Fallback when AI is off."""
+    out = []
+    for line in (raw or "").splitlines():
+        line = line.strip().lstrip("-•*0123456789.) \t")
+        if not line:
+            continue
+        hours, start = _line_hours(line)
+        if not hours or hours <= 0:
+            continue
+        label = line[:start].strip(" :-–—\t") or line.strip()
+        out.append((label, round(hours, 2)))
+    return out
+
+
+def suggest_review_allocation(sig, planned_total, raw_text, qa_comments=None, use_ai=True, bugrep=None):
+    """Parse a tester's RAW activity+time log and return a per-activity MAX-ALLOWED allocation:
+    {activities:[{activity,actual_hours,allowed_hours,rationale}], actual_total, allowed_total, verdict,
+    summary, planned_total, source}. AI-first with a regex fallback; never raises."""
+    planned = _f(planned_total)
+    exp = sig.get("expected") or {}
+    act = sig.get("actual") or {}
+    bugs = int(act.get("bugs_total", 0) or 0)
+
+    def _verdict(actual_v, allowed_v):
+        band = max(1.0, 0.10 * allowed_v)
+        if actual_v <= allowed_v + band:
+            return "within_allowed", f"Actual {actual_v:g}h is within the {allowed_v:g}h allowed."
+        if actual_v <= allowed_v * 1.3:
+            return "slight_overrun", f"Actual {actual_v:g}h slightly exceeds the {allowed_v:g}h allowed."
+        return "over_allowed", f"Actual {actual_v:g}h exceeds the {allowed_v:g}h allowed (+{round(actual_v-allowed_v,1):g}h)."
+
+    # deterministic fallback: parse lines, allow = logged
+    parsed = _parse_activity_lines(raw_text)
+    activities = [{"activity": lbl, "actual_hours": hrs, "allowed_hours": round(hrs, 1),
+                   "rationale": "as logged"} for lbl, hrs in parsed]
+    actual_total = round(sum(a["actual_hours"] for a in activities), 1)
+    allowed_total = round(sum(a["allowed_hours"] for a in activities), 1)
+    verdict, summary = (_verdict(actual_total, allowed_total) if activities
+                        else ("within_allowed", "No activities could be parsed from the text."))
+    out = {"activities": activities, "actual_total": actual_total, "allowed_total": allowed_total,
+           "verdict": verdict, "summary": summary, "planned_total": planned, "source": "rule"}
+    if not use_ai or not (raw_text or "").strip():
+        return out
+    try:
+        if llm_client.available():
+            user = (
+                f"TICKET #{sig.get('ticket_id')} ({sig.get('module')}) — tester: {sig.get('reviewee')}\n"
+                f"PLANNED QA: {planned}h (complexity {exp.get('complexity', {}).get('level')}, "
+                f"target {exp.get('target_qa_hours')}h).\n"
+                f"SIGNALS: bugs {bugs}; QC cycles {act.get('qc_cycles')} (failed {act.get('failed_cycles')}).\n"
+                f"NOTE: bug reporting uses the BIS Bug Reporter — keep reporting time tight.\n"
+                + (f"TESTER NOTE: {qa_comments}\n" if (qa_comments or "").strip() else "")
+                + f"RAW ACTIVITY + TIME LOG (parse this):\n{raw_text.strip()}\n"
+            )
+            ai = llm_client.complete_json(_ALLOC_SYS, user, _ALLOC_SCHEMA, tool_name="emit", max_tokens=1100)
+            if ai and ai.get("activities"):
+                acts = []
+                for a in ai["activities"]:
+                    acts.append({"activity": (a.get("activity") or "").strip() or "Activity",
+                                 "actual_hours": round(_f(a.get("actual_hours")), 2),
+                                 "allowed_hours": round(_f(a.get("allowed_hours")), 2),
+                                 "rationale": (a.get("rationale") or "").strip()})
+                a_tot = round(sum(x["actual_hours"] for x in acts), 1)
+                l_tot = (round(_f(ai.get("allowed_total")), 1) if ai.get("allowed_total") is not None
+                         else round(sum(x["allowed_hours"] for x in acts), 1))
+                v, s = _verdict(a_tot, l_tot)
+                out = {"activities": acts, "actual_total": a_tot, "allowed_total": l_tot,
+                       "verdict": ai.get("verdict") or v, "summary": (ai.get("summary") or s).strip(),
+                       "planned_total": planned, "source": "ai"}
+    except Exception:
+        pass
+    return out
+
+
 # --------------------------------------------------------------------------- scoring helpers (leaderboard)
 def complexity_multiplier(level):
     return {"High": 1.4, "Medium": 1.0, "Low": 0.7}.get(level, 1.0)
