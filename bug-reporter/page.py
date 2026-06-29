@@ -43,21 +43,42 @@ HTML_PAGE = r"""<!DOCTYPE html>
     50%{transform:translate3d(2%,-2%,0) scale(1.08)}
     100%{transform:translate3d(-2%,2%,0) scale(1.04)}}
   .wrap{max-width:960px;margin:0 auto;padding:18px 20px 60px;position:relative;z-index:1}
-  header{display:flex;align-items:center;gap:12px;margin-bottom:14px}
-  header h1{font-size:18px;margin:0;font-weight:800;letter-spacing:.2px;
+  header{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;
+    background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.012));
+    border:1px solid var(--line);border-radius:16px;padding:11px 15px;
+    box-shadow:0 8px 26px rgba(0,0,0,.22);backdrop-filter:blur(6px)}
+  .brand{display:flex;align-items:center;gap:9px;min-width:0}
+  header h1{font-size:19px;margin:0;font-weight:800;letter-spacing:.2px;white-space:nowrap;
     background:linear-gradient(90deg,#a78bfa,#60a5fa,#34d399,#60a5fa,#a78bfa);
     background-size:300% 100%;-webkit-background-clip:text;background-clip:text;color:transparent;
     animation:titleflow 8s linear infinite}
   @keyframes titleflow{to{background-position:300% 0}}
   header h1 .bug{display:inline-block;-webkit-text-fill-color:initial;color:initial;transform-origin:60% 80%;animation:wiggle 3.2s ease-in-out infinite}
   @keyframes wiggle{0%,86%,100%{transform:rotate(0)}90%{transform:rotate(-14deg)}94%{transform:rotate(12deg)}98%{transform:rotate(-6deg)}}
-  header .who{margin-left:auto;color:var(--muted);font-size:12.5px}
-  header .who b{color:var(--acc2)}
-  .iconbtn{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:6px 10px;cursor:pointer;font-size:12.5px}
+  .ver-chip{display:inline-flex;align-items:center;height:20px;font-size:10.5px;font-weight:700;color:var(--acc2);background:var(--chip);
+    border:1px solid var(--line);border-radius:999px;padding:0 9px;letter-spacing:.4px;white-space:nowrap}
+  /* all header controls share one height + vertical centring so the bar lines up cleanly */
+  .who,.hdr-actions .iconbtn{height:34px;box-sizing:border-box;display:inline-flex;align-items:center}
+  .who{margin-left:auto;color:var(--muted);font-size:12.5px;gap:7px;
+    background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:0 14px;white-space:nowrap}
+  .who::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--acc2);box-shadow:0 0 9px var(--acc2);flex:none}
+  .who b{color:var(--acc2)}
+  .hdr-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .iconbtn{display:inline-flex;align-items:center;justify-content:center;gap:5px;height:34px;width:auto;box-sizing:border-box;
+    background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:0 12px;cursor:pointer;font-size:12.5px;font-weight:600}
+  select.iconbtn{padding-right:8px}   /* native arrow needs less right padding */
+  .iconbtn svg{width:15px;height:15px;flex:none;opacity:.9}
   .iconbtn:hover{border-color:var(--acc)}
-  .tabs{display:flex;gap:6px;margin-bottom:14px}
-  .tab{padding:8px 16px;border-radius:999px;background:var(--panel);border:1px solid var(--line);cursor:pointer;color:var(--muted);font-weight:600;font-size:13px}
+  .iconbtn.upd{background:linear-gradient(90deg,#7c3aed,#3b82f6);border:none;color:#fff;font-weight:700;
+    box-shadow:0 4px 14px rgba(124,58,237,.45);animation:updpulse 2.2s ease-in-out infinite}
+  @keyframes updpulse{0%,100%{box-shadow:0 4px 14px rgba(124,58,237,.4)}50%{box-shadow:0 6px 22px rgba(59,130,246,.6)}}
+  .tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+  .tab{display:inline-flex;align-items:center;gap:8px;height:38px;padding:0 16px;border-radius:11px;background:var(--panel);border:1px solid var(--line);cursor:pointer;color:var(--muted);font-weight:600;font-size:13px}
+  .tab svg{width:16px;height:16px;flex:none;opacity:.85}
+  .tab-sub{font-weight:500;color:var(--muted);font-size:11.5px}
   .tab.on{background:var(--acc);border-color:var(--acc);color:#fff}
+  .tab.on svg{opacity:1}
+  .tab.on .tab-sub{color:rgba(255,255,255,.8)}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:14px}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:0 0 12px}
   .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
@@ -135,24 +156,47 @@ HTML_PAGE = r"""<!DOCTYPE html>
 try{ document.documentElement.setAttribute('data-theme', localStorage.getItem('bugrep_theme')||'dark'); }catch(e){}</script>
 <div class="wrap">
   <header>
-    <h1><span class="bug">🐞</span> BIS Bug Reporter</h1>
+    <div class="brand">
+      <h1><span class="bug">🐞</span> BIS Bug Reporter</h1>
+      <span class="ver-chip" id="verChip" title="Installed version"></span>
+    </div>
     <div class="who" id="who"></div>
-    <select class="iconbtn" id="themeSel" onchange="setTheme(this.value)" title="Theme" style="padding:6px 8px;cursor:pointer">
-      <option value="dark">🌙 Dark</option>
-      <option value="light">☀ Light</option>
-      <option value="midnight">🌌 Midnight</option>
-      <option value="forest">🌿 Forest</option>
-    </select>
-    <button class="iconbtn" onclick="window.open('/guide','_blank')" title="Open the user guide (PDF)">📖 User Guide</button>
-    <button class="iconbtn" id="updateBtn" onclick="applyUpdate()" title="Check for and install the latest version" style="display:none"></button>
-    <button class="iconbtn" onclick="openSettings()">⚙ Settings</button>
+    <div class="hdr-actions">
+      <select class="iconbtn" id="themeSel" onchange="setTheme(this.value)" title="Theme" style="cursor:pointer">
+        <option value="dark">🌙 Dark</option>
+        <option value="light">☀ Light</option>
+        <option value="midnight">🌌 Midnight</option>
+        <option value="forest">🌿 Forest</option>
+      </select>
+      <button class="iconbtn" onclick="window.open('/guide','_blank')" title="Open the user guide (PDF)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+        <span>User Guide</span>
+      </button>
+      <button class="iconbtn" id="updateBtn" onclick="applyUpdate()" title="Check for and install the latest version" style="display:none"></button>
+      <button class="iconbtn" onclick="openSettings()" title="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V15z"/></svg>
+        <span>Settings</span>
+      </button>
+    </div>
   </header>
 
   <div class="tabs">
-    <div class="tab on" id="tabCreate" onclick="showTab('create')">Create Bug</div>
-    <div class="tab" id="tabBulk" onclick="showTab('bulk')">Bulk · 1 message → many</div>
-    <div class="tab" id="tabRetest" onclick="showTab('retest')">My Pending Retests</div>
-    <div class="tab" id="tabImpact" onclick="showTab('impact')">📊 Impact</div>
+    <div class="tab on" id="tabCreate" onclick="showTab('create')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6a4 4 0 0 1 8 0"/><rect x="7" y="8" width="10" height="10" rx="5"/><path d="M12 9v9M3 13h4M17 13h4M4.5 8.5 7 10M19.5 8.5 17 10M4.5 17.5 7 16M19.5 17.5 17 16"/></svg>
+      <span>Create Bug</span>
+    </div>
+    <div class="tab" id="tabBulk" onclick="showTab('bulk')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l8 4.5-8 4.5-8-4.5L12 3z"/><path d="M4 12l8 4.5 8-4.5"/><path d="M4 16.5l8 4.5 8-4.5"/></svg>
+      <span>Bulk <span class="tab-sub">· 1 → many</span></span>
+    </div>
+    <div class="tab" id="tabRetest" onclick="showTab('retest')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 4v5h-5"/><path d="M9 12l2 2 4-4"/></svg>
+      <span>Pending Retests</span>
+    </div>
+    <div class="tab" id="tabImpact" onclick="showTab('impact')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"/><path d="M7 16v-4M12 16V8M17 16v-6"/></svg>
+      <span>Impact</span>
+    </div>
   </div>
 
   <!-- ============================ CREATE ============================ -->
@@ -319,6 +363,10 @@ try{ document.documentElement.setAttribute('data-theme', localStorage.getItem('b
     </div>
     <div id="bulkList"></div>
     <div class="card" id="bulkActions" style="display:none">
+      <div class="row" style="align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:10px">
+        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--txt)"><input type="checkbox" id="bulkFailAll" onchange="applyBulkFlag('fail',this.checked)" style="width:auto"/> 🧪 Mark every matched TestRail case Failed</label>
+        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--txt)"><input type="checkbox" id="bulkMakeAll" onchange="applyBulkFlag('make',this.checked)" style="width:auto"/> ➕ Create a case for every bug without an id</label>
+      </div>
       <div class="row">
         <button class="btn" id="createAllBtn" onclick="createAll()">✓ Create all selected</button>
         <button class="iconbtn" onclick="renderBulk([]);document.getElementById('bulkActions').style.display='none'">Clear results</button>
@@ -421,6 +469,7 @@ async function boot(){
     toast('Could not load Redmine field definitions: '+(e.message||e)+'. Connect to the network once.','bad');
   }
   if(!CFG.key_set){ openSettings(); }
+  try{ const vv=await (await fetch('/version')).json(); const vc=$('verChip'); if(vc) vc.textContent='v'+(vv.version||'?'); }catch(e){ const vc=$('verChip'); if(vc) vc.style.display='none'; }
   checkUpdate();
 }
 
@@ -433,10 +482,12 @@ async function checkUpdate(){
     const b=$('updateBtn'); if(!b) return;
     if(d.available && d.frozen){
       b.style.display='';
+      b.className='iconbtn upd';
       b.textContent='⬆ Update to '+d.latest;
       b.title=(d.notes||('Version '+d.latest+' is available'))+' — click to install';
     }else{
       b.style.display='none';
+      b.className='iconbtn';
     }
   }catch(e){ /* offline / older server — silently skip */ }
 }
@@ -449,8 +500,8 @@ async function applyUpdate(){
     const r=await fetch('/update/apply',{method:'POST'});
     const d=await r.json();
     if(!r.ok) throw new Error(d.detail||r.statusText);
-    b.textContent='✓ Restarting…';
-    toast('Updating to '+d.version+' — the app will reopen in a moment. You can close this tab.','ok');
+    b.textContent='✓ Updating…';
+    toast('Installing v'+d.version+'. The app will close to finish — if it doesn\'t reopen on its own, just reopen it (your settings are kept).','ok');
   }catch(e){
     b.disabled=false; b.textContent='⬆ Update to '+UPDATE.latest;
     toast('Update failed: '+(e.message||e),'bad');
@@ -742,10 +793,18 @@ function renderBulk(bugs){
         '<div><label>Parent task</label><input id="b'+i+'_parent" type="number" placeholder="nests under task #" value="'+(b.parent_task_id||'')+'"/></div>'+
         '<div><label>Severity<span class="req">*</span></label><select id="b'+i+'_severity">'+opts(fv('severity'),b.severity,'—')+'</select></div>'+
         '<div><label>Type<span class="req">*</span></label><select id="b'+i+'_type">'+opts(fv('type'),b.type,'—')+'</select></div>'+
-        '<div><label>Environment<span class="req">*</span></label><select id="b'+i+'_environment">'+opts(fv('environment'),b.environment||(CFG.defaults||{}).environment,'—')+'</select></div>'+
+        '<div><label>Environment<span class="req">*</span></label><select id="b'+i+'_environment" onchange="syncBulkCase('+i+')">'+opts(fv('environment'),b.environment||(CFG.defaults||{}).environment,'—')+'</select></div>'+
         '<div><label>Platform</label><select id="b'+i+'_platform">'+opts(fv('platform'),b.platform||(CFG.defaults||{}).platform,'—')+'</select></div>'+
         '<div><label>Module</label><select id="b'+i+'_module">'+opts(fv('module'),b.module,'—')+'</select></div>'+
         '<div><label>Assign to (developer)</label><select id="b'+i+'_assignee">'+assigneeOptions(b.assigned_to_id)+'</select></div>'+
+      '</div>'+
+      '<div class="row" style="margin-top:8px;align-items:center;gap:14px;flex-wrap:wrap;border-top:1px dashed var(--line);padding-top:10px">'+
+        '<div style="min-width:150px"><label>🧪 TestRail Case ID <span class="src">(optional)</span></label>'+
+          '<input id="b'+i+'_case" type="number" value="'+(b.case_id||'')+'" placeholder="none" oninput="syncBulkCase('+i+')"/></div>'+
+        '<label id="b'+i+'_failWrap" style="display:none;align-items:center;gap:6px;margin:0;color:var(--txt)">'+
+          '<input type="checkbox" id="b'+i+'_failTr" style="width:auto"/> 🧪 Mark the case <b id="b'+i+'_failEnv">Failed</b></label>'+
+        '<label id="b'+i+'_makeWrap" style="display:none;align-items:center;gap:6px;margin:0;color:var(--txt)">'+
+          '<input type="checkbox" id="b'+i+'_makeTc" style="width:auto"/> ➕ No case? Create one in TestRail &amp; add it to the plan</label>'+
       '</div>'+
       '<label style="margin-top:8px">Jam link<span class="req">*</span></label><input id="b'+i+'_jam" value="'+esc(b.jam_link)+'" placeholder="https://jam.dev/…"/>'+
       '<details style="margin-top:8px"><summary class="src" style="cursor:pointer">Steps / Expected / Actual</summary>'+
@@ -755,6 +814,28 @@ function renderBulk(bugs){
         '<label>Test Data</label><textarea id="b'+i+'_test_data">'+esc(b.test_data)+'</textarea>'+
       '</details>';
     wrap.appendChild(c);
+  });
+  bugs.forEach((_,i)=>syncBulkCase(i));
+}
+
+// Per-bug: a Case ID present -> offer "mark Failed"; no Case ID -> offer "create a case". Mirrors the single-bug flow.
+function syncBulkCase(i){
+  const hasCase = !!($('b'+i+'_case') && $('b'+i+'_case').value.trim());
+  const fw=$('b'+i+'_failWrap'), mw=$('b'+i+'_makeWrap');
+  if(fw) fw.style.display = hasCase? 'flex':'none';
+  if(mw) mw.style.display = hasCase? 'none':'flex';
+  if(!hasCase && $('b'+i+'_failTr')) $('b'+i+'_failTr').checked=false;
+  if(hasCase && $('b'+i+'_makeTc')) $('b'+i+'_makeTc').checked=false;
+  const env = $('b'+i+'_environment')? $('b'+i+'_environment').value : '';
+  if($('b'+i+'_failEnv')) $('b'+i+'_failEnv').textContent = env? ('Failed in '+env) : 'Failed';
+}
+
+// Bulk master toggles: tick "mark Failed" on every bug that has a case id, or "create a case" on every bug that doesn't.
+function applyBulkFlag(which, on){
+  BULK.forEach((_,i)=>{
+    const hasCase = !!($('b'+i+'_case') && $('b'+i+'_case').value.trim());
+    if(which==='fail' && hasCase && $('b'+i+'_failTr')) $('b'+i+'_failTr').checked=on;
+    if(which==='make' && !hasCase && $('b'+i+'_makeTc')) $('b'+i+'_makeTc').checked=on;
   });
 }
 
@@ -769,17 +850,31 @@ async function createAll(){
     const miss=[]; if(!g('ticket'))miss.push('Ticket'); if(!g('subject'))miss.push('Summary'); if(!g('severity'))miss.push('Severity'); if(!g('type'))miss.push('Type'); if(!g('environment'))miss.push('Environment'); if(!g('jam'))miss.push('Jam');
     if(miss.length){ st.textContent='⚠ missing: '+miss.join(', '); st.style.color='#fca5a5'; fail++; done++; continue; }
     const parent = g('parent') ? parseInt(g('parent')) : (val('bulkParent') ? parseInt(val('bulkParent')) : null);
+    const caseId = g('case') ? parseInt(g('case')) : null;
+    const failTr = !!($('b'+i+'_failTr') && $('b'+i+'_failTr').checked);
+    const makeTc = !!($('b'+i+'_makeTc') && $('b'+i+'_makeTc').checked);
     const body={subject:g('subject'),ticket_id:parseInt(g('ticket')),severity:g('severity'),environment:g('environment'),type:g('type'),module:g('module'),
       platform:g('platform')||dz.platform||'',os:dz.os||'',browser:dz.browser||'',devices:dz.devices||'',build_version:dz.build_version||'',fix_version_mobile:dz.fix_version_mobile||'',
       jam_link:g('jam'),steps:g('steps'),test_data:g('test_data'),expected:g('expected'),actual:g('actual'),
       parent_task_id:parent,
+      case_id:caseId, fail_testrail: failTr && !!caseId, create_testcase: makeTc && !caseId, testrail_run_ref:'',
       assigned_to_id:g('assignee')?parseInt(g('assignee')):null, source:'bulk', tool_seconds:null};
     try{
       const r=await fetch('/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
       const d=await r.json();
       if(!r.ok) throw new Error(d.detail||r.statusText);
-      st.innerHTML='✓ <a href="'+d.url+'" target="_blank">#'+d.id+'</a>'; st.style.color='';
+      let extra='';
+      if(d.testrail){ extra += d.testrail.ok
+        ? ' · 🧪 case '+caseId+' Failed'
+        : ' · ⚠ TestRail: '+(d.testrail.error||'failed'); }
+      if(d.testcase){ extra += d.testcase.ok
+        ? ' · ➕ case '+d.testcase.case_id+' created ('+((d.testcase.added_runs||[]).length)+' run'+(((d.testcase.added_runs||[]).length===1)?'':'s')+')'
+        : ' · ⚠ case not created: '+(d.testcase.error||'failed'); }
+      st.innerHTML='✓ <a href="'+d.url+'" target="_blank">#'+d.id+'</a>'+esc(extra); st.style.color='';
+      // If a new case was generated, reflect it back into the row so it's visible/reusable.
+      if(d.testcase && d.testcase.ok && d.testcase.case_id && $('b'+i+'_case')){ $('b'+i+'_case').value=d.testcase.case_id; syncBulkCase(i); }
       if($('b'+i+'_on')) $('b'+i+'_on').checked=false;
+      if((d.testrail&&!d.testrail.ok)||(d.testcase&&!d.testcase.ok)) st.style.color='#fbbf24';
       ok++;
     }catch(e){ st.textContent='✗ '+(e.message||e); st.style.color='#fca5a5'; fail++; }
     done++; $('createAllMsg').textContent=done+'/'+idxs.length+' processed';

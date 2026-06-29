@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 # --------------------------------------------------------------------------- config
 APP_NAME = "bis-bug-reporter"
-APP_VERSION = "1.1.0"          # bump on each packaged release; compared against the dashboard manifest
+APP_VERSION = "1.2.0"          # bump on each packaged release; compared against the dashboard manifest
 PORT = int(os.environ.get("BUG_REPORTER_PORT", "8765"))
 
 DEFAULT_REDMINE_URL = "https://redmine.bissafety.app"
@@ -220,16 +220,20 @@ def update_apply():
         raise HTTPException(status_code=502, detail="Downloaded file looks too small to be the app — aborting.")
 
     # 2) updater script: waits for THIS exe to unlock, swaps in the new one, relaunches it
+    # Updater bat: once THIS exe exits and unlocks, swap in the new version, then relaunch it.
+    # The swap is reliable; the relaunch is best-effort (it works when the app was started normally
+    # from Explorer; if it doesn't pop back up, the user just reopens — the new version is already in
+    # place). `ping` is used for the waits so it works without a stdin/console.
     bat = os.path.join(exe_dir, "_bug_reporter_update.bat")
     script = (
         "@echo off\r\n"
-        "setlocal\r\n"
         f'set "CUR={cur_exe}"\r\n'
         f'set "NEW={new_exe}"\r\n'
+        "ping 127.0.0.1 -n 3 >nul\r\n"
         ":retry\r\n"
         'move /y "%NEW%" "%CUR%" >nul 2>&1\r\n'
         "if errorlevel 1 (\r\n"
-        "  timeout /t 1 /nobreak >nul\r\n"
+        "  ping 127.0.0.1 -n 2 >nul\r\n"
         "  goto retry\r\n"
         ")\r\n"
         'start "" "%CUR%"\r\n'
@@ -241,13 +245,11 @@ def update_apply():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Couldn't write the updater: {e}")
 
-    # 3) launch the updater detached, then exit so the exe file unlocks for the swap
+    # 3) launch the updater in its own console, then exit so the exe file unlocks for the swap
     try:
-        DETACHED = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+        CREATE_NEW_CONSOLE = 0x00000010
         import subprocess
-        subprocess.Popen(["cmd", "/c", bat], cwd=exe_dir, creationflags=DETACHED,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         close_fds=True)
+        subprocess.Popen(["cmd", "/c", bat], cwd=exe_dir, creationflags=CREATE_NEW_CONSOLE, close_fds=True)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Couldn't launch the updater: {e}")
 
