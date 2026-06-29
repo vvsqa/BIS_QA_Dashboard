@@ -1,0 +1,863 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>BIS Automation Runner — Prototype</title>
+<style>
+  :root{
+    --bg:#0b1220; --bg2:#0e1626; --panel:#141d2e; --panel2:#19233a; --card:#162032;
+    --line:#243049; --line2:#2d3a57; --txt:#e7edf7; --muted:#9fb0c9; --faint:#6b7c9c;
+    --acc:#7c3aed; --acc2:#22d3ee; --teal:#14b8a6; --green:#22c55e; --amber:#f59e0b; --red:#ef4444;
+    --blue:#3b82f6; --violet:#a78bfa; --chip:#1c2740;
+  }
+  [data-theme="midnight"]{ --bg:#070b16; --bg2:#0a1020; --panel:#0f1729; --panel2:#131c33; }
+  [data-theme="forest"]{ --bg:#0a1410; --bg2:#0d1a14; --panel:#10211a; --panel2:#16291f; --acc:#10b981; --acc2:#34d399; }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{background:radial-gradient(1200px 600px at 80% -10%, rgba(124,58,237,.16), transparent 60%),
+       radial-gradient(900px 500px at -10% 10%, rgba(34,211,238,.10), transparent 55%), var(--bg);
+       color:var(--txt); font:14px/1.5 "Segoe UI",system-ui,Roboto,Arial,sans-serif; -webkit-font-smoothing:antialiased}
+  a{color:var(--acc2)}
+  .wrap{max-width:1280px;margin:0 auto;padding:14px 18px 60px}
+
+  /* ---------- header ---------- */
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    background:linear-gradient(180deg,rgba(255,255,255,.05),rgba(255,255,255,.012));
+    border:1px solid var(--line);border-radius:16px;padding:11px 16px;box-shadow:0 10px 30px rgba(0,0,0,.30)}
+  .brand{display:flex;align-items:center;gap:10px;min-width:0}
+  .logo{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:18px;
+    background:linear-gradient(135deg,#7c3aed,#22d3ee);box-shadow:0 6px 18px rgba(124,58,237,.45)}
+  h1{font-size:18px;margin:0;font-weight:800;letter-spacing:.2px;white-space:nowrap;
+    background:linear-gradient(90deg,#a78bfa,#60a5fa,#34d399,#60a5fa,#a78bfa);background-size:300% 100%;
+    -webkit-background-clip:text;background-clip:text;color:transparent;animation:flow 8s linear infinite}
+  @keyframes flow{to{background-position:300% 0}}
+  .ver{font-size:10.5px;font-weight:700;color:var(--acc2);background:var(--chip);border:1px solid var(--line);
+    border-radius:999px;padding:2px 9px;letter-spacing:.4px}
+  .hdr-right{margin-left:auto;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .pill{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 12px;border-radius:10px;
+    background:var(--panel2);border:1px solid var(--line);color:var(--txt);font-size:12.5px;font-weight:600;cursor:pointer}
+  .pill:hover{border-color:var(--acc)}
+  .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green)}
+  .pill.env .dot{background:var(--amber);box-shadow:0 0 8px var(--amber)}
+  .pill.live .dot{background:var(--red);box-shadow:0 0 8px var(--red)}
+  select.pill{appearance:none;padding-right:26px;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
+    background-position:calc(100% - 14px) 14px,calc(100% - 9px) 14px;background-size:5px 5px;background-repeat:no-repeat}
+
+  /* ---------- tabs ---------- */
+  .tabs{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}
+  .tab{display:inline-flex;align-items:center;gap:8px;height:40px;padding:0 16px;border-radius:11px;cursor:pointer;
+    background:var(--panel);border:1px solid var(--line);color:var(--muted);font-weight:700;font-size:13px}
+  .tab .ic{font-size:15px}
+  .tab.on{background:linear-gradient(135deg,rgba(124,58,237,.20),rgba(34,211,238,.14));border-color:var(--acc);color:#fff}
+  .tab .badge{font-size:10.5px;background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:1px 7px;color:var(--muted)}
+
+  /* ---------- cards ---------- */
+  .grid{display:grid;gap:14px}
+  .card{background:linear-gradient(180deg,var(--panel),var(--bg2));border:1px solid var(--line);border-radius:14px;padding:16px;position:relative;overflow:hidden}
+  .card h3{margin:0 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted)}
+  .kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+  .kpi{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:13px 14px;position:relative}
+  .kpi .big{font-size:26px;font-weight:800;line-height:1}
+  .kpi .lbl{color:var(--muted);font-size:11.5px;margin-top:6px}
+  .kpi .accent{position:absolute;top:0;left:0;right:0;height:3px;border-radius:3px}
+  .muted{color:var(--muted)} .faint{color:var(--faint)} .b{font-weight:700}
+  .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+  .sp{flex:1}
+
+  /* ---------- table ---------- */
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{ text-align:left;color:var(--muted);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.5px;padding:6px 8px;border-bottom:1px solid var(--line)}
+  td{padding:9px 8px;border-bottom:1px solid var(--line)}
+  tr.mod{cursor:pointer} tr.mod:hover td{background:rgba(124,58,237,.07)}
+  .bar{height:8px;border-radius:6px;background:var(--chip);overflow:hidden;min-width:80px}
+  .bar > i{display:block;height:100%;border-radius:6px;background:linear-gradient(90deg,#7c3aed,#22d3ee)}
+  .who{display:inline-flex;gap:3px}
+  .av{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:800;color:#06121f}
+  .av.V{background:#22d3ee}.av.Va{background:#a78bfa}.av.Vi{background:#34d399}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;border-radius:999px;padding:2px 9px;border:1px solid var(--line);background:var(--chip)}
+  .chip.smoke{color:#fbbf24}.chip.reg{color:#60a5fa}.chip.san{color:#34d399}
+  .runbtn{font-size:11.5px;font-weight:700;border:1px solid var(--line);background:var(--panel2);color:var(--acc2);border-radius:8px;padding:4px 10px;cursor:pointer}
+  .runbtn:hover{border-color:var(--acc2)}
+
+  /* ---------- filters ---------- */
+  .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .filters select,.filters input{height:32px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:0 10px;font-size:12.5px}
+
+  /* ---------- split layout (UI/API) ---------- */
+  .split{display:grid;grid-template-columns:300px 1fr;gap:14px}
+  .tree{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:10px;max-height:640px;overflow:auto}
+  .tnode{padding:7px 9px;border-radius:8px;cursor:pointer;font-weight:700;display:flex;align-items:center;gap:8px}
+  .tnode:hover{background:rgba(255,255,255,.04)}
+  .tcase{padding:6px 9px 6px 26px;border-radius:8px;cursor:pointer;display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted)}
+  .tcase:hover{background:rgba(255,255,255,.05);color:var(--txt)}
+  .tcase.sel{background:rgba(34,211,238,.12);color:#fff;border:1px solid rgba(34,211,238,.4)}
+  .badge2{font-size:10px;font-weight:800;border-radius:6px;padding:1px 6px}
+  .badge2.auto{color:#06281c;background:#34d399}.badge2.man{color:#3a1111;background:#fca5a5}.badge2.prog{color:#3a2a08;background:#fbbf24}
+
+  /* ---------- run panel ---------- */
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .meta{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:8px 0 14px}
+  .meta div{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+  .meta .k{font-size:10.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+  .meta .v{font-weight:700;margin-top:2px}
+  .ctl{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:11px}
+  .ctl select{height:32px;background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:0 10px}
+  .btn{display:inline-flex;align-items:center;gap:7px;border:none;border-radius:10px;padding:9px 15px;font-weight:800;font-size:13px;cursor:pointer;color:#fff;
+    background:linear-gradient(135deg,#7c3aed,#3b82f6);box-shadow:0 6px 16px rgba(124,58,237,.4)}
+  .btn:hover{filter:brightness(1.08)} .btn.ghost{background:var(--panel2);color:var(--txt);border:1px solid var(--line);box-shadow:none}
+  .btn.green{background:linear-gradient(135deg,#10b981,#22d3ee)} .btn.sm{padding:6px 11px;font-size:12px}
+  .log{margin-top:12px;background:#080d18;border:1px solid var(--line);border-radius:12px;padding:12px;font-family:Consolas,monospace;font-size:12.5px;min-height:120px;max-height:260px;overflow:auto}
+  .log .ok{color:#34d399}.log .fail{color:#fca5a5}.log .info{color:#93c5fd}.log .dim{color:var(--faint)}
+  .arts{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+  .art{font-size:11.5px;border:1px solid var(--line);background:var(--panel2);border-radius:8px;padding:5px 9px;color:var(--acc2);cursor:pointer}
+  .authoring{margin-top:14px;border-top:1px dashed var(--line);padding-top:12px}
+  textarea{width:100%;min-height:56px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:10px;padding:9px;font:13px Consolas,monospace;resize:vertical}
+  input[type=checkbox]{accent-color:var(--acc)}
+  code{background:var(--chip);border:1px solid var(--line);border-radius:6px;padding:1px 5px;font-size:12px}
+  .pre{background:#080d18;border:1px solid var(--line);border-radius:10px;padding:11px;font-family:Consolas,monospace;font-size:12.5px;white-space:pre-wrap;overflow:auto;max-height:300px}
+  .status{font-weight:800} .status.pass{color:var(--green)} .status.fail{color:var(--red)}
+
+  /* progress */
+  .pbar{height:12px;border-radius:8px;background:var(--chip);overflow:hidden}
+  .pbar > i{display:block;height:100%;background:linear-gradient(90deg,#10b981,#22d3ee);transition:width .2s}
+
+  /* modal */
+  .modal{position:fixed;inset:0;background:rgba(2,6,16,.66);backdrop-filter:blur(3px);display:none;align-items:flex-start;justify-content:center;z-index:50;padding:6vh 0}
+  .modal.on{display:flex}
+  .sheet{width:min(560px,94vw);background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:18px}
+  .sheet label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+  .sheet input,.sheet select{width:100%;height:34px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:0 10px}
+  .hide{display:none!important}
+  .toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:11px 16px;font-weight:700;box-shadow:0 12px 30px rgba(0,0,0,.5);opacity:0;transition:.25s;z-index:60}
+  .toast.on{opacity:1}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+  .hint{font-size:11.5px;color:var(--faint)}
+  .seg{display:inline-flex;background:var(--panel2);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .seg button{border:none;background:transparent;color:var(--muted);padding:7px 14px;font-weight:700;cursor:pointer}
+  .seg button.on{background:linear-gradient(135deg,rgba(124,58,237,.3),rgba(34,211,238,.2));color:#fff}
+  @media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr}.meta{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ===================== HEADER ===================== -->
+  <header>
+    <div class="brand">
+      <div class="logo">🤖</div>
+      <h1>BIS Automation Runner</h1>
+      <span class="ver">PROTOTYPE v0.2</span>
+    </div>
+    <div class="hdr-right">
+      <select class="pill env" id="envSel" onchange="setEnv()">
+        <option value="Staging">⬤ Staging</option>
+        <option value="Pre">⬤ Pre-Prod</option>
+        <option value="Live">⬤ Live</option>
+      </select>
+      <span class="pill" title="Your working branch — the only branch the app pushes"><span class="dot"></span>⎇ feat/vishnu</span>
+      <span class="pill" title="pre_main fetched before every run">↻ pre_main: up to date</span>
+      <span class="pill" onclick="openSetup()">🧩 Setup</span>
+      <span class="pill" onclick="openSettings()">⚙ Settings</span>
+    </div>
+  </header>
+
+  <!-- ===================== TABS ===================== -->
+  <div class="tabs">
+    <div class="tab on" data-tab="overview" onclick="showTab('overview')"><span class="ic">📊</span> Discovery</div>
+    <div class="tab" data-tab="mywork" onclick="showTab('mywork')"><span class="ic">👤</span> My Work</div>
+    <div class="tab" data-tab="ui" onclick="showTab('ui')"><span class="ic">🖱️</span> UI Automation <span class="badge">3,556</span></div>
+    <div class="tab" data-tab="api" onclick="showTab('api')"><span class="ic">🔌</span> API Automation <span class="badge">142</span></div>
+    <div class="tab" data-tab="data" onclick="showTab('data')"><span class="ic">🧪</span> Data Generation</div>
+    <div class="tab" data-tab="backlog" onclick="showTab('backlog')"><span class="ic">🎯</span> Backlog <span class="badge">1,240</span></div>
+  </div>
+
+  <!-- ===================== OVERVIEW / DISCOVERY ===================== -->
+  <section id="t-overview">
+    <div class="card" style="margin-bottom:14px">
+      <div class="row">
+        <div><h3>Automation overview — all modules</h3><div class="muted" style="font-size:12px">Live from TestRail · project 18 (Web) + 14 (Mobile) · updated just now</div></div>
+        <div class="sp"></div>
+        <div class="filters">
+          <select id="fMod"><option>All Modules</option></select>
+          <select id="fCat"><option>All Categories</option><option>Smoke</option><option>Regression</option><option>Sanity</option></select>
+          <select id="fBy"><option>All Engineers</option><option>Vishnu VS</option><option>Varsha Dcruz P</option><option>Vivek V Nair</option></select>
+          <select id="fReuse"><option>All Reuse</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select>
+        </div>
+      </div>
+      <div id="kpiStrip" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-top:14px"></div>
+    </div>
+
+    <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+      <div class="card"><h3>Coverage (cases)</h3><div id="donutCov"></div></div>
+      <div class="card"><h3>Execution utilisation</h3><div id="donutExec"></div></div>
+      <div class="card"><h3>Maintenance health</h3><div id="maintChart"></div></div>
+      <div class="card"><h3>Contributors (top)</h3><div id="contributors"></div></div>
+    </div>
+
+    <div class="grid" style="grid-template-columns:1.55fr 1fr;margin-bottom:14px">
+      <div class="card"><h3>Daily scripting contributions — last 14 days</h3><div id="contribBars"></div></div>
+      <div class="card"><h3>Bugs found via automation</h3><div id="bugsChart"></div></div>
+    </div>
+
+    <div class="card">
+      <div class="row"><h3 style="margin:0">Module breakdown — every metric, module by module</h3><div class="sp"></div><span class="hint">click a row to open its cases ▸</span></div>
+      <div style="overflow:auto;margin-top:8px">
+        <table id="modTable">
+          <thead><tr><th>Module</th><th>Total</th><th>Auto</th><th>% Auto</th><th>Manual</th><th>Exec</th><th>Auto exec</th><th>Util%</th><th>Maint</th><th>Bugs</th><th>Saved</th><th>Smoke</th><th>Reg</th><th>By</th><th></th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== MY WORK (per-user) ===================== -->
+  <section id="t-mywork" class="hide"></section>
+
+  <!-- ===================== UI AUTOMATION ===================== -->
+  <section id="t-ui" class="hide">
+    <div class="split">
+      <div class="tree" id="uiTree"></div>
+      <div class="panel" id="uiPanel"><div class="muted" style="padding:30px;text-align:center">Select a case from a module on the left to run or automate it.</div></div>
+    </div>
+  </section>
+
+  <!-- ===================== API AUTOMATION ===================== -->
+  <section id="t-api" class="hide">
+    <div class="card" style="margin-bottom:12px">
+      <div class="row"><h3 style="margin:0">API catalog</h3><span class="muted" style="font-size:12px">imported from Postman / OpenAPI</span><div class="sp"></div>
+        <button class="btn ghost sm" onclick="toast('Re-import collection (mock)')">⤓ Import collection</button></div>
+    </div>
+    <div class="split">
+      <div class="tree" id="apiTree"></div>
+      <div class="panel" id="apiPanel"><div class="muted" style="padding:30px;text-align:center">Select an API to configure and run.</div></div>
+    </div>
+  </section>
+
+  <!-- ===================== DATA GENERATION ===================== -->
+  <section id="t-data" class="hide">
+    <div class="card">
+      <div class="row">
+        <h3 style="margin:0">Generate test data</h3><span class="muted" style="font-size:12px">via app APIs / UI flows — never direct DB</span>
+        <div class="sp"></div>
+        <div class="seg"><button class="on" id="dgSingle" onclick="dgMode('single')">Single</button><button id="dgBulk" onclick="dgMode('bulk')">Bulk</button></div>
+      </div>
+      <div class="row" style="margin-top:14px">
+        <div><div class="k muted" style="font-size:11px">Template</div>
+          <select class="pill" id="dgTpl"><option>Users with roles</option><option>Companies</option><option>Forms + assets</option><option>Course enrolments</option><option>Classroom events</option></select></div>
+        <div><div class="k muted" style="font-size:11px">Environment</div><select class="pill" id="dgEnv"><option>Staging</option><option>Pre</option><option>Live</option></select></div>
+        <div id="dgCountWrap"><div class="k muted" style="font-size:11px">Count</div><input class="pill" id="dgCount" value="50" style="width:90px"/></div>
+        <div><div class="k muted" style="font-size:11px">Role mix</div><select class="pill"><option>Admin 10 · Learner 40</option><option>All Learner</option><option>All Admin</option></select></div>
+        <div style="align-self:flex-end"><button class="btn green" onclick="runDataGen()">▶ Generate via API</button></div>
+      </div>
+      <div id="dgProg" class="hide" style="margin-top:16px">
+        <div class="row"><span class="b" id="dgLabel">Generating…</span><div class="sp"></div><span class="muted" id="dgCounter">0 / 50</span></div>
+        <div class="pbar" style="margin-top:8px"><i id="dgFill" style="width:0%"></i></div>
+      </div>
+      <div id="dgResult" class="hide" style="margin-top:16px">
+        <div class="row"><span class="status pass">✓ Created <span id="dgDone">50</span> records</span><div class="sp"></div>
+          <button class="art" onclick="toast('Saved ids to my private data file')">💾 Save to my data file</button>
+          <button class="art" onclick="toast('Exported ids.csv (mock)')">⤓ export ids.csv</button></div>
+        <div class="pre" id="dgRows" style="margin-top:10px"></div>
+        <div class="hint" id="dgFoot" style="margin-top:8px"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== BACKLOG / CANDIDATES ===================== -->
+  <section id="t-backlog" class="hide">
+    <div class="grid" style="grid-template-columns:1fr 320px;align-items:start">
+      <div class="card">
+        <div class="row" style="margin-bottom:6px"><h3 style="margin:0">Automation backlog — what to automate next</h3>
+          <span class="muted" style="font-size:12px"><b id="blCount">1,240</b> candidates · ranked by ROI</span>
+          <div class="sp"></div><button class="btn sm" id="blBtn" onclick="backlogAutomate()" disabled>✦ Automate selected</button></div>
+        <div class="hint" style="margin-bottom:8px">Not-automated cases scored by reuse frequency × business criticality × execution volume — highest payback first.</div>
+        <div style="overflow:auto">
+          <table id="blTable">
+            <thead><tr><th style="width:26px"></th><th>Rank</th><th>Case</th><th>Module</th><th>Category</th><th>Reuse</th><th>Criticality</th><th>Executions</th><th>Est. saved</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="row" style="margin-top:10px"><span class="muted" style="font-size:12px">1–12 of 1,240</span><div class="sp"></div>
+          <span class="muted" style="font-size:12px">◂ 1 2 3 4 … 104 ▸</span></div>
+      </div>
+      <div class="card">
+        <h3>Candidates by module</h3>
+        <div id="blByMod"></div>
+        <div class="legend" style="flex-direction:column;gap:6px;margin-top:12px">
+          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Reuse legend</div>
+          <div><i style="background:#ef4444"></i>Critical / Very High</div>
+          <div><i style="background:#f59e0b"></i>High</div>
+          <div><i style="background:#3b82f6"></i>Medium</div>
+          <div><i style="background:#34d399"></i>Low</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<!-- ===================== SETUP MODAL (first run) ===================== -->
+<div class="modal" id="setup">
+  <div class="sheet" style="width:min(680px,95vw)">
+    <div class="row"><h2 style="margin:0;font-size:18px">🧩 First-run setup <span class="muted" style="font-size:12px;font-weight:400">— gets your environment ready</span></h2><div class="sp"></div><button class="art" onclick="closeSetup()">✕</button></div>
+    <div id="setupList" style="margin-top:12px"></div>
+    <div class="k muted" style="font-size:11px;text-transform:uppercase;margin:14px 0 6px">Live setup log</div>
+    <div class="log" id="setupLog" style="min-height:120px"></div>
+    <div class="row" style="margin-top:14px"><span class="hint">Installs are idempotent — already-present tools are skipped.</span><div class="sp"></div>
+      <button class="btn" id="setupBtn" onclick="runSetup()">▶ Run setup</button></div>
+  </div>
+</div>
+
+<!-- ===================== SETTINGS MODAL ===================== -->
+<div class="modal" id="settings">
+  <div class="sheet">
+    <div class="row"><h2 style="margin:0;font-size:18px">⚙ Settings <span class="muted" style="font-size:12px;font-weight:400">— stored locally, never shared</span></h2><div class="sp"></div><button class="art" onclick="closeSettings()">✕</button></div>
+    <label>Your name</label><input value="Vishnu VS"/>
+    <label>Dashboard URL</label><input value="http://10.1.0.20:8000"/>
+    <label>Local repo path</label><input value="C:\Apps\bis-automation"/>
+    <label>Your working branch (only branch the app pushes)</label><input value="feat/vishnu"/>
+    <div class="row" style="gap:10px"><div style="flex:1"><label>TestRail email</label><input value="vishnu.vs@…"/></div><div style="flex:1"><label>TestRail API key</label><input type="password" value="••••••••••3kQ"/></div></div>
+    <div class="row" style="gap:10px"><div style="flex:1"><label>GitHub PAT (for PRs)</label><input type="password" value="••••••••ghp"/></div><div style="flex:1"><label>Theme</label>
+      <select onchange="document.documentElement.dataset.theme=this.value"><option value="dark">Dark</option><option value="midnight">Midnight</option><option value="forest">Forest</option></select></div></div>
+    <label>Private data file</label><input value="%APPDATA%\bis-automation-runner\my-data.json"/>
+    <div class="hint" style="margin-top:6px">Per-env URLs + role accounts are configured internally per environment. Concrete values stay only on this machine.</div>
+    <div class="row" style="margin-top:16px"><div class="sp"></div><button class="btn" onclick="closeSettings();toast('Settings saved (mock)')">Save</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ---------------- mock data (modeled on real TestRail numbers) ---------------- */
+// total, auto(mated cases), exec(utions), aExec(automated executions), saved(hours),
+// maint(cases needing maintenance), bugs(found via automation), smoke/reg counts, by(contributors)
+const MODULES = [
+  {m:'Forms', total:6579, auto:1973, exec:10287, aExec:3210, saved:1016, maint:96, bugs:58, smoke:120, reg:980, by:['V','Va','Vi']},
+  {m:'Online Course', total:3427, auto:376, exec:4560, aExec:980, saved:166, maint:41, bugs:22, smoke:44, reg:210, by:['Va']},
+  {m:'Reporting', total:3011, auto:150, exec:7109, aExec:1180, saved:66, maint:18, bugs:9, smoke:18, reg:160, by:['Vi']},
+  {m:'User Management', total:745, auto:285, exec:2169, aExec:1280, saved:150, maint:22, bugs:31, smoke:30, reg:120, by:['V','Vi']},
+  {m:'Classroom Calendar', total:533, auto:89, exec:1799, aExec:640, saved:54, maint:11, bugs:14, smoke:30, reg:95, by:['V']},
+  {m:'Training Matrix', total:650, auto:10, exec:1727, aExec:210, saved:3, maint:2, bugs:1, smoke:6, reg:40, by:['Va']},
+  {m:'Folders', total:419, auto:255, exec:422, aExec:380, saved:58, maint:19, bugs:7, smoke:22, reg:88, by:['Vi']},
+  {m:'E-Commerce', total:340, auto:70, exec:895, aExec:410, saved:36, maint:8, bugs:6, smoke:14, reg:55, by:['V']},
+  {m:'Project Management', total:700, auto:54, exec:1052, aExec:360, saved:15, maint:6, bugs:4, smoke:9, reg:48, by:['Va']},
+  {m:'Assets', total:417, auto:16, exec:345, aExec:120, saved:6, maint:3, bugs:2, smoke:4, reg:30, by:['Vi']},
+  {m:'Training Record Mgmt', total:237, auto:23, exec:513, aExec:190, saved:8, maint:4, bugs:3, smoke:5, reg:25, by:['V']},
+  {m:'Accounting', total:520, auto:34, exec:740, aExec:220, saved:14, maint:5, bugs:3, smoke:8, reg:40, by:['Va']},
+  {m:'Reporting Dashboard', total:1180, auto:160, exec:2010, aExec:760, saved:90, maint:16, bugs:11, smoke:20, reg:90, by:['V','Va']},
+  {m:'Virtual Proctor', total:880, auto:60, exec:1240, aExec:360, saved:28, maint:9, bugs:6, smoke:12, reg:55, by:['Vi']},
+  {m:'Playbook', total:143, auto:1, exec:143, aExec:20, saved:1, maint:1, bugs:0, smoke:1, reg:6, by:['Va']},
+];
+// daily scripting contributions (last 14 days), per engineer
+const DAILY = { days:['Jun16','17','18','19','20','23','24','25','26','27','30','Jul1','2','3'],
+  V:[6,8,5,9,7,4,10,8,6,9,7,5,8,6], Va:[12,9,14,8,11,7,13,9,12,10,8,11,9,7], Vi:[4,6,3,7,5,8,6,5,7,4,6,5,7,9] };
+const CONTRIB = [
+  {n:'Vishnu VS', k:'V', cum:1380, wk:200, bugs:71, color:'#22d3ee'},
+  {n:'Varsha Dcruz P', k:'Va', cum:443, wk:223, bugs:54, color:'#a78bfa'},
+  {n:'Vivek V Nair', k:'Vi', cum:366, wk:92, bugs:42, color:'#34d399'},
+];
+// maintenance health across automated cases (sums to the automated total 3,556 — keep consistent)
+const MAINT = [['Healthy',2980,'#34d399'],['WIP',214,'#3b82f6'],['Maintenance',261,'#f59e0b'],['Obsolete',101,'#ef4444']];
+// automation backlog — not-automated cases ranked by ROI (reuse × criticality × executions)
+const BACKLOG = [
+  {id:221009,m:'Forms',cat:'Regression',reuse:'Critical',crit:'High',exec:1842,save:8.2},
+  {id:221112,m:'Forms',cat:'Regression',reuse:'Critical',crit:'High',exec:1632,save:7.3},
+  {id:220998,m:'User Management',cat:'Regression',reuse:'High',crit:'High',exec:1411,save:6.1},
+  {id:221223,m:'Forms',cat:'Smoke',reuse:'High',crit:'Medium',exec:1208,save:5.2},
+  {id:221334,m:'Online Course',cat:'Regression',reuse:'High',crit:'High',exec:1105,save:4.6},
+  {id:221556,m:'Reporting',cat:'Smoke',reuse:'High',crit:'Medium',exec:987,save:3.8},
+  {id:221667,m:'User Management',cat:'Smoke',reuse:'High',crit:'High',exec:821,save:3.4},
+  {id:221778,m:'Online Course',cat:'Regression',reuse:'Medium',crit:'Medium',exec:765,save:3.2},
+  {id:221889,m:'Classroom Calendar',cat:'Regression',reuse:'Medium',crit:'Low',exec:654,save:2.8},
+  {id:221902,m:'Reporting',cat:'Smoke',reuse:'Medium',crit:'Medium',exec:590,save:2.4},
+  {id:222014,m:'E-Commerce',cat:'Regression',reuse:'High',crit:'High',exec:540,save:2.2},
+  {id:222119,m:'Folders',cat:'Smoke',reuse:'Medium',crit:'Low',exec:498,save:1.9},
+];
+const BL_BYMOD=[['Forms',420],['Online Course',310],['User Management',210],['Reporting',180],['Classroom Calendar',120]];
+const SETUP_STEPS=[['Git','v2.45.1'],['Node.js ≥ 18','v20.12.2'],['Playwright (Chromium)','v1.44.0'],['Claude CLI','v1.0.9'],['Clone repo + checkout pre_main','BIS automation repo']];
+const CASES = {
+  'Forms':[
+    {id:254548,t:'Copy a Slide element to the Content Library',st:'auto',cat:'Regression',exec:'Auto',by:'Va',reuse:'High',ticket:20912},
+    {id:254549,t:'Move a Slide element to the Content Library',st:'auto',cat:'Regression',exec:'Auto',by:'Va',reuse:'High',ticket:20912},
+    {id:259305,t:'Content Library notes logged when slide added',st:'man',cat:'Smoke',exec:'Manual',by:'—',reuse:'Critical',ticket:20912},
+    {id:259306,t:'Content Library notes logged when slide edited',st:'man',cat:'Regression',exec:'Manual',by:'—',reuse:'High',ticket:20912},
+    {id:208581,t:'Create a Secure Form with SIN field',st:'prog',cat:'Smoke',exec:'Manual',by:'V',reuse:'Critical',ticket:19485},
+  ],
+  'User Management':[
+    {id:219560,t:'Create user with Client Admin role',st:'auto',cat:'Smoke',exec:'Auto',by:'Vi',reuse:'Critical',ticket:18261},
+    {id:219561,t:'Bulk import users from CSV',st:'auto',cat:'Regression',exec:'Auto',by:'Vi',reuse:'High',ticket:18261},
+    {id:219570,t:'Deactivate user keeps audit trail',st:'man',cat:'Regression',exec:'Manual',by:'—',reuse:'Medium',ticket:20863},
+  ],
+  'Classroom Calendar':[
+    {id:217089,t:'Schedule event via Add Event modal',st:'auto',cat:'Smoke',exec:'Auto',by:'V',reuse:'Critical',ticket:19704},
+    {id:217090,t:'Drag-and-drop reschedule preserves data',st:'man',cat:'Regression',exec:'Manual',by:'—',reuse:'High',ticket:19704},
+  ],
+};
+['Online Course','Reporting','Folders','E-Commerce','Project Management','Assets','Training Record Mgmt','Accounting','Reporting Dashboard','Virtual Proctor','Training Matrix','Playbook'].forEach(m=>{
+  CASES[m]=[
+    {id:200000+Math.floor(Math.abs(hash(m))%9000),t:m+' — core smoke flow',st:'auto',cat:'Smoke',exec:'Auto',by:'V',reuse:'High',ticket:0},
+    {id:201000+Math.floor(Math.abs(hash(m+'b'))%9000),t:m+' — full regression sweep',st:'man',cat:'Regression',exec:'Manual',by:'—',reuse:'Medium',ticket:0},
+  ];
+});
+function hash(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0}return h}
+
+const APIS = {
+  'Users':[
+    {id:'u1',name:'Create User',method:'POST',path:'/api/v1/users',body:'{\n  "name": "{{name}}",\n  "email": "{{email}}",\n  "role": "{{role}}",\n  "company": "{{company}}"\n}',fields:[['name','Auto'],['email','{{name}}@yopmail.com'],['role','Client Admin'],['company','Acme Corp']],pre:['Auth token valid','Company exists'],resp:'{ "id": 88213, "status": "active", "role": "Client Admin" }',code:'201 Created',ms:142},
+    {id:'u2',name:'Bulk Import Users',method:'POST',path:'/api/v1/users/bulk',body:'{\n  "count": {{count}},\n  "roleMix": "{{mix}}"\n}',fields:[['count','50'],['mix','Admin 10 / Learner 40']],pre:['Auth token valid','CSV template'],resp:'{ "created": 50, "failed": 0 }',code:'200 OK',ms:980},
+  ],
+  'Forms':[
+    {id:'f1',name:'Submit Form',method:'POST',path:'/api/v1/forms/{id}/submit',body:'{\n  "formId": "{{formId}}",\n  "answers": {{answers}}\n}',fields:[['formId','SF-2291'],['answers','{...}']],pre:['Form published','User has access'],resp:'{ "submissionId": 5521, "status": "received" }',code:'201 Created',ms:210},
+  ],
+  'Reports':[
+    {id:'r1',name:'Generate Completion Report',method:'GET',path:'/api/v1/reports/completions',body:'',fields:[['from','2026-06-01'],['to','2026-06-30'],['company','Acme Corp']],pre:['Reporting role'],resp:'{ "rows": 1284, "format": "json" }',code:'200 OK',ms:455},
+  ],
+};
+
+/* ---------------- render: tabs ---------------- */
+function showTab(t){
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===t));
+  ['overview','mywork','ui','api','data','backlog'].forEach(x=>document.getElementById('t-'+x).classList.toggle('hide',x!==t));
+  if(t==='mywork') renderMyWork();
+  if(t==='backlog') renderBacklog();
+}
+function setEnv(){const v=document.getElementById('envSel').value;const p=document.getElementById('envSel');
+  p.classList.toggle('live',v==='Live');toast('Environment → '+v);}
+
+/* ---------------- render: overview ---------------- */
+function pct(a,t){return t?Math.round(a/t*100):0}
+function sum(f){return MODULES.reduce((s,m)=>s+f(m),0)}
+function nf(n){return Math.round(n).toLocaleString()}
+function donutSVG(segs,centerTxt,subTxt){
+  const tot=segs.reduce((s,x)=>s+x[0],0)||1, R=52, C=2*Math.PI*R; let off=0;
+  const arcs=segs.map(([v,col])=>{const len=C*v/tot;const el=`<circle cx="70" cy="70" r="${R}" fill="none" stroke="${col}" stroke-width="16" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`;off+=len;return el;}).join('');
+  return `<svg width="128" height="128" viewBox="0 0 140 140"><circle cx="70" cy="70" r="${R}" fill="none" stroke="#26324d" stroke-width="16"/>${arcs}<text x="70" y="66" text-anchor="middle" font-size="23" font-weight="800" fill="#e7edf7">${centerTxt}</text><text x="70" y="86" text-anchor="middle" font-size="10.5" fill="#9fb0c9">${subTxt}</text></svg>`;
+}
+function renderDiscovery(){
+  const totalCases=sum(m=>m.total),automated=sum(m=>m.auto),manual=totalCases-automated;
+  const exec=sum(m=>m.exec),aExec=sum(m=>m.aExec),mExec=exec-aExec;
+  const saved=sum(m=>m.saved),maint=sum(m=>m.maint),bugs=sum(m=>m.bugs);
+  const cov=pct(automated,totalCases),util=pct(aExec,exec);
+  const K=[['Total cases',nf(totalCases),'#3b82f6'],['Automated',nf(automated),'#34d399'],['Coverage',cov+'%','#22d3ee'],['Manual',nf(manual),'#a78bfa'],
+    ['Total executions',nf(exec),'#3b82f6'],['Automated execs',nf(aExec),'#34d399'],['Manual execs',nf(mExec),'#a78bfa'],['Utilisation',util+'%','#22d3ee'],
+    ['Time saved',nf(saved)+' h','#f59e0b'],['Maintenance req',nf(maint),'#f59e0b'],['Bugs via automation',nf(bugs),'#ef4444'],['Contributors','3','#7c3aed']];
+  document.getElementById('kpiStrip').innerHTML=K.map(([l,v,c])=>`<div class="kpi"><div class="accent" style="background:${c}"></div><div class="big" style="font-size:21px">${v}</div><div class="lbl">${l}</div></div>`).join('');
+  document.getElementById('donutCov').innerHTML=`<div class="row" style="gap:10px"><div>${donutSVG([[automated,'#34d399'],[manual,'#a78bfa']],cov+'%','automated')}</div>
+    <div class="legend" style="flex-direction:column;gap:7px"><div><i style="background:#34d399"></i>Automated · <b>${nf(automated)}</b></div><div><i style="background:#a78bfa"></i>Manual · <b>${nf(manual)}</b></div></div></div>`;
+  document.getElementById('donutExec').innerHTML=`<div class="row" style="gap:10px"><div>${donutSVG([[aExec,'#22d3ee'],[mExec,'#475569']],util+'%','utilised')}</div>
+    <div class="legend" style="flex-direction:column;gap:7px"><div><i style="background:#22d3ee"></i>Automated · <b>${nf(aExec)}</b></div><div><i style="background:#475569"></i>Manual · <b>${nf(mExec)}</b></div><div class="hint">${nf(exec)} total executions</div></div></div>`;
+  renderMaint();renderContributors();renderContribBars();renderBugs();renderModuleTable();
+}
+function renderModuleTable(){
+  const tb=document.querySelector('#modTable tbody');if(!tb)return;tb.innerHTML='';
+  const sel=document.getElementById('fMod');if(sel&&sel.options.length<=1){MODULES.forEach(m=>{const o=document.createElement('option');o.text=m.m;sel.add(o)})}
+  const fMod=document.getElementById('fMod').value;
+  MODULES.filter(m=>fMod==='All Modules'||m.m===fMod).forEach(m=>{
+    const p=pct(m.auto,m.total),u=pct(m.aExec,m.exec);
+    const tr=document.createElement('tr');tr.className='mod';
+    tr.onclick=()=>{showTab('ui');openModuleInTree(m.m)};
+    tr.innerHTML=`<td class="b">${m.m}</td><td>${nf(m.total)}</td><td>${nf(m.auto)}</td>
+      <td><div class="row" style="gap:6px"><div class="bar" style="width:54px"><i style="width:${p}%"></i></div><span class="muted">${p}%</span></div></td>
+      <td>${nf(m.total-m.auto)}</td><td>${nf(m.exec)}</td><td>${nf(m.aExec)}</td><td class="muted">${u}%</td>
+      <td>${m.maint?`<span class="chip" style="color:#fbbf24">${m.maint}</span>`:'<span class="faint">0</span>'}</td>
+      <td>${m.bugs?`<span class="chip" style="color:#fca5a5">${m.bugs}</span>`:'<span class="faint">0</span>'}</td>
+      <td>${m.saved}h</td><td><span class="chip smoke">${m.smoke}</span></td><td><span class="chip reg">${m.reg}</span></td>
+      <td><span class="who">${m.by.map(b=>`<span class="av ${b}">${b}</span>`).join('')}</span></td>
+      <td><button class="runbtn" onclick="event.stopPropagation();showTab('ui');openModuleInTree('${m.m}')">▸</button></td>`;
+    tb.appendChild(tr);
+  });
+}
+function renderContributors(){
+  const mx=Math.max(...CONTRIB.map(c=>c.cum));
+  document.getElementById('contributors').innerHTML=CONTRIB.map(c=>`
+    <div style="margin:9px 0"><div class="row" style="font-size:12px;gap:7px"><span class="av ${c.k}">${c.k}</span><span class="b">${c.n}</span><div class="sp"></div><span class="muted">+${c.wk} wk · 🐞${c.bugs}</span></div>
+      <div class="row" style="gap:8px;margin-top:4px"><div class="bar" style="flex:1;height:10px"><i style="width:${c.cum/mx*100}%;background:${c.color}"></i></div><span class="b" style="width:44px;text-align:right">${c.cum}</span></div></div>`).join('');
+}
+function renderContribBars(){
+  const days=DAILY.days,w=580,h=160,gap=w/days.length,bw=gap*0.58;
+  const tot=days.map((_,i)=>DAILY.V[i]+DAILY.Va[i]+DAILY.Vi[i]),mx=Math.max(...tot);
+  let bars='';days.forEach((d,i)=>{let x=i*gap+gap*0.2,y=h-20;[['#22d3ee',DAILY.V[i]],['#a78bfa',DAILY.Va[i]],['#34d399',DAILY.Vi[i]]].forEach(([col,v])=>{const hh=(v/mx)*(h-34);y-=hh;bars+=`<rect x="${x}" y="${y}" width="${bw}" height="${hh}" fill="${col}" rx="2"/>`;});bars+=`<text x="${x+bw/2}" y="${h-6}" text-anchor="middle" font-size="8.5" fill="#6b7c9c">${d}</text>`;});
+  document.getElementById('contribBars').innerHTML=`<svg width="100%" viewBox="0 0 ${w} ${h}">${bars}</svg>
+    <div class="legend" style="margin-top:2px"><span><i style="background:#22d3ee"></i>Vishnu</span><span><i style="background:#a78bfa"></i>Varsha</span><span><i style="background:#34d399"></i>Vivek</span></div>`;
+}
+function renderMaint(){
+  document.getElementById('maintChart').innerHTML=`<div class="row" style="gap:10px"><div>${donutSVG(MAINT.map(x=>[x[1],x[2]]),nf(MAINT[1][1]+MAINT[2][1]+MAINT[3][1]),'need work')}</div>
+    <div class="legend" style="flex-direction:column;gap:6px">${MAINT.map(x=>`<div><i style="background:${x[2]}"></i>${x[0]} · <b>${x[1]}</b></div>`).join('')}</div></div>`;
+}
+function renderBugs(){
+  const tot=sum(m=>m.bugs),top=[...MODULES].sort((a,b)=>b.bugs-a.bugs).slice(0,6),mx=Math.max(...top.map(m=>m.bugs));
+  document.getElementById('bugsChart').innerHTML=`<div class="row" style="align-items:baseline;gap:10px"><div style="font-size:30px;font-weight:800;color:#fca5a5">${tot}</div><span class="muted">bugs caught by automated runs</span></div>
+    <div style="margin-top:8px">${top.map(m=>`<div class="row" style="margin:5px 0;font-size:12px"><span style="width:130px" class="muted">${m.m}</span><div class="bar" style="flex:1;height:9px"><i style="width:${m.bugs/mx*100}%;background:linear-gradient(90deg,#ef4444,#f59e0b)"></i></div><span class="b" style="width:30px;text-align:right">${m.bugs}</span></div>`).join('')}</div>`;
+}
+function renderMyWork(){
+  const me=CONTRIB[0];
+  const myCases=[{id:217089,m:'Classroom Calendar',t:'Schedule event via Add Event modal',st:'auto',cat:'Smoke'},{id:254548,m:'Forms',t:'Copy a Slide element to the Content Library',st:'auto',cat:'Regression'},{id:208581,m:'Forms',t:'Create a Secure Form with SIN field',st:'prog',cat:'Smoke'}];
+  const myRuns=[['C217089','Staging','pass','7.4s'],['C254548','Pre','pass','6.1s'],['C259306','Staging','fail','11.2s']];
+  document.getElementById('t-mywork').innerHTML=`
+   <div class="card" style="margin-bottom:14px"><div class="row">
+     <div class="logo" style="width:42px;height:42px;font-size:16px">VS</div>
+     <div><h2 style="margin:0;font-size:18px">Vishnu VS</h2><div class="muted" style="font-size:12px">Automation Engineer · branch <b>feat/vishnu</b> · synced with pre_main</div></div>
+     <div class="sp"></div><button class="btn ghost sm" onclick="toast('git fetch + reset to origin/pre_main')">↻ Sync pre_main</button></div>
+     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:14px">
+       <div class="kpi"><div class="accent" style="background:#34d399"></div><div class="big">${me.cum}</div><div class="lbl">Cases I automated</div></div>
+       <div class="kpi"><div class="accent" style="background:#22d3ee"></div><div class="big">+${me.wk}</div><div class="lbl">This week</div></div>
+       <div class="kpi"><div class="accent" style="background:#ef4444"></div><div class="big">${me.bugs}</div><div class="lbl">Bugs I caught</div></div>
+       <div class="kpi"><div class="accent" style="background:#f59e0b"></div><div class="big">2</div><div class="lbl">Open PRs to pre_main</div></div>
+       <div class="kpi"><div class="accent" style="background:#a78bfa"></div><div class="big">86%</div><div class="lbl">My data-ready cases</div></div>
+     </div></div>
+   <div class="grid" style="grid-template-columns:1.4fr 1fr">
+     <div class="card"><h3>My daily scripting — last 14 days</h3><div id="mwBars"></div></div>
+     <div class="card"><h3>My open PRs to pre_main</h3>
+       <table style="font-size:12.5px"><thead><tr><th>Branch</th><th>Cases</th><th>Status</th></tr></thead><tbody>
+        <tr><td class="b">feat/vishnu</td><td>C217089, C254548</td><td><span class="chip" style="color:#fbbf24">● in review</span></td></tr>
+        <tr><td class="b">feat/vishnu-cc</td><td>C217091</td><td><span class="chip" style="color:#34d399">✓ approved</span></td></tr>
+       </tbody></table>
+       <div class="hint" style="margin-top:8px">The app only pushes <b>feat/vishnu*</b>; a lead merges to pre_main.</div></div></div>
+   <div class="grid" style="grid-template-columns:1.25fr 1fr;margin-top:14px">
+     <div class="card"><h3>Cases I've automated / in progress</h3>
+       <table style="font-size:12.5px"><thead><tr><th>Case</th><th>Module</th><th>Category</th><th>Status</th><th></th></tr></thead><tbody>
+       ${myCases.map(c=>`<tr><td class="b">C${c.id}</td><td>${c.m}</td><td><span class="chip ${c.cat==='Smoke'?'smoke':'reg'}">${c.cat}</span></td><td><span class="badge2 ${c.st}">${c.st==='auto'?'AUTO':'WIP'}</span></td><td><button class="runbtn" onclick="showTab('ui');openModuleInTree('${c.m}')">open ▸</button></td></tr>`).join('')}</tbody></table></div>
+     <div class="card"><h3>My recent runs</h3>
+       <table style="font-size:12.5px"><thead><tr><th>Case</th><th>Env</th><th>Result</th><th>Time</th></tr></thead><tbody>
+       ${myRuns.map(r=>`<tr><td class="b">${r[0]}</td><td>${r[1]}</td><td><span class="status ${r[2]}">${r[2]==='pass'?'✓ pass':'✗ fail'}</span></td><td class="muted">${r[3]}</td></tr>`).join('')}</tbody></table>
+       <div class="hint" style="margin-top:8px">Data readiness 86% — <a href="#" onclick="openSettings();return false">configure my-data.json</a></div></div></div>`;
+  const days=DAILY.days,w=520,h=140,gap=w/days.length,bw=gap*0.55,mx=Math.max(...DAILY.V);
+  let bars='';days.forEach((d,i)=>{const x=i*gap+gap*0.2,hh=DAILY.V[i]/mx*(h-30);bars+=`<rect x="${x}" y="${h-20-hh}" width="${bw}" height="${hh}" rx="2" fill="#22d3ee"/><text x="${x+bw/2}" y="${h-6}" text-anchor="middle" font-size="8.5" fill="#6b7c9c">${d}</text>`;});
+  const mb=document.getElementById('mwBars');if(mb)mb.innerHTML=`<svg width="100%" viewBox="0 0 ${w} ${h}">${bars}</svg>`;
+}
+
+/* ---------------- UI automation ---------------- */
+let curCase=null;
+let SELECTED=new Map(), AUTO_LIST=[];
+function renderUITree(){
+  const tr=document.getElementById('uiTree');
+  let html=`<button class="btn green sm" style="width:100%;justify-content:center;margin-bottom:8px" onclick="newAutomation()">＋ New automation</button>`;
+  html+=`<input placeholder="🔍  Search modules / cases" oninput="filterTree(this.value)" style="width:100%;height:32px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:0 10px;margin-bottom:8px;font-size:12.5px"/>`;
+  html+=`<div id="selBar" class="hide" style="background:rgba(34,211,238,.10);border:1px solid rgba(34,211,238,.4);border-radius:9px;padding:8px 10px;margin-bottom:10px;font-size:12px"></div>`;
+  html+=MODULES.map(m=>{
+    const cs=CASES[m.m]||[];
+    return `<div class="modwrap"><div class="tnode" onclick="this.nextElementSibling.classList.toggle('hide')">▸ ${m.m} <span class="muted" style="font-weight:400;font-size:11px">${m.auto}/${m.total}</span></div>`+
+      `<div class="hide">`+cs.map(c=>`<div class="tcase" id="c-${c.id}"><input type="checkbox" id="cb-${c.id}" onclick="toggleSel(event,'${m.m}',${c.id})"/><span style="display:flex;align-items:center;gap:8px;flex:1;cursor:pointer" onclick="selectCase('${m.m}',${c.id})"><span class="badge2 ${c.st}">${c.st==='auto'?'AUTO':c.st==='prog'?'WIP':'MAN'}</span> C${c.id} · ${c.t}</span></div>`).join('')+`</div></div>`;
+  }).join('');
+  tr.innerHTML=html;updateSelBar();
+}
+function openModuleInTree(m){renderUITree();const idx=MODULES.findIndex(x=>x.m===m);const node=document.querySelectorAll('#uiTree .modwrap')[idx];if(node){node.querySelector('.tnode').click();const first=(CASES[m]||[])[0];if(first)selectCase(m,first.id)}}
+function filterTree(q){q=(q||'').trim().toLowerCase();
+  document.querySelectorAll('#uiTree .modwrap').forEach(w=>{const body=w.children[1];let any=false;
+    w.querySelectorAll('.tcase').forEach(tc=>{const ok=!q||tc.textContent.toLowerCase().includes(q);tc.style.display=ok?'':'none';if(ok)any=true;});
+    if(q){body.classList.toggle('hide',!any);}else{body.classList.add('hide');w.querySelectorAll('.tcase').forEach(tc=>tc.style.display='');}});
+}
+/* ---- multi-select: tick any cases across modules, then batch-automate ---- */
+function toggleSel(e,m,id){
+  e.stopPropagation();
+  const c=(CASES[m]||[]).find(x=>x.id===id); if(!c)return;
+  if(SELECTED.has(id))SELECTED.delete(id); else SELECTED.set(id,{id,t:c.t,module:m,st:c.st});
+  updateSelBar();
+}
+function updateSelBar(){
+  const b=document.getElementById('selBar'); if(!b)return;
+  if(!SELECTED.size){b.classList.add('hide');return;}
+  b.classList.remove('hide');
+  b.innerHTML=`<b>${SELECTED.size}</b> case${SELECTED.size>1?'s':''} selected &nbsp;
+    <button class="btn sm" onclick="automateSelected()">✦ Automate selected</button>
+    <a href="#" onclick="clearSel();return false" style="margin-left:8px">clear</a>`;
+}
+function clearSel(){SELECTED.clear();document.querySelectorAll('#uiTree input[type=checkbox]').forEach(c=>c.checked=false);updateSelBar();}
+function automateSelected(){AUTO_LIST=[...SELECTED.values()];renderAutomateWorkspace(`Automate ${AUTO_LIST.length} selected case${AUTO_LIST.length>1?'s':''}`);}
+function renderAutomateWorkspace(title){
+  document.getElementById('uiPanel').innerHTML=`<div class="row"><h2 style="margin:0;font-size:18px">✦ ${title}</h2>
+    <div class="sp"></div><span class="badge2 new" style="font-size:12px;padding:4px 9px">AUTHORING</span></div><div id="modeArea"></div>`;
+  document.getElementById('modeArea').innerHTML=automateHTML();setAuthInput('describe');renderCaseChips();
+}
+
+let curMode='run', authInput='describe';
+const PERSON={V:'Vishnu',Va:'Varsha',Vi:'Vivek'};
+function caseHeader(){
+  const c=curCase, stTxt={auto:'AUTOMATED',prog:'IN PROGRESS',man:'NOT AUTOMATED',new:'NEW'}[c.st];
+  return `<div class="row"><div><div class="muted" style="font-size:12px">${c.module||''}</div>
+    <h2 style="margin:2px 0;font-size:18px">${c.id==='new'?'New automation':'C'+c.id+' · '+c.t}</h2></div>
+    <div class="sp"></div><span class="badge2 ${c.st}" style="font-size:12px;padding:4px 9px">${stTxt}</span></div>`;
+}
+function metaHTML(){
+  const c=curCase;
+  return `<div class="meta">
+    <div><div class="k">Category</div><div class="v"><span class="chip ${c.cat==='Smoke'?'smoke':c.cat==='Regression'?'reg':'san'}">${c.cat}</span></div></div>
+    <div><div class="k">Execution</div><div class="v">${c.exec}</div></div>
+    <div><div class="k">Automated by</div><div class="v">${c.by==='—'?'—':PERSON[c.by]}</div></div>
+    <div><div class="k">Reuse / Ticket</div><div class="v">${c.reuse}${c.ticket?' · #'+c.ticket:''}</div></div></div>`;
+}
+function modeToggle(){return `<div class="seg" id="modeToggle" style="margin:12px 0 4px">
+    <button data-mode="run" onclick="setMode('run')">▶ Run existing</button>
+    <button data-mode="automate" onclick="setMode('automate')">✦ Automate (author)</button></div>`;}
+function selectCase(m,id){
+  const c=(CASES[m]||[]).find(x=>x.id===id);curCase=Object.assign({module:m},c);
+  document.querySelectorAll('.tcase').forEach(e=>e.classList.remove('sel'));
+  const el=document.getElementById('c-'+id);el&&el.classList.add('sel');
+  document.getElementById('uiPanel').innerHTML=caseHeader()+metaHTML()+modeToggle()+`<div id="modeArea"></div>`;
+  setMode(c.st==='auto'?'run':'automate');
+}
+function newAutomation(){
+  curCase={module:'Forms',id:'new',t:'New automation',st:'new',cat:'Smoke',exec:'Manual',by:'—',reuse:'—',ticket:0};
+  document.querySelectorAll('.tcase').forEach(e=>e.classList.remove('sel'));
+  document.getElementById('uiPanel').innerHTML=caseHeader()+modeToggle()+`<div id="modeArea"></div>`;
+  setMode('automate');
+}
+function setMode(mode){
+  curMode=mode;
+  document.querySelectorAll('#modeToggle button').forEach(b=>b.classList.toggle('on',b.dataset.mode===mode));
+  if(mode==='automate') AUTO_LIST=(curCase&&curCase.id!=='new')?[curCase]:[];
+  document.getElementById('modeArea').innerHTML = mode==='run'?runHTML():automateHTML();
+  if(mode==='automate'){ setAuthInput('describe'); renderCaseChips(); }
+}
+function runHTML(){
+  const env=document.getElementById('envSel').value,id=curCase.id;
+  if(curCase.st!=='auto') return `<div class="panel" style="background:var(--panel2)"><span class="muted">This case isn't automated yet. Switch to <b>✦ Automate</b> to build it, then run.</span></div>`;
+  return `<div class="ctl">
+    <span class="muted">Environment</span><select>${['Staging','Pre','Live'].map(e=>`<option ${e===env?'selected':''}>${e}</option>`).join('')}</select>
+    <span class="muted">Role</span><select><option>Instructor</option><option>Client Admin</option><option>Senior Client Admin</option><option>Learner</option><option>Security Admin</option></select>
+    <span class="muted">Test Data</span><select><option>Slide-Library-Data ✓</option><option>my-data.json</option><option>repo defaults</option></select>
+    <label class="muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="onfail" checked/> on fail → create bug</label>
+    <div class="sp"></div><button class="btn" onclick="runCase('${id}')">▶ Fetch pre_main &amp; Run</button></div>
+  <div id="runArea"></div>`;
+}
+/* ---- the Automate (authoring) workspace: cases (single/multi) → input → Claude → spec → run → commit → PR ---- */
+function automateHTML(){
+  const env=document.getElementById('envSel').value;
+  return `<div class="panel" style="background:var(--panel2)">
+    <div class="k muted" style="font-size:11px;text-transform:uppercase;margin:0 0 6px">① Cases to automate <span style="text-transform:none;color:var(--faint)">— tick cases in the tree for multi-select, or type an id</span></div>
+    <div class="ctl" style="flex-wrap:wrap;gap:8px">
+      <div id="caseChips" style="display:flex;flex-wrap:wrap;gap:6px;flex:1"></div>
+      <input id="addCase" placeholder="add C#####" style="height:30px;width:120px;background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:0 8px" onkeydown="if(event.key==='Enter'){addCaseId();return false}"/>
+      <button class="btn ghost sm" onclick="addCaseId()">+ add</button>
+    </div>
+    <div class="k muted" style="font-size:11px;text-transform:uppercase;margin:16px 0 6px">② Provide input <span style="text-transform:none;color:var(--faint)">— Claude builds &amp; verifies the spec</span></div>
+    <div class="seg" id="authSeg" style="margin:0 0 10px">
+      <button data-in="describe" onclick="setAuthInput('describe')">✦ Describe in words</button>
+      <button data-in="record" onclick="setAuthInput('record')">⏺ Record &amp; Codegen</button>
+      <button data-in="paste" onclick="setAuthInput('paste')">📋 Paste codegen</button>
+    </div>
+    <div id="authInput"></div>
+    <div class="k muted" style="font-size:11px;text-transform:uppercase;margin:16px 0 6px">③ Run configuration <span style="text-transform:none;color:var(--faint)">— applies to all selected cases</span></div>
+    <div class="grid" style="grid-template-columns:repeat(4,1fr);gap:8px">
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Category</span><select style="flex:1"><option>Smoke</option><option>Regression</option><option>Sanity</option></select></div>
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Env</span><select style="flex:1">${['Staging','Pre','Live'].map(e=>`<option ${e===env?'selected':''}>${e}</option>`).join('')}</select></div>
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Role</span><select style="flex:1"><option>Client Admin</option><option>Learner</option><option>Security Admin</option></select></div>
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Data</span><select style="flex:1"><option>my-data.json ✓</option><option>repo defaults</option></select></div>
+    </div>
+    <div class="row" style="margin-top:16px"><button class="btn" id="genBtn" onclick="generateSpec()">✦ Generate Playwright test (Claude)</button>
+      <span class="hint" id="authHint">runs the bis-automation skills locally · writes to your branch only</span></div>
+    <div id="genArea"></div>
+  </div>`;
+}
+function renderCaseChips(){
+  const el=document.getElementById('caseChips'); if(!el)return;
+  if(!AUTO_LIST.length){el.innerHTML='<span class="hint">no case yet — tick cases in the tree, type an id, or just generate a brand-new one</span>';}
+  else{el.innerHTML=AUTO_LIST.map(c=>`<span class="chip" style="color:#22d3ee">C${c.id==='new'?'NEW':c.id}<a href="#" onclick="removeCase('${c.id}');return false" style="margin-left:6px;color:#fca5a5;text-decoration:none">×</a></span>`).join('');}
+  const gb=document.getElementById('genBtn'); if(gb) gb.innerHTML='✦ Generate Playwright test'+(AUTO_LIST.length>1?'s ('+AUTO_LIST.length+')':'')+' (Claude)';
+}
+function addCaseId(){
+  const i=document.getElementById('addCase'); if(!i)return; let v=(i.value||'').trim().replace(/^[cC]/,'');
+  if(v && !isNaN(+v)){const id=+v; if(!AUTO_LIST.some(c=>String(c.id)===String(id))){
+    let mod='Forms',t='Case C'+id; Object.keys(CASES).forEach(m=>{const f=CASES[m].find(x=>x.id===id);if(f){mod=m;t=f.t}});
+    AUTO_LIST.push({id,t,module:mod});}}
+  i.value=''; renderCaseChips();
+}
+function removeCase(id){AUTO_LIST=AUTO_LIST.filter(c=>String(c.id)!==String(id));renderCaseChips();}
+function modName(c){return (c.module||'Forms').replace(/[^A-Za-z]/g,'')}
+function setAuthInput(which){
+  authInput=which;
+  document.querySelectorAll('#authSeg button').forEach(b=>b.classList.toggle('on',b.dataset.in===which));
+  const a=document.getElementById('authInput'), c=curCase;
+  if(which==='describe'){
+    a.innerHTML=`<label class="muted" style="font-size:12px">Tell Claude what to automate (plain English)</label>
+      <textarea id="prompt" style="min-height:96px">${c.id==='new'?'':'Automate C'+c.id+': '+c.t+'.\n'}Login as Client Admin, go to the ${c.module||'module'}, perform the steps from the TestRail case, and assert the expected result is shown.</textarea>
+      <div class="hint" style="margin-top:6px">⛓ Auto-attached: TestRail steps · preconditions · expected result · prior locators · page-object conventions.</div>`;
+  } else if(which==='record'){
+    a.innerHTML=`<div class="row"><button class="btn ghost" onclick="recDone()">⏺ Launch Codegen + trace</button>
+      <span class="muted">drive the workflow in a real browser — we capture clicks, trace &amp; HAR, then Claude turns it into a clean spec</span></div>
+      <div id="recOut" class="hint" style="margin-top:10px">No recording captured yet.</div>`;
+  } else {
+    a.innerHTML=`<label class="muted" style="font-size:12px">Paste raw Playwright codegen — Claude refactors it to POM conventions &amp; stable locators</label>
+      <textarea id="codegen" style="min-height:130px" placeholder="await page.goto('https://staging.bissafety.app/forms');
+await page.getByRole('button', { name: 'Add Form' }).click();
+await page.getByLabel('Title').fill('Secure Form');
+await page.getByRole('button', { name: 'Save' }).click();"></textarea>`;
+  }
+}
+function recDone(){toast('Codegen + trace + HAR captured (mock)');document.getElementById('recOut').innerHTML='✓ recording.spec.ts · trace.zip · network.har · clicks.md captured &nbsp;<a href="#" onclick="toast(\'view recording\');return false">view</a>';}
+function generateSpec(){
+  if(!AUTO_LIST.length) AUTO_LIST=[{id:'new',t:(curCase&&curCase.t)||'New automation',module:(curCase&&curCase.module)||'Forms'}];
+  const env=document.getElementById('envSel').value, n=AUTO_LIST.length;
+  document.getElementById('authHint').textContent='Claude is generating '+n+' spec'+(n>1?'s':'')+'…';
+  const ga=document.getElementById('genArea'); ga.innerHTML=`<div class="log" id="glog"></div>`;
+  const l=document.getElementById('glog');
+  const src=authInput==='paste'?'pasted codegen':authInput==='record'?'recording + trace':'your description';
+  const seq=[['dim','$ claude -p "/automate '+AUTO_LIST.map(c=>c.id==='new'?'<new>':'C'+c.id).join(' ')+'"   (cwd=repo · skills: write-playwright-test, locate-best-element)'],
+    ['info','• input: '+src+'  ·  env: '+env+'  ·  '+n+' case'+(n>1?'s':'')]];
+  AUTO_LIST.forEach(c=>{const tag=c.id==='new'?'NEW':c.id;
+    seq.push(['info','— C'+tag+'  '+(c.t||'')]);
+    seq.push(['ok','   ✓ wrote tests/'+modName(c)+'/C'+tag+'.spec.ts  ·  verified ✓']);});
+  let i=0;(function t(){if(i<seq.length){const[cl,x]=seq[i++];const d=document.createElement('div');d.className=cl;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,360)}
+    else{document.getElementById('authHint').textContent='';showGenerated();toast('Generated '+n+' spec'+(n>1?'s':'')+' & verified');}})();
+}
+function showGenerated(){
+  const ga=document.getElementById('genArea'), n=AUTO_LIST.length;
+  const rows=AUTO_LIST.map(c=>{const tag=c.id==='new'?'NEW':c.id;
+    return `<tr><td class="b">C${tag}</td><td>${c.t||'New automation'}</td><td class="muted" style="font-family:Consolas,monospace;font-size:11.5px">tests/${modName(c)}/C${tag}.spec.ts</td><td><span class="status pass">✓ verified</span></td></tr>`;}).join('');
+  const first=AUTO_LIST[0].id==='new'?'NEW':AUTO_LIST[0].id;
+  ga.innerHTML+=`<div class="k muted" style="font-size:11px;text-transform:uppercase;margin:14px 0 4px">④ Generated ${n} spec${n>1?'s':''} — review, run, then publish</div>
+    <table style="font-size:12.5px"><thead><tr><th>Case</th><th>Title</th><th>Spec file</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="row" style="margin-top:14px;gap:8px">
+      <button class="btn" onclick="runCase('${first}','gen')">▶ Run ${n>1?'all '+n:'locally'}</button>
+      <button class="btn green" onclick="toast('Committed ${n} spec${n>1?'s':''} to feat/vishnu · pushed')">⎇ Commit ${n>1?n+' ':''}to my branch</button>
+      <button class="btn ghost" onclick="toast('PR opened: feat/vishnu → pre_main (gated; a lead merges)')">⇪ Open PR to pre_main</button>
+    </div>
+    <div class="hint" style="margin-top:6px">On pass → each case set <b>Automated</b> in TestRail (execution_method = Auto). The app only pushes your own branch.</div>
+    <div id="runArea"></div>`;
+}
+function runCase(id,ctx){
+  const area=document.getElementById('runArea');if(!area)return;
+  const fail = ctx!=='gen' && parseInt(id)%2===1; // odd ids "fail" for the demo; generated runs pass
+  area.innerHTML=`<div class="log" id="log"></div><div class="arts hide" id="arts"></div>`;
+  const log=document.getElementById('log');
+  const steps=[
+    ['dim','$ git fetch origin && git reset --hard origin/pre_main'],
+    ['info','✓ pre_main up to date (a7f3c91)'],
+    ['dim','$ npx playwright test --grep @C'+id+' --project=smoke (ENV='+document.getElementById('envSel').value+')'],
+    ['info','▸ Launching Chromium'],
+    ['info','▸ Navigated to /content-library'],
+    ['ok','✓ Logged in as Instructor'],
+    ['ok','✓ Opened Slide Library'],
+    ['ok','✓ Selected slide: Automation 101'],
+    ['ok','✓ Copied "Copy to Library"'],
+    fail?['fail','✗ Assertion failed: Slide count did not increase  (expected 5, actual 4)']:['ok','✓ Slide added to Content Library'],
+    ['info','▸ Taking screenshot + video…'],
+  ];
+  let i=0;(function tick(){if(i<steps.length){const[c,t]=steps[i++];const d=document.createElement('div');d.className=c;d.textContent='[10:42:'+String(11+(i-1)*2).padStart(2,'0')+'] '+t;log.appendChild(d);log.scrollTop=log.scrollHeight;setTimeout(tick,400)}
+    else{const d=document.createElement('div');d.className=fail?'fail':'ok';d.style.marginTop='8px';d.innerHTML=fail?'● Run completed with failures (11.2s) · pushed to TestRail (status 5)':'● PASSED in 7.4s · pushed to TestRail (status 1)';log.appendChild(d);
+      const arts=document.getElementById('arts');arts.classList.remove('hide');
+      arts.innerHTML=`<span class="art" onclick="toast('open trace.zip')">🧭 trace.zip</span><span class="art" onclick="toast('open video.webm')">🎞 video.webm</span><span class="art" onclick="toast('open screenshot.png')">🖼 screenshot.png</span><span class="art" onclick="toast('error-context.txt')">📄 error-context.txt</span>`;
+      const onfail=document.getElementById('onfail');
+      if(fail && onfail && onfail.checked){arts.innerHTML+=`<button class="btn sm" style="margin-left:6px" onclick="toast('Opening Bug Reporter pre-filled: C${id}, env, actual=error, steps from TestRail')">🐞 Create bug</button>`;}
+    }})();
+}
+
+/* ---------------- API automation ---------------- */
+function renderAPITree(){
+  const tr=document.getElementById('apiTree');
+  tr.innerHTML=Object.keys(APIS).map(g=>`<div><div class="tnode" onclick="this.nextElementSibling.classList.toggle('hide')">▸ ${g}</div>
+    <div>${APIS[g].map(a=>`<div class="tcase" id="a-${a.id}" onclick="selectAPI('${a.id}')"><span class="badge2 auto" style="background:${a.method==='GET'?'#60a5fa':'#34d399'};color:#06121f">${a.method}</span> ${a.name}</div>`).join('')}</div></div>`).join('');
+}
+function selectAPI(id){
+  let a;Object.values(APIS).forEach(g=>g.forEach(x=>{if(x.id===id)a=x}));
+  document.querySelectorAll('#apiTree .tcase').forEach(e=>e.classList.remove('sel'));
+  document.getElementById('a-'+id).classList.add('sel');
+  document.getElementById('apiPanel').innerHTML=`
+    <div class="row"><h2 style="margin:0;font-size:18px"><span class="chip" style="color:${a.method==='GET'?'#60a5fa':'#34d399'}">${a.method}</span> ${a.path}</h2>
+      <div class="sp"></div><span class="muted">${a.name}</span></div>
+    <div style="margin-top:10px"><div class="k muted" style="font-size:11px;text-transform:uppercase">Prerequisites</div>
+      ${a.pre.map(p=>`<span class="chip" style="margin:4px 6px 0 0"><span style="color:#34d399">✓</span> ${p}</span>`).join('')}</div>
+    <div class="meta" style="grid-template-columns:1fr 1fr">
+      <div><div class="k">Environment</div><div class="v">${document.getElementById('envSel').value} · base URL internal</div></div>
+      <div><div class="k">Auth</div><div class="v">Bearer ••••••• (role: Client Admin)</div></div>
+    </div>
+    ${a.body?`<div class="k muted" style="font-size:11px;text-transform:uppercase;margin-bottom:4px">Request body</div><textarea style="min-height:90px">${a.body}</textarea>`:''}
+    <div class="k muted" style="font-size:11px;text-transform:uppercase;margin:12px 0 4px">Configurable fields</div>
+    <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px">
+      ${a.fields.map(([k,v])=>`<div class="ctl" style="padding:7px 10px"><span class="muted" style="min-width:74px">${k}</span><input style="flex:1;height:30px;background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:0 8px" value="${v}"/></div>`).join('')}
+    </div>
+    <div class="row" style="margin-top:14px;gap:8px"><button class="btn" onclick="runAPI('${id}')">▶ Run</button>
+      <button class="btn ghost sm" onclick="toast('Saved as a reusable API test (mock)')">💾 Save as test</button>
+      <span class="hint">runs against ${document.getElementById('envSel').value}</span></div>
+    <div id="apiOut"></div>`;
+}
+function runAPI(id){
+  let a;Object.values(APIS).forEach(g=>g.forEach(x=>{if(x.id===id)a=x}));
+  const out=document.getElementById('apiOut');
+  out.innerHTML=`<div class="log" id="apilog"><span class="dim">→ ${a.method} ${a.path}</span></div>`;
+  setTimeout(()=>{
+    out.innerHTML=`<div class="row" style="margin-top:12px"><span class="status pass">${a.code}</span><span class="muted">· ${a.ms}ms</span>
+      <div class="sp"></div><span class="chip" style="color:#34d399">✓ response verified</span></div>
+      <div class="k muted" style="font-size:11px;margin:10px 0 4px;text-transform:uppercase">Response</div>
+      <div class="pre">${a.resp}</div>
+      <div class="row" style="margin-top:10px"><span class="chip">📦 data created: ${a.name==='Create User'?'user #88213 (Acme Corp)':a.name==='Bulk Import Users'?'50 users':'submission #5521'}</span>
+        <button class="art" onclick="toast('Saved created ids to my data file')">💾 save ids</button>
+        <span class="art" onclick="toast('error log empty')">📄 error log: —</span></div>`;
+    toast('API run complete · '+a.code);
+  },700);
+}
+
+/* ---------------- data generation ---------------- */
+function dgMode(m){document.getElementById('dgSingle').classList.toggle('on',m==='single');document.getElementById('dgBulk').classList.toggle('on',m==='bulk');
+  document.getElementById('dgCountWrap').classList.toggle('hide',m==='single');}
+function runDataGen(){
+  const bulk=document.getElementById('dgBulk').classList.contains('on');
+  const n=bulk?parseInt(document.getElementById('dgCount').value||'50'):1;
+  const prog=document.getElementById('dgProg'),res=document.getElementById('dgResult');
+  prog.classList.remove('hide');res.classList.add('hide');
+  let i=0;const fill=document.getElementById('dgFill'),ctr=document.getElementById('dgCounter');
+  (function t(){i=Math.min(n,i+Math.ceil(n/20));fill.style.width=(i/n*100)+'%';ctr.textContent=i+' / '+n;
+    if(i<n)setTimeout(t,80);else{prog.classList.add('hide');res.classList.remove('hide');document.getElementById('dgDone').textContent=n;
+      const tpl=document.getElementById('dgTpl').value;
+      let rows='';for(let k=0;k<Math.min(n,8);k++){rows+=`#${88200+k}  ${tpl.includes('User')?(k%5?'learner':'admin')+(k+1)+'@acme.yopmail.com':tpl+' '+(k+1)}  ✓ created\n`}
+      if(n>8)rows+=`… +${n-8} more\n`;
+      document.getElementById('dgRows').textContent=rows;
+      document.getElementById('dgFoot').textContent='Completed in 1m 42s · API calls '+n+' · Success '+n+' · Failed 0';
+      toast('Generated '+n+' record'+(n>1?'s':'')+' via API');}})();
+}
+
+/* ---------------- misc ---------------- */
+function openSettings(){document.getElementById('settings').classList.add('on')}
+function closeSettings(){document.getElementById('settings').classList.remove('on')}
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('on');clearTimeout(t._);t._=setTimeout(()=>t.classList.remove('on'),2200)}
+
+/* ---------------- backlog / candidates ---------------- */
+let BL_SEL=new Set();
+function reuseColor(r){return {Critical:'#ef4444','Very High':'#ef4444',High:'#f59e0b',Medium:'#3b82f6',Low:'#34d399'}[r]||'#9fb0c9';}
+function renderBacklog(){
+  const tb=document.querySelector('#blTable tbody');if(!tb)return;tb.innerHTML='';
+  BACKLOG.forEach((c,i)=>{
+    const tr=document.createElement('tr');tr.className='mod';
+    tr.innerHTML=`<td><input type="checkbox" ${BL_SEL.has(c.id)?'checked':''} onclick="blToggle(${c.id})"/></td>
+      <td class="b">${i+1}</td><td class="b">C${c.id}</td><td>${c.m}</td>
+      <td><span class="chip ${c.cat==='Smoke'?'smoke':'reg'}">${c.cat}</span></td>
+      <td><span class="chip" style="color:${reuseColor(c.reuse)}">${c.reuse}</span></td>
+      <td class="muted">${c.crit}</td><td>${c.exec.toLocaleString()}</td><td class="b" style="color:#34d399">${c.save}h</td>`;
+    tb.appendChild(tr);
+  });
+  const mx=Math.max(...BL_BYMOD.map(x=>x[1]));
+  document.getElementById('blByMod').innerHTML=BL_BYMOD.map(([m,v])=>`<div class="row" style="margin:6px 0;font-size:12px"><span style="width:120px" class="muted">${m}</span><div class="bar" style="flex:1;height:9px"><i style="width:${v/mx*100}%;background:linear-gradient(90deg,#7c3aed,#a78bfa)"></i></div><span class="b" style="width:34px;text-align:right">${v}</span></div>`).join('');
+  blUpdateBtn();
+}
+function blToggle(id){BL_SEL.has(id)?BL_SEL.delete(id):BL_SEL.add(id);blUpdateBtn();}
+function blUpdateBtn(){const b=document.getElementById('blBtn');if(!b)return;b.disabled=!BL_SEL.size;b.textContent='✦ Automate selected'+(BL_SEL.size?' ('+BL_SEL.size+')':'');}
+function backlogAutomate(){
+  if(!BL_SEL.size)return;
+  AUTO_LIST=BACKLOG.filter(c=>BL_SEL.has(c.id)).map(c=>({id:c.id,t:c.m+' candidate',module:c.m}));
+  showTab('ui');renderAutomateWorkspace('Automate '+AUTO_LIST.length+' backlog case'+(AUTO_LIST.length>1?'s':''));
+}
+/* ---------------- first-run setup ---------------- */
+function openSetup(){document.getElementById('setup').classList.add('on');renderSetup(false);document.getElementById('setupLog').innerHTML='';}
+function closeSetup(){document.getElementById('setup').classList.remove('on');}
+function renderSetup(done){
+  document.getElementById('setupList').innerHTML=SETUP_STEPS.map(([n,v])=>`
+    <div class="row" style="padding:9px 11px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:var(--panel2)">
+      <span class="b">${n}</span><span class="muted" style="margin-left:8px;font-size:12px">${v}</span><div class="sp"></div>
+      ${done?'<span class="chip" style="color:#34d399">✓ installed</span>':'<button class="btn ghost sm" onclick="runSetup()">Install</button>'}</div>`).join('');
+}
+function runSetup(){
+  const btn=document.getElementById('setupBtn');btn.disabled=true;btn.textContent='Installing…';
+  const log=document.getElementById('setupLog');log.innerHTML='';
+  const lines=[['dim','[10:30:11] $ checking prerequisites…'],['ok','[10:30:12] ✓ Git installed'],['ok','[10:30:12] ✓ Node.js ≥18 installed'],['ok','[10:30:13] ✓ Playwright (Chromium) installed'],['ok','[10:30:14] ✓ Claude CLI installed'],['dim','[10:30:16] $ git clone … && git checkout pre_main'],['ok','[10:30:29] ✓ repository cloned'],['ok','[10:30:31] ✓ checked out pre_main'],['ok','[10:30:32] ● setup completed 🎉']];
+  let i=0;(function t(){if(i<lines.length){const[c,x]=lines[i++];const d=document.createElement('div');d.className=c;d.textContent=x;log.appendChild(d);log.scrollTop=log.scrollHeight;setTimeout(t,280)}
+    else{btn.textContent='✓ Done';btn.disabled=false;renderSetup(true);toast('Environment ready');}})();
+}
+
+/* init */
+renderDiscovery();renderUITree();renderAPITree();renderBacklog();
+['fMod','fCat','fBy','fReuse'].forEach(id=>{const e=document.getElementById(id);if(e)e.addEventListener('change',renderModuleTable);});
+</script>
+</body>
+</html>
