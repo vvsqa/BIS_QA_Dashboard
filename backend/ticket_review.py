@@ -1065,6 +1065,56 @@ def _parse_activity_lines(raw):
     return out
 
 
+def _split_cells(line):
+    """Split a pasted table row into cells: tabs if present, else runs of 2+ spaces."""
+    cells = line.split("\t") if "\t" in line else re.split(r"\s{2,}", line.strip())
+    return [c.strip() for c in cells]
+
+
+def _parse_activity_table(raw):
+    """Parse a pasted TABLE (a header row with Activity + Hours columns, e.g. copied from Excel) into
+    [{activity, actual_hours, allowed_hours, rationale}]. The Hours column is read explicitly so a number
+    buried in a description ('8 reported bugs') is never mistaken for the time. None if not a table."""
+    lines = [l for l in (raw or "").splitlines() if l.strip()]
+    header = h_idx = None
+    for i, l in enumerate(lines[:4]):
+        cells = [c.lower() for c in _split_cells(l)]
+        if len(cells) >= 2 and any(("hour" in c or c == "time" or "time)" in c) for c in cells) \
+                and any(("activ" in c or "task" in c or "why" in c or "descr" in c) for c in cells):
+            header, h_idx = cells, i
+            break
+    if header is None:
+        return None
+
+    def col(*names):
+        for j, c in enumerate(header):
+            if any(n in c for n in names):
+                return j
+        return None
+
+    a_col, h_col = col("activ", "task"), col("hour", "time")
+    e_col, w_col = col("environ", "env"), col("why", "descr", "rationale", "note", "comment")
+    if a_col is None or h_col is None:
+        return None
+    rows = []
+    for l in lines[h_idx + 1:]:
+        cells = _split_cells(l)
+        if len(cells) <= max(a_col, h_col):
+            continue
+        hrs, _ = _line_hours(cells[h_col])
+        if not hrs or hrs <= 0:
+            continue
+        label = cells[a_col].strip()
+        if e_col is not None and e_col < len(cells):
+            env = cells[e_col].strip()
+            if env and env.lower() not in label.lower():
+                label = f"{label} – {env}"
+        rationale = cells[w_col].strip() if (w_col is not None and w_col < len(cells)) else ""
+        rows.append({"activity": label or "Activity", "actual_hours": round(hrs, 2),
+                     "allowed_hours": round(hrs, 1), "rationale": rationale or "as logged"})
+    return rows or None
+
+
 def suggest_review_allocation(sig, planned_total, raw_text, qa_comments=None, use_ai=True, bugrep=None):
     """Parse a tester's RAW activity+time log and return a per-activity MAX-ALLOWED allocation:
     {activities:[{activity,actual_hours,allowed_hours,rationale}], actual_total, allowed_total, verdict,
@@ -1082,10 +1132,12 @@ def suggest_review_allocation(sig, planned_total, raw_text, qa_comments=None, us
             return "slight_overrun", f"Actual {actual_v:g}h slightly exceeds the {allowed_v:g}h allowed."
         return "over_allowed", f"Actual {actual_v:g}h exceeds the {allowed_v:g}h allowed (+{round(actual_v-allowed_v,1):g}h)."
 
-    # deterministic fallback: parse lines, allow = logged
-    parsed = _parse_activity_lines(raw_text)
-    activities = [{"activity": lbl, "actual_hours": hrs, "allowed_hours": round(hrs, 1),
-                   "rationale": "as logged"} for lbl, hrs in parsed]
+    # deterministic fallback: a pasted table (Excel columns incl. Hours) first, else line-by-line.
+    activities = _parse_activity_table(raw_text)
+    if not activities:
+        parsed = _parse_activity_lines(raw_text)
+        activities = [{"activity": lbl, "actual_hours": hrs, "allowed_hours": round(hrs, 1),
+                       "rationale": "as logged"} for lbl, hrs in parsed]
     actual_total = round(sum(a["actual_hours"] for a in activities), 1)
     allowed_total = round(sum(a["allowed_hours"] for a in activities), 1)
     verdict, summary = (_verdict(actual_total, allowed_total) if activities
