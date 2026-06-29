@@ -1000,7 +1000,7 @@ def suggest_review_recalc(sig, planned_total, actual_hours, qa_comments=None, us
 # --------------------------------------------------------------------------- review allocation (per-activity allowed)
 _ALLOC_SCHEMA = {
     "type": "object", "additionalProperties": False,
-    "required": ["activities", "allowed_total", "summary"],
+    "required": ["activities", "allowed_total", "summary", "pm_summary"],
     "properties": {
         "activities": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
@@ -1014,6 +1014,7 @@ _ALLOC_SCHEMA = {
         "allowed_total": {"type": "number"},
         "verdict": {"type": "string", "enum": ["within_allowed", "slight_overrun", "over_allowed"]},
         "summary": {"type": "string"},
+        "pm_summary": {"type": "string"},
     },
 }
 
@@ -1026,8 +1027,22 @@ _ALLOC_SYS = (
     "BIS Bug Reporter so reporting time must stay tight. allowed_hours may be at, below, or modestly above "
     "actual; do NOT rubber-stamp inflated entries, and never exceed ~1.5x an activity's fair time. Give a "
     "short rationale per activity. allowed_total = the sum of allowed_hours (round to 0.1). Also return a "
-    "verdict comparing the tester's total actual vs allowed and a 1-2 sentence summary. Emit via the tool."
+    "verdict comparing the tester's total actual vs allowed and a 1-2 sentence summary. "
+    "Finally, write pm_summary: a 2-3 sentence PLAIN-TEXT justification of the QA work performed, to paste "
+    "into the PM tool's time-edit comment explaining why the QA time increased. Summarize the ACTIVITIES "
+    "and scope (what was tested, regression, environments, bug verification & retests) — do NOT include any "
+    "per-activity hour breakdown, a time table, or hour figures. Emit via the tool."
 )
+
+
+def _compose_pm_summary(tid, activities):
+    """Deterministic PM justification (no hours) when AI is off — lists the activities performed."""
+    names = [str(a.get("activity", "")).strip() for a in (activities or []) if a.get("activity")]
+    if not names:
+        return f"QA review #{tid}: QA time revised after review of the tester's activity log."
+    return (f"QA review #{tid}: QA time revised after review. Activities performed — "
+            + "; ".join(names) + ". The additional time reflects this test scope, including "
+            "bug verification and retesting after fixes.")
 
 _ALLOC_UNIT_RE = re.compile(r'(\d+(?:\.\d+)?)\s*(h|hr|hrs|hour|hours|m|min|mins|minute|minutes)\b', re.I)
 _ALLOC_BARE_RE = re.compile(r'(\d+(?:\.\d+)?)')
@@ -1143,7 +1158,8 @@ def suggest_review_allocation(sig, planned_total, raw_text, qa_comments=None, us
     verdict, summary = (_verdict(actual_total, allowed_total) if activities
                         else ("within_allowed", "No activities could be parsed from the text."))
     out = {"activities": activities, "actual_total": actual_total, "allowed_total": allowed_total,
-           "verdict": verdict, "summary": summary, "planned_total": planned, "source": "rule"}
+           "verdict": verdict, "summary": summary, "pm_summary": _compose_pm_summary(sig.get("ticket_id"), activities),
+           "planned_total": planned, "source": "rule"}
     if not use_ai or not (raw_text or "").strip():
         return out
     try:
@@ -1171,6 +1187,7 @@ def suggest_review_allocation(sig, planned_total, raw_text, qa_comments=None, us
                 v, s = _verdict(a_tot, l_tot)
                 out = {"activities": acts, "actual_total": a_tot, "allowed_total": l_tot,
                        "verdict": ai.get("verdict") or v, "summary": (ai.get("summary") or s).strip(),
+                       "pm_summary": (ai.get("pm_summary") or "").strip() or _compose_pm_summary(sig.get("ticket_id"), acts),
                        "planned_total": planned, "source": "ai"}
     except Exception:
         pass

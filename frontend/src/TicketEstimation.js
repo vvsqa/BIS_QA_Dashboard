@@ -332,21 +332,15 @@ const pmPlanComment = (tid, plan, ticket) => {
 };
 
 // Short justification to paste into PM at REVIEW (edit #2 — only when the plan wasn't met).
-// PM time-edit justification built from the reviewed per-activity allocation (aligned, paste-ready).
+// PM time-edit comment: a plain-text SUMMARY of the activities done (justifying the increase) — no
+// per-activity hour breakdown. Prefers the AI-written pm_summary; composes a fallback from activity names.
 const pmAllocComment = (tid, alloc) => {
+  if (alloc && (alloc.pm_summary || '').trim()) return alloc.pm_summary.trim();
   const acts = (alloc && alloc.activities) || [];
-  if (!acts.length) return `QA review #${tid}: no activity breakdown.`;
-  const allowed = round1(acts.reduce((s, a) => s + (parseFloat(a.allowed_hours) || 0), 0));
-  const actual = round1(acts.reduce((s, a) => s + (parseFloat(a.actual_hours) || 0), 0));
-  const W = Math.min(46, Math.max(16, ...acts.map(a => (a.activity || '').length)) + 2);
-  const leader = (label, h) => {
-    label = (label || '').trim();
-    return `${label} ${'.'.repeat(Math.max(2, W - label.length))} ${`${(+h || 0).toFixed(1)}h`.padStart(6)}`;
-  };
-  const out = [`QA review #${tid}: allowed ${allowed}h (actual ${actual}h) — per-activity max-allowed:`];
-  acts.forEach(a => out.push('  ' + leader(a.activity, a.allowed_hours)));
-  out.push('  ' + '─'.repeat(W + 7), '  ' + leader('TOTAL ALLOWED', allowed));
-  return out.join('\n');
+  if (!acts.length) return `QA review #${tid}: QA time revised after review.`;
+  const names = acts.map(a => (a.activity || '').trim()).filter(Boolean).join('; ');
+  return `QA review #${tid}: QA time revised after review. Activities performed — ${names}. `
+    + 'The additional time reflects this test scope, including bug verification and retesting after fixes.';
 };
 
 // ------------------------------------------------------------------ Detail modal
