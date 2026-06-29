@@ -73,7 +73,9 @@ def _build_summary(db, ws):
 
 def _render_summary(rows, next_total, nws, nwe):
     line_h = 34
-    H = 96 + 44 + len(rows) * line_h + 70
+    # room below the table for the two-line "Planned for next week" block + the footer (the +70 used to
+    # land the footer exactly on the planned line — overlap).
+    H = 96 + 44 + len(rows) * line_h + 120
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
 
@@ -112,6 +114,9 @@ def generate_combined_pdf(manual_data, week_start: date = None, output_path: Pat
     """One PDF: manual card + automation card + a counts-only automation summary (per-person scripted /
     cumulative / backlog + next-week planned total). No case lists. `manual_data` from _build_qa_weekly_data."""
     ws = week_start or (date.today() - timedelta(days=date.today().weekday()))
+    # The combined report omits the "Slowest tickets in QC" table (kept only on the standalone manual
+    # report). render_card gates that section on slow_tickets, so empty it for the combined render.
+    manual_data = {**manual_data, "slow_tickets": []}
     manual_img = MAN.render_card(manual_data).convert("RGB")
     auto_img = AUTO.render_card(ws).convert("RGB")
     db = SessionLocal()
