@@ -257,19 +257,57 @@ function PlanEditor({ plan, setPlan }) {
 }
 
 const round1 = (n) => Math.round((Number(n) || 0) * 10) / 10;
+// Clean, aligned, copy-pasteable plan: section per environment, dot-leader alignment of activity → hours,
+// a subtotal per environment and a grand total. Reads well in PM/Teams/email (dot leaders survive both
+// monospace and proportional fonts).
 const planText = (tid, plan) => {
   const acts = plan?.activities || [];
-  const total = round1(acts.reduce((a, x) => a + (parseFloat(x.suggested_hours) || 0), 0) + (plan?.buffer_hours || 0));
-  const lines = [`QA Test Plan — #${tid} (execution order)`, ''];
+  const buf = round1(plan?.buffer_hours || 0);
+  const total = round1(acts.reduce((a, x) => a + (parseFloat(x.suggested_hours) || 0), 0) + buf);
+  const labels = acts.map(a => (a.activity || '').trim()).concat(['Subtotal', 'Buffer (10%)', 'TOTAL']);
+  const W = Math.min(50, Math.max(18, ...labels.map(l => l.length)) + 2);
+  const leader = (label, hours) => {
+    label = (label || '').trim();
+    const val = `${(+hours || 0).toFixed(1)}h`.padStart(6);
+    const dots = Math.max(2, W - label.length);
+    return `${label} ${'.'.repeat(dots)} ${val}`;
+  };
+  const out = [`QA Test Plan · #${tid}`, 'Execution order: Staging → Pre → Live', ''];
   ENV_OPTS.forEach(env => {
     const rows = acts.filter(a => (a.environment || 'Staging') === env);
     if (!rows.length) return;
-    lines.push(`【 ${env} 】`);
-    rows.forEach(a => lines.push(`  • ${a.activity} — ${(+a.suggested_hours || 0).toFixed(1)}h${a.rationale ? `  (${a.rationale})` : ''}`));
+    out.push(env.toUpperCase());
+    let sub = 0;
+    rows.forEach(a => {
+      sub += (+a.suggested_hours || 0);
+      out.push('  ' + leader(a.activity, a.suggested_hours));
+      if (a.rationale) out.push('      ' + a.rationale.trim());
+    });
+    out.push('  ' + leader('Subtotal', sub), '');
   });
-  if (plan?.buffer_hours) lines.push(`  • Buffer (10%) — ${(+plan.buffer_hours).toFixed(1)}h`);
-  lines.push('', `TOTAL: ${total}h`);
-  return lines.join('\n');
+  if (buf) out.push('  ' + leader('Buffer (10%)', buf), '');
+  out.push('  ' + '─'.repeat(W + 7), '  ' + leader('TOTAL', total));
+  return out.join('\n');
+};
+
+// Clipboard that also works on the dashboard's plain-HTTP origin (http://10.1.0.20), where
+// navigator.clipboard is unavailable because it's not a secure context. Falls back to a hidden
+// textarea + execCommand('copy'); returns false only if even that fails.
+const copyToClipboard = async (text) => {
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return true; } catch { /* fall through */ }
+  }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed'; ta.style.top = '-1000px'; ta.style.left = '0'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select(); ta.setSelectionRange(0, text.length);
+    const ok = document.execCommand('copy');
+    document.body.removeChild(ta);
+    return ok;
+  } catch { return false; }
 };
 
 // Short justification to paste into PM when adding the PLANNED QA time (edit #1).
@@ -370,10 +408,13 @@ function DetailPanel({ ticket, onChanged }) {
     setBusy('');
   };
   const copyPlan = async () => {
-    try { await navigator.clipboard.writeText(planText(tid, plan)); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch { /* ignore */ }
+    const txt = planText(tid, plan);
+    if (await copyToClipboard(txt)) { setCopied(true); setTimeout(() => setCopied(false), 1500); }
+    else { window.prompt('Copy the plan (Ctrl+C, Enter):', txt); }
   };
   const copyText = async (txt, which) => {
-    try { await navigator.clipboard.writeText(txt); setCopiedPm(which); setTimeout(() => setCopiedPm(''), 1600); } catch { /* ignore */ }
+    if (await copyToClipboard(txt)) { setCopiedPm(which); setTimeout(() => setCopiedPm(''), 1600); }
+    else { window.prompt('Copy this PM comment (Ctrl+C, Enter):', txt); }
   };
   const downloadExcel = async () => {
     try {
