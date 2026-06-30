@@ -60,7 +60,7 @@ Today automation is siloed: only a few engineers can author or run Playwright te
 - **Shell** — a local **FastAPI + single‑page UI**, packaged as a one‑file `.exe` with an in‑app self‑updater, exactly like the BIS Bug Reporter; per‑user config in `%APPDATA%`. Calls the central QA dashboard for shared catalog/analytics and AI.
 - **Bootstrap** — on first run the app installs **git, Node, Playwright, the Claude CLI** and **clones** the automation repo; before **every** run it does `git fetch + reset --hard origin/pre_main` so runs always use the latest stable code.
 - **Authoring with Claude** — the app shells the **Claude CLI** in the repo (skills: *write‑playwright‑test, locate‑best‑element, record‑workflow, playwright‑test‑heal*) to turn a description / recording / codegen into a clean, convention‑following spec, then runs it once to verify.
-- **Execution** — runs Playwright per‑case (sequential — the platform disallows concurrent logins), streams a live log, captures trace/video/screenshot/error‑context, and pushes results to **TestRail** (`@C####` → status); a passing new case is set **Automated** in TestRail.
+- **Execution** — runs Playwright per‑case with the user's own account, streams a live log, captures trace/video/screenshot/error‑context, and pushes results to **TestRail** (`@C####` → status); a passing new case is set **Automated** in TestRail. Concurrent runs across users are coordinated centrally (see §8a).
 - **Git governance** — the app commits **only to the user's branch** and opens a **PR to `pre_main`**; a lead merges. It refuses to push anything else.
 - **Reuse** — the existing dashboard `/automation/*` analytics (`automation_sync.py`, `AutomationCase/Execution/Snapshot`), the bis‑automation Playwright config / TestRail client / record tooling, and the Bug‑Reporter `/create` flow for on‑fail bugs.
 
@@ -72,9 +72,18 @@ Today automation is siloed: only a few engineers can author or run Playwright te
 
 ## 8. Governance & control
 - **One source of truth**: `pre_main`; everyone runs the latest; authors never edit `pre_main` directly.
-- **Own‑branch + PR**: controlled contribution; leads merge.
-- **Single‑user, sequential runs**: respects the platform's no‑concurrent‑login constraint.
+- **Own‑branch + PR**: every locally‑created UI **or** API case is pushed to the **user's own branch only**; merges to `pre_main` are **manual** (done by a lead). All pulls/executions come from `pre_main`.
 - **Secrets local‑only**: TestRail/GitHub keys and role passwords stay in `%APPDATA%` (optional OS‑keychain hardening later).
+
+## 8a. Concurrency & coordination (multiple users at once)
+The app **supports concurrent sessions** — many users run it (each their own local instance) and may execute the **same cases** at the same time. Collisions only happen on *shared* resources (the app‑under‑test, accounts, data, the TestRail run), and are handled by:
+- **Per‑user accounts** — each user runs with **their own account** for each (env, role) from their private config, so concurrent logins never kick each other's session (the platform allows one session per account).
+- **Auto‑queue identical executions** — a central coordination registry serializes any runs that target the **same case + environment**, so two users never contend for the same data; everyone else runs in parallel.
+- **Per‑user/run data namespacing** — created entities carry a unique `user + runId` token (setup‑at‑start, scoped cleanup) → no record clashes.
+- **TestRail isolation** — each execution writes to its **own run / run‑entry**; no two writers on one test at once.
+- **Per‑environment capacity + queue** — a cap on concurrent runs per env; overflow queues.
+- **Live Activity** — a central feed shows who's running what, where; the app shows a pre‑run notice when your run will auto‑queue.
+- **Git is inherently safe** — own‑branch commits + read‑only `pre_main` pulls never conflict across users.
 
 ## 9. TestRail + PM configuration (to make it effective)
 - **Add `custom_case_test_category`** (Smoke / Regression / Sanity) — there is no structured field today; this powers reliable categorisation and pack runs.
@@ -103,7 +112,7 @@ Today automation is siloed: only a few engineers can author or run Playwright te
 - **Claude CLI access per machine** → governance for N users (per‑user subscription vs shared API key); decide before Phase 1.
 - **`pre_main` discipline** → enforced by own‑branch authoring + reset‑before‑run.
 - **Secrets at rest** → local‑only now; OS‑keychain option later.
-- **No concurrent logins** → sequential runs; prefer per‑user accounts to avoid env collisions.
+- **Concurrent sessions** → handled by per‑user accounts + auto‑queue of same‑case/same‑env runs + data namespacing + per‑run TestRail isolation (see §8a); needs a per‑user account set per env and a small coordination service on the dashboard.
 - **TestRail rate limits** → cached catalog, 429‑aware backoff.
 - **Smoke/Regression field missing** → spec‑tag inference until the TestRail field is added (top config ask).
 

@@ -148,7 +148,7 @@
     <div class="brand">
       <div class="logo">🤖</div>
       <h1>BIS Automation Runner</h1>
-      <span class="ver">PROTOTYPE v0.5</span>
+      <span class="ver">PROTOTYPE v0.7</span>
     </div>
     <div class="hdr-right">
       <select class="pill env" id="envSel" onchange="setEnv()">
@@ -158,6 +158,7 @@
       </select>
       <span class="pill" title="Your working branch — the only branch the app pushes"><span class="dot"></span>⎇ feat/vishnu</span>
       <span class="pill" title="pre_main fetched before every run">↻ pre_main: up to date</span>
+      <span class="pill" onclick="openActivity()" title="See who's running what across the team right now"><span class="dot"></span>Live · <span id="liveN">2</span> running</span>
       <span class="pill" onclick="openSetup()">🧩 Setup</span>
       <span class="pill" onclick="openSettings()">⚙ Settings</span>
     </div>
@@ -178,7 +179,7 @@
   <section id="t-overview">
     <div class="card" style="margin-bottom:14px">
       <div class="row">
-        <div><h3>Automation overview — all modules</h3><div class="muted" style="font-size:12px">Live from TestRail · project 18 (Web) + 14 (Mobile) · updated just now</div></div>
+        <div><h3>Automation overview</h3></div>
         <div class="sp"></div>
         <div class="filters">
           <select id="fMod"><option>All Modules</option></select>
@@ -227,8 +228,9 @@
   <!-- ===================== API AUTOMATION ===================== -->
   <section id="t-api" class="hide">
     <div class="card" style="margin-bottom:12px">
-      <div class="row"><h3 style="margin:0">API catalog</h3><span class="muted" style="font-size:12px">imported from Postman / OpenAPI</span><div class="sp"></div>
-        <button class="btn ghost sm" onclick="toast('Re-import collection (mock)')">⤓ Import collection</button></div>
+      <div class="row"><h3 style="margin:0">API catalog</h3><span class="muted" style="font-size:12px">from a Postman / OpenAPI collection</span><div class="sp"></div>
+        <button class="btn green sm" onclick="apiNew()">＋ New API case</button>
+        <button class="btn ghost sm" onclick="toast('Import a Postman / OpenAPI collection')">⤓ Import collection</button></div>
     </div>
     <div class="split">
       <div class="tree" id="apiTree"></div>
@@ -259,7 +261,7 @@
       <div id="dgResult" class="hide" style="margin-top:16px">
         <div class="row"><span class="status pass">✓ Created <span id="dgDone">50</span> records</span><div class="sp"></div>
           <button class="art" onclick="toast('Saved ids to my private data file')">💾 Save to my data file</button>
-          <button class="art" onclick="toast('Exported ids.csv (mock)')">⤓ export ids.csv</button></div>
+          <button class="art" onclick="toast('Exported ids.csv')">⤓ export ids.csv</button></div>
         <div class="pre" id="dgRows" style="margin-top:10px"></div>
         <div class="hint" id="dgFoot" style="margin-top:8px"></div>
       </div>
@@ -302,6 +304,15 @@
 
 </div>
 
+<!-- ===================== LIVE ACTIVITY MODAL (concurrency) ===================== -->
+<div class="modal" id="activity">
+  <div class="sheet" style="width:min(760px,96vw)">
+    <div class="row"><h2 style="margin:0;font-size:18px">🟢 Live activity — who's running what</h2><div class="sp"></div><button class="art" onclick="closeActivity()">✕</button></div>
+    <div class="hint" style="margin:6px 0 10px">Concurrent sessions are coordinated centrally. Each user runs with <b>their own accounts</b> (no shared sessions); identical <b>case + environment</b> executions <b>auto-queue</b> so they never contend for the same data. Results go to per-run TestRail entries.</div>
+    <div id="activityBody"></div>
+  </div>
+</div>
+
 <!-- ===================== SETUP MODAL (first run) ===================== -->
 <div class="modal" id="setup">
   <div class="sheet" style="width:min(680px,95vw)">
@@ -327,7 +338,7 @@
       <select onchange="document.documentElement.dataset.theme=this.value"><option value="dark">Dark</option><option value="midnight">Midnight</option><option value="forest">Forest</option></select></div></div>
     <label>Private data file</label><input value="%APPDATA%\bis-automation-runner\my-data.json"/>
     <div class="hint" style="margin-top:6px">Per-env URLs + role accounts are configured internally per environment. Concrete values stay only on this machine.</div>
-    <div class="row" style="margin-top:16px"><div class="sp"></div><button class="btn" onclick="closeSettings();toast('Settings saved (mock)')">Save</button></div>
+    <div class="row" style="margin-top:16px"><div class="sp"></div><button class="btn" onclick="closeSettings();toast('Settings saved')">Save</button></div>
   </div>
 </div>
 
@@ -396,6 +407,12 @@ let HEAL_QUEUE = [
 function findCase(cid){let f=null;Object.keys(CASES).forEach(m=>{const c=(CASES[m]||[]).find(x=>x.id===cid);if(c)f=Object.assign({module:m},c);});return f;}
 // failure classification for the demo: 'script' (auto-heal), 'bug' (raise bug), 'confused' (ask human)
 function failureType(cid){return ({254549:'script',259306:'bug',217090:'confused'})[cid] || ['script','confused','bug'][cid%3];}
+// concurrent sessions across the team (central coordination registry)
+const ACTIVITY = [
+  {user:'Varsha Dcruz P', k:'Va', case:'C254548', module:'Forms', env:'Staging', status:'running', since:'00:42'},
+  {user:'Vivek V Nair', k:'Vi', case:'C219560', module:'User Management', env:'Pre', status:'running', since:'01:15'},
+  {user:'Reshma R', k:'R', case:'C254548', module:'Forms', env:'Staging', status:'queued', since:'—'},
+];
 const CASES = {
   'Forms':[
     {id:254548,t:'Copy a Slide element to the Content Library',st:'auto',cat:'Regression',exec:'Auto',by:'Va',reuse:'High',ticket:20912},
@@ -661,6 +678,7 @@ function runHTML(){
     <label class="muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="trUpdate" checked/> update results in TestRail</label>
     <div class="sp"></div><button class="btn" onclick="runCase('${id}')">▶ Fetch pre_main &amp; Run</button>
   </div>
+  <div class="hint" style="margin-top:6px">Runs with <b>your own account</b> for the selected role (per-user — never shares a session). If someone else is running this case on this environment, your run <b>auto-queues</b>.</div>
   <div id="runArea"></div>`;
 }
 /* ---- the Automate (authoring) workspace: cases (single/multi) → input → Claude → spec → run → commit → PR ---- */
@@ -736,7 +754,7 @@ await page.getByLabel('Title').fill('Secure Form');
 await page.getByRole('button', { name: 'Save' }).click();"></textarea>`;
   }
 }
-function recDone(){toast('Codegen + trace + HAR captured (mock)');document.getElementById('recOut').innerHTML='✓ recording.spec.ts · trace.zip · network.har · clicks.md captured &nbsp;<a href="#" onclick="toast(\'view recording\');return false">view</a>';}
+function recDone(){toast('Codegen + trace + HAR captured');document.getElementById('recOut').innerHTML='✓ recording.spec.ts · trace.zip · network.har · clicks.md captured &nbsp;<a href="#" onclick="toast(\'view recording\');return false">view</a>';}
 function generateSpec(){
   if(!AUTO_LIST.length) AUTO_LIST=[{id:'new',t:(curCase&&curCase.t)||'New automation',module:(curCase&&curCase.module)||'Forms'}];
   const env=document.getElementById('envSel').value, n=AUTO_LIST.length;
@@ -775,9 +793,12 @@ function runCase(id,ctx){
   const ticket=(document.getElementById('trTicket')||{}).value||'';
   const upd=document.getElementById('trUpdate')?document.getElementById('trUpdate').checked:true;
   const trTxt=upd?('pushed to TestRail run #'+run+(ticket?' (ticket #'+ticket+')':'')):'TestRail update skipped';
+  const env=document.getElementById('envSel').value;
+  const clash=ctx!=='gen' && ACTIVITY.find(a=>a.case==='C'+id && a.env===env && a.status==='running');
   area.innerHTML=`<div class="log" id="log"></div><div class="arts hide" id="arts"></div>`;
   const log=document.getElementById('log');
   const steps=[
+    ...(clash?[['info','⏳ Auto-queued — '+clash.user+' is running C'+id+' on '+env+' (same case+env). Serialized to avoid data contention.'],['ok','✓ slot released — starting your run']]:[]),
     ['dim','$ git fetch origin && git reset --hard origin/pre_main'],
     ['info','✓ pre_main up to date (a7f3c91)'],
     ['dim','$ npx playwright test --grep @C'+id+' --project=smoke (ENV='+document.getElementById('envSel').value+')'],
@@ -825,7 +846,7 @@ function selectAPI(id){
       ${a.fields.map(([k,v])=>`<div class="ctl" style="padding:7px 10px"><span class="muted" style="min-width:74px">${k}</span><input style="flex:1;height:30px;background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:0 8px" value="${v}"/></div>`).join('')}
     </div>
     <div class="row" style="margin-top:14px;gap:8px"><button class="btn" onclick="runAPI('${id}')">▶ Run</button>
-      <button class="btn ghost sm" onclick="toast('Saved as a reusable API test (mock)')">💾 Save as test</button>
+      <button class="btn ghost sm" onclick="toast('Saved as a reusable API test')">💾 Save as test</button>
       <span class="hint">runs against ${document.getElementById('envSel').value}</span></div>
     <div id="apiOut"></div>`;
 }
@@ -845,6 +866,74 @@ function runAPI(id){
       </div>`;
     toast('API run complete · '+a.code);
   },700);
+}
+/* ---- Postman-style API authoring → save the case to the repo (your branch) ---- */
+function apiNew(){
+  document.querySelectorAll('#apiTree .tcase').forEach(e=>e.classList.remove('sel'));
+  const env=document.getElementById('envSel').value, fld='flex:1;height:30px;background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:0 8px';
+  document.getElementById('apiPanel').innerHTML=`
+    <div class="row"><h2 style="margin:0;font-size:18px">✦ New API test case</h2><div class="sp"></div><span class="badge2 new" style="font-size:12px;padding:4px 9px">AUTHORING</span></div>
+    <div class="hint" style="margin:4px 0 12px">Build it like Postman → Send to verify → save the case to the repo. The app commits to <b>your branch only</b>.</div>
+    <div class="grid" style="grid-template-columns:2fr 1fr;gap:8px">
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Name</span><input id="anName" value="Create User" style="${fld}"/></div>
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Group</span><select id="anGroup" style="flex:1"><option>Users</option><option>Forms</option><option>Reports</option><option>+ new group…</option></select></div>
+    </div>
+    <div class="ctl" style="margin-top:8px">
+      <select id="anMethod" onchange="anColor()" style="font-weight:700"><option>POST</option><option>GET</option><option>PUT</option><option>DELETE</option><option>PATCH</option></select>
+      <input id="anUrl" value="/api/v1/users" placeholder="/api/v1/…" style="${fld};font-family:Consolas,monospace"/>
+      <span class="muted" style="font-size:11px">base URL: {{${env}}} (internal)</span>
+    </div>
+    <div class="seg" id="anSeg" style="margin:12px 0 8px">
+      <button class="on" data-t="body" onclick="anTab('body')">Body</button>
+      <button data-t="headers" onclick="anTab('headers')">Headers</button>
+      <button data-t="params" onclick="anTab('params')">Params</button>
+      <button data-t="auth" onclick="anTab('auth')">Auth</button>
+      <button data-t="tests" onclick="anTab('tests')">Tests</button>
+    </div>
+    <div id="anTabBody"></div>
+    <div class="ctl" style="margin-top:12px"><span class="muted">Prerequisites</span><input id="anPre" value="Auth token, Company exists" style="${fld}"/></div>
+    <div class="row" style="margin-top:14px;gap:8px"><button class="btn" onclick="anSend()">▶ Send</button>
+      <button class="btn green" onclick="anSave()">💾 Save & add to repo</button>
+      <span class="hint">commits to <b>feat/vishnu</b> → opens a PR to pre_main (a lead merges manually)</span></div>
+    <div id="anOut"></div>`;
+  anTab('body');
+}
+function anColor(){/* method dropdown is plain; color handled by chips elsewhere */}
+function anTab(t){
+  document.querySelectorAll('#anSeg button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  const fld='flex:1;height:30px;background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:0 8px';
+  const kv=(rows)=>rows.map(([k,v])=>`<div class="ctl" style="padding:6px 10px;gap:6px"><input value="${k}" placeholder="key" style="width:200px;height:28px;background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:0 8px"/><input value="${v}" placeholder="value" style="${fld};height:28px"/></div>`).join('')+`<div class="hint" style="margin-top:4px">＋ add row</div>`;
+  const el=document.getElementById('anTabBody');
+  if(t==='body') el.innerHTML=`<label class="muted" style="font-size:12px">Request body (JSON · use {{variables}})</label>
+    <textarea id="anBody" style="min-height:120px">{\n  "name": "{{name}}",\n  "email": "{{email}}",\n  "role": "{{role}}",\n  "companyId": "{{companyId}}",\n  "isActive": true\n}</textarea>`;
+  else if(t==='headers') el.innerHTML=kv([['Authorization','Bearer {{token}}'],['Content-Type','application/json']]);
+  else if(t==='params') el.innerHTML=kv([['companyId','1001']]);
+  else if(t==='auth') el.innerHTML=`<div class="ctl"><span class="muted">Type</span><select><option>Bearer Token</option><option>Basic</option><option>None</option></select>
+    <span class="muted">Role</span><select><option>Instructor</option><option>Client Admin</option><option>Security Admin</option></select>
+    <span class="hint">token resolved per environment from your private config</span></div>`;
+  else el.innerHTML=`<label class="muted" style="font-size:12px">Tests / assertions (Postman-style)</label>
+    <textarea id="anTests" style="min-height:110px">pm.test("status is 201", () => pm.response.to.have.status(201));\npm.test("returns an id", () => pm.expect(pm.response.json().id).to.exist);\npm.test("role echoed", () => pm.expect(pm.response.json().role).to.eql("Instructor"));</textarea>`;
+}
+function anSend(){
+  const m=document.getElementById('anMethod').value, u=document.getElementById('anUrl').value, out=document.getElementById('anOut');
+  out.innerHTML=`<div class="log" id="anlog"><span class="dim">→ ${m} ${u}</span></div>`;
+  setTimeout(()=>{out.innerHTML=`<div class="row" style="margin-top:14px"><span class="status pass">201 Created</span><span class="muted">· 142ms</span>
+    <div class="sp"></div><span class="chip" style="color:#34d399">✓ 3/3 tests passed</span></div>
+    <div class="k muted" style="font-size:11px;margin:10px 0 4px;text-transform:uppercase">Response</div>
+    <div class="pre">{\n  "id": 88213,\n  "name": "John Doe",\n  "role": "Instructor",\n  "companyId": 1001,\n  "isActive": true\n}</div>
+    <div class="ctl" style="padding:9px 11px;margin-top:8px"><span class="muted">Logs</span><span style="color:#34d399;margin-left:6px">✓ No errors</span></div>`;
+    toast('Sent · 201 Created · tests passed');},700);
+}
+function anSave(){
+  const name=document.getElementById('anName').value, m=document.getElementById('anMethod').value, u=document.getElementById('anUrl').value, g=document.getElementById('anGroup').value;
+  const grp=g.startsWith('+')?'Users':g;
+  const out=document.getElementById('anOut');
+  out.innerHTML=`<div class="log" id="anlog"></div>`;
+  const l=document.getElementById('anlog');
+  const file='api-tests/'+grp.toLowerCase()+'/'+name.replace(/\s+/g,'')+'.api.ts';
+  const lines=[['ok','✓ wrote '+file],['ok','✓ added to API catalog'],['dim','$ git add '+file+' && git commit -m "api: '+name+'"'],['ok','✓ committed to feat/vishnu'],['dim','$ git push -u origin feat/vishnu'],['ok','✓ pushed (your branch only)'],['ok','✓ opened PR feat/vishnu → pre_main (a lead merges manually)']];
+  let i=0;(function t(){if(i<lines.length){const[c,x]=lines[i++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,300)}
+    else{(APIS[grp]=APIS[grp]||[]).push({id:'new'+Date.now(),name,method:m,path:u,body:'{ … }',fields:[['name','John Doe']],pre:['Auth token'],resp:'{ "id": 88213 }',code:'201 Created',ms:142,created:'user #88213'});renderAPITree();toast('Saved to repo · PR opened to pre_main');}})();
 }
 
 /* ---------------- data generation ---------------- */
@@ -1001,6 +1090,21 @@ function verifyHeal(id){
   setTimeout(()=>{const x=HEAL_QUEUE.find(h=>h.id===id);if(x){x.status='verified';x.reason='Human-confirmed — fix works; pushed to TestRail';x.healedOn='just now';}renderMaintenance();toast('C'+id+' verified ✓ — back to Healthy');},1500);
 }
 function manualTriage(id){const x=HEAL_QUEUE.find(h=>h.id===id);if(x){x.status='awaiting_verify';x.reason='Auto-healed after triage — awaiting human re-verify';x.healedOn='just now';}renderMaintenance();toast('Claude triaged C'+id+' → auto-healed; awaiting human verify');}
+
+/* ---------------- live activity / concurrency coordination ---------------- */
+function openActivity(){document.getElementById('activity').classList.add('on');renderActivity();}
+function closeActivity(){document.getElementById('activity').classList.remove('on');}
+function renderActivity(){
+  const el=document.getElementById('activityBody'); if(!el)return;
+  const run=ACTIVITY.filter(a=>a.status==='running').length;
+  const ln=document.getElementById('liveN'); if(ln) ln.textContent=run;
+  el.innerHTML=`<table style="font-size:12.5px"><thead><tr><th>User</th><th>Case</th><th>Module</th><th>Environment</th><th>Status</th><th>Elapsed</th></tr></thead>
+    <tbody>${ACTIVITY.map(a=>`<tr><td><span class="av ${a.k}">${a.k}</span> <span class="b" style="margin-left:6px">${a.user}</span></td>
+      <td class="b">${a.case}</td><td>${a.module}</td><td>${a.env}</td>
+      <td>${a.status==='running'?'<span class="status pass">● running</span>':'<span class="chip" style="color:#fbbf24">⏳ queued</span>'}</td>
+      <td class="muted">${a.since}</td></tr>`).join('')}</tbody></table>
+    <div class="hint" style="margin-top:10px">Reshma is auto-queued behind Varsha on the same case+env (Forms · C254548 · Staging) — it will start automatically when Varsha's run releases.</div>`;
+}
 
 /* init */
 renderDiscovery();renderUITree();renderAPITree();renderBacklog();
