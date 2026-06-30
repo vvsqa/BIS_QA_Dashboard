@@ -173,6 +173,7 @@
     <div class="tab" data-tab="data" onclick="showTab('data')"><span class="ic">🧪</span> Data Generation</div>
     <div class="tab" data-tab="backlog" onclick="showTab('backlog')"><span class="ic">🎯</span> Backlog <span class="badge">1,240</span></div>
     <div class="tab" data-tab="maint" onclick="showTab('maint')"><span class="ic">🩺</span> Maintenance <span class="badge">576</span></div>
+    <div class="tab" data-tab="reviews" onclick="showTab('reviews')"><span class="ic">✅</span> Reviews <span class="badge">4</span></div>
   </div>
 
   <!-- ===================== OVERVIEW / DISCOVERY ===================== -->
@@ -301,6 +302,9 @@
       </div>
     </div>
   </section>
+
+  <!-- ===================== REVIEWS (Lead / Manager) ===================== -->
+  <section id="t-reviews" class="hide"></section>
 
 </div>
 
@@ -467,10 +471,11 @@ function methodColor(m){return {POST:'#34d399',GET:'#60a5fa',PUT:'#f59e0b',DELET
 /* ---------------- render: tabs ---------------- */
 function showTab(t){
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===t));
-  ['overview','mywork','ui','api','data','backlog','maint'].forEach(x=>document.getElementById('t-'+x).classList.toggle('hide',x!==t));
+  ['overview','mywork','ui','api','data','backlog','maint','reviews'].forEach(x=>document.getElementById('t-'+x).classList.toggle('hide',x!==t));
   if(t==='mywork') renderMyWork();
   if(t==='backlog') renderBacklog();
   if(t==='maint') renderMaintenance();
+  if(t==='reviews') renderReviews();
 }
 function setEnv(){const v=document.getElementById('envSel').value;const p=document.getElementById('envSel');
   p.classList.toggle('live',v==='Live');toast('Environment → '+v);}
@@ -984,6 +989,53 @@ function backlogAutomate(){
   if(!BL_SEL.size)return;
   AUTO_LIST=BACKLOG.filter(c=>BL_SEL.has(c.id)).map(c=>({id:c.id,t:c.m+' candidate',module:c.m}));
   showTab('ui');renderAutomateWorkspace('Automate '+AUTO_LIST.length+' backlog case'+(AUTO_LIST.length>1?'s':''));
+}
+/* ---------------- reviews (lead / manager) ---------------- */
+const REVIEWS=[
+  {pr:218,author:'Vishnu VS',init:'V',col:'#3b82f6',branch:'vishnu/forms-delta-submit',ui:6,api:2,m:'Forms',cat:'Regression',status:'awaiting',age:'2h',risk:'low',note:'Delta required-field cases + submit-validation API'},
+  {pr:217,author:'Varsha Dcruz P',init:'Va',col:'#a78bfa',branch:'varsha/online-course-adv',ui:4,api:0,m:'Online Course',cat:'Smoke',status:'awaiting',age:'5h',risk:'low',note:'Advanced-tab smoke flow'},
+  {pr:215,author:'Vivek V Nair',init:'Vi',col:'#34d399',branch:'vivek/safetapp-assets',ui:3,api:1,m:'SafeTapp',cat:'Regression',status:'changes',age:'1d',risk:'med',note:'Flaky Assets-list selector — asked for a stable locator'},
+  {pr:214,author:'Vishnu VS',init:'V',col:'#3b82f6',branch:'vishnu/api-bearer-auth',ui:0,api:5,m:'API',cat:'Smoke',status:'awaiting',age:'1d',risk:'low',note:'Bearer-token auth across 5 endpoints'},
+  {pr:212,author:'Varsha Dcruz P',init:'Va',col:'#a78bfa',branch:'varsha/classroom-cal',ui:8,api:0,m:'Classroom Calendar',cat:'Regression',status:'approved',age:'2d',risk:'low',note:'Master-cert default logic'},
+  {pr:210,author:'Vivek V Nair',init:'Vi',col:'#34d399',branch:'vivek/driver-licence',ui:2,api:0,m:'Driver Management',cat:'Smoke',status:'approved',age:'3d',risk:'low',note:'Licence-validation toggle'},
+];
+const RSTAT={awaiting:['Awaiting review','#f59e0b'],changes:['Changes requested','#ef4444'],approved:['Approved → pre_main','#34d399']};
+function reviewApprove(pr){const x=REVIEWS.find(r=>r.pr===pr);if(x){x.status='approved';x.age='just now';}renderReviews();toast('PR #'+pr+' approved & merged to pre_main ✓');}
+function reviewChanges(pr){const x=REVIEWS.find(r=>r.pr===pr);if(x){x.status='changes';}renderReviews();toast('Requested changes on PR #'+pr+' — author notified');}
+function ava(init,col){return `<span style="display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:${col};color:#0b1220;font-weight:800;font-size:11px">${init}</span>`;}
+function renderReviews(){
+  const open=REVIEWS.filter(r=>r.status!=='approved');
+  const awaitingCases=open.reduce((s,r)=>s+r.ui+r.api,0);
+  const approvedWk=REVIEWS.filter(r=>r.status==='approved').length;
+  const K=[['Open PRs',open.length,'#f59e0b'],['Cases awaiting merge',awaitingCases,'#3b82f6'],['Approved this week',approvedWk,'#34d399'],['Avg review time','4.2 h','#22d3ee'],['Coverage Δ (mo)','+1.8%','#7c3aed'],['Hours saved/mo','86 h','#34d399']];
+  const byA={};REVIEWS.forEach(r=>{byA[r.author]=byA[r.author]||{c:0,col:r.col,init:r.init};byA[r.author].c+=r.ui+r.api;});
+  const contrib=Object.entries(byA).sort((a,b)=>b[1].c-a[1].c);const mx=Math.max(...contrib.map(c=>c[1].c))||1;
+  const rows=REVIEWS.map(r=>{const[lbl,col]=RSTAT[r.status];
+    const act=r.status==='approved'?`<span class="b" style="color:#34d399">✓ Merged</span>`
+      :`<button class="btn green sm" onclick="reviewApprove(${r.pr})">✓ Approve &amp; merge</button> <button class="btn ghost sm" onclick="reviewChanges(${r.pr})">⤺ Changes</button>`;
+    return `<tr class="mod"><td class="b">#${r.pr}</td>
+      <td><div class="row" style="gap:7px">${ava(r.init,r.col)}<div><div class="b">${r.author}</div><div class="muted" style="font-size:11px">${r.branch}</div></div></div></td>
+      <td>${r.ui?`<span class="chip">🖱️ ${r.ui}</span>`:''}${r.api?` <span class="chip">🔌 ${r.api}</span>`:''}</td>
+      <td>${r.m}</td><td><span class="chip ${r.cat==='Smoke'?'smoke':'reg'}">${r.cat}</span></td>
+      <td><span class="chip" style="color:${col}">${lbl}</span>${r.risk==='med'?' <span class="chip" style="color:#f59e0b">⚠ flaky</span>':''}</td>
+      <td class="muted">${r.age}</td><td>${act}</td></tr>
+      <tr><td></td><td colspan="7" class="muted" style="font-size:11.5px;padding:0 0 4px">${r.note}</td></tr>`;}).join('');
+  document.getElementById('t-reviews').innerHTML=`
+    <div class="card" style="margin-bottom:14px"><div class="row"><div><h3>Reviews — lead &amp; manager</h3><div class="hint">Approve engineers' own-branch automation into <b>pre_main</b>, and track contribution &amp; ROI.</div></div></div>
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:14px">${K.map(([l,v,c])=>`<div class="kpi"><div class="accent" style="background:${c}"></div><div class="big" style="font-size:21px">${v}</div><div class="lbl">${l}</div></div>`).join('')}</div></div>
+    <div class="grid" style="grid-template-columns:1.55fr 1fr">
+      <div class="card"><div class="row"><h3>PR review queue</h3><div class="sp"></div><span class="hint">user branch → pre_main · manual merge by a lead</span></div>
+        <table style="font-size:12.5px;margin-top:8px"><thead><tr><th>PR</th><th>Author / branch</th><th>Cases</th><th>Module</th><th>Cat</th><th>Status</th><th>Age</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="card"><h3>Contribution (cases in review)</h3>${contrib.map(([n,d])=>`<div class="row" style="margin:8px 0;font-size:12px;gap:8px">${ava(d.init,d.col)}<span style="width:92px" class="muted">${n}</span><div class="bar" style="flex:1;height:9px"><i style="width:${d.c/mx*100}%;background:linear-gradient(90deg,#22d3ee,#34d399)"></i></div><span class="b" style="width:28px;text-align:right">${d.c}</span></div>`).join('')}</div>
+        <div class="card"><h3>ROI this month</h3>
+          <div class="row" style="justify-content:space-between;margin:7px 0"><span class="muted">Cases merged to pre_main</span><span class="b">38</span></div>
+          <div class="row" style="justify-content:space-between;margin:7px 0"><span class="muted">Automated executions</span><span class="b">2,140</span></div>
+          <div class="row" style="justify-content:space-between;margin:7px 0"><span class="muted">Engineer hours saved</span><span class="b" style="color:#34d399">86 h</span></div>
+          <div class="row" style="justify-content:space-between;margin:7px 0"><span class="muted">Coverage growth</span><span class="b" style="color:#22d3ee">+1.8%</span></div>
+        </div>
+      </div>
+    </div>`;
 }
 /* ---------------- first-run setup ---------------- */
 function openSetup(){document.getElementById('setup').classList.add('on');renderSetup(false);document.getElementById('setupLog').innerHTML='';}
