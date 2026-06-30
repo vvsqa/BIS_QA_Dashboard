@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 # --------------------------------------------------------------------------- config
 APP_NAME = "bis-bug-reporter"
-APP_VERSION = "1.4.2"          # bump on each packaged release; compared against the dashboard manifest
+APP_VERSION = "1.4.5"          # bump on each packaged release; compared against the dashboard manifest
 PORT = int(os.environ.get("BUG_REPORTER_PORT", "8765"))
 
 DEFAULT_REDMINE_URL = "https://redmine.bissafety.app"
@@ -528,13 +528,52 @@ def _page_from_url(url):
         return url
 
 
+def _event_str_to_step(s):
+    """Jam now returns user events as readable strings like
+    'Clicked on <input id="..." ...>' — turn one into a clean step line."""
+    s = (s or "").strip()
+    if not s:
+        return None
+    low = s.lower()
+    verb = "Interact with"
+    if low.startswith("click"):            verb = "Click"
+    elif low.startswith(("typed", "type", "entered", "input")): verb = "Enter into"
+    elif low.startswith(("navigated", "opened", "visited")):    verb = "Open"
+    elif low.startswith("scroll"):         verb = "Scroll to"
+    elif low.startswith(("selected", "chose")): verb = "Select"
+    # best human-readable target: visible text > id > placeholder/aria > tag
+    target = None
+    m = re.search(r">\s*([^<>]{2,60}?)\s*<", s)              # text between tags
+    if m and not m.group(1).strip().startswith("_"):
+        target = m.group(1).strip()
+    for attr in ("id", "placeholder", "aria-label", "name", "value"):
+        if target:
+            break
+        m = re.search(attr + r'="([^"]{1,60})"', s)
+        if m and not m.group(1).startswith("_"):
+            target = m.group(1)
+    if not target:
+        m = re.search(r"<(\w+)", s)
+        target = m.group(1) if m else "the element"
+    target = re.sub(r"\s+", " ", target).strip()
+    return f"{verb} {target}"
+
+
 def _summarize_events(ev):
-    """User events JSON -> a clean, de-duplicated list of page visits / actions."""
+    """User events JSON -> a clean, de-duplicated list of page visits / actions.
+    Handles both the legacy dict-shaped events and Jam's current string events."""
     items = ev if isinstance(ev, list) else (ev.get("events") if isinstance(ev, dict) else None)
     if not isinstance(items, list):
         return ""
     out, last = [], None
     for e in items:
+        if isinstance(e, str):                  # current Jam format: a plain action string
+            line = _event_str_to_step(e)
+            if line and line != last:
+                out.append(line); last = line
+            if len(out) >= 15:
+                break
+            continue
         if not isinstance(e, dict):
             continue
         jt = str(e.get("jamType") or e.get("type") or "").lower()
@@ -735,6 +774,12 @@ def jam(link: str, note: str = ""):
     details = data.get("getDetails") or {}
     sysinfo = details.get("systemInfo") or {}
     events = data.get("getUserEvents")
+    # While Jam is still processing a fresh recording (or processing failed), getUserEvents comes back
+    # as an error string ("FAILED: ... not retrievable until the upstream consumer recovers"). Treat
+    # that as "no events" rather than feeding the error text into the step parser.
+    events_pending = isinstance(events, str) and events.strip().upper().startswith("FAILED")
+    if events_pending:
+        events = None
     # URL: prefer getDetails, else the first navigation url in the events
     url = details.get("url") or (sysinfo.get("url") if isinstance(sysinfo, dict) else "") or ""
     if not url and isinstance(events, list):
@@ -744,7 +789,12 @@ def jam(link: str, note: str = ""):
                 if u:
                     url = u
                     break
-    transcript = _vtt_to_text((data.get("getVideoTranscript") or {}).get("transcript") if isinstance(data.get("getVideoTranscript"), dict) else data.get("getVideoTranscript"))
+    _raw_tr = (data.get("getVideoTranscript") or {}).get("transcript") if isinstance(data.get("getVideoTranscript"), dict) else data.get("getVideoTranscript")
+    transcript = _vtt_to_text(_raw_tr)
+    # Jam returns a placeholder when narration captions aren't ready/available — don't treat it as the bug text.
+    captions_pending = "captions are not available" in (str(_raw_tr or "").lower())
+    if transcript and "captions are not available" in transcript.lower():
+        transcript = ""
     steps = _summarize_events(events)
     # console errors
     cl = data.get("getConsoleLogs")
@@ -756,11 +806,28 @@ def jam(link: str, note: str = ""):
             if msg:
                 errs.append(str(msg)[:200])
 
-    # ticket id mentioned in the narration
+    # Ticket id: from the narration, the tester's typed note, or the page URL (not just the
+    # transcript, which is often empty when captions aren't ready).
     tid = None
-    m = re.search(r"(?i)ticket\s*(?:number\s*)?#?\s*(\d{3,6})", transcript or "")
-    if m:
-        tid = int(m.group(1))
+    _tkt = re.compile(r"(?i)ticket\s*(?:id|number|no\.?)?\s*#?\s*(\d{3,6})")
+    for _hay in (transcript or "", note or ""):
+        m = _tkt.search(_hay)
+        if m:
+            tid = int(m.group(1)); break
+    if not tid and url:                                   # ...tickets/20861 or ?ticket_id=20861
+        m = re.search(r"(?i)(?:tickets?/|ticket_id=|[?&]id=)(\d{3,6})", url)
+        if m:
+            tid = int(m.group(1))
+    if not tid and note:                                  # tester just typed the ticket # in Notes
+        m = re.search(r"^\s*#?(\d{3,6})\b", note.strip())
+        if m:
+            tid = int(m.group(1))
+
+    # Optional parent task only if the tester explicitly wrote one ("parent 11262" / "parent task #11262").
+    pid = None
+    m = re.search(r"(?i)parent\s*(?:task\s*)?#?\s*(\d{3,6})", note or "")
+    if m and int(m.group(1)) != (tid or 0):
+        pid = int(m.group(1))
 
     # Parse the narration + the tester's typed note into fields (rule-based, NO AI).
     mods = sevs = types = []
@@ -795,10 +862,18 @@ def jam(link: str, note: str = ""):
     if errs:
         note_parts.append("Console errors:\n" + "\n".join(errs))
 
+    # Nothing usable AND Jam says it's still processing → tell the caller it isn't ready yet.
+    not_ready = (not transcript) and (not steps) and (events_pending or captions_pending)
+
     return {
         "jam_id": jid,
         "url": url,
+        "ready": (not not_ready),
+        "notice": ("Jam is still processing this recording (its captions and step events aren't ready yet, "
+                   "or processing failed). Wait a minute and try again, or narrate the bug / type a note.")
+                  if not_ready else None,
         "ticket_id": tid,
+        "parent_task_id": pid,
         "subject": subject,
         "actual": parsed["actual"],
         "expected": parsed["expected"],

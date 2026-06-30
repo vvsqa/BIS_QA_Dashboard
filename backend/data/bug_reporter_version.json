@@ -1,5 +1,5 @@
 {
-  "version": "1.4.2",
-  "notes": "Auto-update: the app now installs new releases automatically in the background the next time you open it (no more clicking Update) — you can turn this off in Settings. Also includes the reliable updater (force-close, swap, auto-reopen), the bulk progress bar with created-bug links grouped by ticket, and the Retest tab's 'Bugs I created (via app)' view.",
+  "version": "1.4.5",
+  "notes": "Bulk-from-Jam fix: if a recording is still being processed by Jam (no captions/steps yet), the tool now shows a clear 'Jam is still processing this recording' message and no longer fails bulk with a cryptic 'message is required'. Includes the earlier auto-fill fixes (Steps from clicks, Ticket ID from your note/URL) and background auto-update.",
   "updated_on": "2026-06-30"
 }

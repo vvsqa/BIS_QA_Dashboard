@@ -601,8 +601,10 @@ async function loadJam(){
     const r=await fetch('/jam?link='+encodeURIComponent(link)+(note?('&note='+encodeURIComponent(note)):''));
     const d=await r.json();
     if(!r.ok) throw new Error(d.detail||r.statusText);
+    if(d.ready===false && d.notice){ toast(d.notice,'bad'); }
     // every field straight from the recording + your note — NO AI
     if(d.ticket_id && $('ticket_id') && !$('ticket_id').value){ $('ticket_id').value=d.ticket_id; flash('ticket_id'); }
+    if(d.parent_task_id && $('parent_task_id') && !$('parent_task_id').value){ $('parent_task_id').value=d.parent_task_id; flash('parent_task_id'); }
     put('subject',d.subject); put('steps',d.steps); put('expected',d.expected); put('actual',d.actual);
     setIf('environment',d.environment); setIf('severity',d.severity); setIf('type',d.type); setIf('module',d.module);
     setIf('platform',d.platform); setIf('os',d.os); setIf('browser',d.browser);
@@ -643,12 +645,13 @@ async function fillBug(){
     if(link){
       const r=await fetch('/jam?link='+encodeURIComponent(link)+(note?('&note='+encodeURIComponent(note)):'')); const d=await r.json();
       if(r.ok){
+        if(d.ready===false && d.notice && !caseId && !note){ toast(d.notice,'bad'); }
         m.actual=d.actual; m.environment=d.environment; m.browser=d.browser; m.os=d.os;
         // Test Data: keep the TestRail case's canonical data if present, and append the concrete
         // values observed in the recording (account/files/dates/volumes — password masked).
         if(d.test_data){ m.test_data = m.test_data ? (m.test_data+'\n\nObserved in recording:\n'+d.test_data) : d.test_data; }
         m.severity=m.severity||d.severity; m.type=m.type||d.type; m.module=m.module||d.module;
-        m.subject=m.subject||d.subject; m.platform=m.platform||d.platform; m.ticket_id=m.ticket_id||d.ticket_id;
+        m.subject=m.subject||d.subject; m.platform=m.platform||d.platform; m.ticket_id=m.ticket_id||d.ticket_id; m.parent_task_id=m.parent_task_id||d.parent_task_id;
         if(!m.steps) m.steps=d.steps; if(!m.expected) m.expected=d.expected;
         m._jam=d.jam_id; used.push('Jam');
       } else toast('Jam: '+(d.detail||r.statusText),'bad');
@@ -663,6 +666,7 @@ async function fillBug(){
     if(note && !m.actual) m.actual=note;
     // apply merged
     if(m.ticket_id && !val('ticket_id')){ $('ticket_id').value=m.ticket_id; flash('ticket_id'); }
+    if(m.parent_task_id && !val('parent_task_id')){ $('parent_task_id').value=m.parent_task_id; flash('parent_task_id'); }
     put('subject',m.subject); put('steps',m.steps); put('expected',m.expected); put('actual',m.actual); put('test_data',m.test_data);
     setIf('severity',m.severity); setIf('type',m.type); setIf('module',m.module); setIf('environment',m.environment);
     const adv=[setIf('platform',m.platform),setIf('os',m.os),setIf('browser',m.browser)].some(Boolean);
@@ -790,7 +794,11 @@ async function parseBulk(){
     if(notes) parts.push('Additional notes from the tester:\n'+notes);
     if(cases) parts.push('TestRail case ids for these bugs, in the order the bugs are described: '+cases);
     const message=parts.join('\n\n');
-
+    if(!message.trim()){
+      $('bulkInfo').textContent='';
+      toast(jam ? 'This Jam recording has no narration or captured steps yet — Jam may still be processing it (wait a minute and retry), or add notes / test-case ids.' : 'Add some notes, a Jam link, or test-case ids first.','bad');
+      return;
+    }
     $('bulkInfo').innerHTML='<span class="spin"></span> '+($('bulkAi').checked?'splitting into bugs…':'reading test cases…');
     const body={message:message,
       ticket_id: val('bulkTicket')?parseInt(val('bulkTicket')):(jamTicket||null),
