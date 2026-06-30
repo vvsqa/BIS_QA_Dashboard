@@ -25,11 +25,25 @@ TPQ_MAX_RETRY = int(os.getenv("TEST_PLAN_QUEUE_MAX_RETRY", "3"))  # auto-retry e
 _scheduler: Optional[BackgroundScheduler] = None
 
 
+QC_ENQUEUE_STATUSES = ("QC Testing", "QC Testing in Progress")
+
+
 def _is_first_time(t) -> bool:
-    """First-time in QC = not a retest/refix re-entry (same signal as the row's Refix badge:
-    a tracked re-entry OR prior QA actual hours)."""
-    return not (t.get("is_retesting") or (t.get("retest_cycle_count") or 0) > 0
-                or (t.get("qa_actual_hours") or 0) > 0)
+    """First-time in QC = not a retest/refix re-entry. Logged QA hours only disqualify a ticket still
+    WAITING in QC (status exactly 'QC Testing', no tester started) — a ticket already 'in Progress'
+    naturally has hours logged and is still a valid first-time plan target."""
+    if t.get("is_retesting") or (t.get("retest_cycle_count") or 0) > 0:
+        return False
+    if (t.get("status") or "") == "QC Testing" and (t.get("qa_actual_hours") or 0) > 0:
+        return False
+    return True
+
+
+def _has_real_plan(t) -> bool:
+    """A *generated* TestRail plan/run exists for this ticket (a named plan in project 18 or 14).
+    The P18 mobile-suite case cache (test_plan_source='mobile_suite') is NOT a generated plan — it
+    must never block generation or auto-close a queue row, or mobile tickets get silently skipped."""
+    return t.get("test_plan_source") == "plan"
 
 
 def sync_test_plan_queue(db) -> dict:
@@ -56,23 +70,25 @@ def sync_test_plan_queue(db) -> dict:
             r.error = None
             retried += 1
 
-    # 1) enqueue tickets needing a plan: exact 'QC Testing' status, not a refix re-entry, and no
-    #    TestRail plan. Includes both Unplanned (no tester) AND Assigned-Not-Started (tester set) —
-    #    any first-time QC ticket without a plan should get one.
+    # 1) enqueue tickets needing a plan: in QC Testing OR QC Testing in Progress, first-time (not a
+    #    refix re-entry), and with NO real generated plan. "in Progress" is included because a ticket
+    #    can move QC Testing -> in Progress before the scheduler runs; it still needs a plan. Skip only
+    #    on a *real* plan (test_plan_source='plan') — not the flaky mobile-suite case cache.
     for tid, t in by_id.items():
-        if (t.get("status") or "") != "QC Testing":
+        if (t.get("status") or "") not in QC_ENQUEUE_STATUSES:
             continue
-        if t.get("has_test_plan") or not _is_first_time(t) or tid in existing:
+        if _has_real_plan(t) or not _is_first_time(t) or tid in existing:
             continue
         db.add(TestPlanRequest(ticket_id=tid, status="pending", source="auto"))
         enqueued += 1
 
-    # 2) auto-close rows whose plan now exists in TestRail
+    # 2) auto-close rows whose *real* plan now exists in TestRail (named plan in P18/P14). Closing on
+    #    the mobile-suite cache used to strand mobile tickets as 'done' with no actual plan.
     for tid, r in existing.items():
         if r.status == "done":
             continue
         t = by_id.get(tid)
-        if t and t.get("has_test_plan"):
+        if t and _has_real_plan(t):
             r.status = "done"
             r.plan_url = t.get("testrail_plan_url") or r.plan_url
             closed += 1
