@@ -148,7 +148,7 @@
     <div class="brand">
       <div class="logo">🤖</div>
       <h1>BIS Automation Runner</h1>
-      <span class="ver">PROTOTYPE v0.2</span>
+      <span class="ver">PROTOTYPE v0.5</span>
     </div>
     <div class="hdr-right">
       <select class="pill env" id="envSel" onchange="setEnv()">
@@ -171,6 +171,7 @@
     <div class="tab" data-tab="api" onclick="showTab('api')"><span class="ic">🔌</span> API Automation <span class="badge">142</span></div>
     <div class="tab" data-tab="data" onclick="showTab('data')"><span class="ic">🧪</span> Data Generation</div>
     <div class="tab" data-tab="backlog" onclick="showTab('backlog')"><span class="ic">🎯</span> Backlog <span class="badge">1,240</span></div>
+    <div class="tab" data-tab="maint" onclick="showTab('maint')"><span class="ic">🩺</span> Maintenance <span class="badge">576</span></div>
   </div>
 
   <!-- ===================== OVERVIEW / DISCOVERY ===================== -->
@@ -186,7 +187,7 @@
           <select id="fReuse"><option>All Reuse</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select>
         </div>
       </div>
-      <div id="kpiStrip" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:10px;margin-top:14px"></div>
+      <div id="kpiStrip" style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:14px"></div>
     </div>
 
     <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
@@ -245,10 +246,10 @@
       </div>
       <div class="row" style="margin-top:14px">
         <div><div class="k muted" style="font-size:11px">Template</div>
-          <select class="pill" id="dgTpl"><option>Users with roles</option><option>Companies</option><option>Forms + assets</option><option>Course enrolments</option><option>Classroom events</option></select></div>
+          <select class="pill" id="dgTpl"><option>User Accounts (Instructor)</option><option>Companies</option><option>Forms + assets</option><option>Course enrolments</option><option>Classroom events</option></select></div>
         <div><div class="k muted" style="font-size:11px">Environment</div><select class="pill" id="dgEnv"><option>Staging</option><option>Pre</option><option>Live</option></select></div>
         <div id="dgCountWrap"><div class="k muted" style="font-size:11px">Count</div><input class="pill" id="dgCount" value="50" style="width:90px"/></div>
-        <div><div class="k muted" style="font-size:11px">Role mix</div><select class="pill"><option>Admin 10 · Learner 40</option><option>All Learner</option><option>All Admin</option></select></div>
+        <div><div class="k muted" style="font-size:11px">Role mix</div><select class="pill"><option>80% Instructor / 20% Student</option><option>All Instructor</option><option>All Student</option></select></div>
         <div style="align-self:flex-end"><button class="btn green" onclick="runDataGen()">▶ Generate via API</button></div>
       </div>
       <div id="dgProg" class="hide" style="margin-top:16px">
@@ -264,6 +265,9 @@
       </div>
     </div>
   </section>
+
+  <!-- ===================== MAINTENANCE ===================== -->
+  <section id="t-maint" class="hide"></section>
 
   <!-- ===================== BACKLOG / CANDIDATES ===================== -->
   <section id="t-backlog" class="hide">
@@ -306,7 +310,7 @@
     <div class="k muted" style="font-size:11px;text-transform:uppercase;margin:14px 0 6px">Live setup log</div>
     <div class="log" id="setupLog" style="min-height:120px"></div>
     <div class="row" style="margin-top:14px"><span class="hint">Installs are idempotent — already-present tools are skipped.</span><div class="sp"></div>
-      <button class="btn" id="setupBtn" onclick="runSetup()">▶ Run setup</button></div>
+      <button class="btn" id="setupBtn" onclick="runSetup()">Finish setup</button></div>
   </div>
 </div>
 
@@ -377,6 +381,21 @@ const BACKLOG = [
 ];
 const BL_BYMOD=[['Forms',420],['Online Course',310],['User Management',210],['Reporting',180],['Classroom Calendar',120]];
 const SETUP_STEPS=[['Git','v2.45.1'],['Node.js ≥ 18','v20.12.2'],['Playwright (Chromium)','v1.44.0'],['Claude CLI','v1.0.9'],['Clone repo + checkout pre_main','BIS automation repo']];
+// TestRail runs → the automated cases added under that ticket/run (fetched by Run ID)
+const RUNS = {
+  '4396': {ticket:20912, cases:[254548,254549,254550,254551,254556]},
+  '4397': {ticket:20912, cases:[254548,254549,254550]},
+};
+// Maintenance lifecycle: failed → triaged → auto-heal (code/locator) → human re-verify
+let HEAL_QUEUE = [
+  {id:259410, m:'Forms', status:'awaiting_verify', reason:'Locator drift — auto-healed by Claude', healedOn:'today 10:31'},
+  {id:217090, m:'Classroom Calendar', status:'needs_triage', reason:'Assertion failed on drag-and-drop reschedule', healedOn:'—'},
+  {id:221009, m:'Reporting', status:'healing', reason:'Selector changed after redesign', healedOn:'—'},
+  {id:219570, m:'User Management', status:'deprecated', reason:'Feature removed — script no longer applicable', healedOn:'—'},
+];
+function findCase(cid){let f=null;Object.keys(CASES).forEach(m=>{const c=(CASES[m]||[]).find(x=>x.id===cid);if(c)f=Object.assign({module:m},c);});return f;}
+// failure classification for the demo: 'script' (auto-heal), 'bug' (raise bug), 'confused' (ask human)
+function failureType(cid){return ({254549:'script',259306:'bug',217090:'confused'})[cid] || ['script','confused','bug'][cid%3];}
 const CASES = {
   'Forms':[
     {id:254548,t:'Copy a Slide element to the Content Library',st:'auto',cat:'Regression',exec:'Auto',by:'Va',reuse:'High',ticket:20912},
@@ -405,23 +424,36 @@ function hash(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0}
 
 const APIS = {
   'Users':[
-    {id:'u1',name:'Create User',method:'POST',path:'/api/v1/users',body:'{\n  "name": "{{name}}",\n  "email": "{{email}}",\n  "role": "{{role}}",\n  "company": "{{company}}"\n}',fields:[['name','Auto'],['email','{{name}}@yopmail.com'],['role','Client Admin'],['company','Acme Corp']],pre:['Auth token valid','Company exists'],resp:'{ "id": 88213, "status": "active", "role": "Client Admin" }',code:'201 Created',ms:142},
-    {id:'u2',name:'Bulk Import Users',method:'POST',path:'/api/v1/users/bulk',body:'{\n  "count": {{count}},\n  "roleMix": "{{mix}}"\n}',fields:[['count','50'],['mix','Admin 10 / Learner 40']],pre:['Auth token valid','CSV template'],resp:'{ "created": 50, "failed": 0 }',code:'200 OK',ms:980},
+    {id:'u1',name:'Create User',method:'POST',path:'/api/v1/users',
+      body:'{\n  "name": "{{name}}",\n  "email": "{{email}}",\n  "role": "{{role}}",\n  "companyId": "{{companyId}}",\n  "isActive": true\n}',
+      fields:[['name','John Doe'],['email','john.doe@example.com'],['role','Instructor']],
+      pre:['Auth token','Company exists'],
+      resp:'{\n  "id": 88213,\n  "name": "John Doe",\n  "email": "john.doe@example.com",\n  "role": "Instructor",\n  "companyId": 1001,\n  "isActive": true,\n  "createdAt": "2025-05-27T10:52:11Z"\n}',
+      code:'201 Created',ms:142,created:'user #88213'},
+    {id:'u2',name:'List Users',method:'GET',path:'/api/v1/users',body:'',fields:[['page','1'],['pageSize','50'],['role','All']],pre:['Auth token'],resp:'{ "total": 1284, "page": 1, "users": [ … ] }',code:'200 OK',ms:88,created:'—'},
+    {id:'u3',name:'Get User',method:'GET',path:'/api/v1/users/{id}',body:'',fields:[['id','88213']],pre:['Auth token'],resp:'{ "id": 88213, "name": "John Doe", "role": "Instructor" }',code:'200 OK',ms:64,created:'—'},
+    {id:'u4',name:'Update User',method:'PUT',path:'/api/v1/users/{id}',body:'{\n  "role": "{{role}}"\n}',fields:[['id','88213'],['role','Senior Instructor']],pre:['Auth token','User exists'],resp:'{ "id": 88213, "role": "Senior Instructor", "updated": true }',code:'200 OK',ms:120,created:'user #88213'},
+    {id:'u5',name:'Delete User',method:'DELETE',path:'/api/v1/users/{id}',body:'',fields:[['id','88213']],pre:['Auth token','Admin role'],resp:'{ "id": 88213, "deleted": true }',code:'200 OK',ms:96,created:'—'},
   ],
   'Forms':[
-    {id:'f1',name:'Submit Form',method:'POST',path:'/api/v1/forms/{id}/submit',body:'{\n  "formId": "{{formId}}",\n  "answers": {{answers}}\n}',fields:[['formId','SF-2291'],['answers','{...}']],pre:['Form published','User has access'],resp:'{ "submissionId": 5521, "status": "received" }',code:'201 Created',ms:210},
+    {id:'f1',name:'Create Form',method:'POST',path:'/api/v1/forms',body:'{\n  "title": "{{title}}",\n  "type": "{{type}}"\n}',fields:[['title','Secure Form'],['type','Standard']],pre:['Auth token','Forms permission'],resp:'{ "formId": "SF-2291", "status": "draft" }',code:'201 Created',ms:175,created:'form SF-2291'},
+    {id:'f2',name:'List Forms',method:'GET',path:'/api/v1/forms',body:'',fields:[['page','1']],pre:['Auth token'],resp:'{ "total": 340, "forms": [ … ] }',code:'200 OK',ms:91,created:'—'},
+    {id:'f3',name:'Submit Form',method:'POST',path:'/api/v1/forms/{id}/submit',body:'{\n  "answers": {{answers}}\n}',fields:[['id','SF-2291'],['answers','{...}']],pre:['Form published','User access'],resp:'{ "submissionId": 5521, "status": "received" }',code:'201 Created',ms:210,created:'submission #5521'},
   ],
   'Reports':[
-    {id:'r1',name:'Generate Completion Report',method:'GET',path:'/api/v1/reports/completions',body:'',fields:[['from','2026-06-01'],['to','2026-06-30'],['company','Acme Corp']],pre:['Reporting role'],resp:'{ "rows": 1284, "format": "json" }',code:'200 OK',ms:455},
+    {id:'r1',name:'Completion Report',method:'GET',path:'/api/v1/reports/completions',body:'',fields:[['from','2026-06-01'],['to','2026-06-30']],pre:['Reporting role'],resp:'{ "rows": 1284, "format": "json" }',code:'200 OK',ms:455,created:'—'},
+    {id:'r2',name:'Export Report',method:'POST',path:'/api/v1/reports/export',body:'{\n  "format": "{{format}}"\n}',fields:[['format','xlsx']],pre:['Reporting role'],resp:'{ "fileId": "RPT-9920", "ready": true }',code:'202 Accepted',ms:512,created:'file RPT-9920'},
   ],
 };
+function methodColor(m){return {POST:'#34d399',GET:'#60a5fa',PUT:'#f59e0b',DELETE:'#ef4444'}[m]||'#9fb0c9';}
 
 /* ---------------- render: tabs ---------------- */
 function showTab(t){
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===t));
-  ['overview','mywork','ui','api','data','backlog'].forEach(x=>document.getElementById('t-'+x).classList.toggle('hide',x!==t));
+  ['overview','mywork','ui','api','data','backlog','maint'].forEach(x=>document.getElementById('t-'+x).classList.toggle('hide',x!==t));
   if(t==='mywork') renderMyWork();
   if(t==='backlog') renderBacklog();
+  if(t==='maint') renderMaintenance();
 }
 function setEnv(){const v=document.getElementById('envSel').value;const p=document.getElementById('envSel');
   p.classList.toggle('live',v==='Live');toast('Environment → '+v);}
@@ -614,12 +646,21 @@ function setMode(mode){
 function runHTML(){
   const env=document.getElementById('envSel').value,id=curCase.id;
   if(curCase.st!=='auto') return `<div class="panel" style="background:var(--panel2)"><span class="muted">This case isn't automated yet. Switch to <b>✦ Automate</b> to build it, then run.</span></div>`;
+  const fld='height:30px;background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:0 8px';
   return `<div class="ctl">
     <span class="muted">Environment</span><select>${['Staging','Pre','Live'].map(e=>`<option ${e===env?'selected':''}>${e}</option>`).join('')}</select>
     <span class="muted">Role</span><select><option>Instructor</option><option>Client Admin</option><option>Senior Client Admin</option><option>Learner</option><option>Security Admin</option></select>
     <span class="muted">Test Data</span><select><option>Slide-Library-Data ✓</option><option>my-data.json</option><option>repo defaults</option></select>
     <label class="muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="onfail" checked/> on fail → create bug</label>
-    <div class="sp"></div><button class="btn" onclick="runCase('${id}')">▶ Fetch pre_main &amp; Run</button></div>
+  </div>
+  <div class="ctl" style="margin-top:8px">
+    <span class="b" style="color:var(--acc2)">🧪 TestRail</span>
+    <span class="muted">Ticket ID</span><input id="trTicket" value="${curCase.ticket||''}" placeholder="e.g. 20912" style="width:92px;${fld}"/>
+    <span class="muted">Run ID</span><input id="trRun" value="4396" placeholder="run id" style="width:92px;${fld}"/>
+    <button class="btn ghost sm" onclick="fetchRunCases()" title="List all automated cases in this run/ticket to run them">⤓ Fetch run's cases</button>
+    <label class="muted" style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="trUpdate" checked/> update results in TestRail</label>
+    <div class="sp"></div><button class="btn" onclick="runCase('${id}')">▶ Fetch pre_main &amp; Run</button>
+  </div>
   <div id="runArea"></div>`;
 }
 /* ---- the Automate (authoring) workspace: cases (single/multi) → input → Claude → spec → run → commit → PR ---- */
@@ -640,12 +681,15 @@ function automateHTML(){
     </div>
     <div id="authInput"></div>
     <div class="k muted" style="font-size:11px;text-transform:uppercase;margin:16px 0 6px">③ Run configuration <span style="text-transform:none;color:var(--faint)">— applies to all selected cases</span></div>
-    <div class="grid" style="grid-template-columns:repeat(4,1fr);gap:8px">
-      <div class="ctl" style="padding:7px 10px"><span class="muted">Category</span><select style="flex:1"><option>Smoke</option><option>Regression</option><option>Sanity</option></select></div>
-      <div class="ctl" style="padding:7px 10px"><span class="muted">Env</span><select style="flex:1">${['Staging','Pre','Live'].map(e=>`<option ${e===env?'selected':''}>${e}</option>`).join('')}</select></div>
-      <div class="ctl" style="padding:7px 10px"><span class="muted">Role</span><select style="flex:1"><option>Client Admin</option><option>Learner</option><option>Security Admin</option></select></div>
-      <div class="ctl" style="padding:7px 10px"><span class="muted">Data</span><select style="flex:1"><option>my-data.json ✓</option><option>repo defaults</option></select></div>
+    <div class="grid" style="grid-template-columns:repeat(3,1fr);gap:8px">
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Category</span><select style="flex:1"><option>Regression</option><option>Smoke</option><option>Sanity</option></select></div>
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Environment</span><select style="flex:1">${['Staging','Pre','Live'].map(e=>`<option ${e===env?'selected':''}>${e}</option>`).join('')}</select></div>
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Role</span><select style="flex:1"><option>Instructor</option><option>Client Admin</option><option>Learner</option><option>Security Admin</option></select></div>
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Test Data</span><select style="flex:1"><option>Slide-Library-Data ✓</option><option>my-data.json</option><option>repo defaults</option></select></div>
+      <div class="ctl" style="padding:7px 10px"><span class="muted">🧪 Ticket ID</span><input id="trTicket" value="${(AUTO_LIST[0]&&AUTO_LIST[0].id!=='new')?'20912':''}" placeholder="e.g. 20912" style="flex:1;height:30px;background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:0 8px"/></div>
+      <div class="ctl" style="padding:7px 10px"><span class="muted">Run ID</span><input id="trRun" value="4396" placeholder="run id" style="flex:1;height:30px;background:var(--panel);border:1px solid var(--line);color:var(--txt);border-radius:7px;padding:0 8px"/></div>
     </div>
+    <div class="hint" style="margin-top:6px">On pass, automated results are written to TestRail run #<span id="runHint">4396</span> (execution_method = Auto).</div>
     <div class="row" style="margin-top:16px"><button class="btn" id="genBtn" onclick="generateSpec()">✦ Generate Playwright test (Claude)</button>
       <span class="hint" id="authHint">runs the bis-automation skills locally · writes to your branch only</span></div>
     <div id="genArea"></div>
@@ -672,7 +716,13 @@ function setAuthInput(which){
   const a=document.getElementById('authInput'), c=curCase;
   if(which==='describe'){
     a.innerHTML=`<label class="muted" style="font-size:12px">Tell Claude what to automate (plain English)</label>
-      <textarea id="prompt" style="min-height:96px">${c.id==='new'?'':'Automate C'+c.id+': '+c.t+'.\n'}Login as Client Admin, go to the ${c.module||'module'}, perform the steps from the TestRail case, and assert the expected result is shown.</textarea>
+      <textarea id="prompt" style="min-height:120px">As an Instructor, I want to copy a slide to the Content Library so that I can reuse it in other courses.
+
+Steps:
+1. Open Slide Library
+2. Select a slide
+3. Click "Copy to Library"
+4. Verify the success toast and that the slide count increases</textarea>
       <div class="hint" style="margin-top:6px">⛓ Auto-attached: TestRail steps · preconditions · expected result · prior locators · page-object conventions.</div>`;
   } else if(which==='record'){
     a.innerHTML=`<div class="row"><button class="btn ghost" onclick="recDone()">⏺ Launch Codegen + trace</button>
@@ -694,18 +744,19 @@ function generateSpec(){
   const ga=document.getElementById('genArea'); ga.innerHTML=`<div class="log" id="glog"></div>`;
   const l=document.getElementById('glog');
   const src=authInput==='paste'?'pasted codegen':authInput==='record'?'recording + trace':'your description';
-  const seq=[['dim','$ claude -p "/automate '+AUTO_LIST.map(c=>c.id==='new'?'<new>':'C'+c.id).join(' ')+'"   (cwd=repo · skills: write-playwright-test, locate-best-element)'],
-    ['info','• input: '+src+'  ·  env: '+env+'  ·  '+n+' case'+(n>1?'s':'')]];
+  const seq=[['dim','$ claude -p "/automate '+AUTO_LIST.map(c=>c.id==='new'?'<new>':'C'+c.id).join(' ')+'"'],
+    ['info','▸ Analyzing '+n+' case'+(n>1?'s':'')+'  ·  input: '+src+'  ·  env: '+env],
+    ['info','▸ Generating Playwright specs (skills: write-playwright-test, locate-best-element)']];
   AUTO_LIST.forEach(c=>{const tag=c.id==='new'?'NEW':c.id;
-    seq.push(['info','— C'+tag+'  '+(c.t||'')]);
-    seq.push(['ok','   ✓ wrote tests/'+modName(c)+'/C'+tag+'.spec.ts  ·  verified ✓']);});
+    seq.push(['ok','✓ wrote specs/C'+tag+'.spec.ts — verified']);});
+  seq.push(['ok','✓ All '+n+' spec'+(n>1?'s':'')+' verified successfully']);
   let i=0;(function t(){if(i<seq.length){const[cl,x]=seq[i++];const d=document.createElement('div');d.className=cl;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,360)}
     else{document.getElementById('authHint').textContent='';showGenerated();toast('Generated '+n+' spec'+(n>1?'s':'')+' & verified');}})();
 }
 function showGenerated(){
   const ga=document.getElementById('genArea'), n=AUTO_LIST.length;
   const rows=AUTO_LIST.map(c=>{const tag=c.id==='new'?'NEW':c.id;
-    return `<tr><td class="b">C${tag}</td><td>${c.t||'New automation'}</td><td class="muted" style="font-family:Consolas,monospace;font-size:11.5px">tests/${modName(c)}/C${tag}.spec.ts</td><td><span class="status pass">✓ verified</span></td></tr>`;}).join('');
+    return `<tr><td class="b">C${tag}</td><td>${c.t||'New automation'}</td><td class="muted" style="font-family:Consolas,monospace;font-size:11.5px">specs/C${tag}.spec.ts</td><td><span class="status pass">✓ verified</span></td></tr>`;}).join('');
   const first=AUTO_LIST[0].id==='new'?'NEW':AUTO_LIST[0].id;
   ga.innerHTML+=`<div class="k muted" style="font-size:11px;text-transform:uppercase;margin:14px 0 4px">④ Generated ${n} spec${n>1?'s':''} — review, run, then publish</div>
     <table style="font-size:12.5px"><thead><tr><th>Case</th><th>Title</th><th>Spec file</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table>
@@ -720,6 +771,10 @@ function showGenerated(){
 function runCase(id,ctx){
   const area=document.getElementById('runArea');if(!area)return;
   const fail = ctx!=='gen' && parseInt(id)%2===1; // odd ids "fail" for the demo; generated runs pass
+  const run=(document.getElementById('trRun')||{}).value||'4396';
+  const ticket=(document.getElementById('trTicket')||{}).value||'';
+  const upd=document.getElementById('trUpdate')?document.getElementById('trUpdate').checked:true;
+  const trTxt=upd?('pushed to TestRail run #'+run+(ticket?' (ticket #'+ticket+')':'')):'TestRail update skipped';
   area.innerHTML=`<div class="log" id="log"></div><div class="arts hide" id="arts"></div>`;
   const log=document.getElementById('log');
   const steps=[
@@ -734,34 +789,35 @@ function runCase(id,ctx){
     ['ok','✓ Copied "Copy to Library"'],
     fail?['fail','✗ Assertion failed: Slide count did not increase  (expected 5, actual 4)']:['ok','✓ Slide added to Content Library'],
     ['info','▸ Taking screenshot + video…'],
+    upd?['info','▸ Reporting result to TestRail run #'+run+(ticket?' (ticket #'+ticket+')':'')]:['dim','▸ TestRail update disabled — not reporting'],
   ];
   let i=0;(function tick(){if(i<steps.length){const[c,t]=steps[i++];const d=document.createElement('div');d.className=c;d.textContent='[10:42:'+String(11+(i-1)*2).padStart(2,'0')+'] '+t;log.appendChild(d);log.scrollTop=log.scrollHeight;setTimeout(tick,400)}
-    else{const d=document.createElement('div');d.className=fail?'fail':'ok';d.style.marginTop='8px';d.innerHTML=fail?'● Run completed with failures (11.2s) · pushed to TestRail (status 5)':'● PASSED in 7.4s · pushed to TestRail (status 1)';log.appendChild(d);
+    else{const d=document.createElement('div');d.className=fail?'fail':'ok';d.style.marginTop='8px';d.innerHTML=fail?('● Run completed with failures (11.2s) · '+trTxt+(upd?' · status 5':'')):('● PASSED in 7.4s · '+trTxt+(upd?' · status 1':''));log.appendChild(d);
       const arts=document.getElementById('arts');arts.classList.remove('hide');
       arts.innerHTML=`<span class="art" onclick="toast('open trace.zip')">🧭 trace.zip</span><span class="art" onclick="toast('open video.webm')">🎞 video.webm</span><span class="art" onclick="toast('open screenshot.png')">🖼 screenshot.png</span><span class="art" onclick="toast('error-context.txt')">📄 error-context.txt</span>`;
       const onfail=document.getElementById('onfail');
-      if(fail && onfail && onfail.checked){arts.innerHTML+=`<button class="btn sm" style="margin-left:6px" onclick="toast('Opening Bug Reporter pre-filled: C${id}, env, actual=error, steps from TestRail')">🐞 Create bug</button>`;}
+      if(fail){ showTriage(parseInt(id),'runArea'); }
     }})();
 }
 
 /* ---------------- API automation ---------------- */
 function renderAPITree(){
   const tr=document.getElementById('apiTree');
-  tr.innerHTML=Object.keys(APIS).map(g=>`<div><div class="tnode" onclick="this.nextElementSibling.classList.toggle('hide')">▸ ${g}</div>
-    <div>${APIS[g].map(a=>`<div class="tcase" id="a-${a.id}" onclick="selectAPI('${a.id}')"><span class="badge2 auto" style="background:${a.method==='GET'?'#60a5fa':'#34d399'};color:#06121f">${a.method}</span> ${a.name}</div>`).join('')}</div></div>`).join('');
+  tr.innerHTML=Object.keys(APIS).map(g=>`<div class="modwrap"><div class="tnode" onclick="this.nextElementSibling.classList.toggle('hide')">▸ ${g} <span class="muted" style="font-weight:400;font-size:11px">(${APIS[g].length})</span></div>
+    <div>${APIS[g].map(a=>`<div class="tcase" id="a-${a.id}" onclick="selectAPI('${a.id}')"><span class="badge2" style="background:${methodColor(a.method)};color:#06121f;min-width:46px;text-align:center">${a.method}</span> <span style="font-family:Consolas,monospace;font-size:11.5px">${a.path}</span></div>`).join('')}</div></div>`).join('');
 }
 function selectAPI(id){
   let a;Object.values(APIS).forEach(g=>g.forEach(x=>{if(x.id===id)a=x}));
   document.querySelectorAll('#apiTree .tcase').forEach(e=>e.classList.remove('sel'));
   document.getElementById('a-'+id).classList.add('sel');
   document.getElementById('apiPanel').innerHTML=`
-    <div class="row"><h2 style="margin:0;font-size:18px"><span class="chip" style="color:${a.method==='GET'?'#60a5fa':'#34d399'}">${a.method}</span> ${a.path}</h2>
+    <div class="row"><h2 style="margin:0;font-size:18px"><span class="chip" style="color:${methodColor(a.method)}">${a.method}</span> ${a.path}</h2>
       <div class="sp"></div><span class="muted">${a.name}</span></div>
     <div style="margin-top:10px"><div class="k muted" style="font-size:11px;text-transform:uppercase">Prerequisites</div>
       ${a.pre.map(p=>`<span class="chip" style="margin:4px 6px 0 0"><span style="color:#34d399">✓</span> ${p}</span>`).join('')}</div>
     <div class="meta" style="grid-template-columns:1fr 1fr">
       <div><div class="k">Environment</div><div class="v">${document.getElementById('envSel').value} · base URL internal</div></div>
-      <div><div class="k">Auth</div><div class="v">Bearer ••••••• (role: Client Admin)</div></div>
+      <div><div class="k">Auth</div><div class="v">Bearer Token</div></div>
     </div>
     ${a.body?`<div class="k muted" style="font-size:11px;text-transform:uppercase;margin-bottom:4px">Request body</div><textarea style="min-height:90px">${a.body}</textarea>`:''}
     <div class="k muted" style="font-size:11px;text-transform:uppercase;margin:12px 0 4px">Configurable fields</div>
@@ -778,13 +834,15 @@ function runAPI(id){
   const out=document.getElementById('apiOut');
   out.innerHTML=`<div class="log" id="apilog"><span class="dim">→ ${a.method} ${a.path}</span></div>`;
   setTimeout(()=>{
-    out.innerHTML=`<div class="row" style="margin-top:12px"><span class="status pass">${a.code}</span><span class="muted">· ${a.ms}ms</span>
+    out.innerHTML=`<div class="row" style="margin-top:14px"><span class="status pass">${a.code}</span><span class="muted">· ${a.ms}ms</span>
       <div class="sp"></div><span class="chip" style="color:#34d399">✓ response verified</span></div>
       <div class="k muted" style="font-size:11px;margin:10px 0 4px;text-transform:uppercase">Response</div>
-      <div class="pre">${a.resp}</div>
-      <div class="row" style="margin-top:10px"><span class="chip">📦 data created: ${a.name==='Create User'?'user #88213 (Acme Corp)':a.name==='Bulk Import Users'?'50 users':'submission #5521'}</span>
-        <button class="art" onclick="toast('Saved created ids to my data file')">💾 save ids</button>
-        <span class="art" onclick="toast('error log empty')">📄 error log: —</span></div>`;
+      <div class="pre">${a.resp.replace(/</g,'&lt;')}</div>
+      <div class="grid" style="grid-template-columns:1fr 1fr;gap:10px;margin-top:10px">
+        <div class="ctl" style="padding:9px 11px"><span class="muted">Data created</span><span class="b" style="margin-left:6px">${a.created}</span>
+          ${a.created!=='—'?'<button class="art" style="margin-left:auto" onclick="toast(\'Saved ids to my data file\')">💾 save</button>':''}</div>
+        <div class="ctl" style="padding:9px 11px"><span class="muted">Logs</span><span style="color:#34d399;margin-left:6px">✓ No errors</span></div>
+      </div>`;
     toast('API run complete · '+a.code);
   },700);
 }
@@ -801,7 +859,7 @@ function runDataGen(){
   (function t(){i=Math.min(n,i+Math.ceil(n/20));fill.style.width=(i/n*100)+'%';ctr.textContent=i+' / '+n;
     if(i<n)setTimeout(t,80);else{prog.classList.add('hide');res.classList.remove('hide');document.getElementById('dgDone').textContent=n;
       const tpl=document.getElementById('dgTpl').value;
-      let rows='';for(let k=0;k<Math.min(n,8);k++){rows+=`#${88200+k}  ${tpl.includes('User')?(k%5?'learner':'admin')+(k+1)+'@acme.yopmail.com':tpl+' '+(k+1)}  ✓ created\n`}
+      let rows='';for(let k=0;k<Math.min(n,8);k++){rows+=`#${String(201+k).padStart(5,'0')}  john.dw${k+1}@example.com  ${k%5===4?'Student':'Instructor'}  ✓ created\n`}
       if(n>8)rows+=`… +${n-8} more\n`;
       document.getElementById('dgRows').textContent=rows;
       document.getElementById('dgFoot').textContent='Completed in 1m 42s · API calls '+n+' · Success '+n+' · Failed 0';
@@ -842,10 +900,10 @@ function backlogAutomate(){
 function openSetup(){document.getElementById('setup').classList.add('on');renderSetup(false);document.getElementById('setupLog').innerHTML='';}
 function closeSetup(){document.getElementById('setup').classList.remove('on');}
 function renderSetup(done){
-  document.getElementById('setupList').innerHTML=SETUP_STEPS.map(([n,v])=>`
+  document.getElementById('setupList').innerHTML=SETUP_STEPS.map(([n,v],i)=>`
     <div class="row" style="padding:9px 11px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:var(--panel2)">
       <span class="b">${n}</span><span class="muted" style="margin-left:8px;font-size:12px">${v}</span><div class="sp"></div>
-      ${done?'<span class="chip" style="color:#34d399">✓ installed</span>':'<button class="btn ghost sm" onclick="runSetup()">Install</button>'}</div>`).join('');
+      ${(done||i<4)?'<span class="chip" style="color:#34d399">✓ installed</span>':'<button class="btn ghost sm" style="background:rgba(245,158,11,.15);color:#fbbf24;border-color:rgba(245,158,11,.45)" onclick="runSetup()">Install</button>'}</div>`).join('');
 }
 function runSetup(){
   const btn=document.getElementById('setupBtn');btn.disabled=true;btn.textContent='Installing…';
@@ -854,6 +912,95 @@ function runSetup(){
   let i=0;(function t(){if(i<lines.length){const[c,x]=lines[i++];const d=document.createElement('div');d.className=c;d.textContent=x;log.appendChild(d);log.scrollTop=log.scrollHeight;setTimeout(t,280)}
     else{btn.textContent='✓ Done';btn.disabled=false;renderSetup(true);toast('Environment ready');}})();
 }
+
+/* ---------------- run a whole TestRail run (fetch its automated cases by Run ID) ---------------- */
+function fetchRunCases(){
+  const run=(document.getElementById('trRun')||{}).value||'';
+  const r=RUNS[run], area=document.getElementById('runArea'); if(!area)return;
+  if(!r){area.innerHTML=`<div class="panel" style="background:var(--panel2);margin-top:10px"><span class="muted">No automated cases found for run #${run}. (try 4396)</span></div>`;return;}
+  area.innerHTML=`<div class="panel" style="background:var(--panel2);margin-top:10px">
+    <div class="row"><b>Run #${run}</b> <span class="muted">· ticket #${r.ticket} · ${r.cases.length} automated cases in this run</span>
+      <div class="sp"></div><button class="btn sm" onclick="runRunCases('${run}')">▶ Run all ${r.cases.length}</button></div>
+    <table style="font-size:12.5px;margin-top:8px"><thead><tr><th style="width:22px"><input type="checkbox" checked onclick="document.querySelectorAll('.rc').forEach(c=>c.checked=this.checked)"/></th><th>Case</th><th>Title</th><th>Result</th></tr></thead>
+    <tbody>${r.cases.map(cid=>{const c=findCase(cid);return `<tr><td><input type="checkbox" class="rc" value="${cid}" checked/></td><td class="b">C${cid}</td><td>${c?c.t:'Automated case'}</td><td id="rcs-${cid}" class="muted">queued</td></tr>`;}).join('')}</tbody></table>
+    <div id="runResults" style="margin-top:6px"></div></div>`;
+}
+function runRunCases(run){
+  const ids=[...document.querySelectorAll('.rc')].filter(c=>c.checked).map(c=>+c.value);
+  const res=document.getElementById('runResults'); res.innerHTML='';
+  let i=0;(function next(){
+    if(i>=ids.length){const okc=ids.filter(x=>x%2===0).length, fc=ids.length-okc;
+      res.insertAdjacentHTML('beforeend',`<div class="${fc?'fail':'ok'}" style="margin-top:8px">● Run #${run} done · ${okc} passed · ${fc} failed · results pushed to TestRail (ticket #${RUNS[run].ticket})</div>`);return;}
+    const cid=ids[i++], fail=cid%2!==0;
+    const cell=document.getElementById('rcs-'+cid); if(cell){cell.innerHTML='<span class="spin"></span> running';}
+    setTimeout(()=>{ if(cell) cell.innerHTML=fail?'<span class="status fail">✗ failed</span>':'<span class="status pass">✓ passed</span>';
+      if(fail) showTriage(cid,'runResults'); next();},500);
+  })();
+}
+/* ---------------- failure triage → auto-heal or raise bug (ask when ambiguous) ---------------- */
+function showTriage(cid, where){
+  const ft=failureType(cid), el=document.getElementById(where); if(!el)return;
+  let inner='';
+  if(ft==='script') inner=`Looks like a <b>script / locator drift</b> (code-side), not a product bug — safe to auto-heal.
+    <div class="sp"></div><button class="btn sm" onclick="autoHeal(${cid},'${where}')">✦ Auto-heal</button>
+    <button class="btn ghost sm" onclick="toast('Bug Reporter pre-filled for C${cid}')">🐞 It's a real bug</button>`;
+  else if(ft==='bug') inner=`This looks like a <b>real product change / bug</b> — recommend raising a bug for the dev team.
+    <div class="sp"></div><button class="btn sm" onclick="toast('Bug Reporter pre-filled for C${cid}')">🐞 Create bug</button>
+    <button class="btn ghost sm" onclick="autoHeal(${cid},'${where}')">it's a script issue → heal</button>`;
+  else inner=`<b>Ambiguous</b> — Claude can't tell if it's a product bug or a script issue. <b>Please confirm:</b>
+    <div class="sp"></div><button class="btn ghost sm" onclick="toast('Bug Reporter pre-filled for C${cid}')">It's a real bug</button>
+    <button class="btn sm" onclick="autoHeal(${cid},'${where}')">Script issue → heal</button>`;
+  el.insertAdjacentHTML('beforeend',`<div class="ctl" id="tri-${cid}" style="margin-top:8px;flex-wrap:wrap;background:rgba(124,58,237,.10);border-color:rgba(124,58,237,.45)">
+    <span class="b" style="color:var(--violet)">🤖 Claude triage · C${cid}</span> <span style="flex:1;min-width:200px">${inner}</span></div>`);
+}
+function autoHeal(cid, where){
+  const tri=document.getElementById('tri-'+cid); if(tri) tri.remove();
+  const el=document.getElementById(where);
+  const log=document.createElement('div');log.className='log';log.style.marginTop='8px';el.appendChild(log);
+  const lines=[['dim','$ claude -p "/heal C'+cid+'"  (skill: playwright-test-heal)'],
+    ['info','▸ reading trace.zip + error-context.md'],
+    ['info','▸ root cause: locator drift — button[name="Copy"] → getByRole("button",{ name:"Copy to Library" })'],
+    ['ok','✓ patched specs/C'+cid+'.spec.ts (selector moved to page object)'],
+    ['ok','✓ re-ran once headless → green'],
+    ['ok','● Healed — queued for HUMAN re-verify before it counts as fixed']];
+  let i=0;(function t(){if(i<lines.length){const[c,x]=lines[i++];const d=document.createElement('div');d.className=c;d.textContent=x;log.appendChild(d);log.scrollTop=log.scrollHeight;setTimeout(t,360)}
+    else{ if(!HEAL_QUEUE.some(h=>h.id===cid)) HEAL_QUEUE.unshift({id:cid,m:(findCase(cid)||{}).module||'—',status:'awaiting_verify',reason:'Locator drift — auto-healed by Claude',healedOn:'just now'});
+      toast('C'+cid+' healed — added to Maintenance for human re-verify');}})();
+}
+/* ---------------- maintenance tab ---------------- */
+const MSTAT={needs_triage:['Needs triage','#f59e0b'],healing:['Auto-healing…','#3b82f6'],awaiting_verify:['Healed — awaiting verify','#a78bfa'],deprecated:['Deprecated','#ef4444'],verified:['✓ Verified','#34d399']};
+function maintAction(x){
+  if(x.status==='awaiting_verify') return `<button class="btn sm" onclick="verifyHeal(${x.id})">▶ Re-run to confirm</button>`;
+  if(x.status==='needs_triage') return `<button class="btn ghost sm" onclick="manualTriage(${x.id})">Triage with Claude</button>`;
+  if(x.status==='healing') return `<span class="muted">healing…</span>`;
+  if(x.status==='deprecated') return `<button class="btn ghost sm" onclick="toast('Flagged for removal')">Review</button>`;
+  return `<span class="status pass">✓ done</span>`;
+}
+function renderMaintenance(){
+  const el=document.getElementById('t-maint'); if(!el)return;
+  const c={needs_triage:0,healing:0,awaiting_verify:0,deprecated:0,verified:0};
+  HEAL_QUEUE.forEach(x=>c[x.status]=(c[x.status]||0)+1);
+  el.innerHTML=`
+    <div class="card" style="margin-bottom:14px"><div class="row"><div>
+      <h3 style="margin:0">Maintenance — failures, auto-heal &amp; human re-verify</h3>
+      <div class="muted" style="font-size:12px">Failed automated runs are triaged by Claude → <b>auto-heal</b> code/locator drift (ambiguous cases ask you) → a <b>human re-runs</b> to confirm the fix before it's marked healthy.</div></div></div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:14px">
+        <div class="kpi"><div class="accent" style="background:#f59e0b"></div><div class="big">${c.needs_triage}</div><div class="lbl">Needs triage</div></div>
+        <div class="kpi"><div class="accent" style="background:#3b82f6"></div><div class="big">${c.healing}</div><div class="lbl">Under auto-heal</div></div>
+        <div class="kpi"><div class="accent" style="background:#a78bfa"></div><div class="big">${c.awaiting_verify}</div><div class="lbl">Awaiting human verify</div></div>
+        <div class="kpi"><div class="accent" style="background:#ef4444"></div><div class="big">${c.deprecated}</div><div class="lbl">Deprecated</div></div>
+        <div class="kpi"><div class="accent" style="background:#34d399"></div><div class="big">${c.verified}</div><div class="lbl">Verified this week</div></div>
+      </div></div>
+    <div class="card"><div class="row" style="margin-bottom:8px"><h3 style="margin:0">Cases in maintenance</h3><span class="muted" style="font-size:12px">auto-heal handles code/locator drift; product changes become bugs; humans confirm every fix</span></div>
+      <table style="font-size:12.5px"><thead><tr><th>Case</th><th>Module</th><th>Status</th><th>Reason</th><th>Healed</th><th>Action</th></tr></thead>
+      <tbody>${HEAL_QUEUE.map(x=>{const[lbl,col]=MSTAT[x.status];return `<tr id="mrow-${x.id}"><td class="b">C${x.id}</td><td>${x.m}</td><td><span class="chip" style="color:${col}">${lbl}</span></td><td class="muted">${x.reason}</td><td class="muted">${x.healedOn}</td><td>${maintAction(x)}</td></tr>`;}).join('')}</tbody></table>
+    </div>`;
+}
+function verifyHeal(id){
+  toast('Re-running C'+id+' to confirm the fix…');
+  setTimeout(()=>{const x=HEAL_QUEUE.find(h=>h.id===id);if(x){x.status='verified';x.reason='Human-confirmed — fix works; pushed to TestRail';x.healedOn='just now';}renderMaintenance();toast('C'+id+' verified ✓ — back to Healthy');},1500);
+}
+function manualTriage(id){const x=HEAL_QUEUE.find(h=>h.id===id);if(x){x.status='awaiting_verify';x.reason='Auto-healed after triage — awaiting human re-verify';x.healedOn='just now';}renderMaintenance();toast('Claude triaged C'+id+' → auto-healed; awaiting human verify');}
 
 /* init */
 renderDiscovery();renderUITree();renderAPITree();renderBacklog();
