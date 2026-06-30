@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 # --------------------------------------------------------------------------- config
 APP_NAME = "bis-bug-reporter"
-APP_VERSION = "1.2.0"          # bump on each packaged release; compared against the dashboard manifest
+APP_VERSION = "1.4.2"          # bump on each packaged release; compared against the dashboard manifest
 PORT = int(os.environ.get("BUG_REPORTER_PORT", "8765"))
 
 DEFAULT_REDMINE_URL = "https://redmine.bissafety.app"
@@ -52,6 +52,7 @@ DEFAULT_CONFIG = {
     "testrail_api_key": "",        # per-user TestRail API key (local only; falls back to shared)
     "redmine_url": DEFAULT_REDMINE_URL,
     "dashboard_url": DEFAULT_DASHBOARD_URL,
+    "auto_update": True,           # silently install a newer version on launch (background)
     # Per-user defaults so repetitive required fields are pre-filled.
     "defaults": {
         "platform": "Web",
@@ -225,18 +226,25 @@ def update_apply():
     # from Explorer; if it doesn't pop back up, the user just reopens — the new version is already in
     # place). `ping` is used for the waits so it works without a stdin/console.
     bat = os.path.join(exe_dir, "_bug_reporter_update.bat")
+    cur_name = os.path.basename(cur_exe)
     script = (
         "@echo off\r\n"
         f'set "CUR={cur_exe}"\r\n'
         f'set "NEW={new_exe}"\r\n'
         "ping 127.0.0.1 -n 3 >nul\r\n"
+        # force-close any lingering app instance so the .exe file unlocks for the swap
+        f'taskkill /f /im "{cur_name}" >nul 2>&1\r\n'
+        "ping 127.0.0.1 -n 2 >nul\r\n"
+        "set /a tries=0\r\n"
         ":retry\r\n"
         'move /y "%NEW%" "%CUR%" >nul 2>&1\r\n'
         "if errorlevel 1 (\r\n"
-        "  ping 127.0.0.1 -n 2 >nul\r\n"
-        "  goto retry\r\n"
+        "  set /a tries+=1\r\n"
+        '  if %tries% lss 40 ( ping 127.0.0.1 -n 2 >nul & goto retry )\r\n'
         ")\r\n"
-        'start "" "%CUR%"\r\n'
+        # relaunch via Explorer — launches in the user session, far more reliable than `start` from a
+        # detached console (which was the part that previously failed to reopen the app)
+        'start "" explorer.exe "%CUR%"\r\n'
         'del "%~f0"\r\n'
     )
     try:
@@ -270,6 +278,7 @@ def get_config():
         "tester_name": cfg.get("tester_name", ""),
         "redmine_url": cfg.get("redmine_url", DEFAULT_REDMINE_URL),
         "dashboard_url": cfg.get("dashboard_url", DEFAULT_DASHBOARD_URL),
+        "auto_update": cfg.get("auto_update", True),
         "defaults": cfg.get("defaults", {}),
         "key_set": bool(key),
         "key_tail": ("…" + key[-4:]) if len(key) >= 4 else "",
@@ -289,6 +298,7 @@ class ConfigBody(BaseModel):
     testrail_api_key: str = ""  # blank = keep existing
     redmine_url: str = DEFAULT_REDMINE_URL
     dashboard_url: str = DEFAULT_DASHBOARD_URL
+    auto_update: bool | None = None     # None = keep existing
     defaults: dict = {}
 
 
@@ -310,6 +320,8 @@ def post_config(body: ConfigBody):
     cfg = load_config()
     cfg["redmine_url"] = (body.redmine_url or DEFAULT_REDMINE_URL).strip().rstrip("/")
     cfg["dashboard_url"] = (body.dashboard_url or DEFAULT_DASHBOARD_URL).strip().rstrip("/")
+    if body.auto_update is not None:
+        cfg["auto_update"] = bool(body.auto_update)
     if isinstance(body.defaults, dict):
         cfg["defaults"].update(body.defaults)
 
@@ -1098,6 +1110,75 @@ def my_retests(ticket_id: int | None = None):
         return (0, int(k)) if k.isdigit() else (1, k)
     grouped = [{"ticket_id": k, "bugs": v} for k, v in sorted(groups.items(), key=lambda kv: _sortkey(kv[0]), reverse=True)]
     return {"count": len(out), "issues": out, "groups": grouped}
+
+
+@app.get("/my-created")
+def my_created(ticket_id: int | None = None):
+    """Bugs THIS tester created via the app (tracked on the dashboard), enriched with their current
+    Redmine status and grouped by PM Ticket ID. Flags the ones now pending a retest."""
+    cfg = load_config()
+    rep = cfg.get("tester_name", "")
+    dash = cfg.get("dashboard_url", DEFAULT_DASHBOARD_URL)
+    url = cfg.get("redmine_url", DEFAULT_REDMINE_URL)
+    key = cfg.get("redmine_api_key", "")
+
+    # 1) app-created bug ids for this tester (from the dashboard usage log)
+    events = []
+    try:
+        r = requests.get(f"{dash}/bug-reporter/my-bugs", params=({"reporter": rep} if rep else {}), timeout=20)
+        if r.status_code == 200:
+            events = r.json().get("bugs") or []
+    except Exception:
+        events = []
+    ev_ticket = {}
+    for e in events:
+        if e.get("bug_id"):
+            ev_ticket[int(e["bug_id"])] = e.get("ticket_id")
+    bug_ids = list(ev_ticket.keys())
+    if ticket_id:
+        bug_ids = [b for b in bug_ids if str(ev_ticket.get(b) or "") == str(ticket_id)]
+    if not bug_ids:
+        return {"count": 0, "groups": []}
+
+    # 2) current state from Redmine, batched by issue_id
+    issues = {}
+    if key:
+        for s in range(0, len(bug_ids), 100):
+            ids = bug_ids[s:s + 100]
+            try:
+                rr = requests.get(f"{url}/issues.json", headers={"X-Redmine-API-Key": key},
+                                  params={"issue_id": ",".join(map(str, ids)), "status_id": "*", "limit": 100}, timeout=25)
+                if rr.status_code == 200:
+                    for i in rr.json().get("issues", []):
+                        cfs = {c.get("name"): c.get("value") for c in i.get("custom_fields", [])}
+                        issues[i.get("id")] = {
+                            "id": i.get("id"), "subject": i.get("subject"),
+                            "status": (i.get("status") or {}).get("name"),
+                            "severity": cfs.get("Severity"), "environment": cfs.get("Environment"),
+                            "ticket_id": cfs.get("Ticket ID") or ev_ticket.get(i.get("id")),
+                            "updated_on": i.get("updated_on"), "url": f"{url}/issues/{i.get('id')}",
+                        }
+            except Exception:
+                pass
+
+    RETEST_NAMES = {"released to qa", "reopened"}
+    rows = []
+    for bid in bug_ids:
+        it = issues.get(bid) or {"id": bid, "subject": "(could not load from Redmine)", "status": None,
+                                 "severity": None, "environment": None, "ticket_id": ev_ticket.get(bid),
+                                 "url": f"{url}/issues/{bid}"}
+        it["needs_retest"] = (it.get("status") or "").strip().lower() in RETEST_NAMES
+        rows.append(it)
+
+    groups = {}
+    for o in rows:
+        tid = str(o.get("ticket_id") or "").strip() or "No ticket"
+        groups.setdefault(tid, []).append(o)
+
+    def _sk(k):
+        return (0, int(k)) if k.isdigit() else (1, k)
+    grouped = [{"ticket_id": k, "bugs": v} for k, v in sorted(groups.items(), key=lambda kv: _sk(kv[0]), reverse=True)]
+    return {"count": len(rows), "groups": grouped}
 
 
 @app.get("/impact-stats")

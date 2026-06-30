@@ -149,6 +149,34 @@ def _already_has_plan(ticket_id):
         return False  # if unsure, let the generator's own "never duplicate" hard-rule decide
 
 
+# Mobile tickets' plans live in TestRail project 14 (SafeTapp), not the Web project 18. The generator,
+# its MCP server and the TS client all read TESTRAIL_PROJECT_ID/TESTRAIL_SUITE_ID from the env, so we
+# just set them per-ticket before launching `claude`. Web (anything else) keeps the 18/137 defaults.
+MOBILE_PROJECT_ID = "14"
+MOBILE_SUITE_ID = "118"
+
+
+def _is_mobile_ticket(ticket_id):
+    """True when the ticket's PM subdepartment is 'Mobile' (the routing signal for project 14)."""
+    try:
+        with urllib.request.urlopen(f"{DASHBOARD_BASE}/live/ticket-lookup?ticket_id={ticket_id}", timeout=20) as r:
+            info = json.loads(r.read().decode())
+        sd = (info.get("subdepartment") or info.get("module") or "").strip().lower()
+        return sd == "mobile"
+    except Exception:
+        return False
+
+
+def _ticket_env(ticket_id):
+    """Subprocess env for the generator: project 14 / suite 118 for Mobile tickets, else inherit."""
+    env = dict(os.environ)
+    if _is_mobile_ticket(ticket_id):
+        env["TESTRAIL_PROJECT_ID"] = MOBILE_PROJECT_ID
+        env["TESTRAIL_SUITE_ID"] = MOBILE_SUITE_ID
+        print(f"  [mobile] {ticket_id}: routing TestRail to project {MOBILE_PROJECT_ID} / suite {MOBILE_SUITE_ID} (SafeTapp)")
+    return env
+
+
 _PM_CREDS = None
 
 
@@ -456,7 +484,7 @@ def process_ticket(ticket_id, dry_run=False):
     _report(ticket_id, "generating")
     try:
         proc = subprocess.run(cmd, cwd=BIS_AUTOMATION_DIR, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                              timeout=PER_TICKET_TIMEOUT)
+                              env=_ticket_env(ticket_id), timeout=PER_TICKET_TIMEOUT)
     except subprocess.TimeoutExpired:
         _report(ticket_id, "error", error=f"timed out after {PER_TICKET_TIMEOUT}s")
         print(f"  [fail] {ticket_id}: timed out")

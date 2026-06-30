@@ -1,5 +1,5 @@
 {
-  "version": "1.3.0",
-  "notes": "Bulk now supports TestRail too: per-bug Case ID with 'mark Failed' and 'create a case & add to plan', plus one-click toggles to fail every matched case or create cases for all bugs without an id. Also: icon-based menus, a cleaner aligned header, bulk parent-task mapping, and the in-app updater.",
-  "updated_on": "2026-06-29"
+  "version": "1.4.2",
+  "notes": "Auto-update: the app now installs new releases automatically in the background the next time you open it (no more clicking Update) — you can turn this off in Settings. Also includes the reliable updater (force-close, swap, auto-reopen), the bulk progress bar with created-bug links grouped by ticket, and the Retest tab's 'Bugs I created (via app)' view.",
+  "updated_on": "2026-06-30"
 }

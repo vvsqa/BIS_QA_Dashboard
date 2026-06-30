@@ -369,20 +369,28 @@ try{ document.documentElement.setAttribute('data-theme', localStorage.getItem('b
       </div>
       <div class="row">
         <button class="btn" id="createAllBtn" onclick="createAll()">✓ Create all selected</button>
-        <button class="iconbtn" onclick="renderBulk([]);document.getElementById('bulkActions').style.display='none'">Clear results</button>
+        <button class="iconbtn" onclick="renderBulk([]);document.getElementById('bulkActions').style.display='none';document.getElementById('bulkCreated').innerHTML='';document.getElementById('bulkProgWrap').style.display='none'">Clear results</button>
         <span class="src" id="createAllMsg" style="margin-left:auto"></span>
       </div>
+      <div id="bulkProgWrap" style="display:none;margin-top:10px">
+        <div style="height:8px;background:var(--chip);border-radius:6px;overflow:hidden"><div id="bulkProgBar" style="height:100%;width:0%;background:var(--acc2);transition:width .2s"></div></div>
+      </div>
+      <div id="bulkCreated" style="margin-top:12px"></div>
     </div>
   </div>
 
   <!-- ============================ RETEST ============================ -->
   <div id="viewRetest" style="display:none">
     <div class="card">
-      <h2>My pending retests <span class="src">(bugs dev released back to you)</span></h2>
+      <div class="row" style="gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <button class="btn ghost on" id="rtModePending" onclick="setRetestMode('pending')">↻ Pending retests</button>
+        <button class="btn ghost" id="rtModeCreated" onclick="setRetestMode('created')">🐞 Bugs I created (via app)</button>
+      </div>
+      <h2 id="rtTitle">My pending retests <span class="src">(bugs dev released back to you)</span></h2>
       <div class="row" style="margin-bottom:12px">
-        <input id="rtTicket" type="number" placeholder="Filter by Ticket ID (optional)" style="max-width:240px" onkeydown="if(event.key==='Enter')loadRetests()"/>
-        <button class="btn ghost" onclick="loadRetests()">Refresh</button>
-        <button class="iconbtn" onclick="document.getElementById('rtTicket').value='';loadRetests()">Clear</button>
+        <input id="rtTicket" type="number" placeholder="Filter by Ticket ID (optional)" style="max-width:240px" onkeydown="if(event.key==='Enter')loadRetestView()"/>
+        <button class="btn ghost" onclick="loadRetestView()">Refresh</button>
+        <button class="iconbtn" onclick="document.getElementById('rtTicket').value='';loadRetestView()">Clear</button>
         <span class="src" id="rtCount" style="margin-left:auto"></span>
       </div>
       <div class="rt" id="rtList"><div class="empty">Loading…</div></div>
@@ -423,6 +431,7 @@ try{ document.documentElement.setAttribute('data-theme', localStorage.getItem('b
       <div><label>Redmine URL</label><input id="cf_redmine"/></div>
       <div><label>Dashboard URL (for AI)</label><input id="cf_dash"/></div>
     </div>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:12px;color:var(--txt)"><input type="checkbox" id="cf_auto" style="width:auto"/> Automatically install updates in the background <span class="src">(recommended — keeps everyone on the latest version)</span></label>
     <div class="row" style="margin-top:14px">
       <button class="btn" id="saveSetBtn" onclick="saveSettings()">Save</button>
       <button class="btn ghost" onclick="closeSettings()">Close</button>
@@ -470,7 +479,8 @@ async function boot(){
   }
   if(!CFG.key_set){ openSettings(); }
   try{ const vv=await (await fetch('/version')).json(); const vc=$('verChip'); if(vc) vc.textContent='v'+(vv.version||'?'); }catch(e){ const vc=$('verChip'); if(vc) vc.style.display='none'; }
-  checkUpdate();
+  await checkUpdate();
+  maybeAutoUpdate();
 }
 
 /* ---- self-update ---- */
@@ -491,21 +501,44 @@ async function checkUpdate(){
     }
   }catch(e){ /* offline / older server — silently skip */ }
 }
-async function applyUpdate(){
+async function applyUpdate(silent){
   if(!UPDATE||!UPDATE.available) return;
   const b=$('updateBtn');
-  if(!confirm('Update BIS Bug Reporter to '+UPDATE.latest+'?\n\n'+(UPDATE.notes||'')+'\n\nThe app will download the new version and restart.')) return;
-  b.disabled=true; b.textContent='⬇ Downloading…';
+  if(!silent && !confirm('Update BIS Bug Reporter to '+UPDATE.latest+'?\n\n'+(UPDATE.notes||'')+'\n\nThe app will download the new version and restart.')) return;
+  if(silent) showUpdateOverlay(UPDATE.latest);   // background update: show the screen straight away
+  if(b){ b.disabled=true; b.textContent='⬇ Downloading…'; }
   try{
     const r=await fetch('/update/apply',{method:'POST'});
     const d=await r.json();
     if(!r.ok) throw new Error(d.detail||r.statusText);
-    b.textContent='✓ Updating…';
-    toast('Installing v'+d.version+'. The app will close to finish — if it doesn\'t reopen on its own, just reopen it (your settings are kept).','ok');
+    showUpdateOverlay(d.version||UPDATE.latest);
   }catch(e){
-    b.disabled=false; b.textContent='⬆ Update to '+UPDATE.latest;
-    toast('Update failed: '+(e.message||e),'bad');
+    if(b){ b.disabled=false; b.textContent='⬆ Update to '+UPDATE.latest; }
+    hideUpdateOverlay();
+    if(!silent) toast('Update failed: '+(e.message||e),'bad');
+    // silent: stay on the current version and let the user work; the manual Update button remains
   }
+}
+// On launch: silently install a newer packaged version in the background (unless turned off in Settings).
+function maybeAutoUpdate(){
+  if(UPDATE && UPDATE.available && UPDATE.frozen && (CFG.auto_update!==false)){
+    applyUpdate(true);
+  }
+}
+function hideUpdateOverlay(){ const o=document.getElementById('updOverlay'); if(o) o.remove(); }
+// Full-screen, persistent message shown while the app swaps the exe and restarts. The server is about
+// to exit, so this is the LAST thing rendered — it stays on screen, making the close/reopen expected
+// (not a frozen 'Updating…'). Reopen is automatic via Explorer; the note covers the rare miss.
+function showUpdateOverlay(ver){
+  let o=document.getElementById('updOverlay');
+  if(!o){ o=document.createElement('div'); o.id='updOverlay'; document.body.appendChild(o); }
+  o.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(8,12,20,.97);display:flex;align-items:center;justify-content:center;text-align:center;padding:30px';
+  o.innerHTML='<div style="max-width:500px">'+
+    '<div style="font-size:44px">⬇️</div>'+
+    '<h2 style="color:var(--acc2);margin:12px 0">Installing v'+ver+'…</h2>'+
+    '<p style="color:var(--txt);font-size:15px;line-height:1.6">The app will <b>close in a moment</b> to finish updating, then <b>reopen automatically</b> in a few seconds.</p>'+
+    '<p style="color:var(--muted);font-size:13px;line-height:1.6">This window may freeze briefly while it swaps — that\'s normal. If the app doesn\'t reopen within ~15 seconds, just open <b>BIS Bug Reporter</b> again from your Desktop or Start Menu.<br>Your settings and API keys are kept.</p>'+
+    '<div style="margin-top:16px"><span class="spin"></span></div></div>';
 }
 
 function ticketTouched(){ clearTimeout(window._tt); window._tt=setTimeout(fetchTicketTitle,500); }
@@ -844,6 +877,8 @@ async function createAll(){
   const idxs=BULK.map((_,i)=>i).filter(i=>$('b'+i+'_on') && $('b'+i+'_on').checked);
   if(!idxs.length){ toast('No bugs selected.','bad'); return; }
   const btn=$('createAllBtn'); btn.disabled=true;
+  const created=[];
+  $('bulkProgWrap').style.display=''; $('bulkProgBar').style.width='0%'; $('bulkCreated').innerHTML='';
   for(const i of idxs){
     const st=$('b'+i+'_st'); st.innerHTML='<span class="spin"></span>';
     const g=(s)=>($('b'+i+'_'+s)?$('b'+i+'_'+s).value.trim():'');
@@ -875,12 +910,31 @@ async function createAll(){
       if(d.testcase && d.testcase.ok && d.testcase.case_id && $('b'+i+'_case')){ $('b'+i+'_case').value=d.testcase.case_id; syncBulkCase(i); }
       if($('b'+i+'_on')) $('b'+i+'_on').checked=false;
       if((d.testrail&&!d.testrail.ok)||(d.testcase&&!d.testcase.ok)) st.style.color='#fbbf24';
+      created.push({id:d.id, url:d.url, ticket:parseInt(g('ticket'))||null});
       ok++;
     }catch(e){ st.textContent='✗ '+(e.message||e); st.style.color='#fca5a5'; fail++; }
     done++; $('createAllMsg').textContent=done+'/'+idxs.length+' processed';
+    $('bulkProgBar').style.width=Math.round(done/idxs.length*100)+'%';
   }
   btn.disabled=false;
+  renderBulkCreated(created);
   toast('Created '+ok+(fail?(' · '+fail+' failed/skipped'):'')+'.', fail?'bad':'ok');
+}
+// After a bulk run: the created bugs as clickable links, grouped by ticket.
+function renderBulkCreated(created){
+  const wrap=$('bulkCreated'); if(!wrap) return;
+  if(!created.length){ wrap.innerHTML=''; return; }
+  const groups={};
+  created.forEach(c=>{ const k=c.ticket?('#'+c.ticket):'No ticket'; (groups[k]=groups[k]||[]).push(c); });
+  let h='<div class="card" style="margin:0"><h2 style="margin:0 0 8px">✓ Created bugs <span class="src">('+created.length+', grouped by ticket)</span></h2>';
+  Object.keys(groups).sort().forEach(k=>{
+    h+='<div style="margin:10px 0 4px;font-weight:700;color:var(--acc2);font-size:13px;border-bottom:1px solid var(--line);padding-bottom:4px">Ticket '+k+' <span class="src">('+groups[k].length+' bug'+(groups[k].length===1?'':'s')+')</span></div>';
+    h+='<div class="row" style="gap:8px;flex-wrap:wrap;margin-top:6px">';
+    groups[k].forEach(c=>{ h+='<a class="sev" style="background:var(--chip);padding:4px 10px;text-decoration:none" href="'+c.url+'" target="_blank">#'+c.id+'</a>'; });
+    h+='</div>';
+  });
+  h+='</div>';
+  wrap.innerHTML=h;
 }
 
 /* ---- retests ---- */
@@ -893,8 +947,43 @@ function showTab(t){
   $('viewBulk').style.display = t==='bulk'?'':'none';
   $('viewRetest').style.display = t==='retest'?'':'none';
   if($('viewImpact')) $('viewImpact').style.display = t==='impact'?'':'none';
-  if(t==='retest') loadRetests();
+  if(t==='retest') loadRetestView();
   if(t==='impact') loadImpact();
+}
+var RETEST_MODE='pending';
+function setRetestMode(m){
+  RETEST_MODE=m;
+  $('rtModePending').classList.toggle('on',m==='pending');
+  $('rtModeCreated').classList.toggle('on',m==='created');
+  $('rtTitle').innerHTML = (m==='created')
+    ? 'Bugs I created via the app <span class="src">(grouped by ticket · ↻ = now pending retest)</span>'
+    : 'My pending retests <span class="src">(bugs dev released back to you)</span>';
+  loadRetestView();
+}
+function loadRetestView(){ return RETEST_MODE==='created' ? loadCreated() : loadRetests(); }
+// shared: render bug groups (by ticket) into the retest list
+function renderGroups(groups, opts){
+  opts=opts||{}; const list=$('rtList');
+  if(!groups.length){ list.innerHTML='<div class="empty">'+(opts.empty||'Nothing here.')+'</div>'; return; }
+  list.innerHTML='';
+  groups.forEach(g=>{
+    const hdr=document.createElement('div');
+    hdr.style.cssText='margin:14px 0 6px;font-weight:700;color:var(--acc2);font-size:13px;border-bottom:1px solid var(--line);padding-bottom:5px';
+    const label=(g.ticket_id==='No ticket')?'No ticket':('Ticket #'+g.ticket_id);
+    hdr.innerHTML=label+' <span class="src">('+g.bugs.length+' bug'+(g.bugs.length===1?'':'s')+(opts.suffix||'')+')</span>';
+    list.appendChild(hdr);
+    g.bugs.forEach(i=>{
+      const el=document.createElement('div'); el.className='item';
+      const badge=(opts.showRetest && i.needs_retest)?'<span class="sev" style="background:#7c2d12;color:#fed7aa">↻ retest</span>':'';
+      el.innerHTML='<span class="id">#'+i.id+'</span>'+
+        '<span class="sev '+(i.severity||'')+'">'+(i.severity||'—')+'</span>'+
+        '<span class="sub" title="'+(i.subject||'').replace(/"/g,'&quot;')+'">'+(i.subject||'')+'</span>'+
+        badge+
+        '<span class="st">'+(i.status||'')+(i.environment?(' · '+i.environment):'')+'</span>';
+      el.onclick=()=>window.open(i.url,'_blank');
+      list.appendChild(el);
+    });
+  });
 }
 async function loadImpact(){
   const wrap=$('impactBody'); wrap.innerHTML='<div class="empty"><span class="spin"></span> Loading…</div>';
@@ -935,33 +1024,27 @@ async function loadRetests(){
     const d=await r.json();
     if(!r.ok) throw new Error(d.detail||r.statusText);
     $('rtCount').textContent=d.count+' bug'+(d.count===1?'':'s')+' you reported, released back for retest';
-    const groups=d.groups||[];
-    if(!groups.length){ list.innerHTML='<div class="empty">🎉 Nothing pending retest'+(tid?(' for ticket '+tid):'')+'.</div>'; return; }
-    list.innerHTML='';
-    groups.forEach(g=>{
-      const hdr=document.createElement('div');
-      hdr.style.cssText='margin:14px 0 6px;font-weight:700;color:var(--acc2);font-size:13px;border-bottom:1px solid var(--line);padding-bottom:5px';
-      const label=(g.ticket_id==='No ticket')?'No ticket':('Ticket #'+g.ticket_id);
-      hdr.innerHTML=label+' <span class="src">('+g.bugs.length+' bug'+(g.bugs.length===1?'':'s')+' released to QA)</span>';
-      list.appendChild(hdr);
-      g.bugs.forEach(i=>{
-        const el=document.createElement('div'); el.className='item';
-        el.innerHTML='<span class="id">#'+i.id+'</span>'+
-          '<span class="sev '+(i.severity||'')+'">'+(i.severity||'—')+'</span>'+
-          '<span class="sub" title="'+(i.subject||'').replace(/"/g,'&quot;')+'">'+(i.subject||'')+'</span>'+
-          '<span class="st">'+(i.status||'')+(i.environment?(' · '+i.environment):'')+'</span>';
-        el.onclick=()=>window.open(i.url,'_blank');
-        list.appendChild(el);
-      });
-    });
+    renderGroups(d.groups||[], {empty:'🎉 Nothing pending retest'+(tid?(' for ticket '+tid):'')+'.', suffix:' released to QA'});
+  }catch(e){ list.innerHTML='<div class="empty" style="color:#fca5a5">'+(e.message||e)+'</div>'; }
+}
+async function loadCreated(){
+  const tid=val('rtTicket'); const list=$('rtList');
+  list.innerHTML='<div class="empty"><span class="spin"></span> Loading…</div>'; $('rtCount').textContent='';
+  try{
+    const r=await fetch('/my-created'+(tid?('?ticket_id='+encodeURIComponent(tid)):''));
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail||r.statusText);
+    const pend=(d.groups||[]).reduce((n,g)=>n+g.bugs.filter(b=>b.needs_retest).length,0);
+    $('rtCount').textContent=d.count+' bug'+(d.count===1?'':'s')+' created via the app'+(pend?(' · '+pend+' pending retest'):'');
+    renderGroups(d.groups||[], {empty:'No bugs created via the app'+(tid?(' for ticket '+tid):'')+' yet.', suffix:' created', showRetest:true});
   }catch(e){ list.innerHTML='<div class="empty" style="color:#fca5a5">'+(e.message||e)+'</div>'; }
 }
 
 /* ---- settings ---- */
-function openSettings(){ $('cf_redmine').value=CFG.redmine_url||''; $('cf_dash').value=CFG.dashboard_url||''; $('cf_key').value=''; $('cf_jam').value=''; $('cf_tremail').value=CFG.testrail_email||''; $('cf_trkey').value=''; $('cf_whoami').textContent=CFG.tester_name?('✓ '+CFG.tester_name):'— your name is fetched automatically from this key —'; $('keyState').textContent=CFG.key_set?('Key set ('+CFG.key_tail+'). Leave blank to keep.'):'No key set yet — paste your Redmine API key.'; $('jamState').textContent=CFG.jam_set?('Jam token set ('+CFG.jam_tail+'). Leave blank to keep.'):'No Jam token yet (optional — needed only for 🎥 Load from Jam).'; if($('trState')) $('trState').textContent=CFG.testrail_set?('TestRail key set ('+CFG.testrail_tail+'). Leave blank to keep.'):'Optional — set it to fail cases under your own name (else the shared key is used).'; $('setMsg').textContent=''; $('settings').classList.add('show'); }
+function openSettings(){ $('cf_redmine').value=CFG.redmine_url||''; $('cf_dash').value=CFG.dashboard_url||''; if($('cf_auto')) $('cf_auto').checked=(CFG.auto_update!==false); $('cf_key').value=''; $('cf_jam').value=''; $('cf_tremail').value=CFG.testrail_email||''; $('cf_trkey').value=''; $('cf_whoami').textContent=CFG.tester_name?('✓ '+CFG.tester_name):'— your name is fetched automatically from this key —'; $('keyState').textContent=CFG.key_set?('Key set ('+CFG.key_tail+'). Leave blank to keep.'):'No key set yet — paste your Redmine API key.'; $('jamState').textContent=CFG.jam_set?('Jam token set ('+CFG.jam_tail+'). Leave blank to keep.'):'No Jam token yet (optional — needed only for 🎥 Load from Jam).'; if($('trState')) $('trState').textContent=CFG.testrail_set?('TestRail key set ('+CFG.testrail_tail+'). Leave blank to keep.'):'Optional — set it to fail cases under your own name (else the shared key is used).'; $('setMsg').textContent=''; $('settings').classList.add('show'); }
 function closeSettings(){ $('settings').classList.remove('show'); }
 async function saveSettings(){
-  const body={tester_name:'',redmine_api_key:val('cf_key'),jam_pat:val('cf_jam'),testrail_email:val('cf_tremail'),testrail_api_key:val('cf_trkey'),redmine_url:val('cf_redmine'),dashboard_url:val('cf_dash'),defaults:{}};
+  const body={tester_name:'',redmine_api_key:val('cf_key'),jam_pat:val('cf_jam'),testrail_email:val('cf_tremail'),testrail_api_key:val('cf_trkey'),redmine_url:val('cf_redmine'),dashboard_url:val('cf_dash'),auto_update:($('cf_auto')?$('cf_auto').checked:true),defaults:{}};
   const btn=$('saveSetBtn'); btn.disabled=true; $('setMsg').innerHTML='<span class="spin"></span> verifying key…';
   try{
     const r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});

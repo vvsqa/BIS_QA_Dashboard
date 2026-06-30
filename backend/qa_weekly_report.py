@@ -79,6 +79,8 @@ def render_card(data):
     days = data.get("daily", [])
     testers = data.get("testers", [])
     modules = data.get("modules", [])
+    per_member = data.get("per_member", [])     # richer per-tester profile (replaces the tester bars)
+    slow = data.get("slow_tickets", [])         # slowest tickets in QC this period
     mtests = data.get("manual_tests")  # None until weekly capture is built
     mtd = data.get("mtd")  # month-to-date cumulative (weekly report only); None otherwise
     title = data.get("title", "QA Weekly Report")
@@ -91,19 +93,24 @@ def render_card(data):
     head_h = 98
     kpi_y = head_h + 14
     kpi_h = 96
-    mtd_y = kpi_y + kpi_h + 12
+    kpi_list_n = 9
+    kpi_per_row = 5
+    kpi_rows = (kpi_list_n + kpi_per_row - 1) // kpi_per_row
+    kpi_total = kpi_rows * kpi_h + (kpi_rows - 1) * 12
+    mtd_y = kpi_y + kpi_total + 12
     mtd_h = 48 if mtd else 0
     secA_y = mtd_y + mtd_h + (12 if mtd else 6)
     secA_h = 206
     secB_y = secA_y + secA_h + 18
     secB_h = 210
-    wl_y = secB_y + secB_h + 18
-    wl_rows = max(len(testers), 1)
-    wl_h = 60 + wl_rows * 30 + 14
-    mt_y = wl_y + wl_h + 18
+    pm_y = secB_y + secB_h + 18                     # Per-Member Profile table (was tester bars)
+    pm_h = 54 + 26 + max(len(per_member), 1) * 30 + 14
+    mt_y = pm_y + pm_h + 18
     mt_h = 54 + 28 + max(len(modules), 1) * 29 + 14
+    st_h = (54 + 26 + len(slow) * 29 + 14) if slow else 0   # Slowest-in-QC table (optional)
+    st_y = mt_y + mt_h + (18 if slow else 0)
     foot_h = 30
-    H = mt_y + mt_h + foot_h
+    H = (st_y + st_h if slow else mt_y + mt_h) + foot_h
 
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)
@@ -136,18 +143,23 @@ def render_card(data):
          f"{flow.get('first_time', 0)} new · {flow.get('retest', 0)} retest"),
         ("Delivered to BIS", f"{k.get('delivered', 0):,}", PURPLE, "moved out for review"),
         ("Closed", f"{k.get('closed', 0):,}", GREEN, "completed this week"),
-        ("Avg QA cycle", f"{k.get('qa_cycle', 0):g}", AMBER, "days in active QC"),
+        ("Avg QC cycle", f"{k.get('qa_cycle', 0):g}", AMBER, "days QC→BIS"),
+        ("Avg QC (first pass)", f"{k.get('qc_first_pass', 0):g}", CYAN, "0-cycle tickets"),
+        ("Retests", f"{k.get('retests', 0):,}", RED, "came back for re-test"),
+        ("Avg closure", f"{k.get('closure', 0):g}", BLUE, "days Live → closed"),
         ("Bugs raised", f"{k.get('bugs', 0):,}", RED, "logged this week"),
-        ("QA testers", f"{k.get('testers', 0):,}", BLUE, "web manual team"),
+        ("QA testers", f"{k.get('testers', 0):,}", GREEN, "web manual team"),
     ]
-    kw = (W - 2 * M - GAP * (len(kpis) - 1)) / len(kpis)
+    kw = (W - 2 * M - GAP * (kpi_per_row - 1)) / kpi_per_row
     for i, (lbl, val, ac, sub) in enumerate(kpis):
-        x = M + i * (kw + GAP)
-        card(x, kpi_y, kw, kpi_h, ac)
-        chip(x + 15, kpi_y + 16, 22, 5, ac)
-        txt(x + 15, kpi_y + 26, val, _font(30, "b"))
-        txt(x + 15, kpi_y + 63, lbl, _font(11.5, "sb"), MUTED)
-        txt(x + 15, kpi_y + 79, sub, _font(9.5), FAINT)
+        col, row = i % kpi_per_row, i // kpi_per_row
+        x = M + col * (kw + GAP)
+        y = kpi_y + row * (kpi_h + 12)
+        card(x, y, kw, kpi_h, ac)
+        chip(x + 15, y + 16, 22, 5, ac)
+        txt(x + 15, y + 26, val, _font(30, "b"))
+        txt(x + 15, y + 63, lbl, _font(11.5, "sb"), MUTED)
+        txt(x + 15, y + 79, sub, _font(9.5), FAINT)
 
     # ============ MONTH-TO-DATE STRIP (cumulative, alongside the weekly KPIs) ============
     if mtd:
@@ -210,7 +222,7 @@ def render_card(data):
 
     # ---- A-right : QA cycle ring ----
     card(ax_r, secA_y, aw_r, secA_h, AMBER)
-    txt(ax_r + 18, secA_y + 14, "Average QA cycle time", _font(15, "sb"))
+    txt(ax_r + 18, secA_y + 14, "Avg QC waiting time (QC → BIS)", _font(15, "sb"))
     txt(ax_r + 18, secA_y + 36, f"over {cycle.get('closed_tickets', 0)} tickets closed this {period_word}", _font(10.5), FAINT)
     qa_days = cycle.get("qa_days", 0) or 0
     total_days = cycle.get("total_days", 0) or 0
@@ -222,11 +234,11 @@ def render_card(data):
     txt(cx, ccy - 9, f"{qa_days:g}", _font(27, "b"), AMBER, anchor="mm")
     txt(cx, ccy + 15, "days", _font(11), MUTED, anchor="mm")
     lx = cx + r + 26
-    txt(lx, ccy - 30, "Active-QC cycle", _font(11), MUTED)
+    txt(lx, ccy - 30, "QC → BIS waiting", _font(11), MUTED)
     txt(lx, ccy - 12, f"{qa_days:g} days", _font(16, "b"), AMBER)
     txt(lx, ccy + 16, "Total lead time", _font(11), MUTED)
     txt(lx, ccy + 34, f"{total_days:g} days", _font(15, "sb"), TEXT)
-    txt(ax_r + 18, secA_y + secA_h - 26, "Created → closed; active QC excludes external review wait.",
+    txt(ax_r + 18, secA_y + secA_h - 26, "QC waiting = entering QC Testing → handed to BIS Testing.",
         _font(9.5), FAINT)
 
     # ============ SECTION B : DAILY LOAD (+ MANUAL TEST EXECUTION when data exists) ============
@@ -285,48 +297,46 @@ def render_card(data):
             txt(tx + tcw - 14, ty + 12, f"{mtests.get(key, 0):,}", _font(22, "b"), TEXT, anchor="ra")
             txt(tx + 12, ty + 32, lbl, _font(10.5), MUTED)
 
-    # ============ WORKLOAD BY TESTER (ALL web-manual members) ============
-    card(M, wl_y, W - 2 * M, wl_h)
-    txt(M + 18, wl_y + 14, "Workload by QA tester", _font(15, "sb"))
-    txt(M + 230, wl_y + 17, "(all web manual testers)", _font(10.5), FAINT)
-    for j, (key, clr) in enumerate(sset):
-        lxx = W - M - 360 + j * 116
-        chip(lxx, wl_y + 18, 11, 11, clr)
-        txt(lxx + 16, wl_y + 16, key.capitalize(), _font(10.5), MUTED)
-    lx = M + 20
-    name_w = 150
-    track_x = lx + name_w
-    track_w = (W - 2 * M) - name_w - 40 - 56
-    tmax = max([1] + [t.get("received", 0) + t.get("delivered", 0) + t.get("closed", 0) for t in testers])
-    ry0 = wl_y + 50
-    for idx, t in enumerate(testers):
-        cy = ry0 + idx * 30 + 13
-        nm = t.get("name", "")
-        if len(nm) > 22:
-            nm = nm[:21] + "…"
-        txt(lx, cy - 4, nm, _font(11.5, "sb"), TEXT, anchor="lm")
-        _cx = t.get("complexity") or {}
-        if any(_cx.values()):
-            txt(lx, cy + 10, f"⬆ {_cx.get('high', 0)} High · {_cx.get('medium', 0)} Med · {_cx.get('low', 0)} Low",
-                _font(8.5, "sb"), TEAL, anchor="lm")
-        total = t.get("received", 0) + t.get("delivered", 0) + t.get("closed", 0)
-        d.rounded_rectangle([track_x, cy - 9, track_x + track_w, cy + 9], radius=5, fill=CARD2)
-        seg_x = track_x
-        bar_total_w = track_w * (total / tmax)
-        for key, clr in sset:
-            v = t.get(key, 0)
-            if total <= 0:
-                continue
-            segw = bar_total_w * (v / total)
-            if segw > 0:
-                d.rectangle([seg_x, cy - 9, seg_x + segw, cy + 9], fill=clr)
-                seg_x += segw
-        if bar_total_w > 0:
-            d.rounded_rectangle([track_x, cy - 9, track_x + max(6, bar_total_w), cy + 9],
-                                radius=5, outline=_mix(BORDER, CARD, 0.4), width=1)
-        txt(W - M - 18, cy, f"{total}", _font(12.5, "b"), TEXT, anchor="rm")
-    if not testers:
-        txt(W / 2, wl_y + wl_h / 2, "No tester activity this week", _font(12), FAINT, anchor="mm")
+    # ============ QA TEAM PERFORMANCE — PER-MEMBER PROFILE (replaces the tester bars) ============
+    card(M, pm_y, W - 2 * M, pm_h)
+    txt(M + 18, pm_y + 14, "QA team performance", _font(15, "sb"))
+    txt(M + 245, pm_y + 17, f"per-member · this {period_word} · A·B·C = Attended · to BIS · Closed",
+        _font(10.5), FAINT)
+    p_l, p_r = M + 22, W - M - 26
+    p_name_w = (p_r - p_l) * 0.22
+    p_col0 = p_l + p_name_w
+    p_area = p_r - p_col0
+    p_headers = ["A·B·C", "Cases", "Bugs", "Retest", "Cx H/M/L", "Avg cyc", "Velocity"]
+    p_centers = [p_col0 + p_area * (j + 0.5) / len(p_headers) for j in range(len(p_headers))]
+    phy = pm_y + 50
+    txt(p_l, phy, "Member", _font(12, "sb"), MUTED, anchor="la")
+    for h, cxx in zip(p_headers, p_centers):
+        txt(cxx, phy, h, _font(11.5, "sb"), MUTED, anchor="ma")
+    d.line([M + 16, phy + 26, W - M - 16, phy + 26], fill=BORDER, width=1)
+    if per_member:
+        for i, mrow in enumerate(per_member):
+            ry = phy + 40 + i * 30
+            disp = f"{mrow.get('medal', '')} {mrow.get('name', '')}".strip()
+            if len(disp) > 24:
+                disp = disp[:23] + "…"
+            txt(p_l, ry, disp, _font(12.5, "sb"), anchor="la")
+            avgc = mrow.get("avg_qc_days")
+            cyc_clr = FAINT if avgc is None else (GREEN if avgc <= 4 else AMBER if avgc <= 7 else RED)
+            cmix = mrow.get("complexity") or {}
+            cases = mrow.get("cases")
+            vals = [
+                (f"{mrow.get('attended', 0)}·{mrow.get('handed_to_bis', 0)}·{mrow.get('closed', 0)}", TEXT),
+                (f"{cases:,}" if cases is not None else "—", TEXT if cases else FAINT),
+                (f"{mrow.get('bugs', 0)}", RED if mrow.get('bugs') else FAINT),
+                (f"{mrow.get('retests', 0)}", AMBER if mrow.get('retests') else FAINT),
+                (f"{cmix.get('high', 0)}/{cmix.get('medium', 0)}/{cmix.get('low', 0)}", TEXT),
+                (f"{avgc:g}d" if avgc is not None else "—", cyc_clr),
+                (f"{mrow.get('velocity', 0):g}", TEAL),
+            ]
+            for (val, clr), cxx in zip(vals, p_centers):
+                txt(cxx, ry, val, _font(13), clr, anchor="ma")
+    else:
+        txt(W / 2, phy + 50, f"No QA activity this {period_word}", _font(12), FAINT, anchor="mm")
 
     # ============ MODULE TABLE ============
     # Count columns evenly spaced; header + value share the SAME centre x so digits sit directly
@@ -360,9 +370,48 @@ def render_card(data):
     else:
         txt(W / 2, hy + 50, f"No module activity this {period_word}", _font(12), FAINT, anchor="mm")
 
+    # ============ SLOWEST TICKETS IN QC (top by QC → BIS) ============
+    if slow:
+        card(M, st_y, W - 2 * M, st_h)
+        txt(M + 18, st_y + 14, "Slowest tickets in QC", _font(15, "sb"))
+        txt(M + 230, st_y + 17, f"top {len(slow)} by QC Testing → BIS Testing time", _font(10.5), FAINT)
+        s_l, s_r = M + 22, W - M - 26
+        s_name_w = (s_r - s_l) * 0.46
+        s_col0 = s_l + s_name_w
+        s_area = s_r - s_col0
+        s_headers = ["Module", "QA", "Cx", "QC→BIS", "Cycles", "Bugs"]
+        s_centers = [s_col0 + s_area * (j + 0.5) / len(s_headers) for j in range(len(s_headers))]
+        shy = st_y + 50
+        txt(s_l, shy, "Ticket", _font(12, "sb"), MUTED, anchor="la")
+        for h, cxx in zip(s_headers, s_centers):
+            txt(cxx, shy, h, _font(11.5, "sb"), MUTED, anchor="ma")
+        d.line([M + 16, shy + 26, W - M - 16, shy + 26], fill=BORDER, width=1)
+        CXCLR = {"high": RED, "medium": AMBER, "low": GREEN}
+        for i, srow in enumerate(slow):
+            ry = shy + 38 + i * 29
+            ttl = f"#{srow.get('ticket_id')}  {srow.get('title', '')}"
+            if len(ttl) > 56:
+                ttl = ttl[:55] + "…"
+            txt(s_l, ry, ttl, _font(12.5), TEXT, anchor="la")
+            cxlvl = (srow.get("complexity") or "").lower()
+            qcb = srow.get("qc_to_bis_days", 0)
+            qcb_clr = GREEN if qcb <= 4 else AMBER if qcb <= 7 else RED
+            mod = srow.get("module", "—") or "—"
+            qa = srow.get("qc_tester", "—") or "—"
+            vals = [
+                (mod[:14] + ("…" if len(mod) > 14 else ""), MUTED),
+                (qa[:14] + ("…" if len(qa) > 14 else ""), MUTED),
+                ((cxlvl[:1].upper() or "—"), CXCLR.get(cxlvl, FAINT)),
+                (f"{qcb:g}d", qcb_clr),
+                (f"{srow.get('cycles', 0)}", RED if srow.get('cycles', 0) > 1 else FAINT),
+                (f"{srow.get('bugs', 0)}", RED if srow.get('bugs') else FAINT),
+            ]
+            for (val, clr), cxx in zip(vals, s_centers):
+                txt(cxx, ry, val, _font(12.5), clr, anchor="ma")
+
     # ============ FOOTER ============
     txt(M, H - 22, "BIS Training Solutions · QA Team · Web Manual Testing", _font(10.5), FAINT)
-    txt(W - M, H - 22, "Mobile & Automation excluded · QA cycle counts active QC only",
+    txt(W - M, H - 22, "Mobile & Automation excluded · QC waiting = QC Testing → BIS Testing",
         _font(10), FAINT, anchor="ra")
     return img
 

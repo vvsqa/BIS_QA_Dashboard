@@ -9741,10 +9741,18 @@ def _compute_qa_load_summary(db, start_date, end_date, movement):
         return _dur_cache[tid]
 
     def qa_time(tid):
-        # Sum of days in active QC statuses (QC Testing / In Progress / Hold). Approved-for-Live
-        # and the BIS wait and any dev rework are NOT counted.
-        d = durs(tid)
-        return sum(d.get(s, 0) for s in QA_TIME_STATUSES)
+        # QC turnaround = wall-clock days from the ticket first entering QC Testing to it being handed
+        # to BIS Testing (the "QC waiting time"). Measured QC Testing → BIS Testing, not from ticket
+        # start. Returns None when the ticket didn't go QC Testing → BIS Testing (excluded from the avg).
+        hist = hist_by.get(tid) or []
+        qc_start = next((h.changed_on for h in hist if h.new_status in QA_TESTING_STATUSES), None)
+        if not qc_start:
+            return None
+        bis_start = next((h.changed_on for h in hist
+                          if h.new_status == "BIS Testing" and h.changed_on >= qc_start), None)
+        if not bis_start:
+            return None
+        return max(0, (bis_start.date() - qc_start.date()).days)
 
     def bis_time(tid):
         # Span from moving to BIS Testing until moving to Approved for Live (the client/BIS wait).
@@ -9762,15 +9770,33 @@ def _compute_qa_load_summary(db, start_date, end_date, movement):
         cr, cl = created_by.get(tid), closed_by.get(tid)
         return max(0, (cl.date() - cr.date()).days) if cr and cl else None
 
-    qa_vals, bis_vals, total_vals = [], [], []
+    def closure_time(tid):
+        # Span from going live (Approved for Live / Moved to Live) to the ticket being closed.
+        hist = hist_by.get(tid) or []
+        live = next((h.changed_on for h in hist
+                     if h.new_status in ("Approved for Live", "Moved to Live", "Live")), None)
+        cl = closed_by.get(tid)
+        if not live or not cl:
+            return None
+        return max(0, (cl.date() - live.date()).days)
+
+    qa_vals, bis_vals, total_vals, closure_vals = [], [], [], []
+    qc_detail = {}   # tid -> {"qc_to_bis": <span days>, "qc_active": <sum of active-QC-status days>}
     for t in closed_tids:
-        qa_vals.append(qa_time(t))
+        qv = qa_time(t)
+        if qv is not None:
+            qa_vals.append(qv)
+            qc_detail[t] = {"qc_to_bis": qv,
+                            "qc_active": round(sum(durs(t).get(s, 0) for s in QA_TIME_STATUSES), 1)}
         bv = bis_time(t)
         if bv is not None:
             bis_vals.append(bv)
         tv = total_time(t)
         if tv is not None:
             total_vals.append(tv)
+        cv = closure_time(t)
+        if cv is not None:
+            closure_vals.append(cv)
 
     def mean(v):
         return round(sum(v) / len(v), 1) if v else 0
@@ -9787,13 +9813,18 @@ def _compute_qa_load_summary(db, start_date, end_date, movement):
             "count": movement.get("closed", {}).get("count", 0),
             "tickets": len(closed_tids),
             "qa_avg_days": mean(qa_vals),
+            "qa_tickets": len(qa_vals),
+            "qc_detail_by_ticket": qc_detail,   # per-closed-ticket QC→BIS span + active-QC days
             "bis_avg_days": mean(bis_vals),
             "bis_tickets": len(bis_vals),
             "total_avg_days": mean(total_vals),
+            "closure_avg_days": mean(closure_vals),
+            "closure_tickets": len(closure_vals),
         },
         "methodology": {
-            "qa": "Average days a closed ticket spent in active QC statuses (QC Testing, QC Testing in "
-                  "Progress, QC Testing Hold). Approved-for-Live, the BIS wait and dev rework are excluded.",
+            "qa": "Average wall-clock days from a ticket entering QC Testing to being handed to BIS "
+                  "Testing (the QC turnaround / waiting time). Measured QC Testing → BIS Testing, not "
+                  "from ticket start. Tickets that didn't reach BIS Testing are excluded from the average.",
             "bis": "Average days from moving to BIS Testing until moving to Approved for Live "
                    "(the client/BIS approval wait). Computed over closed tickets that reached Approved for Live.",
             "total": "Average full lead time: ticket created date to closed date.",
@@ -10015,6 +10046,74 @@ def _build_qa_weekly_data(db, ws, we, period_kind="week"):
     closed = movement["closed"]["count"]
     cyc = qa_summary["closed"]
 
+    # ---- Per-member profile + slowest-in-QC table (ported from the QA-metrics prototype) ----
+    weeks = max(1, round(((we - ws).days + 1) / 7))
+    qc_detail = cyc.get("qc_detail_by_ticket", {})                 # tid -> {qc_to_bis, qc_active}
+    closed_tickets = movement["closed"]["tickets"]
+    closed_by_tid = {t["ticket_id"]: t for t in closed_tickets if t.get("ticket_id")}
+    CXP = {"high": 3, "medium": 2, "low": 1}                       # complexity → velocity points
+
+    bug_by_tid = defaultdict(int)
+    for b in bugs:
+        if getattr(b, "ticket_id", None):
+            bug_by_tid[b.ticket_id] += 1
+
+    retest_by_tester = defaultdict(int)
+    for t in movement["refix_to_qc"]["tickets"]:
+        retest_by_tester[t.get("qc_tester") or "Unassigned"] += 1
+    qcbis_by_tester = defaultdict(list)
+    points_by_tester = defaultdict(float)
+    for t in closed_tickets:
+        nm = t.get("qc_tester") or "Unassigned"
+        tid = t.get("ticket_id")
+        d = qc_detail.get(tid)
+        if d:
+            qcbis_by_tester[nm].append(d["qc_to_bis"])
+        lvl = ((_cxc.get(str(tid)) or {}).get("level") or "").lower()
+        points_by_tester[nm] += CXP.get(lvl, 1)
+
+    # Cases executed per member — reuse the QA leaderboard (same source the prototype binds to). Resilient.
+    cases_by_name = {}
+    try:
+        _lb = get_performance_leaderboard(period="month", offset=0, team="qa",
+                                          from_date=ws.isoformat(), to_date=we.isoformat())
+        for e in (_lb.get("qa") or []):
+            cases_by_name[_compact_person_name(e.get("name") or "")] = (e.get("raw_metrics") or {}).get("tests_executed")
+    except Exception:
+        cases_by_name = {}
+
+    per_member = []
+    for ti in testers_list:
+        nm = ti["name"]
+        qcb = qcbis_by_tester.get(nm) or []
+        per_member.append({
+            "name": nm,
+            "attended": ti["received"], "handed_to_bis": ti["delivered"], "closed": ti["closed"],
+            "cases": cases_by_name.get(_compact_person_name(nm)),
+            "bugs": ti["bugs"], "retests": retest_by_tester.get(nm, 0),
+            "complexity": ti.get("complexity") or {"high": 0, "medium": 0, "low": 0},
+            "avg_qc_days": round(sum(qcb) / len(qcb), 1) if qcb else None,
+            "velocity": round(points_by_tester.get(nm, 0) / weeks, 1),
+        })
+    per_member.sort(key=lambda x: -x["velocity"])
+    for i, mm in enumerate(per_member):
+        mm["medal"] = f"#{i + 1}"   # text rank (PIL report font has no emoji glyphs)
+
+    slow_tickets = []
+    for tid, d in sorted(qc_detail.items(), key=lambda kv: -kv[1]["qc_to_bis"])[:10]:
+        t = closed_by_tid.get(tid, {})
+        slow_tickets.append({
+            "ticket_id": tid, "title": t.get("title") or "", "module": t.get("module") or "—",
+            "qc_tester": t.get("qc_tester") or "Unassigned",
+            "complexity": ((_cxc.get(str(tid)) or {}).get("level") or "").lower() or None,
+            "qc_days": d["qc_active"], "qc_to_bis_days": d["qc_to_bis"],
+            "cycles": t.get("fail_loops", 0), "bugs": bug_by_tid.get(tid, 0),
+        })
+
+    _fp = [qc_detail[tid]["qc_to_bis"] for tid in qc_detail
+           if closed_by_tid.get(tid, {}).get("fail_loops", 0) == 0]
+    qc_first_pass_days = round(sum(_fp) / len(_fp), 1) if _fp else 0
+
     # Month-to-date cumulative (1st of the report week's month → we) shown alongside the weekly
     # figures. Only for the weekly report; the monthly/custom views already span their own period.
     mtd = None
@@ -10043,9 +10142,15 @@ def _build_qa_weekly_data(db, ws, we, period_kind="week"):
             "closed": closed,
             "bugs": len(bugs),
             "qa_cycle": cyc["qa_avg_days"],
+            "qc_first_pass": qc_first_pass_days,      # avg QC→BIS for first-pass (0-cycle) tickets
+            "retests": retest,                        # tickets that came back for a re-test
+            "closure": cyc.get("closure_avg_days", 0),  # avg Approved-for-Live → closed
             "lead_time": cyc["total_avg_days"],
             "testers": len([n for n in testers if n != "Unassigned"]),
         },
+        # Per-member QA profile + slowest-in-QC tickets (ported from the QA-metrics prototype).
+        "per_member": per_member,
+        "slow_tickets": slow_tickets,
         # Ticket movement through the QA pipeline this week (the "flow").
         "flow": {
             "first_time": first_time, "retest": retest, "received": received,
@@ -18684,6 +18789,7 @@ def live_ticket_lookup(ticket_id: str = Query(..., description="PM ticket number
             "status": t.status or "",
             "priority": t.priority or "",
             "module": (t.subdepartment or "").strip() or "Unassigned",
+            "subdepartment": (t.subdepartment or "").strip() or None,   # raw PM subdepartment; 'Mobile' → TestRail project 14
             "qc_tester": _strip_paren(t.qc_tester or "").strip() or None,
             "backend_developer": _strip_paren(t.backend_developer or "").strip() or None,
             "frontend_developer": _strip_paren(t.frontend_developer or "").strip() or None,
@@ -27119,6 +27225,23 @@ def bug_reporter_stats(reporter: Optional[str] = Query(None)):
             "by_reporter": reps, "by_week": weeks, "by_source": dict(by_src),
             "baseline_minutes": BUGREP_MANUAL_BASELINE_MIN, "me": my,
         }
+    finally:
+        db.close()
+
+
+@app.get("/bug-reporter/my-bugs")
+def bug_reporter_my_bugs(reporter: Optional[str] = Query(None), limit: int = 400):
+    """Bugs created VIA THE APP, optionally for one reporter (most recent first). The bug-reporter
+    tool reads this to show a tester the bugs they logged through the tool, grouped by ticket
+    (the local log distinguishes app-created bugs from ones made by hand in Redmine)."""
+    db: Session = SessionLocal()
+    try:
+        q = db.query(BugReporterEvent).filter(BugReporterEvent.bug_id.isnot(None))
+        if reporter:
+            q = q.filter(BugReporterEvent.reporter == reporter)
+        rows = q.order_by(BugReporterEvent.created_on.desc()).limit(max(1, min(limit, 1000))).all()
+        return {"bugs": [{"bug_id": r.bug_id, "ticket_id": r.ticket_id, "source": r.source,
+                          "created_on": r.created_on.isoformat() if r.created_on else None} for r in rows]}
     finally:
         db.close()
 
