@@ -19596,7 +19596,19 @@ def live_qc_queue():
             dbc.close()
     except Exception:
         case_summary, case_log_map = {}, {}
-    # Attach the case-count summary/history to every section's tickets.
+    # QA-estimation status per ticket (a saved plan exists → the queue shows an "estimated" badge).
+    est_map = {}
+    try:
+        _edb: Session = SessionLocal()
+        try:
+            for _tid, _st in (_edb.query(TicketEstimation.ticket_id, TicketEstimation.status)
+                              .filter(TicketEstimation.status.in_(("planning", "in_review", "reviewed"))).all()):
+                est_map[int(_tid)] = _st
+        finally:
+            _edb.close()
+    except Exception:
+        est_map = {}
+    # Attach the case-count summary/history + estimate status to every section's tickets.
     for _t in _all_q_sections(data):
         try:
             _tid = int(_t.get("ticket_id"))
@@ -19606,6 +19618,8 @@ def live_qc_queue():
             _t["case_summary"] = case_summary[_tid]
         if _tid in case_log_map:
             _t["case_log"] = case_log_map[_tid]
+        if _tid in est_map:
+            _t["est_status"] = est_map[_tid]
     # Documentation Confidence — read the cache only (no per-row PM/gh calls in the queue hot path).
     # Entries are populated by the single-ticket lookup and by the runner after a generation.
     try:

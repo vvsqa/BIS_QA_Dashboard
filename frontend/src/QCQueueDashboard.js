@@ -437,6 +437,7 @@ export default function QCQueueDashboard() {
     const [cardFilter, setCardFilter] = useState(null); // null or 'unassigned'|'assigned_not_started'|'in_progress'|'on_hold'|'qc_failed'
   const [expandedTicket, setExpandedTicket] = useState(null);
   const [estimatePopup, setEstimatePopup] = useState(null);   // ticket object for the QA-estimate modal
+  const [estimated, setEstimated] = useState({});             // ticket_id -> status, optimistic after saving a plan
   const [searchFilter, setSearchFilter] = useState('');
   const [listPriorityFilter, setListPriorityFilter] = useState('');
   const [listModuleFilter, setListModuleFilter] = useState('');
@@ -1079,11 +1080,19 @@ export default function QCQueueDashboard() {
                       title="Queue this ticket for test-plan generation" onClick={e => { e.stopPropagation(); generateTestPlan(t.ticket_id); }}>Generate</button>;
                   }
                   return <span style={{ color: 'var(--text-muted)' }}>–</span>;
-                })()}{(t.has_test_plan || t.has_excel) && (
-                  <button title="Generate QA estimate with Claude — activity/time split-up + PM comment (available once the test plan is created)"
-                    onClick={e => { e.stopPropagation(); setEstimatePopup(t); }}
-                    style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 22, borderRadius: 7, cursor: 'pointer', fontSize: '0.82rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>⏱</button>
-                )}</span></td>
+                })()}{(t.has_test_plan || t.has_excel) && (() => {
+                  const est = estimated[t.ticket_id] || t.est_status;   // saved QA plan exists
+                  return (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      {est && (
+                        <span title={`QA estimate saved (${est})`} style={{ display: 'inline-flex', alignItems: 'center', padding: '2px 7px', borderRadius: 10, fontSize: '0.66rem', fontWeight: 700, background: 'rgba(34,197,94,0.14)', color: 'var(--accent-green, #22c55e)' }}>✓ est</span>
+                      )}
+                      <button title={est ? 'View / revise QA estimate (Claude)' : 'Generate QA estimate with Claude — activity/time split-up + PM comment'}
+                        onClick={e => { e.stopPropagation(); setEstimatePopup(t); }}
+                        style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 22, borderRadius: 7, cursor: 'pointer', fontSize: '0.82rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>⏱</button>
+                    </span>
+                  );
+                })()}</span></td>
                 <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>{t.has_test_plan ? (() => {
                   const rs = reviewState[t.ticket_id] || {};
                   const status = rs.review_status || t.review_status || 'Draft';
@@ -1999,7 +2008,8 @@ export default function QCQueueDashboard() {
               <button onClick={() => setEstimatePopup(null)}
                 style={{ background: 'none', border: 'none', color: 'var(--text-muted, #94a3b8)', fontSize: '1.1rem', cursor: 'pointer' }}>✕</button>
             </div>
-            <TicketEstimatePanel ticketId={estimatePopup.ticket_id} qaMember={estimatePopup.qc_tester || ''} />
+            <TicketEstimatePanel ticketId={estimatePopup.ticket_id} qaMember={estimatePopup.qc_tester || ''}
+              onSaved={() => setEstimated(m => ({ ...m, [estimatePopup.ticket_id]: 'planning' }))} />
           </div>
         </div>
       )}
