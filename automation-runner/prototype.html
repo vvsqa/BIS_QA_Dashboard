@@ -138,6 +138,8 @@
   .seg button{border:none;background:transparent;color:var(--muted);padding:7px 14px;font-weight:700;cursor:pointer}
   .seg button.on{background:linear-gradient(135deg,rgba(124,58,237,.3),rgba(34,211,238,.2));color:#fff}
   @media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr}.meta{grid-template-columns:1fr 1fr}}
+  #t-buggen input:not([type=checkbox]),#t-buggen select{width:100%;height:34px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:0 10px;font-size:12.5px}
+  #t-buggen label{display:block;font-size:11px;color:var(--muted);margin:0 0 3px;font-weight:600}
 </style>
 </head>
 <body>
@@ -148,7 +150,7 @@
     <div class="brand">
       <div class="logo">🤖</div>
       <h1>BIS Automation Runner</h1>
-      <span class="ver">PROTOTYPE v0.9</span>
+      <span class="ver">PROTOTYPE v1.0</span>
     </div>
     <div class="hdr-right">
       <select class="pill env" id="envSel" onchange="setEnv()">
@@ -1059,21 +1061,128 @@ const BG_RECENT=[
   {id:4998,t:'Redirect toggle label not translated',tk:18872,src:'jam',ago:'5h'},
   {id:4995,t:'Certificate radio resets after reload',tk:19148,src:'case',ago:'1d'},
 ];
+const BG_SEV=['Critical','Major','Minor','Trivial'],BG_TYPE=['Functional / Logic','UI / UX','Workflow / State','Data Integrity','Performance'],BG_ENV=['Staging','Pre-production','Live'];
+let BG_VIEW='overview',BG_NEXTID=5003,BG_BULK=[];
+const bg$=id=>document.getElementById(id);
+const bgOpts=(a,s)=>a.map(v=>`<option ${v===s?'selected':''}>${v}</option>`).join('');
+function bgView(v){BG_VIEW=v;renderBugGen();}
 function renderBugGen(){
+  const nav=[['overview','📊 Overview'],['create','📝 Create bug'],['bulk','📚 Bulk / run failure']]
+    .map(([v,l])=>`<button class="btn ${BG_VIEW===v?'':'ghost'} sm" onclick="bgView('${v}')">${l}</button>`).join('');
+  const body=BG_VIEW==='create'?bgCreateView():BG_VIEW==='bulk'?bgBulkView():bgOverviewView();
+  document.getElementById('t-buggen').innerHTML=`
+    <div class="card" style="margin-bottom:14px"><div class="row"><div><h3>🐞 Bug Generator</h3><div class="hint">A local per-user tool: turn a Jam recording, notes, or a TestRail case into a clean Redmine bug in seconds — single or bulk — and fail the matching TestRail cases.</div></div><div class="sp"></div><span class="pill">v1.4.8 · auto-updating</span></div>
+      <div class="row" style="gap:8px;margin-top:12px">${nav}<div class="sp"></div><span class="chip" style="color:#f59e0b">● interactive demo</span></div></div>
+    ${body}`;
+}
+function bgOverviewView(){
   const K=[['Bugs filed (tool)','212','#3b82f6'],['~ Hours saved','184 h','#f59e0b'],['This week','38','#34d399'],['Avg time / bug','~2.4 min','#22d3ee'],['Testers using','6','#a78bfa'],['TestRail cases failed','96','#ef4444']];
   const mx=Math.max(...BG_BYTESTER.map(x=>x[1]));
   const srcClr={jam:'#a78bfa',bulk:'#22d3ee',combo:'#34d399',case:'#f59e0b',notes:'#9fb0c9'};
-  document.getElementById('t-buggen').innerHTML=`
-    <div class="card" style="margin-bottom:14px"><div class="row"><div><h3>🐞 Bug Generator</h3><div class="hint">A local per-user tool: turn a Jam recording, notes, or a TestRail case into a clean Redmine bug in seconds — single or bulk — and fail the matching TestRail cases.</div></div><div class="sp"></div><span class="pill">v1.4.8 · auto-updating</span></div>
-      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:14px">${K.map(([l,v,c])=>`<div class="kpi"><div class="accent" style="background:${c}"></div><div class="big" style="font-size:21px">${v}</div><div class="lbl">${l}</div></div>`).join('')}</div></div>
+  return `<div class="card" style="margin-bottom:14px"><div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px">${K.map(([l,v,c])=>`<div class="kpi"><div class="accent" style="background:${c}"></div><div class="big" style="font-size:21px">${v}</div><div class="lbl">${l}</div></div>`).join('')}</div></div>
     <div class="grid" style="grid-template-columns:1.5fr 1fr">
       <div class="card"><h3>Capabilities</h3>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px">${BG_FEATURES.map(f=>`<div style="background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:11px 12px"><div class="row" style="gap:8px;margin-bottom:4px"><span style="font-size:16px">${f.ic}</span><b style="font-size:13px">${f.t}</b></div><div class="muted" style="font-size:11.5px;line-height:1.5">${f.d}</div></div>`).join('')}</div></div>
       <div style="display:flex;flex-direction:column;gap:14px">
         <div class="card"><h3>Adoption (bugs filed)</h3>${BG_BYTESTER.map(([n,v,c])=>`<div class="row" style="margin:8px 0;font-size:12px;gap:8px"><span style="width:112px" class="muted">${n}</span><div class="bar" style="flex:1;height:9px"><i style="width:${v/mx*100}%;background:${c}"></i></div><span class="b" style="width:26px;text-align:right">${v}</span></div>`).join('')}</div>
-        <div class="card"><h3>Recent bugs</h3><table class="rt" style="width:100%"><tbody>${BG_RECENT.map(b=>`<tr class="item"><td class="id">#${b.id}</td><td class="sub" title="${b.t}">${b.t}</td><td><span class="chip" style="color:${srcClr[b.src]||'#9fb0c9'}">${b.src}</span></td><td class="st muted">tkt ${b.tk} · ${b.ago}</td></tr>`).join('')}</tbody></table></div>
+        <div class="card"><h3>Recent bugs</h3><div id="bgRecent" style="display:flex;flex-direction:column">${BG_RECENT.map(b=>`<div class="row" style="font-size:12px;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)"><span class="b" style="color:var(--acc2)">#${b.id}</span><span style="flex:1" title="${b.t}">${b.t}</span><span class="chip" style="color:${srcClr[b.src]||'#9fb0c9'}">${b.src}</span><span class="muted" style="font-size:11px;white-space:nowrap">tkt ${b.tk} · ${b.ago}</span></div>`).join('')}</div></div>
       </div>
     </div>`;
+}
+function bgCreateView(){
+  return `<div class="grid" style="grid-template-columns:1fr 1fr">
+    <div class="card"><h3>Build from a source</h3><div class="hint" style="margin-bottom:10px">Any one — or a mix — then AI drafts the rest.</div>
+      <label>🎥 Jam video link</label><input id="bg_jam" placeholder="https://jam.dev/…">
+      <label style="margin-top:9px">🧪 TestRail Case ID</label><input id="bg_case" placeholder="e.g. C244812">
+      <label style="margin-top:9px">📝 Notes</label><textarea id="bg_notes" placeholder="e.g. Ticket 19148, staging — default certificate radio resets after every reload"></textarea>
+      <button class="btn ai" style="margin-top:11px" onclick="bgFill()">⚡ Draft the bug with AI</button>
+      <div class="hint" id="bg_fillmsg" style="margin-top:7px"></div></div>
+    <div class="card"><h3>Bug details</h3>
+      <label>Summary</label><input id="bg_subject" placeholder="One-line summary">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-top:9px">
+        <div><label>PM Ticket ID</label><div class="row" style="gap:6px"><input id="bg_ticket" placeholder="e.g. 19148" style="flex:1"><button class="btn ghost sm" style="white-space:nowrap" onclick="bgParent()">➕ Parent</button></div></div>
+        <div><label>Severity</label><select id="bg_sev">${bgOpts(BG_SEV,'Major')}</select></div>
+        <div><label>Type</label><select id="bg_type">${bgOpts(BG_TYPE,'Functional / Logic')}</select></div>
+        <div><label>Environment</label><select id="bg_env">${bgOpts(BG_ENV,'Staging')}</select></div>
+      </div>
+      <label style="margin-top:9px">Steps to reproduce</label><textarea id="bg_steps"></textarea>
+      <label>Expected</label><textarea id="bg_expected" style="min-height:44px"></textarea>
+      <label>Actual</label><textarea id="bg_actual" style="min-height:44px"></textarea>
+      <div class="row" style="gap:16px;margin-top:10px;flex-wrap:wrap"><label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="bg_failcase" checked style="width:auto;height:auto"> 🧪 Mark case Failed</label><label style="display:flex;align-items:center;gap:6px;margin:0"><input type="checkbox" id="bg_parentchk" style="width:auto;height:auto"> 🗂 Nest under parent task</label></div>
+      <button class="btn green" style="margin-top:11px" onclick="bgCreate()">✓ Create bug in Redmine</button>
+      <div id="bg_createmsg" style="margin-top:9px;font-size:12.5px"></div></div>
+  </div>`;
+}
+function bgFill(){
+  const src=bg$('bg_jam').value?'Jam recording':(bg$('bg_case').value?'TestRail case':'notes');
+  bg$('bg_subject').value='Default certificate selection is not saved after reload';
+  if(!bg$('bg_ticket').value)bg$('bg_ticket').value='19148';
+  bg$('bg_sev').value='Major';bg$('bg_type').value='Functional / Logic';bg$('bg_env').value='Staging';
+  bg$('bg_steps').value='1. Open Classroom Calendar → certificate settings.\n2. Set a custom certificate as the default.\n3. Reload the page.';
+  bg$('bg_expected').value='The selected default certificate persists after reload.';
+  bg$('bg_actual').value='The default radio reverts to the first option after every reload.';
+  bg$('bg_fillmsg').innerHTML=`✓ Drafted from <b>${src}</b> + AI polish — review &amp; Create. Manual edits are kept.`;
+}
+function bgParent(){
+  const tk=bg$('bg_ticket').value.trim();
+  if(!tk){toast('Enter the Ticket ID first — the parent task is named by it.');return;}
+  bg$('bg_parentchk').checked=true;
+  toast('✓ Parent task "'+tk+'" ready (Redmine #'+(4900+(+tk%97))+', auto id) — bug will nest under it.');
+}
+function bgCreate(){
+  const subj=(bg$('bg_subject').value||'').trim(),tk=(bg$('bg_ticket').value||'').trim();
+  if(!subj||!tk){toast('Summary and Ticket ID are required.');return;}
+  const id=BG_NEXTID++;
+  const src=bg$('bg_jam').value?'jam':bg$('bg_case').value?'case':'notes';
+  BG_RECENT.unshift({id,t:subj.slice(0,48),tk:parseInt(tk)||tk,src,ago:'just now'});
+  const extra=(bg$('bg_failcase').checked&&bg$('bg_case').value?' · '+bg$('bg_case').value+' marked Failed':'')+(bg$('bg_parentchk').checked?' · nested under parent '+tk:'');
+  bg$('bg_createmsg').innerHTML=`✓ <b style="color:#34d399">Bug #${id}</b> created in Redmine (demo)${extra}. <a href="#" onclick="return false" style="color:var(--acc2)">view issue →</a>`;
+  toast('✓ Bug #'+id+' created in Redmine'+extra);
+  ['bg_jam','bg_case','bg_notes','bg_subject','bg_ticket','bg_steps','bg_expected','bg_actual'].forEach(i=>{if(bg$(i))bg$(i).value='';});
+  bg$('bg_fillmsg').innerHTML='';
+}
+function bgBulkView(){
+  return `<div class="card" style="margin-bottom:14px"><h3>Bulk creation</h3>
+    <label>Notes / Jam narration <span class="muted">(AI splits it into several bugs)</span></label>
+    <textarea id="bg_bulkmsg" placeholder="e.g. Ticket 20861, staging. Bug 1: Save button stays greyed out. Bug 2: error toast shows raw HTML. Bug 3: default radio resets after reload."></textarea>
+    <div class="row" style="gap:8px;margin-top:9px"><input id="bg_bulkticket" placeholder="Default Ticket ID" style="max-width:180px"><button class="btn ai" onclick="bgSplit()">⚡ Split into bugs</button><span class="muted" id="bg_bulkinfo" style="font-size:11.5px"></span></div>
+    <div style="border-top:1px dashed var(--line);margin-top:13px;padding-top:13px"><div class="row" style="gap:8px;align-items:flex-end"><div style="max-width:210px"><label>Or — fail cases from a TestRail run</label><input id="bg_runid" placeholder="Run ID (e.g. 3958)"></div><button class="btn ghost" onclick="bgRun()">🧪 Fetch run cases</button><span class="muted" id="bg_runinfo" style="font-size:11.5px"></span></div></div></div>
+    <div id="bg_bulklist"></div>
+    <div class="card" id="bg_bulkact" style="display:none"><div class="row"><button class="btn green" onclick="bgCreateAll()">✓ Create all</button><div class="sp"></div><span class="muted" id="bg_bulkmsg2" style="font-size:12.5px"></span></div></div>`;
+}
+function bgSplit(){
+  const tk=(bg$('bg_bulkticket').value||'20861').trim();
+  BG_BULK=[
+    {subject:'Save button stays greyed out after selecting a template',sev:'Critical',tk},
+    {subject:'Error toast renders raw HTML instead of a message',sev:'Major',tk},
+    {subject:'Default radio selection resets to first option after reload',sev:'Major',tk},
+  ];
+  bgRenderBulk('bg_bulkinfo','✓ 3 bugs (AI split) — review & Create all.');
+}
+function bgRun(){
+  const rid=(bg$('bg_runid').value||'3958').trim();
+  BG_BULK=[
+    {subject:'Generate Complete Online Course Status report fails via API',sev:'Major',tk:'20698',cid:'C259839',run:rid},
+    {subject:'Schedule report action skips the access-permission check',sev:'Major',tk:'20698',cid:'C259840',run:rid},
+    {subject:'Training Matrix Details export is missing two columns',sev:'Minor',tk:'20698',cid:'C259855',run:rid},
+  ];
+  bgRenderBulk('bg_runinfo','✓ 3 cases from run '+rid+' — each marked Failed on Create all.');
+}
+function bgRenderBulk(infoId,info){
+  ['bg_bulkinfo','bg_runinfo'].forEach(i=>{if(bg$(i))bg$(i).textContent='';});
+  if(bg$(infoId))bg$(infoId).textContent=info;
+  bg$('bg_bulklist').innerHTML=BG_BULK.map((b,i)=>`<div class="card" style="margin:0 0 10px"><div class="row" style="gap:8px"><b style="color:var(--acc2)">Bug ${i+1}</b>${b.cid?`<span class="muted" style="font-size:11.5px">· case ${b.cid} → Fail in run ${b.run}</span>`:''}<div class="sp"></div><span class="chip" style="color:${b.sev==='Critical'?'#ef4444':b.sev==='Major'?'#f59e0b':'#9fb0c9'}">${b.sev}</span></div><input value="${b.subject}" style="margin-top:8px"><div class="muted" style="margin-top:5px;font-size:11.5px">Ticket ${b.tk} · Staging · Chrome</div></div>`).join('');
+  bg$('bg_bulkact').style.display='';
+  bg$('bg_bulkmsg2').textContent=BG_BULK.length+' ready';
+}
+function bgCreateAll(){
+  const n=BG_BULK.length;if(!n)return;
+  const ids=[];
+  BG_BULK.forEach(b=>{const id=BG_NEXTID++;ids.push(id);BG_RECENT.unshift({id,t:b.subject.slice(0,48),tk:parseInt(b.tk)||b.tk,src:b.cid?'case':'bulk',ago:'just now'});});
+  const failed=BG_BULK.filter(b=>b.cid).length;
+  toast('✓ Created '+n+' bugs'+(failed?' · '+failed+' cases marked Failed':''));
+  bg$('bg_bulkmsg2').innerHTML='✓ Created '+n+' bugs: '+ids.map(i=>'#'+i).join(', ')+(failed?' · '+failed+' cases Failed in the run':'');
+  BG_BULK=[];bg$('bg_bulklist').innerHTML='';bg$('bg_bulkact').style.display='none';
 }
 /* ---------------- first-run setup ---------------- */
 function openSetup(){document.getElementById('setup').classList.add('on');renderSetup(false);document.getElementById('setupLog').innerHTML='';}
