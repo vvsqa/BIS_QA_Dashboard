@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 # --------------------------------------------------------------------------- config
 APP_NAME = "bis-bug-reporter"
-APP_VERSION = "1.4.7"          # bump on each packaged release; compared against the dashboard manifest
+APP_VERSION = "1.4.8"          # bump on each packaged release; compared against the dashboard manifest
 PORT = int(os.environ.get("BUG_REPORTER_PORT", "8765"))
 
 DEFAULT_REDMINE_URL = "https://redmine.bissafety.app"
@@ -993,28 +993,71 @@ def _compose_description(b: CreateBody, struct_fields=None):
     return "\n\n".join(parts) if parts else (b.actual or b.subject)
 
 
+@app.get("/run-cases")
+def run_cases(run_id: int):
+    """List a TestRail run's cases (via the dashboard) so the user can multi-select them for bulk bug
+    creation + failing. Uses the tester's own TestRail key when set."""
+    cfg = load_config()
+    dash = cfg.get("dashboard_url", DEFAULT_DASHBOARD_URL)
+    params = {"run_id": run_id}
+    if cfg.get("testrail_email"):
+        params["testrail_email"] = cfg["testrail_email"]
+    if cfg.get("testrail_api_key"):
+        params["testrail_api_key"] = cfg["testrail_api_key"]
+    try:
+        r = requests.get(f"{dash}/testrail/run-cases", params=params, timeout=45)
+        if r.status_code == 200:
+            return r.json()
+        detail = r.json().get("detail") if r.headers.get("content-type", "").startswith("application/json") else r.text[:200]
+        raise HTTPException(status_code=r.status_code, detail=detail)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach the server: {e}")
+
+
 class ParentBody(BaseModel):
-    subject: str
-    ticket_id: int | None = None
-    platform: str = "Web"       # Ticket/Task tracker requires a Platform
+    ticket_id: int                 # the parent task is NAMED by the PM Ticket ID (id auto-generated)
+    platform: str = "Web"          # Ticket/Task tracker requires a Platform
+
+
+def _find_parent_task(url, key, ticket_id, tracker):
+    """Existing parent task for this ticket = a Ticket/Task whose subject IS the ticket id.
+    Returns its issue id, or None. Keeps it one-parent-per-ticket (find-or-create)."""
+    subj = str(ticket_id)
+    try:
+        r = requests.get(f"{url}/issues.json", headers={"X-Redmine-API-Key": key},
+                         params={"tracker_id": tracker, "subject": "~" + subj, "status_id": "*", "limit": 100}, timeout=25)
+        if r.status_code == 200:
+            for i in r.json().get("issues", []):
+                if str(i.get("subject", "")).strip() == subj:
+                    return i.get("id")
+    except Exception:
+        pass
+    return None
 
 
 @app.post("/create-parent")
 def create_parent(b: ParentBody):
-    """Create a Redmine parent task (tracker 'Ticket/Task') on the fly so a bug can nest under it when
-    no parent exists yet. Returns the new issue id + url; the page fills the Parent task field."""
+    """Find-or-create the Redmine parent task for a ticket. The task is NAMED by the PM Ticket ID (one
+    parent per ticket, reused across bugs); its Redmine id is auto-generated. Used by single + bulk so a
+    bug nests under its ticket's parent task."""
     cfg = load_config()
     key = cfg.get("redmine_api_key", "")
     if not key:
         raise HTTPException(status_code=400, detail="No Redmine API key set. Open Settings and paste your key.")
-    if not (b.subject or "").strip():
-        raise HTTPException(status_code=400, detail="A parent task name is required.")
+    if not b.ticket_id:
+        raise HTTPException(status_code=400, detail="A PM Ticket ID is required — the parent task is named by it.")
     url = cfg.get("redmine_url", DEFAULT_REDMINE_URL)
     try:
         m = meta()
     except HTTPException:
         m = {}
-    desc = f"Parent task for PM ticket #{b.ticket_id}. Bugs for this ticket nest under it." if b.ticket_id else ""
+    tracker = m.get("tracker_task_id", 2)   # 2 = Ticket/Task
+    # find-or-create: reuse the existing parent task named by this ticket id
+    found = _find_parent_task(url, key, b.ticket_id, tracker)
+    if found:
+        return {"ok": True, "id": found, "url": f"{url}/issues/{found}", "reused": True}
     fields = m.get("fields", {})
     custom = []
     pf = fields.get("platform")                       # required on the Ticket/Task tracker (multi-value)
@@ -1022,9 +1065,9 @@ def create_parent(b: ParentBody):
         custom.append({"id": pf["id"], "value": [b.platform or "Web"]})
     payload = {"issue": {
         "project_id": m.get("project", {}).get("id") or m.get("project", {}).get("identifier") or "bis-web",
-        "tracker_id": m.get("tracker_task_id", 2),   # 2 = Ticket/Task
-        "subject": b.subject.strip(),
-        "description": desc,
+        "tracker_id": tracker,
+        "subject": str(b.ticket_id),                  # task name = ticket id
+        "description": f"Parent task for PM ticket #{b.ticket_id}. Bugs for this ticket nest under it.",
         "custom_fields": custom,
     }}
     try:
@@ -1034,7 +1077,7 @@ def create_parent(b: ParentBody):
         raise HTTPException(status_code=502, detail=f"Could not reach Redmine: {e}")
     if r.status_code in (200, 201):
         iid = r.json().get("issue", {}).get("id")
-        return {"ok": True, "id": iid, "url": f"{url}/issues/{iid}"}
+        return {"ok": True, "id": iid, "url": f"{url}/issues/{iid}", "reused": False}
     detail = r.text
     try:
         j = r.json()

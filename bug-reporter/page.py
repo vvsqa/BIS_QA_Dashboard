@@ -363,12 +363,21 @@ try{ document.documentElement.setAttribute('data-theme', localStorage.getItem('b
         <span class="src" id="bulkInfo"></span>
       </div>
       <div class="hint" style="margin-top:6px">The video’s narration (and any case ids) are split into separate, editable bugs — each one shares the same Jam link as its proof. Review &amp; edit below, then Create all.</div>
+      <div class="row" style="align-items:end;gap:8px;margin-top:12px;border-top:1px dashed var(--line);padding-top:12px;flex-wrap:wrap">
+        <div style="max-width:210px"><label>Or — fail cases from a TestRail run <span class="src">(multi-select → a bug each)</span></label>
+          <input id="bulkRunId" type="number" placeholder="Run ID (e.g. 3958)" onkeydown="if(event.key==='Enter')fetchRunCases()"/></div>
+        <button class="btn ghost" onclick="fetchRunCases()">🧪 Fetch run cases</button>
+        <span class="src" id="runInfo"></span>
+      </div>
+      <div class="hint" style="margin-top:6px">Pick cases from a run — each becomes a bug pre-filled from the test case (plus the Jam link above as shared proof, if set). On <b>Create all</b>, each selected case is marked <b>Failed</b> in that run.</div>
+      <div id="runCasesBox" style="display:none;margin-top:8px"></div>
     </div>
     <div id="bulkList"></div>
     <div class="card" id="bulkActions" style="display:none">
       <div class="row" style="align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:10px">
         <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--txt)"><input type="checkbox" id="bulkFailAll" onchange="applyBulkFlag('fail',this.checked)" style="width:auto"/> 🧪 Mark every matched TestRail case Failed</label>
         <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--txt)"><input type="checkbox" id="bulkMakeAll" onchange="applyBulkFlag('make',this.checked)" style="width:auto"/> ➕ Create a case for every bug without an id</label>
+        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--txt)"><input type="checkbox" id="bulkParentAll" style="width:auto"/> 🗂 Nest each bug under its ticket's parent task <span class="src">(create if needed)</span></label>
       </div>
       <div class="row">
         <button class="btn" id="createAllBtn" onclick="createAll()">✓ Create all selected</button>
@@ -706,21 +715,18 @@ function clearForm(){
   if($('ticket_id')) $('ticket_id').focus();
 }
 
-// Create a Redmine parent task on the fly, then nest this bug under it.
+// Find-or-create the Redmine parent task for this ticket (named by the ticket id), then nest under it.
 async function createParent(){
-  if(val('parent_task_id')){ toast('Parent task already set (#'+val('parent_task_id')+'). Clear it first to create a new one.','bad'); return; }
-  const def=val('subject')|| (val('ticket_id')?('Ticket '+val('ticket_id')):'');
-  const subj=prompt('Name for the new parent task in Redmine:', def);
-  if(subj===null) return;
-  if(!subj.trim()){ toast('Enter a name for the parent task.','bad'); return; }
+  if(val('parent_task_id')){ toast('Parent task already set (#'+val('parent_task_id')+'). Clear it to re-attach.','bad'); return; }
+  if(!val('ticket_id')){ toast('Enter the PM Ticket ID first — the parent task is named by it.','bad'); $('ticket_id').focus(); return; }
   try{
     const r=await fetch('/create-parent',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({subject:subj.trim(), ticket_id: val('ticket_id')?parseInt(val('ticket_id')):null, platform: val('platform')||'Web'})});
+      body:JSON.stringify({ticket_id:parseInt(val('ticket_id')), platform: val('platform')||'Web'})});
     const d=await r.json();
     if(!r.ok) throw new Error(d.detail||r.statusText);
     $('parent_task_id').value=d.id; flash('parent_task_id');
-    toast('✓ Parent task #'+d.id+' created — this bug will nest under it.','ok');
-  }catch(e){ toast('Could not create parent task: '+(e.message||e),'bad'); }
+    toast((d.reused?'✓ Attached to existing parent task #':'✓ Created parent task #')+d.id+' ("'+val('ticket_id')+'") — bug nests under it.','ok');
+  }catch(e){ toast('Could not create/attach parent task: '+(e.message||e),'bad'); }
 }
 async function createBug(){
   const req=[['ticket_id','PM Ticket ID'],['subject','Summary'],['severity','Severity'],['environment','Environment'],['type','Type'],['jam_link','Jam link']];
@@ -904,19 +910,80 @@ function applyBulkFlag(which, on){
   });
 }
 
+/* ---- fail cases from a TestRail run ---- */
+let RUN_CASES=[], RUN_META={};
+async function fetchRunCases(){
+  const rid=val('bulkRunId'); if(!rid){ toast('Enter a Run ID.','bad'); return; }
+  $('runInfo').innerHTML='<span class="spin"></span> loading run cases…';
+  try{
+    const r=await fetch('/run-cases?run_id='+encodeURIComponent(rid));
+    const d=await r.json(); if(!r.ok) throw new Error(d.detail||r.statusText);
+    RUN_CASES=d.cases||[]; RUN_META={run_id:d.run_id, ticket_id:d.ticket_id, run_name:d.run_name, run_url:d.run_url};
+    renderRunCases();
+    $('runInfo').textContent='✓ '+(d.count||0)+' cases · ticket '+(d.ticket_id||'—')+(d.run_name?(' · '+d.run_name):'');
+  }catch(e){ $('runInfo').textContent=''; toast('Run fetch failed: '+(e.message||e),'bad'); }
+}
+function renderRunCases(){
+  const box=$('runCasesBox'); box.style.display='';
+  if(!RUN_CASES.length){ box.innerHTML='<div class="empty">No cases in that run.</div>'; return; }
+  let h='<div class="card" style="margin:0"><div class="row" style="gap:10px;margin-bottom:8px"><b>Select cases to fail &amp; file bugs for</b><div class="sp"></div>'+
+    '<label style="margin:0;display:flex;align-items:center;gap:5px"><input type="checkbox" id="runSelAll" onclick="runToggleAll(this.checked)" style="width:auto"/> all</label>'+
+    '<button class="btn green sm" id="runLoadBtn" onclick="loadRunSelected()" disabled>Load selected as bugs</button></div>'+
+    '<div style="max-height:260px;overflow:auto;display:flex;flex-direction:column;gap:2px">';
+  RUN_CASES.forEach(c=>{ const fail=(c.status||'').toLowerCase()==='failed';
+    h+='<label class="item" style="cursor:pointer"><input type="checkbox" class="runchk" value="'+c.case_id+'" '+(fail?'checked':'')+' onchange="runUpd()" style="width:auto;margin-right:8px"/>'+
+      '<span class="id">C'+c.case_id+'</span><span class="sub" title="'+esc(c.title)+'">'+esc(c.title)+'</span>'+
+      '<span class="sev" style="background:'+(fail?'#7f1d1d':'var(--chip)')+';color:'+(fail?'#fecaca':'var(--muted)')+'">'+esc(c.status)+'</span></label>'; });
+  h+='</div></div>'; box.innerHTML=h; runUpd();
+}
+function runToggleAll(on){ document.querySelectorAll('.runchk').forEach(x=>x.checked=on); runUpd(); }
+function runUpd(){ const n=document.querySelectorAll('.runchk:checked').length; const b=$('runLoadBtn'); if(b){ b.disabled=!n; b.textContent='Load selected as bugs'+(n?' ('+n+')':''); } }
+async function loadRunSelected(){
+  const ids=[...document.querySelectorAll('.runchk:checked')].map(x=>parseInt(x.value));
+  if(!ids.length){ toast('Select at least one case.','bad'); return; }
+  const jam=val('bulkJam');
+  $('runInfo').innerHTML='<span class="spin"></span> building '+ids.length+' bug'+(ids.length>1?'s':'')+'…';
+  let J=null;
+  if(jam){ try{ const jr=await fetch('/jam?link='+encodeURIComponent(jam)); if(jr.ok) J=await jr.json(); }catch(_){} }
+  const dz=CFG.defaults||{};
+  const bugs=[];
+  for(const cid of ids){
+    let c={}; try{ const cr=await fetch('/case?case_id='+cid); if(cr.ok) c=await cr.json(); }catch(_){}
+    bugs.push({subject:c.subject||('C'+cid+' — failed'), steps:c.steps||'', expected:c.expected||'', test_data:c.test_data||'',
+      actual: (J&&J.actual)||'', ticket_id: c.ticket_id||RUN_META.ticket_id||null, case_id: cid,
+      jam_link: jam||RUN_META.run_url||'',                 // shared Jam if given, else the run link as proof
+      severity:'Major', type:'Functional / Logic',        // sensible defaults (editable per card)
+      platform: c.platform||(J&&J.platform)||dz.platform||'', environment: (J&&J.environment)||dz.environment||'',
+      browser:(J&&J.browser)||'', os:(J&&J.os)||''});
+  }
+  BULK=bugs; window.BULK_RUN_REF=RUN_META.run_id; renderBulk(BULK);
+  BULK.forEach((_,i)=>{ const f=$('b'+i+'_failTr'); if(f) f.checked=true; });  // intent = fail these cases in the run
+  $('bulkActions').style.display=''; window._fillStart=window._fillStart||Date.now();
+  $('runInfo').textContent='✓ '+bugs.length+' bug'+(bugs.length>1?'s':'')+' ready — review & Create all (each marks its case Failed in run '+RUN_META.run_id+').';
+  document.getElementById('bulkList').scrollIntoView({behavior:'smooth'});
+}
+// find-or-create the parent task for a ticket (named by the ticket id), cached across the create run
+async function ensureParent(tid,cache){
+  if(!tid) return null;
+  if(tid in cache) return cache[tid];
+  try{ const r=await fetch('/create-parent',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticket_id:tid,platform:'Web'})}); const d=await r.json(); cache[tid]=r.ok?d.id:null; }
+  catch(_){ cache[tid]=null; }
+  return cache[tid];
+}
 async function createAll(){
   const dz=CFG.defaults||{}; let ok=0, fail=0, done=0;
   const idxs=BULK.map((_,i)=>i).filter(i=>$('b'+i+'_on') && $('b'+i+'_on').checked);
   if(!idxs.length){ toast('No bugs selected.','bad'); return; }
   const btn=$('createAllBtn'); btn.disabled=true;
-  const created=[];
+  const created=[]; const PARENT_CACHE={};
   $('bulkProgWrap').style.display=''; $('bulkProgBar').style.width='0%'; $('bulkCreated').innerHTML='';
   for(const i of idxs){
     const st=$('b'+i+'_st'); st.innerHTML='<span class="spin"></span>';
     const g=(s)=>($('b'+i+'_'+s)?$('b'+i+'_'+s).value.trim():'');
     const miss=[]; if(!g('ticket'))miss.push('Ticket'); if(!g('subject'))miss.push('Summary'); if(!g('severity'))miss.push('Severity'); if(!g('type'))miss.push('Type'); if(!g('environment'))miss.push('Environment'); if(!g('jam'))miss.push('Jam');
     if(miss.length){ st.textContent='⚠ missing: '+miss.join(', '); st.style.color='#fca5a5'; fail++; done++; continue; }
-    const parent = g('parent') ? parseInt(g('parent')) : (val('bulkParent') ? parseInt(val('bulkParent')) : null);
+    let parent = g('parent') ? parseInt(g('parent')) : (val('bulkParent') ? parseInt(val('bulkParent')) : null);
+    if(!parent && $('bulkParentAll') && $('bulkParentAll').checked){ parent = await ensureParent(parseInt(g('ticket')), PARENT_CACHE); }
     const caseId = g('case') ? parseInt(g('case')) : null;
     const failTr = !!($('b'+i+'_failTr') && $('b'+i+'_failTr').checked);
     const makeTc = !!($('b'+i+'_makeTc') && $('b'+i+'_makeTc').checked);
@@ -924,7 +991,7 @@ async function createAll(){
       platform:g('platform')||dz.platform||'',os:dz.os||'',browser:dz.browser||'',devices:dz.devices||'',build_version:dz.build_version||'',fix_version_mobile:dz.fix_version_mobile||'',
       jam_link:g('jam'),steps:g('steps'),test_data:g('test_data'),expected:g('expected'),actual:g('actual'),
       parent_task_id:parent,
-      case_id:caseId, fail_testrail: failTr && !!caseId, create_testcase: makeTc && !caseId, testrail_run_ref:'',
+      case_id:caseId, fail_testrail: failTr && !!caseId, create_testcase: makeTc && !caseId, testrail_run_ref: window.BULK_RUN_REF||'',
       assigned_to_id:g('assignee')?parseInt(g('assignee')):null, source:'bulk', tool_seconds:null};
     try{
       const r=await fetch('/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});

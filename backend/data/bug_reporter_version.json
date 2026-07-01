@@ -1,5 +1,5 @@
 {
-  "version": "1.4.7",
-  "notes": "New: a 'New' button next to Parent task — if there's no parent task yet, create one in Redmine (Ticket/Task) on the fly (names default to the summary/ticket) and the bug nests under it. Plus the 1.4.6 fix that keeps your manual edits over the AI polish.",
+  "version": "1.4.8",
+  "notes": "Parent task = the PM Ticket ID (auto-generated id, find-or-create one per ticket) for single AND bulk. New bulk mode: enter a TestRail Run ID, fetch its cases, multi-select, and each becomes a bug pre-filled from the test case (plus an optional shared Jam) - Create all marks each case Failed in that run. Bulk option to nest every bug under its ticket's parent task.",
   "updated_on": "2026-07-01"
 }
