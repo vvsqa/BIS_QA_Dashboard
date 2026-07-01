@@ -246,7 +246,10 @@ try{ document.documentElement.setAttribute('data-theme', localStorage.getItem('b
         </div>
         <div>
           <label>Parent task <span class="src">(optional — Redmine task #; bug nests under it)</span></label>
-          <input id="parent_task_id" type="number" placeholder="e.g. 11262"/>
+          <div class="row" style="gap:6px">
+            <input id="parent_task_id" type="number" placeholder="e.g. 11262" style="flex:1"/>
+            <button class="iconbtn" type="button" onclick="createParent()" title="No parent task yet? Create one in Redmine and nest this bug under it">➕ New</button>
+          </div>
         </div>
         <div>
           <label>Severity<span class="req">*</span></label>
@@ -703,6 +706,22 @@ function clearForm(){
   if($('ticket_id')) $('ticket_id').focus();
 }
 
+// Create a Redmine parent task on the fly, then nest this bug under it.
+async function createParent(){
+  if(val('parent_task_id')){ toast('Parent task already set (#'+val('parent_task_id')+'). Clear it first to create a new one.','bad'); return; }
+  const def=val('subject')|| (val('ticket_id')?('Ticket '+val('ticket_id')):'');
+  const subj=prompt('Name for the new parent task in Redmine:', def);
+  if(subj===null) return;
+  if(!subj.trim()){ toast('Enter a name for the parent task.','bad'); return; }
+  try{
+    const r=await fetch('/create-parent',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({subject:subj.trim(), ticket_id: val('ticket_id')?parseInt(val('ticket_id')):null, platform: val('platform')||'Web'})});
+    const d=await r.json();
+    if(!r.ok) throw new Error(d.detail||r.statusText);
+    $('parent_task_id').value=d.id; flash('parent_task_id');
+    toast('✓ Parent task #'+d.id+' created — this bug will nest under it.','ok');
+  }catch(e){ toast('Could not create parent task: '+(e.message||e),'bad'); }
+}
 async function createBug(){
   const req=[['ticket_id','PM Ticket ID'],['subject','Summary'],['severity','Severity'],['environment','Environment'],['type','Type'],['jam_link','Jam link']];
   for(const [id,name] of req){ if(!val(id)){ toast('Missing required: '+name,'bad'); $(id).focus(); return; } }

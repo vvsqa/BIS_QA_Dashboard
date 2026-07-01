@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 # --------------------------------------------------------------------------- config
 APP_NAME = "bis-bug-reporter"
-APP_VERSION = "1.4.6"          # bump on each packaged release; compared against the dashboard manifest
+APP_VERSION = "1.4.7"          # bump on each packaged release; compared against the dashboard manifest
 PORT = int(os.environ.get("BUG_REPORTER_PORT", "8765"))
 
 DEFAULT_REDMINE_URL = "https://redmine.bissafety.app"
@@ -991,6 +991,58 @@ def _compose_description(b: CreateBody, struct_fields=None):
     if b.jam_link and not have("proof_links"):
         parts.append("Proof of testing: " + b.jam_link)
     return "\n\n".join(parts) if parts else (b.actual or b.subject)
+
+
+class ParentBody(BaseModel):
+    subject: str
+    ticket_id: int | None = None
+    platform: str = "Web"       # Ticket/Task tracker requires a Platform
+
+
+@app.post("/create-parent")
+def create_parent(b: ParentBody):
+    """Create a Redmine parent task (tracker 'Ticket/Task') on the fly so a bug can nest under it when
+    no parent exists yet. Returns the new issue id + url; the page fills the Parent task field."""
+    cfg = load_config()
+    key = cfg.get("redmine_api_key", "")
+    if not key:
+        raise HTTPException(status_code=400, detail="No Redmine API key set. Open Settings and paste your key.")
+    if not (b.subject or "").strip():
+        raise HTTPException(status_code=400, detail="A parent task name is required.")
+    url = cfg.get("redmine_url", DEFAULT_REDMINE_URL)
+    try:
+        m = meta()
+    except HTTPException:
+        m = {}
+    desc = f"Parent task for PM ticket #{b.ticket_id}. Bugs for this ticket nest under it." if b.ticket_id else ""
+    fields = m.get("fields", {})
+    custom = []
+    pf = fields.get("platform")                       # required on the Ticket/Task tracker (multi-value)
+    if pf:
+        custom.append({"id": pf["id"], "value": [b.platform or "Web"]})
+    payload = {"issue": {
+        "project_id": m.get("project", {}).get("id") or m.get("project", {}).get("identifier") or "bis-web",
+        "tracker_id": m.get("tracker_task_id", 2),   # 2 = Ticket/Task
+        "subject": b.subject.strip(),
+        "description": desc,
+        "custom_fields": custom,
+    }}
+    try:
+        r = requests.post(f"{url}/issues.json", headers={"X-Redmine-API-Key": key, "Content-Type": "application/json"},
+                          data=json.dumps(payload), timeout=30)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Could not reach Redmine: {e}")
+    if r.status_code in (200, 201):
+        iid = r.json().get("issue", {}).get("id")
+        return {"ok": True, "id": iid, "url": f"{url}/issues/{iid}"}
+    detail = r.text
+    try:
+        j = r.json()
+        if isinstance(j, dict) and j.get("errors"):
+            detail = "; ".join(j["errors"])
+    except Exception:
+        pass
+    raise HTTPException(status_code=r.status_code, detail=f"Redmine rejected the parent task: {detail[:300]}")
 
 
 @app.post("/create")

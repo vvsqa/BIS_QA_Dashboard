@@ -1,5 +1,5 @@
 {
-  "version": "1.4.6",
-  "notes": "Fix: manual edits to Summary / Steps / Expected / Actual are no longer overwritten. The AI formatting pass runs asynchronously after a Jam/notes fill; it now skips any field you've edited while it was running, so your typed content is what gets created.",
+  "version": "1.4.7",
+  "notes": "New: a 'New' button next to Parent task — if there's no parent task yet, create one in Redmine (Ticket/Task) on the fly (names default to the summary/ticket) and the bug nests under it. Plus the 1.4.6 fix that keeps your manual edits over the AI polish.",
   "updated_on": "2026-07-01"
 }
