@@ -7431,16 +7431,21 @@ def _appraisal_narrative(emp, period_label, use_ai=True):
     if (rm.get("quality_percent") or 0) >= 85:
         strengths.append(f"High quality ({rm['quality_percent']}%).")
     elif (rm.get("quality_percent") or 0) and rm["quality_percent"] < 70:
-        areas.append(f"Quality is below target ({rm['quality_percent']}%).")
+        areas.append(f"Quality is below target ({rm['quality_percent']}%) — add a self-review pass and cover "
+                     f"edge/negative cases before handing tickets to BIS, to reduce rejections/rework.")
     if (rm.get("ticket_focus_percent") or 0) >= 85:
         strengths.append(f"Excellent ticket focus ({rm['ticket_focus_percent']}% of time on real tickets).")
     if (rm.get("on_time_rate") or 0) < 80:
-        areas.append(f"On-time delivery vs target needs improvement ({rm.get('on_time_rate')}% · {rm.get('overrun_tickets',0)} over).")
+        areas.append(f"On-time delivery vs target needs improvement ({rm.get('on_time_rate')}% · "
+                     f"{rm.get('overrun_tickets',0)} over) — flag scope growth early and ask for a re-estimate "
+                     f"promptly so tickets aren't silently running past their target.")
     ea = rm.get("estimate_accuracy")
     if ea is not None and abs(100 - ea) > 25:
-        areas.append(f"Estimate accuracy is off ({ea}%) — estimates vs actuals diverge.")
+        areas.append(f"Estimate accuracy is off ({ea}%) — when planning, break a ticket into test phases and "
+                     f"compare against similar past tickets so the estimate better matches the real effort.")
     if (rm.get("present_days") or 0) and (rm.get("working_days") or 0) and rm["present_days"] / rm["working_days"] < 0.7:
-        areas.append(f"Attendance is low ({rm['present_days']}/{rm['working_days']} days present).")
+        areas.append(f"Attendance is low ({rm['present_days']}/{rm['working_days']} days present) — keep timesheet "
+                     f"and leave entries complete and plan known leave ahead so delivery stays predictable.")
     if rm.get("manager_note_net", 0) > 0:
         strengths.append(f"Positive manager feedback (+{rm['manager_note_net']} diligence).")
     elif rm.get("manager_note_net", 0) < 0:
@@ -7459,6 +7464,17 @@ def _appraisal_narrative(emp, period_label, use_ai=True):
         import llm_client
         if not llm_client.available():
             return rule
+        # Modules this person OWNS — concentration in an owned module is by design (module ownership),
+        # NOT a weakness. Matched on compact names so "Sariga KA" == "Sariga K A".
+        owned_modules = []
+        try:
+            _own = load_module_ownership() or {}
+            _nk = _compact_person_name(name)
+            for _mod, _info in (_own.get("modules") or {}).items():
+                if any(_compact_person_name(o) == _nk for o in (_info.get("primary_owners") or [])):
+                    owned_modules.append(_mod)
+        except Exception:
+            owned_modules = []
         user = (f"Employee: {name} ({emp.get('role') or 'QA'}). Period: {period_label}. "
                 f"Composite {emp.get('composite_score')}/100.\n"
                 f"Delivered {rm.get('delivered_to_live',0)} (H{cc.get('high',0)}/M{cc.get('medium',0)}/L{cc.get('low',0)}), "
@@ -7467,18 +7483,34 @@ def _appraisal_narrative(emp, period_label, use_ai=True):
                 f"on-time {rm.get('on_time_rate')}% ({rm.get('overrun_tickets',0)} over), ticket-focus {rm.get('ticket_focus_percent')}%, "
                 f"presence {rm.get('present_days')}/{rm.get('working_days')}, utilization {rm.get('utilization_percent')}%.\n"
                 f"Sub-scores: {ss}.\n"
+                f"Review/estimate signals: {rm.get('manager_reviewed_tickets',0)} ticket(s) manager-reviewed, "
+                f"{rm.get('review_applied_tickets',0)} refined via applied review comments, "
+                f"delivered-within-reviewed-estimate={rm.get('reviewed_est_within')}.\n"
                 f"Manager comments: {[ (n.get('sentiment'), n.get('severity'), n.get('text')) for n in (rm.get('manager_notes') or []) ] or 'none'}.\n"
-                f"Modules: {[ (m.get('module'), m.get('count')) for m in (rm.get('module_breakdown') or [])[:6] ]}.")
-        sysmsg = ("You are a QA manager writing a fair, specific performance appraisal for ONE QA team member from "
-                  "their metrics and your comments. Be balanced and evidence-based; cite the numbers. Note: bug-leakage "
-                  "is NOT auto-scored and may be a false positive — only treat manager comments as conduct signals. "
-                  "Return a 2-4 sentence overall summary, 2-4 concrete strengths, and 1-3 areas to improve. Emit via the tool.")
+                f"Modules worked: {[ (m.get('module'), m.get('count')) for m in (rm.get('module_breakdown') or [])[:6] ]}.\n"
+                f"Modules this person OWNS (assigned module owner): {owned_modules or 'none'}.")
+        sysmsg = ("You are an experienced QA manager writing a fair, specific, and CONSTRUCTIVE performance appraisal for "
+                  "ONE team member, to be discussed with them face-to-face in a 1-on-1. Be balanced and evidence-based; "
+                  "cite the actual numbers. Note: bug-leakage is NOT auto-scored and may be a false positive — only treat "
+                  "manager comments as conduct signals. "
+                  "CRITICAL: Module ownership is assigned — if most of this person's tickets fall in a module they OWN, that "
+                  "concentration is EXPECTED and reflects their ownership role; do NOT flag it as a pacing, diversity, or "
+                  "over-concentration weakness. Only treat concentration as a concern when it is NOT an owned module. "
+                  "Credit delivering within reviewed estimates and handling manager-reviewed tickets as positives. "
+                  "For STRENGTHS: be specific and tie each to concrete evidence/numbers. "
+                  "For AREAS TO IMPROVE: make each one genuinely ACTIONABLE so the person understands exactly what to change "
+                  "and how — for each area: (a) state the specific observation with the number, (b) briefly say why it matters, "
+                  "and (c) give ONE concrete, realistic next step they can take. Use a supportive coaching tone. Avoid vague "
+                  "advice, avoid blaming factors outside their control, and do NOT invent problems to fill the list — if the "
+                  "metrics show no real concern, say so plainly. "
+                  "Return a clear 2-4 sentence overall summary, 2-4 specific strengths, and 1-3 actionable areas to improve. "
+                  "Emit via the tool.")
         schema = {"type": "object", "additionalProperties": False,
                   "required": ["overall", "strengths", "areas"],
                   "properties": {"overall": {"type": "string"},
                                  "strengths": {"type": "array", "items": {"type": "string"}},
                                  "areas": {"type": "array", "items": {"type": "string"}}}}
-        ai = llm_client.complete_json(sysmsg, user, schema, tool_name="emit", max_tokens=700)
+        ai = llm_client.complete_json(sysmsg, user, schema, tool_name="emit", max_tokens=900)
         if ai and ai.get("overall"):
             return {"overall": ai["overall"], "strengths": ai.get("strengths") or rule["strengths"],
                     "areas": ai.get("areas") or rule["areas"], "source": "ai"}
@@ -27258,6 +27290,41 @@ class TestrailFailBody(BaseModel):
     expected: Optional[str] = ""         # what was expected instead
     testrail_email: Optional[str] = None    # per-user creds; falls back to the shared service key
     testrail_api_key: Optional[str] = None
+
+
+@app.get("/testrail/run-cases")
+def testrail_run_cases(run_id: int = Query(...), testrail_email: str = Query(None), testrail_api_key: str = Query(None)):
+    """List the cases in a TestRail run (case_id, title, current status) + the run's ticket id.
+    Used by the bug-reporter's run-based bulk failure flow. Per-user TestRail key when supplied."""
+    import base64, requests as _rq, re as _re
+    U = (os.getenv("TESTRAIL_URL", "https://bistrainer.testrail.io") or "").rstrip("/")
+    if testrail_email and testrail_api_key:
+        cred = base64.b64encode(f"{testrail_email}:{testrail_api_key}".encode()).decode()
+    else:
+        e = os.getenv("TESTRAIL_EMAIL", ""); k = os.getenv("TESTRAIL_API_KEY", "")
+        if not (e and k):
+            raise HTTPException(status_code=400, detail="No TestRail credentials — add yours in Settings.")
+        cred = base64.b64encode(f"{e}:{k}".encode()).decode()
+    H = {"Authorization": f"Basic {cred}", "Content-Type": "application/json"}
+    api = f"{U}/index.php?/api/v2"
+    rg = _rq.get(f"{api}/get_run/{run_id}", headers=H, timeout=30)
+    if rg.status_code != 200:
+        raise HTTPException(status_code=502 if rg.status_code >= 500 else rg.status_code,
+                            detail=f"Could not read run {run_id} ({rg.status_code}).")
+    run = rg.json()
+    name = run.get("name", "") or ""
+    m = _re.search(r"#?\s*(\d{4,6})", name)
+    ticket_id = int(m.group(1)) if m else None
+    tg = _rq.get(f"{api}/get_tests/{run_id}", headers=H, timeout=40)
+    if tg.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Could not read the tests for run {run_id}.")
+    td = tg.json()
+    tests = td.get("tests", td) if isinstance(td, dict) else td
+    ST = {1: "Passed", 2: "Blocked", 3: "Untested", 4: "Retest", 5: "Failed"}
+    cases = [{"case_id": t.get("case_id"), "title": t.get("title") or "",
+              "status": ST.get(t.get("status_id"), str(t.get("status_id")))} for t in (tests or [])]
+    return {"run_id": run_id, "run_name": name, "ticket_id": ticket_id, "count": len(cases), "cases": cases,
+            "run_url": f"{U}/index.php?/runs/view/{run_id}"}
 
 
 @app.post("/testrail/fail-case")
