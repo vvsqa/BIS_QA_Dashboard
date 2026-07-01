@@ -1079,8 +1079,8 @@ export default function QCQueueDashboard() {
                       title="Queue this ticket for test-plan generation" onClick={e => { e.stopPropagation(); generateTestPlan(t.ticket_id); }}>Generate</button>;
                   }
                   return <span style={{ color: 'var(--text-muted)' }}>–</span>;
-                })()}{(t.status || '').startsWith('QC Testing') && (
-                  <button title="QA estimate — activity/time split-up + PM comment for the initial estimate"
+                })()}{(t.has_test_plan || t.has_excel) && (
+                  <button title="Generate QA estimate with Claude — activity/time split-up + PM comment (available once the test plan is created)"
                     onClick={e => { e.stopPropagation(); setEstimatePopup(t); }}
                     style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 22, borderRadius: 7, cursor: 'pointer', fontSize: '0.82rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>⏱</button>
                 )}</span></td>
