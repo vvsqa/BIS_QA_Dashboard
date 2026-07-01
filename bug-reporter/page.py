@@ -377,7 +377,7 @@ try{ document.documentElement.setAttribute('data-theme', localStorage.getItem('b
       <div class="row" style="align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:10px">
         <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--txt)"><input type="checkbox" id="bulkFailAll" onchange="applyBulkFlag('fail',this.checked)" style="width:auto"/> 🧪 Mark every matched TestRail case Failed</label>
         <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--txt)"><input type="checkbox" id="bulkMakeAll" onchange="applyBulkFlag('make',this.checked)" style="width:auto"/> ➕ Create a case for every bug without an id</label>
-        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--txt)"><input type="checkbox" id="bulkParentAll" style="width:auto"/> 🗂 Nest each bug under its ticket's parent task <span class="src">(create if needed)</span></label>
+        <label style="display:flex;align-items:center;gap:6px;margin:0;color:var(--txt)"><input type="checkbox" id="bulkParentAll" checked style="width:auto"/> 🗂 Nest each bug under its ticket's parent task <span class="src">(automatic — uncheck to skip)</span></label>
       </div>
       <div class="row">
         <button class="btn" id="createAllBtn" onclick="createAll()">✓ Create all selected</button>
@@ -991,6 +991,7 @@ async function createAll(){
       platform:g('platform')||dz.platform||'',os:dz.os||'',browser:dz.browser||'',devices:dz.devices||'',build_version:dz.build_version||'',fix_version_mobile:dz.fix_version_mobile||'',
       jam_link:g('jam'),steps:g('steps'),test_data:g('test_data'),expected:g('expected'),actual:g('actual'),
       parent_task_id:parent,
+      auto_parent: !!($('bulkParentAll') && $('bulkParentAll').checked),
       case_id:caseId, fail_testrail: failTr && !!caseId, create_testcase: makeTc && !caseId, testrail_run_ref: window.BULK_RUN_REF||'',
       assigned_to_id:g('assignee')?parseInt(g('assignee')):null, source:'bulk', tool_seconds:null};
     try{

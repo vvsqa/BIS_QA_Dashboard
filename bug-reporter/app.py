@@ -961,6 +961,7 @@ class CreateBody(BaseModel):
     actual: str = ""
     assigned_to_id: int | None = None   # developer to assign the bug to
     parent_task_id: int | None = None   # Redmine parent issue -> the bug nests under that task
+    auto_parent: bool = True             # if no parent given, find-or-create the ticket-id parent + nest
     case_id: int | None = None          # TestRail case this bug came from (optional)
     fail_testrail: bool = False         # also mark that case Failed in the env's run
     testrail_run_ref: str = ""          # optional explicit run id / link (else resolved by env)
@@ -1035,6 +1036,37 @@ def _find_parent_task(url, key, ticket_id, tracker):
     except Exception:
         pass
     return None
+
+
+def _ensure_parent_task(url, key, ticket_id, platform, m):
+    """Find-or-create the Redmine parent task named by the PM ticket id; return its issue id.
+    Race-safe: if a concurrent create beat us (or the create fails), re-find and reuse so we never
+    end up with two parents for one ticket. Returns None only if it truly can't be resolved."""
+    tracker = m.get("tracker_task_id", 2)   # 2 = Ticket/Task
+    found = _find_parent_task(url, key, ticket_id, tracker)
+    if found:
+        return found
+    fields = m.get("fields", {})
+    custom = []
+    pf = fields.get("platform")                       # required on the Ticket/Task tracker (multi-value)
+    if pf:
+        custom.append({"id": pf["id"], "value": [platform or "Web"]})
+    payload = {"issue": {
+        "project_id": m.get("project", {}).get("id") or m.get("project", {}).get("identifier") or "bis-web",
+        "tracker_id": tracker,
+        "subject": str(ticket_id),                    # task name = ticket id
+        "description": f"Parent task for PM ticket #{ticket_id}. Bugs for this ticket nest under it.",
+        "custom_fields": custom,
+    }}
+    try:
+        r = requests.post(f"{url}/issues.json", headers={"X-Redmine-API-Key": key, "Content-Type": "application/json"},
+                          data=json.dumps(payload), timeout=30)
+    except Exception:
+        return _find_parent_task(url, key, ticket_id, tracker)   # network hiccup — maybe another run made it
+    if r.status_code in (200, 201):
+        return r.json().get("issue", {}).get("id")
+    # Create failed (e.g. a concurrent create won the race) — re-find and reuse if one now exists.
+    return _find_parent_task(url, key, ticket_id, tracker)
 
 
 @app.post("/create-parent")
@@ -1146,8 +1178,16 @@ def create(b: CreateBody):
     }
     if b.assigned_to_id:
         payload["issue"]["assigned_to_id"] = b.assigned_to_id
-    if b.parent_task_id:
-        payload["issue"]["parent_issue_id"] = b.parent_task_id
+    # Nest under the ticket's parent task. Use an explicitly-given parent, else auto find-or-create the
+    # parent named by the PM ticket id (one parent per ticket, reused). Best-effort: never block the bug.
+    parent_id = b.parent_task_id
+    if not parent_id and b.ticket_id and b.auto_parent and cfg.get("auto_parent", True):
+        try:
+            parent_id = _ensure_parent_task(url, key, b.ticket_id, b.platform or "Web", m)
+        except Exception:
+            parent_id = None
+    if parent_id:
+        payload["issue"]["parent_issue_id"] = parent_id
 
     try:
         r = requests.post(f"{url}/issues.json", headers={"X-Redmine-API-Key": key, "Content-Type": "application/json"},
