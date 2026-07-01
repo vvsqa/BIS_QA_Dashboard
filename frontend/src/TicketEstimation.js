@@ -887,10 +887,10 @@ export default function TicketEstimation() {
           <table className="qcq-table">
             <thead><tr>
               <th>Ticket</th><th style={{ textAlign: 'left' }}>Title</th><th>QC Tester</th><th>Module</th><th>Complexity</th>
-              <th>QC Status</th><th>Stage</th><th>Planned</th><th>Actual</th><th>Allowed</th><th>Rounds</th>
+              <th>QC Status</th><th>Stage</th><th>Planned</th><th>Actual</th><th>Allowed</th><th>Rounds</th><th>Reviewed</th>
             </tr></thead>
             <tbody>
-              {loading ? <tr><td colSpan={11} style={{ padding: 16 }}><div className="qae-skel" style={{ height: 120 }} /></td></tr>
+              {loading ? <tr><td colSpan={12} style={{ padding: 16 }}><div className="qae-skel" style={{ height: 120 }} /></td></tr>
                 : tickets.length ? tickets.map(t => {
                   const sc = STATUS_COLOR[t.current_status] || '#64748b';
                   return (
@@ -906,9 +906,17 @@ export default function TicketEstimation() {
                       <td>{t.actual_hours != null ? fmtH(t.actual_hours) : '–'}</td>
                       <td style={{ fontWeight: 700 }}>{t.recalc_total != null ? fmtH(t.recalc_total) : '–'}</td>
                       <td>{t.rounds || '–'}</td>
+                      <td style={{ fontSize: '0.72rem' }}>
+                        {t.reviewed_on ? (
+                          <span title={t.manager_comment || 'Manager-reviewed'}>
+                            {t.reviewed_by || '✓ reviewed'}
+                            <br /><span style={{ color: 'var(--text-muted)' }}>{new Date(t.reviewed_on).toLocaleDateString('en-US')}</span>
+                          </span>
+                        ) : '–'}
+                      </td>
                     </tr>
                   );
-                }) : <tr><td colSpan={11} className="qcq-empty" style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)' }}>No tickets.</td></tr>}
+                }) : <tr><td colSpan={12} className="qcq-empty" style={{ padding: 20, textAlign: 'center', color: 'var(--text-muted)' }}>No tickets.</td></tr>}
             </tbody>
           </table>
         </div>

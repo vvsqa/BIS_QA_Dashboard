@@ -49,7 +49,53 @@ function CalendarModule() {
   const [syncStatus, setSyncStatus] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [filterOptions, setFilterOptions] = useState({ teams: [], categories: [] });
-  
+
+  // ---- Shareable timesheet reminder (Teams message) ----
+  const [reminderOpen, setReminderOpen] = useState(false);
+  const [reminderData, setReminderData] = useState(null);
+  const [reminderLoading, setReminderLoading] = useState(false);
+  const [reminderCopied, setReminderCopied] = useState(false);
+  const [reminderTol, setReminderTol] = useState(1);        // hours of deviation to ignore
+  const [reminderExclude, setReminderExclude] = useState(''); // names to leave out (e.g. the sender)
+
+  const loadReminder = useCallback(async (tol, excl) => {
+    setReminderLoading(true); setReminderCopied(false);
+    try {
+      const monthStr = `${currentDate.getFullYear()}-${String(currentDate.getMonth() + 1).padStart(2, '0')}`;
+      const rteam = team === 'ALL' ? 'QA' : team;   // QA = web+mobile+automation, one combined list
+      const res = await fetch(`${API_BASE}/calendar/timesheet-reminder?team=${rteam}&month=${monthStr}`
+        + `&tolerance=${tol}&exclude=${encodeURIComponent(excl || '')}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setReminderData(await res.json());
+    } catch (e) {
+      setReminderData({ message: `Could not build the reminder: ${e.message}`, error: true });
+    } finally {
+      setReminderLoading(false);
+    }
+  }, [team, currentDate]);
+
+  const openReminder = useCallback(() => {
+    setReminderOpen(true); setReminderData(null); setReminderCopied(false);
+    loadReminder(reminderTol, reminderExclude);
+  }, [loadReminder, reminderTol, reminderExclude]);
+
+  const copyReminder = useCallback(() => {
+    const text = (reminderData && reminderData.message) || '';
+    const done = () => { setReminderCopied(true); setTimeout(() => setReminderCopied(false), 2000); };
+    // navigator.clipboard is unavailable on plain-HTTP origins → fall back to execCommand.
+    const fallback = () => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      try { document.execCommand('copy'); done(); } catch (e) { /* ignore */ }
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(text).then(done).catch(fallback);
+    } else { fallback(); }
+  }, [reminderData]);
+
+
   // Filter options — hardcoded teams since no auth
   useEffect(() => {
     setFilterOptions({ teams: ['QA', 'DEVELOPMENT'], categories: ['BILLED', 'UN-BILLED'] });
@@ -244,6 +290,13 @@ function CalendarModule() {
     
     return () => clearInterval(statusInterval);
   }, [lastKnownSyncTime, view, team, currentDate]);
+
+  // Auto-refresh an OPEN timesheet reminder whenever a new sync lands or the month/team changes,
+  // so the notes always reflect the latest fetched timesheet data (never a stale snapshot).
+  useEffect(() => {
+    if (reminderOpen) loadReminder(reminderTol, reminderExclude);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastKnownSyncTime, team, currentDate]);
 
   // Get hours color class
   const getHoursColorClass = (hours) => {
@@ -1084,6 +1137,16 @@ function CalendarModule() {
                 <option key={c} value={c}>{c}</option>
               ))}
             </select>
+
+            {view === 'monthly' && (
+              <button onClick={openReminder} aria-label="Timesheet reminder"
+                title="Timesheet reminder — shareable summary of missing / short / mis-dated entries for this month"
+                style={{ marginLeft: 8, width: 34, height: 34, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  fontSize: '1.05rem', cursor: 'pointer', borderRadius: 8, background: 'var(--bg-secondary, #0f172a)',
+                  border: '1px solid var(--border-color, #334155)', color: 'var(--text-primary, #e2e8f0)' }}>
+                📋
+              </button>
+            )}
           </div>
 
           <div className="date-navigation">
@@ -1195,6 +1258,70 @@ function CalendarModule() {
 
       {/* Employee Detail Modal */}
       {renderEmployeeModal()}
+
+      {/* Shareable timesheet reminder modal */}
+      {reminderOpen && (
+        <div onClick={() => setReminderOpen(false)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.66)', backdropFilter: 'blur(2px)',
+            zIndex: 100000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowY: 'auto', padding: '4vh 12px' }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ width: 'min(680px, 96vw)', background: 'var(--bg-card, #1e293b)', border: '1px solid var(--border-color, #334155)',
+              borderRadius: 12, padding: 16, color: 'var(--text-primary, #e2e8f0)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <strong style={{ fontSize: '0.95rem' }}>📋 Timesheet reminder{reminderData && reminderData.month_label ? ` — ${reminderData.month_label}` : ''}</strong>
+              <button onClick={() => setReminderOpen(false)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted, #94a3b8)', fontSize: '1.1rem', cursor: 'pointer' }}>✕</button>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+              <label style={{ fontSize: '0.72rem', color: 'var(--text-muted, #94a3b8)', display: 'flex', alignItems: 'center', gap: 5 }}>
+                Ignore up to
+                <select value={reminderTol} onChange={e => { const v = Number(e.target.value); setReminderTol(v); loadReminder(v, reminderExclude); }}
+                  style={{ padding: '4px 6px', borderRadius: 6, background: 'var(--bg-secondary, #0f172a)', border: '1px solid var(--border-color, #334155)', color: 'var(--text-primary, #e2e8f0)' }}>
+                  <option value={0}>0h (strict)</option>
+                  <option value={0.5}>0.5h</option>
+                  <option value={1}>1h</option>
+                  <option value={2}>2h</option>
+                </select>
+              </label>
+              <input type="text" value={reminderExclude} onChange={e => setReminderExclude(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') loadReminder(reminderTol, reminderExclude); }}
+                placeholder="Exclude names (e.g. yours), comma-separated"
+                style={{ flex: 1, minWidth: 160, padding: '5px 8px', borderRadius: 6, fontSize: '0.75rem',
+                  background: 'var(--bg-secondary, #0f172a)', border: '1px solid var(--border-color, #334155)', color: 'var(--text-primary, #e2e8f0)' }} />
+              <button className="btn" onClick={() => loadReminder(reminderTol, reminderExclude)}
+                style={{ padding: '5px 12px', borderRadius: 6, border: '1px solid var(--border-color, #334155)', cursor: 'pointer',
+                  background: 'var(--bg-secondary, #0f172a)', color: 'var(--text-primary, #e2e8f0)', fontSize: '0.75rem' }}>
+                ↻ Regenerate
+              </button>
+            </div>
+            {reminderLoading ? (
+              <p style={{ color: 'var(--text-muted, #94a3b8)' }}>Building the message…</p>
+            ) : (
+              <>
+                {reminderData && !reminderData.error && (
+                  <div style={{ fontSize: '0.72rem', color: 'var(--text-muted, #94a3b8)', marginBottom: 8 }}>
+                    {(reminderData.no_entries || []).length + (reminderData.flagged || []).length} to fix ·
+                    {' '}{(reminderData.ok || []).length} within tolerance · {reminderData.working_days} working days ·
+                    {' '}deviations up to {reminderData.tolerance}h ignored
+                  </div>
+                )}
+                <textarea readOnly value={(reminderData && reminderData.message) || ''}
+                  onFocus={e => e.target.select()}
+                  style={{ width: '100%', height: 340, resize: 'vertical', fontFamily: 'Consolas, monospace', fontSize: '0.8rem',
+                    lineHeight: 1.5, padding: 10, borderRadius: 8, background: 'var(--bg-secondary, #0f172a)',
+                    border: '1px solid var(--border-color, #334155)', color: 'var(--text-primary, #e2e8f0)' }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10 }}>
+                  <button className="btn btn-primary" onClick={copyReminder} disabled={!reminderData || reminderData.error}
+                    style={{ padding: '7px 18px', borderRadius: 8, border: 'none', cursor: 'pointer',
+                      background: reminderCopied ? '#16a34a' : 'var(--accent-teal, #14b8a6)', color: '#fff', fontWeight: 600 }}>
+                    {reminderCopied ? '✓ Copied' : 'Copy'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

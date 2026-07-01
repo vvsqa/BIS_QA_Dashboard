@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { apiFetch } from './api';
 
 const CATEGORIES = [
@@ -60,12 +60,16 @@ export default function PerformersPanel() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  const candReq = useRef(0);
   const loadCandidates = useCallback(async (period_type, offset, category, keepSummary) => {
+    const myReq = ++candReq.current;   // guard: only the latest request may update state
     setCandLoading(true);
     try {
       const res = await apiFetch(`/performers/candidates?period_type=${period_type}&offset=${offset}&category=${category}`);
+      if (myReq !== candReq.current) return;   // a newer period/category request superseded this one
       if (res.ok) {
         const j = await res.json();
+        if (myReq !== candReq.current) return;
         setCandidates(j.candidates || []);
         setPeriodInfo({ label: j.period_label, key: j.period_key, ended: j.period_ended });
         if (!keepSummary && (j.candidates || []).length) {
@@ -76,7 +80,7 @@ export default function PerformersPanel() {
         }
       }
     } catch (e) { /* noop */ }
-    setCandLoading(false);
+    if (myReq === candReq.current) setCandLoading(false);
   }, []);
 
   const openNew = () => {
@@ -120,8 +124,9 @@ export default function PerformersPanel() {
         team: form.team, role: form.role, composite_score: form.composite_score, rank: form.rank,
         team_size: form.team_size, summary: form.summary, metrics: form.metrics, freeze }) });
       if (res.ok) { setShowForm(false); await load(); }
+      else if (res.status === 401 || res.status === 403) { setMsg('Your session expired — please log in again, then retry.'); }
       else { const e = await res.json().catch(() => ({})); setMsg(e.detail || 'Save failed.'); }
-    } catch (e) { setMsg('Save failed.'); }
+    } catch (e) { setMsg(e.message === 'Unauthorized' ? 'Your session expired — please log in again, then retry.' : 'Save failed.'); }
     setSaving(false);
   };
 

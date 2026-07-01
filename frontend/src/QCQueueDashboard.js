@@ -439,6 +439,7 @@ export default function QCQueueDashboard() {
   const [listPriorityFilter, setListPriorityFilter] = useState('');
   const [listModuleFilter, setListModuleFilter] = useState('');
   const [listTesterFilter, setListTesterFilter] = useState('');
+  const [listDeveloperFilter, setListDeveloperFilter] = useState(''); // '', a developer name, or 'Not Assigned'
   const [listPlanFilter, setListPlanFilter] = useState(''); // '', 'created', 'pending'
   const [listPrFilter, setListPrFilter] = useState(''); // '', 'ready', 'pre_release'
   const [listDocFilter, setListDocFilter] = useState(''); // '', 'weak' (NO_PR_NO_RN/THIN_RN/...), 'thin'
@@ -702,7 +703,7 @@ export default function QCQueueDashboard() {
     try {
       await fetch(`${API_BASE}/live/refresh`, { method: 'POST' });
       setCardFilter(null); setSelectedModuleBar(null); setSelectedPipelineBar(null);
-      setSearchFilter(''); setListPriorityFilter(''); setListModuleFilter(''); setListTesterFilter('');
+      setSearchFilter(''); setListPriorityFilter(''); setListModuleFilter(''); setListTesterFilter(''); setListDeveloperFilter('');
       await fetchAll();
     } finally { setSyncing(false); }
   };
@@ -839,6 +840,7 @@ export default function QCQueueDashboard() {
         String(t.ticket_id).includes(s) ||
         (t.title || '').toLowerCase().includes(s) ||
         (t.qc_tester || '').toLowerCase().includes(s) ||
+        (t.developers_str || '').toLowerCase().includes(s) ||
         (t.module || '').toLowerCase().includes(s) ||
         (t.priority || '').toLowerCase().includes(s)
       );
@@ -851,6 +853,13 @@ export default function QCQueueDashboard() {
     }
     if (listTesterFilter) {
       result = result.filter(t => listTesterFilter === 'Unassigned' ? !t.qc_tester : (t.qc_tester || '') === listTesterFilter);
+    }
+    if (listDeveloperFilter) {
+      result = result.filter(t => {
+        const raw = (t.developers_str || '').trim();
+        if (listDeveloperFilter === 'Not Assigned') return !raw || raw === 'Not Assigned';
+        return raw.split(',').map(x => x.trim()).includes(listDeveloperFilter);
+      });
     }
     if (listPlanFilter === 'created') {
       result = result.filter(t => t.has_test_plan);
@@ -891,6 +900,10 @@ export default function QCQueueDashboard() {
   const uniquePriorities = [...new Set(allTicketsForFilters.map(t => t.priority).filter(Boolean))].sort();
   const uniqueModules = [...new Set(allTicketsForFilters.map(t => t.module).filter(Boolean))].sort();
   const uniqueTesters = [...new Set(allTicketsForFilters.map(t => t.qc_tester).filter(Boolean))].sort();
+  const uniqueDevelopers = [...new Set(allTicketsForFilters
+    .flatMap(t => (t.developers_str || '').split(','))
+    .map(x => x.trim())
+    .filter(d => d && d !== 'Not Assigned'))].sort();
 
   const handleCardClick = (filter) => {
     if (cardFilter === filter) {
@@ -933,7 +946,7 @@ export default function QCQueueDashboard() {
 
   const exportQueueCSV = (rows, label) => {
     const esc = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
-    const headers = ['Ticket', 'Title', 'Status', 'Priority', 'Complexity', 'Platform', 'QC Tester', 'Planning', 'Planner',
+    const headers = ['Ticket', 'Title', 'Status', 'Priority', 'Complexity', 'Platform', 'QC Tester', 'Developer', 'Planning', 'Planner',
       'Module', 'Days in QC', 'Days No Action', 'Activity', 'Retest Cycles', 'QA Est', 'QA Actual', 'Test Plan', 'Test Cases',
       'TC Initial', 'TC Current', 'TC Added', 'TC Removed',
       'PR / Release Note', 'Bugs Total', 'Bugs Open', 'Bugs Closed', 'Released to QA', 'Current Assignee', 'ETA'];
@@ -941,7 +954,7 @@ export default function QCQueueDashboard() {
     const lines = [headers.join(',')];
     rows.forEach(t => {
       const planning = t.qc_tester ? 'Assigned' : (t.planning_status === 'in_planning' ? 'Plan Initiated' : 'Unplanned');
-      lines.push([t.ticket_id, t.title, t.status, t.priority, cxOf(t).level || '', t.platform || 'Web', t.qc_tester || '', planning,
+      lines.push([t.ticket_id, t.title, t.status, t.priority, cxOf(t).level || '', t.platform || 'Web', t.qc_tester || '', t.developers_str || '', planning,
         t.planner || '', t.module, t.days_in_qc, t.days_since_last_action ?? '', t.activity_label, t.retest_cycle_count || 0,
         t.qa_estimate_hours || 0, t.qa_actual_hours || 0, t.has_test_plan ? 'Created' : 'No plan', t.test_cases || 0,
         t.case_summary?.initial ?? '', t.case_summary?.current ?? '', t.case_summary?.added ?? '', t.case_summary?.removed ?? '',
@@ -1570,6 +1583,11 @@ export default function QCQueueDashboard() {
                 <option value="">All Testers</option>
                 {[...new Set(cardFilteredList.map(t => t.qc_tester).filter(Boolean))].sort().map(t => <option key={t} value={t}>{t}</option>)}
               </select>
+              <select className="qcq-search-input" value={listDeveloperFilter} onChange={e => setListDeveloperFilter(e.target.value)} style={{ width: '150px' }} title="Filter by developer on the ticket">
+                <option value="">All Developers</option>
+                <option value="Not Assigned">— Not Assigned —</option>
+                {[...new Set(cardFilteredList.flatMap(t => (t.developers_str || '').split(',')).map(x => x.trim()).filter(d => d && d !== 'Not Assigned'))].sort().map(d => <option key={d} value={d}>{d}</option>)}
+              </select>
               <select className="qcq-search-input" value={listPlanFilter} onChange={e => setListPlanFilter(e.target.value)} style={{ width: '150px' }} title="TestRail plan (project BIS)">
                 <option value="">All Test Plans</option>
                 <option value="created">✓ Plan created</option>
@@ -1609,8 +1627,8 @@ export default function QCQueueDashboard() {
                 <option value="Medium">🟡 Medium</option>
                 <option value="Low">🟢 Low</option>
               </select>
-              {(searchFilter || listPriorityFilter || listModuleFilter || listTesterFilter || listPlanFilter || listPrFilter || listDocFilter || ageingDays || cxLevelFilter) && (
-                <button className="btn btn-sm btn-secondary" onClick={() => { setSearchFilter(''); setListPriorityFilter(''); setListModuleFilter(''); setListTesterFilter(''); setListPlanFilter(''); setListPrFilter(''); setListDocFilter(''); setAgeingDays(0); setCxLevelFilter(''); }}>
+              {(searchFilter || listPriorityFilter || listModuleFilter || listTesterFilter || listDeveloperFilter || listPlanFilter || listPrFilter || listDocFilter || ageingDays || cxLevelFilter) && (
+                <button className="btn btn-sm btn-secondary" onClick={() => { setSearchFilter(''); setListPriorityFilter(''); setListModuleFilter(''); setListTesterFilter(''); setListDeveloperFilter(''); setListPlanFilter(''); setListPrFilter(''); setListDocFilter(''); setAgeingDays(0); setCxLevelFilter(''); }}>
                   Clear Filters
                 </button>
               )}
@@ -1666,6 +1684,11 @@ export default function QCQueueDashboard() {
               <select className="qcq-search-input" value={listTesterFilter} onChange={e => setListTesterFilter(e.target.value)} style={{ width: '140px' }}>
                 <option value="">All Testers</option>
                 {uniqueTesters.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+              <select className="qcq-search-input" value={listDeveloperFilter} onChange={e => setListDeveloperFilter(e.target.value)} style={{ width: '150px' }} title="Filter by developer on the ticket">
+                <option value="">All Developers</option>
+                <option value="Not Assigned">— Not Assigned —</option>
+                {uniqueDevelopers.map(d => <option key={d} value={d}>{d}</option>)}
               </select>
               <select className="qcq-search-input" value={listPlanFilter} onChange={e => setListPlanFilter(e.target.value)} style={{ width: '150px' }} title="TestRail plan (project BIS)">
                 <option value="">All Test Plans</option>

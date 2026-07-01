@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { API_BASE } from './api';
+import { API_BASE, downloadFile } from './api';
 import { EmployeeBreakdown, monthOptions, quarterOptions } from './EmployeePerformance';
 import './dashboard.css';
 
@@ -34,6 +34,8 @@ export function DiscussionPanel() {
   const [loadingBoard, setLoadingBoard] = useState(false);
   const [loadingDisc, setLoadingDisc] = useState(false);
   const [error, setError] = useState('');
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfErr, setPdfErr] = useState('');
 
   const customValid = kind !== 'custom' || (cFrom && cTo && cFrom <= cTo);
 
@@ -99,6 +101,19 @@ export function DiscussionPanel() {
   const pdfUrl = (empId && resFrom && resTo)
     ? `${API_BASE}/employees/${empId}/appraisal-report?from=${resFrom}&to=${resTo}&hide_rank=true`
     : null;
+  const empName = (disc?.entry?.name) || (board?.[teamKey] || []).find(e => e.employee_id === empId)?.name || empId;
+  const downloadPdf = useCallback(async () => {
+    if (!pdfUrl) return;
+    setPdfBusy(true); setPdfErr('');
+    try {
+      const fname = `1-on-1 ${empName} (${resFrom} to ${resTo}).pdf`;
+      await downloadFile(pdfUrl, fname);
+    } catch (e) {
+      setPdfErr(e.message || 'Could not generate the PDF. Please try again.');
+    } finally {
+      setPdfBusy(false);
+    }
+  }, [pdfUrl, empName, resFrom, resTo]);
   const offsetOpts = kind === 'quarter' ? quarterOptions() : monthOptions();
 
   const card = { background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: 10, padding: 14 };
@@ -154,13 +169,16 @@ export function DiscussionPanel() {
             <option value="">{loadingBoard ? 'Loading team…' : `— select from ${TEAMS.find(t => t.key === teamKey)?.label} (${teamList.length}) —`}</option>
             {teamList.map(e => <option key={e.employee_id} value={e.employee_id}>{e.name}</option>)}
           </select>
-          <a className="btn btn-primary" href={pdfUrl || undefined}
-            style={{ pointerEvents: pdfUrl ? 'auto' : 'none', opacity: pdfUrl ? 1 : 0.5 }}
-            target="_blank" rel="noreferrer">⬇ Download PDF</a>
+          <button className="btn btn-primary" onClick={downloadPdf}
+            disabled={!pdfUrl || pdfBusy}
+            style={{ opacity: (pdfUrl && !pdfBusy) ? 1 : 0.6, cursor: (pdfUrl && !pdfBusy) ? 'pointer' : 'default' }}>
+            {pdfBusy ? '⏳ Preparing PDF…' : '⬇ Download PDF'}
+          </button>
           <span style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginLeft: 'auto', maxWidth: 280 }}>
             Discussion view — full performance detail &amp; trend, but the leaderboard position is hidden.
           </span>
         </div>
+        {pdfErr && <span style={{ fontSize: '0.72rem', color: '#dc2626' }}>{pdfErr}</span>}
         {kind === 'custom' && !customValid && <span style={{ fontSize: '0.72rem', color: CAT_COLOR['Awaiting review'] }}>Pick a valid From/To range.</span>}
       </div>
 

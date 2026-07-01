@@ -7238,6 +7238,31 @@ BIS_UNEXEC_PENALTY_CAP = 12.0
 # Leave types that count as a billing-loss absence (WFH = still working; Holiday = company-wide).
 ABSENCE_LEAVE_TYPES = ("leave", "sick leave", "casual leave", "half day", "earned leave", "lop")
 
+
+def _leave_day_fraction(leave_type, hours):
+    """Fraction of a working day a leave entry consumes.
+    IMPORTANT: 'Half Day' leaves are stored with hours=8 (the hours column is unreliable for them),
+    so a half-day must be detected by its TYPE and counts as 0.5 regardless of hours. Any other
+    leave defaults to a full day; a genuinely small hours value (0<h<8) is honored proportionally."""
+    if "half" in (leave_type or "").lower():
+        return 0.5
+    h = hours if (hours is not None) else 8
+    if 0 < h < 8:
+        return round(h / 8.0, 2)
+    return 1.0
+
+# ── Tiny secondary scoring factors (added 2026-07) ────────────────────────────────────────────
+# Four small, signed composite adjustments — each capped at ±1 so they only nudge, never dominate.
+# They are gated to periods ending on/after NEW_FACTORS_EFFECTIVE so PAST months' ratings (already
+# frozen as PerformanceSnapshots) never shift retroactively. Credit for reviewed / manager-reviewed
+# tickets goes to the TICKET'S TESTER (a quality/diligence signal on their delivered work).
+NEW_FACTORS_EFFECTIVE = date(2026, 7, 1)
+EST_ADHERENCE_CAP = 1.0      # within the Claude/manager reviewed-allowed time → +, well over → −
+REVIEW_CREDIT_CAP = 1.0      # share of the tester's tickets that had review comments applied → +
+MGR_REVIEW_CREDIT_CAP = 1.0  # share of the tester's tickets marked manager-reviewed → +
+LOG_HOURS_CAP = 1.0          # more full/long logged days than short days → +, more short days → −
+EST_OVERRUN_TOLERANCE = 1.25 # actual over reviewed-allowed by >25% counts as "exceeded too much"
+
 # Statuses where the person's work is done but the ticket is held for EXTERNAL review/deploy
 # (waiting in BIS, or approved and awaiting go-live). Not the person's delay — credited so they
 # aren't penalized for a low closed-count caused by tickets sitting in review.
@@ -8049,7 +8074,8 @@ def get_performance_leaderboard(
                 ts_by_emp[eid].append(e)
 
         # Leave days taken in the period (billing loss), counted exactly like the Calendar module:
-        # sum(leave hours)/8 over actual-leave entries (any "Leave" type; WFH/Holiday excluded).
+        # a full "Leave" = 1 day, a "Half Day" = 0.5 (WFH/Holiday excluded). Half-days are stored
+        # with hours=8, so they MUST be detected by type — see _leave_day_fraction.
         leave_days_by_emp = defaultdict(float)
         for lv in db.query(LeaveEntry).filter(
             LeaveEntry.date >= start_date.date(),
@@ -8060,7 +8086,7 @@ def get_performance_leaderboard(
                 continue
             eid = _resolve(lv.employee_name)
             if eid:
-                leave_days_by_emp[eid] += (lv.hours or 8) / 8.0
+                leave_days_by_emp[eid] += _leave_day_fraction(lv.leave_type, lv.hours)
 
         # Working days in the period (Mon–Fri) for attendance/presence.
         period_working_days = sum(
@@ -8100,6 +8126,24 @@ def get_performance_leaderboard(
                     _revised_map[_r.ticket_id] = _r.revised_estimate
             except Exception:
                 _revised_map = {}
+
+        # Tiny secondary factors apply only from NEW_FACTORS_EFFECTIVE onward (past months stay frozen).
+        new_factors_on = end_date.date() >= NEW_FACTORS_EFFECTIVE
+        _review_applied_ids = set()   # tickets whose test cases had review comments applied
+        _mgr_reviewed_ids = set()     # tickets marked manager-reviewed in the QA Estimation/Review flow
+        if new_factors_on:
+            try:
+                for _tp in (db.query(TestPlanRequest)
+                            .filter(TestPlanRequest.review_applied_on.isnot(None)).all()):
+                    _review_applied_ids.add(_tp.ticket_id)
+            except Exception:
+                _review_applied_ids = set()
+            try:
+                for _wr in (db.query(WeeklyTicketReview)
+                            .filter(WeeklyTicketReview.status == "reviewed").all()):
+                    _mgr_reviewed_ids.add(_wr.ticket_id)
+            except Exception:
+                _mgr_reviewed_ids = set()
 
         def _effective_qa_target(t):
             """QA target hours: manager-revised (if reviewed) else qa_estimate else 33% of dev_estimate."""
@@ -8245,6 +8289,20 @@ def get_performance_leaderboard(
                 revised_est_acc = round(100 * tot_target / tot_actual, 1) if (not is_dev and tot_actual > 0) else None
                 revised_used = sum(1 for t in etickets if t.ticket_id in _revised_map)
 
+                # Tiny secondary factors (period-gated) — credit to THIS tester's own tickets.
+                review_applied_n = manager_reviewed_n = rev_est_n = 0
+                rev_allowed = rev_actual = 0.0
+                if new_factors_on and not is_dev:
+                    for t in etickets:
+                        if t.ticket_id in _review_applied_ids:
+                            review_applied_n += 1
+                        if t.ticket_id in _mgr_reviewed_ids:
+                            manager_reviewed_n += 1
+                        if t.ticket_id in _revised_map:
+                            rev_est_n += 1
+                            rev_allowed += float(_revised_map[t.ticket_id] or 0)
+                            rev_actual += float(t.actual_qa_hours or 0)
+
                 # ---- Diligence = ONLY the manager's comments (0-centered: +positive / −negative) ----
                 # Auto bug-leakage is NOT scored: it reaches into the past, often isn't QA's fault, and
                 # can be a false positive. It's surfaced as an informational, period-scoped flag instead.
@@ -8291,7 +8349,10 @@ def get_performance_leaderboard(
                              "diligence_score": diligence_score, "diligence_lines": diligence_lines,
                              "manager_net": manager_net, "manager_notes": manager_notes,
                              "leak_tids": leak_tids,
-                             "revised_est_acc": revised_est_acc, "revised_used": revised_used})
+                             "revised_est_acc": revised_est_acc, "revised_used": revised_used,
+                             "review_applied_n": review_applied_n, "manager_reviewed_n": manager_reviewed_n,
+                             "rev_est_n": rev_est_n, "rev_allowed": round(rev_allowed, 1),
+                             "rev_actual": round(rev_actual, 1)})
 
             max_cwv = max((r["throughput_base"] for r in rows), default=0) or 0
             max_out = max((r["output_raw"] for r in rows), default=0) or 0
@@ -8334,57 +8395,87 @@ def get_performance_leaderboard(
                 bis_penalty = round(min(BIS_UNEXEC_PENALTY_CAP, unexec_bis * BIS_UNEXEC_PENALTY_PER), 1)
                 # Manager comments: signed adjustment added directly (0 default; capped swing).
                 manager_adj = max(-MANAGER_ADJ_CAP, min(MANAGER_ADJ_CAP, r.get("manager_net") or 0))
-                composite = round(max(0, sum(contrib.values()) - leave_penalty - bis_penalty + manager_adj), 1)
+                # ── Tiny secondary factors (±1 each; 0 before NEW_FACTORS_EFFECTIVE so past months don't shift) ──
+                est_adj = review_adj = mgr_review_adj = loghours_adj = 0.0
+                if new_factors_on:
+                    _dn = max(m["tickets"]["count"], 1)
+                    # (a) estimate-vs-actual vs the Claude/manager reviewed-allowed time (after final review)
+                    if r.get("rev_est_n") and r.get("rev_allowed", 0) > 0:
+                        if r["rev_actual"] <= r["rev_allowed"]:
+                            est_adj = EST_ADHERENCE_CAP                    # completed within the reviewed estimate
+                        elif r["rev_actual"] > r["rev_allowed"] * EST_OVERRUN_TOLERANCE:
+                            est_adj = -EST_ADHERENCE_CAP                   # exceeded the reviewed estimate too much
+                    # (b) review comments applied to the tester's test cases (share of their tickets)
+                    review_adj = round(REVIEW_CREDIT_CAP * min(1.0, (r.get("review_applied_n") or 0) / _dn), 2)
+                    # (c) tickets marked manager-reviewed (share of their tickets)
+                    mgr_review_adj = round(MGR_REVIEW_CREDIT_CAP * min(1.0, (r.get("manager_reviewed_n") or 0) / _dn), 2)
+                    # (d) daily logged-hours: more long days than short → +, more short days → −
+                    _pd = r.get("present_days") or 0
+                    if _pd:
+                        loghours_adj = max(-LOG_HOURS_CAP, min(LOG_HOURS_CAP,
+                                           round(LOG_HOURS_CAP * (r["days_over_8"] - r["days_under_8"]) / _pd, 2)))
+                new_factor_adj = round(est_adj + review_adj + mgr_review_adj + loghours_adj, 1)
+                composite = round(max(0, sum(contrib.values()) - leave_penalty - bis_penalty + manager_adj + new_factor_adj), 1)
                 delivered = m["tickets"]["count"]
                 bugs = m["bugs"].get("total", 0)
                 tests = m.get("tests", {}).get("total_executed", 0)
                 _texec = m.get("tests", {})
                 hours = m["timesheet"]["total_hours"]
 
-                # Human-readable "how they earned this" summary.
-                summary_lines = [f"{r['present_days']}/{period_working_days} days present · "
-                                 f"avg {r['avg_hours_per_day']}h/day · {r['days_under_8']} day(s) under 8h · "
-                                 f"{r['productive_hours']}h productive (attendance {presence})"]
-                if r["leave_days"]:
-                    summary_lines.append(f"{r['leave_days']} leave day(s) taken "
-                                         f"(−{leave_penalty} billing-loss penalty)")
+                # Human-readable "how they earned this" — achievement-first, shareable.
+                # Order: delivery → quality → execution → bugs → focus → presence → caveats → leave (last).
                 _cc = r["cx_counts"]
-                summary_lines.append(f"Delivered {delivered} ticket(s) to live "
-                                     f"({r['delivered_cwv']} depth pts · "
-                                     f"{_cc['high']} High / {_cc['medium']} Med / {_cc['low']} Low complexity)")
+                summary_lines = [f"Delivered {delivered} ticket(s) to live "
+                                 f"({_cc['high']} High / {_cc['medium']} Med / {_cc['low']} Low · {r['delivered_cwv']} depth pts)"]
                 if r["awaiting_n"]:
-                    summary_lines.append(f"{r['awaiting_n']} ticket(s) handed off, awaiting BIS "
-                                         f"review/go-live (credited)")
-                if r["has_focus"]:
-                    summary_lines.append(f"Ticket focus {r['ticket_focus']}% — {r['ticket_hours']}h on "
-                                         f"tickets vs {r['task_hours']}h on non-ticket tasks")
-                if bugs:
-                    summary_lines.append(f"{'Found' if not is_dev else 'Handled'} {bugs} bug(s)"
-                                         + ("" if is_dev else " (all reported bugs count — rejected/deferred included)"))
+                    summary_lines.append(f"{r['awaiting_n']} more handed off, awaiting BIS review/go-live (credited)")
+                summary_lines.append(f"{round(quality, 1)}% quality · {est_acc}% estimate accuracy"
+                                     + (f" (revised on {r['revised_used']} ticket(s))" if r.get("revised_used") else ""))
                 if not is_dev and _texec.get("total_cases", 0):
                     summary_lines.append(f"Executed {_texec.get('total_executed', 0)}/"
-                                         f"{_texec.get('total_cases', 0)} test case(s) "
+                                         f"{_texec.get('total_cases', 0)} test cases "
                                          f"({_texec.get('execution_completeness', 0)}% completeness)")
                 elif tests:
                     summary_lines.append(f"{tests} test case(s) executed")
-                if not is_dev and unexec_bis:
-                    summary_lines.append(f"⚠ {unexec_bis} ticket(s) handed to BIS with unexecuted cases "
-                                         f"(−{bis_penalty} incomplete-testing penalty): "
-                                         + ", ".join('#' + str(x) for x in _texec.get("unexecuted_bis_tids", [])[:6]))
-                summary_lines.append(f"{round(quality, 1)}% quality · {est_acc}% estimate accuracy"
-                                     + (f" (revised on {r['revised_used']} ticket(s))" if r.get("revised_used") else ""))
+                if bugs:
+                    summary_lines.append(f"{'Found' if not is_dev else 'Handled'} {bugs} bug(s)"
+                                         + ("" if is_dev else " (all reported bugs counted)"))
+                if r["has_focus"]:
+                    summary_lines.append(f"Ticket focus {r['ticket_focus']}% — {r['ticket_hours']}h on "
+                                         f"tickets vs {r['task_hours']}h on other tasks")
+                summary_lines.append(f"{r['present_days']}/{period_working_days} days present "
+                                     f"({presence}% attendance) · avg {r['avg_hours_per_day']}h/day · "
+                                     f"{r['productive_hours']}h productive")
                 if r["overrun_tickets"]:
                     summary_lines.append(f"{r['overrun_tickets']} ticket(s) over target "
-                                         f"(+{r['overrun_hours']}h overrun) · on-time {on_time}%")
+                                         f"(+{r['overrun_hours']}h) · on-time {on_time}%")
                 if r.get("manager_net"):
                     summary_lines.append(f"Diligence {'+' if r['manager_net'] >= 0 else ''}{r['manager_net']} "
                                          f"from {len(r['manager_notes'])} manager comment(s): "
                                          + "; ".join(r["diligence_lines"][:4]))
+                if not is_dev and unexec_bis:
+                    summary_lines.append(f"⚠ {unexec_bis} ticket(s) handed to BIS with unexecuted cases: "
+                                         + ", ".join('#' + str(x) for x in _texec.get("unexecuted_bis_tids", [])[:6]))
                 if r.get("leak_tids"):
-                    summary_lines.append("ℹ Possible Live leakage this period on "
+                    summary_lines.append("ℹ Possible Live leakage on "
                                          f"{len(r['leak_tids'])} ticket(s): "
                                          + ", ".join('#' + str(x) for x in r["leak_tids"][:6])
-                                         + " — review (NOT auto-scored; add a comment if it's a real miss)")
+                                         + " — review (not auto-scored)")
+                # Tiny secondary factors — surfaced qualitatively (no point values shown on the page).
+                if new_factors_on:
+                    if r.get("rev_est_n"):
+                        if est_adj > 0:
+                            summary_lines.append(f"Delivered within the reviewed time estimate "
+                                                 f"on {r['rev_est_n']} reviewed ticket(s)")
+                        elif est_adj < 0:
+                            summary_lines.append("Ran over the reviewed time estimate on reviewed ticket(s)")
+                    if r.get("manager_reviewed_n"):
+                        summary_lines.append(f"{r['manager_reviewed_n']} ticket(s) manager-reviewed")
+                    if r.get("review_applied_n"):
+                        summary_lines.append(f"{r['review_applied_n']} ticket(s) refined via applied review comments")
+                # Leave mentioned LAST, without the point penalty.
+                if r["leave_days"]:
+                    summary_lines.append(f"{r['leave_days']} leave day(s) taken")
 
                 scored.append({
                     "employee_id": r["emp"].employee_id,
@@ -8439,6 +8530,11 @@ def get_performance_leaderboard(
                         "manager_note_net": r.get("manager_net") or 0,
                         "leakage_tickets": r.get("leak_tids") or [],
                         "revised_estimate_used": r.get("revised_used") or 0,
+                        "review_applied_tickets": r.get("review_applied_n") or 0,
+                        "manager_reviewed_tickets": r.get("manager_reviewed_n") or 0,
+                        "reviewed_est_tickets": r.get("rev_est_n") or 0,
+                        "reviewed_est_within": bool(est_adj > 0),
+                        "secondary_factor_adj": new_factor_adj,
                     },
                     "_tb": r["throughput_base"],
                 })
@@ -8777,9 +8873,11 @@ class PerformerBody(BaseModel):
 
 
 @app.post("/performers")
-def upsert_performer(body: PerformerBody, current_user: dict = Depends(get_current_user)):
+def upsert_performer(body: PerformerBody, current_user: dict = Depends(get_current_user_optional)):
     """Record (or update) the performer for a period + category. Re-recording a FROZEN period is
-    rejected — a frozen result is the official, immutable record. Set freeze=true to finalize."""
+    rejected — a frozen result is the official, immutable record. Set freeze=true to finalize.
+    Auth is OPTIONAL (matches the manager-notes writes): a token is used for created_by/frozen_by
+    attribution when present, but an expired/missing token never blocks recording a performer."""
     if body.period_type not in ("month", "quarter") or body.category not in PERFORMER_CATEGORY_TEAM:
         raise HTTPException(status_code=400, detail="Bad period_type or category")
     start, end, label = get_period_range(body.period_type, body.offset)
@@ -8792,7 +8890,7 @@ def upsert_performer(body: PerformerBody, current_user: dict = Depends(get_curre
         if rec and rec.frozen:
             raise HTTPException(status_code=409, detail=f"{label} {body.category.upper()} is frozen and cannot be changed.")
         now = datetime.utcnow()
-        uname = (current_user or {}).get("name") or (current_user or {}).get("username")
+        uname = (current_user or {}).get("name") or (current_user or {}).get("username") or (current_user or {}).get("email")
         if not rec:
             rec = PerformerRecord(period_type=body.period_type, period_key=pkey,
                                   period_label=label, category=body.category, created_by=uname,
@@ -8821,7 +8919,7 @@ def upsert_performer(body: PerformerBody, current_user: dict = Depends(get_curre
 
 
 @app.post("/performers/{record_id}/freeze")
-def freeze_performer(record_id: int, current_user: dict = Depends(get_current_user)):
+def freeze_performer(record_id: int, current_user: dict = Depends(get_current_user_optional)):
     db: Session = SessionLocal()
     try:
         rec = db.query(PerformerRecord).get(record_id)
@@ -8829,7 +8927,7 @@ def freeze_performer(record_id: int, current_user: dict = Depends(get_current_us
             raise HTTPException(status_code=404, detail="Not found")
         rec.frozen = True
         rec.frozen_on = datetime.utcnow()
-        rec.frozen_by = (current_user or {}).get("name") or (current_user or {}).get("username")
+        rec.frozen_by = (current_user or {}).get("name") or (current_user or {}).get("username") or (current_user or {}).get("email")
         db.commit()
         return {"ok": True, "frozen": True}
     finally:
@@ -8853,7 +8951,7 @@ def unfreeze_performer(record_id: int, current_user: dict = Depends(require_role
 
 
 @app.delete("/performers/{record_id}")
-def delete_performer(record_id: int, current_user: dict = Depends(get_current_user)):
+def delete_performer(record_id: int, current_user: dict = Depends(get_current_user_optional)):
     """Delete a provisional (unfrozen) record. Frozen records are protected (admins use unfreeze first)."""
     db: Session = SessionLocal()
     try:
@@ -15860,8 +15958,12 @@ def get_monthly_calendar(
             if eid is not None:
                 day = leave.date.isoformat()
                 employee_data[eid]["days"][day]["leave_type"] = leave.leave_type
-                employee_data[eid]["total_leave_days"] += 1
-                employee_data[eid]["total_leave_hours"] += float(leave.hours or 0)
+                # Count leaves by fraction of a working day: a "Half Day" leave is 0.5, not 1.
+                # Half-days are stored with hours=8, so they must be detected by TYPE (not hours) —
+                # see _leave_day_fraction.
+                _frac = _leave_day_fraction(leave.leave_type, leave.hours)
+                employee_data[eid]["total_leave_days"] += _frac
+                employee_data[eid]["total_leave_hours"] += round(_frac * 8.0, 2)
         
         # Calculate working days and average productive hours
         today = date.today()
@@ -15931,6 +16033,124 @@ def get_monthly_calendar(
         }
     finally:
         db.close()
+
+
+@app.get("/calendar/timesheet-reminder")
+def timesheet_reminder(
+    team: str = Query("QA", description="Team: QA, DEV, or ALL (QA = web+mobile+automation, one combined list)"),
+    month: str = Query(None, description="Month (YYYY-MM). Defaults to current month."),
+    tolerance: float = Query(1.0, ge=0, le=8, description="Per-person deviation (hours) to ignore"),
+    exclude: str = Query("", description="Comma-separated employee names to leave out (e.g. the sender)"),
+):
+    """Build a ready-to-share (Teams/WhatsApp) timesheet-compliance reminder for a month:
+    who has NO entries, who is net-short beyond `tolerance`, and the exact dates to fix.
+    Half-day leaves count as 4h (detected by type). Public, like the other /calendar/* views."""
+    import datetime as _dt
+    cal = get_monthly_calendar(team=team, month=month, category="ALL")
+    ms = _dt.date.fromisoformat(cal["month_start"])
+    me = _dt.date.fromisoformat(cal["month_end"])
+    today = _dt.date.today()
+    cutoff = min(me, today)
+    holiday_dates = {h.get("date") for h in (cal.get("holidays") or []) if h.get("date")}
+    # All countable working days = weekdays in [month_start, cutoff] minus holidays.
+    working = []
+    dcur = ms
+    while dcur <= cutoff:
+        iso = dcur.isoformat()
+        if not is_weekend(dcur) and iso not in holiday_dates:
+            working.append(iso)
+        dcur += _dt.timedelta(days=1)
+    excl = {x.strip().lower() for x in (exclude or "").split(",") if x.strip()}
+
+    def _day_label(iso):
+        return _dt.date.fromisoformat(iso).strftime("%a %d %b")
+
+    flagged, no_entries, ok = [], [], []
+    for e in cal["employees"]:
+        name = e.get("employee_name") or ""
+        if name.strip().lower() in excl:
+            continue
+        exp = e.get("expected_hours") or 0
+        days = e.get("days") or {}
+        worked = 0.0
+        anylog = False
+        items = []          # (iso, message)
+        has_missing = has_halfgap = has_discrepancy = False
+        # Long days (10–12h) are fine (overtime). Only an unusually large single day (> OVERLOG_FLAG)
+        # is treated as a likely wrong-date/double entry to verify against the calendar.
+        OVERLOG_FLAG = 12.0
+        for iso in working:
+            day = days.get(iso)
+            label = _day_label(iso)
+            if day is None:
+                items.append((iso, f"{label} — missing"))
+                has_missing = True
+                continue
+            h = day.get("hours") or 0
+            if h > 0:
+                anylog = True
+            lt = (day.get("leave_type") or "").strip()
+            is_half = "half" in lt.lower()
+            worked += h
+            if lt and not is_half:
+                # A full-day leave that ALSO has hours logged is contradictory — verify.
+                if h > 0.25:
+                    items.append((iso, f"⚠️ {label} — {h:.0f}h logged on a leave day; please correct"))
+                    has_discrepancy = True
+                continue
+            if is_half:
+                if (4 - h) > 0.25:
+                    items.append((iso, f"{label} — {h:.1f}h on a half-day; add leave or log the balance"))
+                    has_halfgap = True
+                continue
+            if h == 0:
+                items.append((iso, f"{label} — missing"))
+                has_missing = True
+                continue
+            if h > OVERLOG_FLAG:
+                # Unusually large day — likely another day's hours entered on the wrong date.
+                items.append((iso, f"⚠️ {label} — {h:.0f}h logged; please check the calendar, the date may be wrong"))
+                has_discrepancy = True
+                continue
+            gap = 8 - h
+            if 3.0 <= h <= 4.5:
+                items.append((iso, f"{label} — {h:.1f}h; add leave or log the balance"))
+                has_halfgap = True
+            elif gap >= 0.5:
+                items.append((iso, f"{label} — {h:.1f}h logged"))
+        net = round(exp - worked, 1)
+        if not anylog and net > tolerance:
+            no_entries.append({"name": name, "expected": exp})
+            continue
+        if net > tolerance or has_missing or has_halfgap or has_discrepancy:
+            flagged.append({"name": name, "worked": round(worked, 1), "expected": exp,
+                            "short": net, "discrepancy": has_discrepancy or has_missing,
+                            "items": [{"date": i, "label": _day_label(i), "note": m} for i, m in items]})
+        else:
+            ok.append(name)
+    # Discrepancies (wrong-date / over-log / missing) first, then largest shortage.
+    flagged.sort(key=lambda r: (not r.get("discrepancy"), -r["short"]))
+
+    # Plain text (no markdown ** / _ ) so it pastes cleanly into Teams without stray characters.
+    # Everyone who needs a fix is in ONE list — no separate section for people with no entries.
+    month_label = ms.strftime("%B %Y")
+    L = [f"Timesheet check — {month_label}", ""]
+    for n in no_entries:
+        L.append(f"{n['name']} — no entries yet; please complete the full month (0/{n['expected']:.0f}h)")
+        L.append("")
+    for f in flagged:
+        short_txt = f" ({f['short']:.1f}h short)" if f["short"] >= 0.5 else ""
+        L.append(f"{f['name']} — {f['worked']:.0f}/{f['expected']:.0f}h{short_txt}")
+        for it in f["items"]:
+            L.append(f"   {it['note']}")
+        L.append("")
+    L.append("Everyone else is up to date — thank you!")
+    return {
+        "month": cal["month"], "month_label": month_label, "team": team,
+        "tolerance": tolerance, "working_days": len(working),
+        "no_entries": no_entries, "flagged": flagged, "ok": ok,
+        "message": "\n".join(L),
+    }
 
 
 @app.get("/calendar/employee/{employee_id}")
@@ -17393,9 +17613,10 @@ def get_timesheet_manager_summary(
         for l in leaves:
             if l.employee_id not in emp_meta:
                 continue
-            leave_hours = float(l.hours or 0.0)
-            emp_meta[l.employee_id]["leave_hours"] += leave_hours
-            emp_meta[l.employee_id]["leave_days"] += round(leave_hours / 8.0, 2) if leave_hours > 0 else 0
+            # Half-days are stored with hours=8, so count days by TYPE (see _leave_day_fraction).
+            frac = _leave_day_fraction(l.leave_type, l.hours)
+            emp_meta[l.employee_id]["leave_hours"] += round(frac * 8.0, 2)
+            emp_meta[l.employee_id]["leave_days"] += frac
 
         working_days = get_working_days_in_range(range_start, range_end, db, include_optional_holidays=False)
         for emp_id in emp_meta:
@@ -20657,6 +20878,8 @@ def qa_estimation_board(period: str = Query("60d", regex="^(30d|60d|90d|180d|all
                 "automated_cases": th.automated_cases if th else None,
                 "manual_cases": th.manual_cases if th else None,
                 "reviewed_on": th.reviewed_on.isoformat() if (th and th.reviewed_on) else None,
+                "reviewed_by": (th.reviewed_by if th else None),
+                "manager_comment": ((th.manager_comment or "")[:280] if th else None),
             })
             by_status[st] += 1
             for m in members:

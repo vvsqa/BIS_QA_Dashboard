@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { API_BASE } from './api';
+import { API_BASE, downloadFile } from './api';
 import AppSidebar from './AppSidebar';
-import { PerformanceExportPanel } from './PerformanceExport';
 import PerformersPanel from './Performers';
 import { DiscussionPanel } from './Discussion';
 import './dashboard.css';
@@ -254,11 +253,6 @@ function PodiumCard({ entry, isQA }) {
         <span className="emp-chip emp-chip-presence" title="Days present / working days (attendance — billing)">
           📅 {rm.present_days}/{rm.working_days} present
         </span>
-        {rm.leave_days > 0 && (
-          <span className="emp-chip emp-chip-leave" title="Leave days taken (billing loss)">
-            🔻 {rm.leave_days} leave (−{entry.leave_penalty})
-          </span>
-        )}
         <span className="emp-chip emp-chip-deliver" title="Tickets delivered to live in this period">
           🚀 {rm.delivered_to_live} delivered
         </span>
@@ -277,6 +271,11 @@ function PodiumCard({ entry, isQA }) {
         <span className="emp-chip emp-chip-quality" title="Quality score">✓ {rm.quality_percent}% quality</span>
         <span className="emp-chip">{rm.bugs} bugs</span>
         <span className="emp-chip">{rm.hours}h</span>
+        {rm.leave_days > 0 && (
+          <span className="emp-chip emp-chip-leave" title="Leave days taken">
+            🔻 {rm.leave_days} leave
+          </span>
+        )}
       </div>
       {Array.isArray(entry.summary_lines) && entry.summary_lines.length > 0 && (
         <ul className="emp-summary-lines">
@@ -384,7 +383,7 @@ function FullRow({ entry, isQA, reload, apFrom, apTo }) {
         <td style={{ textAlign: 'center', color: rm.avg_hours_per_day >= 8 ? 'var(--accent-green)' : 'var(--text-secondary)' }}>{rm.avg_hours_per_day}h</td>
         <td style={{ textAlign: 'center', color: rm.days_under_8 > 0 ? 'var(--accent-amber)' : 'var(--text-muted)' }}>{rm.days_under_8 || '–'}</td>
         <td style={{ textAlign: 'center', color: rm.leave_days > 0 ? 'var(--accent-red)' : 'var(--text-muted)' }}>
-          {rm.leave_days > 0 ? `${rm.leave_days} (−${entry.leave_penalty})` : '–'}
+          {rm.leave_days > 0 ? rm.leave_days : '–'}
         </td>
         <td style={{ textAlign: 'center' }}>{rm.hours}</td>
         <td style={{ textAlign: 'center' }}>{rm.quality_percent}%</td>
@@ -418,6 +417,18 @@ export function EmployeeBreakdown({ entry, reload, apFrom, apTo, hideRank = fals
   const rm = entry.raw_metrics || {};
   const ss = entry.sub_scores || {};
   const appraisalUrl = `${API_BASE}/employees/${entry.employee_id}/appraisal-report?from=${apFrom}&to=${apTo}${hideRank ? '&hide_rank=true' : ''}`;
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const [pdfErr, setPdfErr] = useState('');
+  const downloadAppraisal = useCallback(async () => {
+    setPdfBusy(true); setPdfErr('');
+    try {
+      await downloadFile(appraisalUrl, `Appraisal ${entry.name || entry.employee_id} (${apFrom} to ${apTo}).pdf`);
+    } catch (e) {
+      setPdfErr(e.message || 'Could not generate the PDF. Please try again.');
+    } finally {
+      setPdfBusy(false);
+    }
+  }, [appraisalUrl, entry.name, entry.employee_id, apFrom, apTo]);
   return (
             <div className="emp-breakdown">
               {/* Stat widgets */}
@@ -438,7 +449,7 @@ export function EmployeeBreakdown({ entry, reload, apFrom, apTo, hideRank = fals
                 <Tile label="Present" value={`${rm.present_days}/${rm.working_days}`} sub={`avg ${rm.avg_hours_per_day}h/day`} />
                 <Tile label="Utilization" value={`${rm.utilization_percent}%`} sub={`${rm.hours}h logged`} />
                 {rm.manager_note_net ? <Tile label="Diligence (comments)" value={`${rm.manager_note_net > 0 ? '+' : ''}${rm.manager_note_net}`} accent={rm.manager_note_net > 0 ? '#22c55e' : '#ef4444'} sub={`${(rm.manager_notes || []).length} note(s)`} /> : null}
-                {rm.leave_days > 0 ? <Tile label="Leave" value={rm.leave_days} accent="#ef4444" sub={`−${entry.leave_penalty} penalty`} /> : null}
+                {rm.leave_days > 0 ? <Tile label="Leave" value={rm.leave_days} accent="#ef4444" sub="days taken" /> : null}
               </div>
 
               {/* Complexity donut + module breakdown */}
@@ -510,10 +521,14 @@ export function EmployeeBreakdown({ entry, reload, apFrom, apTo, hideRank = fals
               <ManagerNotes entry={entry} reload={reload} />
 
               <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: 10 }}>
-                <a href={appraisalUrl} target="_blank" rel="noreferrer"
-                  style={{ fontSize: '0.8rem', fontWeight: 600, padding: '7px 14px', borderRadius: 8, textDecoration: 'none',
-                    color: '#fff', background: 'var(--accent-teal, #14b8a6)' }}>📄 Generate appraisal PDF</a>
+                <button onClick={downloadAppraisal} disabled={pdfBusy}
+                  style={{ fontSize: '0.8rem', fontWeight: 600, padding: '7px 14px', borderRadius: 8, border: 'none',
+                    cursor: pdfBusy ? 'default' : 'pointer', opacity: pdfBusy ? 0.6 : 1,
+                    color: '#fff', background: 'var(--accent-teal, #14b8a6)' }}>
+                  {pdfBusy ? '⏳ Preparing…' : '📄 Generate appraisal PDF'}
+                </button>
                 <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>for {apFrom} → {apTo}</span>
+                {pdfErr && <span style={{ fontSize: '0.7rem', color: '#dc2626' }}>{pdfErr}</span>}
               </div>
             </div>
   );
@@ -796,7 +811,6 @@ export default function EmployeePerformance() {
         <div className="qcq-tabs">
           <button className={`qcq-tab ${view === 'performance' ? 'active' : ''}`} onClick={() => setView('performance')}>Performance</button>
           <button className={`qcq-tab ${view === 'qaflow' ? 'active' : ''}`} onClick={() => setView('qaflow')}>QA Flow</button>
-          <button className={`qcq-tab ${view === 'export' ? 'active' : ''}`} onClick={() => setView('export')}>Performance Export</button>
           <button className={`qcq-tab ${view === 'discussion' ? 'active' : ''}`} onClick={() => setView('discussion')}>1-on-1 Discussion</button>
           <button className={`qcq-tab ${view === 'performers' ? 'active' : ''}`} onClick={() => setView('performers')}>Performers</button>
         </div>
@@ -807,8 +821,6 @@ export default function EmployeePerformance() {
           <PerformersPanel />
         ) : view === 'discussion' ? (
           <DiscussionPanel />
-        ) : view === 'export' ? (
-          <PerformanceExportPanel />
         ) : loading ? (
           <div className="loading-container"><div className="loading-spinner"></div><p>Loading performance…</p></div>
         ) : error ? (
