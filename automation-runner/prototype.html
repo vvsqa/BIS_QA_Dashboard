@@ -148,7 +148,7 @@
     <div class="brand">
       <div class="logo">🤖</div>
       <h1>BIS Automation Runner</h1>
-      <span class="ver">PROTOTYPE v0.7</span>
+      <span class="ver">PROTOTYPE v0.9</span>
     </div>
     <div class="hdr-right">
       <select class="pill env" id="envSel" onchange="setEnv()">
@@ -353,6 +353,8 @@
 // total, auto(mated cases), exec(utions), aExec(automated executions), saved(hours),
 // maint(cases needing maintenance), bugs(found via automation), smoke/reg counts, by(contributors)
 const MODULES = [
+  {m:'Bug Generator', tool:true, total:7, auto:7, exec:0, aExec:0, saved:184, maint:0, bugs:212, smoke:0, reg:0, by:['V','Va','Vi'],
+   subs:['Single bug (Jam / notes / case)','Bulk creation','Run-based case failure','TestRail fail / create-case','Parent task creation','Pending Retests','Impact / usage stats']},
   {m:'Forms', total:6579, auto:1973, exec:10287, aExec:3210, saved:1016, maint:96, bugs:58, smoke:120, reg:980, by:['V','Va','Vi']},
   {m:'Online Course', total:3427, auto:376, exec:4560, aExec:980, saved:166, maint:41, bugs:22, smoke:44, reg:210, by:['Va']},
   {m:'Reporting', total:3011, auto:150, exec:7109, aExec:1180, saved:66, maint:18, bugs:9, smoke:18, reg:160, by:['Vi']},
@@ -591,6 +593,10 @@ function renderUITree(){
   html+=`<input placeholder="🔍  Search modules / cases" oninput="filterTree(this.value)" style="width:100%;height:32px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:0 10px;margin-bottom:8px;font-size:12.5px"/>`;
   html+=`<div id="selBar" class="hide" style="background:rgba(34,211,238,.10);border:1px solid rgba(34,211,238,.4);border-radius:9px;padding:8px 10px;margin-bottom:10px;font-size:12px"></div>`;
   html+=MODULES.map(m=>{
+    if(m.subs){  // tool module (e.g. Bug Generator) — expands to its feature submodules, not test cases
+      return `<div class="modwrap"><div class="tnode" onclick="this.nextElementSibling.classList.toggle('hide')">▸ 🐞 ${m.m} <span class="muted" style="font-weight:400;font-size:11px">${m.subs.length} submodules</span></div>`+
+        `<div class="hide">`+m.subs.map(s=>`<div class="tcase"><span style="display:flex;align-items:center;gap:8px;flex:1"><span class="badge2" style="background:#334155;color:#cbd5e1">SUB</span> ${s}</span></div>`).join('')+`</div></div>`;
+    }
     const cs=CASES[m.m]||[];
     return `<div class="modwrap"><div class="tnode" onclick="this.nextElementSibling.classList.toggle('hide')">▸ ${m.m} <span class="muted" style="font-weight:400;font-size:11px">${m.auto}/${m.total}</span></div>`+
       `<div class="hide">`+cs.map(c=>`<div class="tcase" id="c-${c.id}"><input type="checkbox" id="cb-${c.id}" onclick="toggleSel(event,'${m.m}',${c.id})"/><span style="display:flex;align-items:center;gap:8px;flex:1;cursor:pointer" onclick="selectCase('${m.m}',${c.id})"><span class="badge2 ${c.st}">${c.st==='auto'?'AUTO':c.st==='prog'?'WIP':'MAN'}</span> C${c.id} · ${c.t}</span></div>`).join('')+`</div></div>`;
