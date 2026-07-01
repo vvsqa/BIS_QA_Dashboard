@@ -16134,7 +16134,10 @@ def timesheet_reminder(
     # Plain text (no markdown ** / _ ) so it pastes cleanly into Teams without stray characters.
     # Everyone who needs a fix is in ONE list — no separate section for people with no entries.
     month_label = ms.strftime("%B %Y")
-    L = [f"Timesheet check — {month_label}", ""]
+    L = ["Hi everyone,", "", f"Timesheet check — {month_label}", ""]
+    if no_entries or flagged:
+        L.append("Please review and update:")
+        L.append("")
     for n in no_entries:
         L.append(f"{n['name']} — no entries yet; please complete the full month (0/{n['expected']:.0f}h)")
         L.append("")
