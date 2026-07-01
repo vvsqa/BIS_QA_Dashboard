@@ -613,9 +613,10 @@ async function loadJam(){
     $('jamMsg').textContent='✓ Filled from the recording'+(note?' + your note':'')+' — formatting steps…';
     // minimal AI formatting pass: numbers the steps + tidies the title (fast; rule fallback if AI off)
     try{
-      const fr=await fetch('/format',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject:val('subject'),steps:val('steps'),expected:val('expected'),actual:val('actual')})});
+      const snap={subject:val('subject'),steps:val('steps'),expected:val('expected'),actual:val('actual')};
+      const fr=await fetch('/format',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(snap)});
       const f=await fr.json();
-      if(fr.ok){ put('subject',f.subject); put('steps',f.steps); put('expected',f.expected); put('actual',f.actual);
+      if(fr.ok){ putKeep('subject',snap.subject,f.subject); putKeep('steps',snap.steps,f.steps); putKeep('expected',snap.expected,f.expected); putKeep('actual',snap.actual,f.actual);
         $('jamMsg').textContent='✓ Filled from the recording'+(note?' + note':'')+(f.ai?', steps formatted with AI':'')+' — review & Create.'; }
       else { $('jamMsg').textContent='✓ Filled from the recording — review & Create.'; }
     }catch(_){ $('jamMsg').textContent='✓ Filled from the recording — review & Create.'; }
@@ -624,6 +625,9 @@ async function loadJam(){
 }
 
 function val(id){ return ($(id).value||'').trim(); }
+// Apply an AI-formatted value ONLY if the user hasn't edited the field since it was sent to /format
+// (the AI pass is async — without this it would clobber a manual edit made while it was running).
+function putKeep(id,was,v){ if(v && $(id) && val(id)===was){ $(id).value=v; flash(id); } }
 
 // Unified combiner: Jam link + TestRail case ID + notes — any one, or any mix.
 async function fillBug(){
@@ -676,9 +680,10 @@ async function fillBug(){
     $('fillMsg').textContent='✓ Filled from '+used.join(' + ')+' — formatting…';
     // 4) minimal AI format pass — numbers steps + tidies wording (rule fallback if AI off)
     try{
-      const fr=await fetch('/format',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({subject:val('subject'),steps:val('steps'),expected:val('expected'),actual:val('actual')})});
+      const snap={subject:val('subject'),steps:val('steps'),expected:val('expected'),actual:val('actual')};
+      const fr=await fetch('/format',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(snap)});
       const f=await fr.json();
-      if(fr.ok){ put('subject',f.subject); put('steps',f.steps); put('expected',f.expected); put('actual',f.actual);
+      if(fr.ok){ putKeep('subject',snap.subject,f.subject); putKeep('steps',snap.steps,f.steps); putKeep('expected',snap.expected,f.expected); putKeep('actual',snap.actual,f.actual);
         $('fillMsg').textContent='✓ Filled from '+used.join(' + ')+(f.ai?', formatted with AI':'')+' — review & Create.'; }
       else $('fillMsg').textContent='✓ Filled from '+used.join(' + ')+' — review & Create.';
     }catch(_){ $('fillMsg').textContent='✓ Filled from '+used.join(' + ')+' — review & Create.'; }

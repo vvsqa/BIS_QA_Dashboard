@@ -1,5 +1,5 @@
 {
-  "version": "1.4.5",
-  "notes": "Bulk-from-Jam fix: if a recording is still being processed by Jam (no captions/steps yet), the tool now shows a clear 'Jam is still processing this recording' message and no longer fails bulk with a cryptic 'message is required'. Includes the earlier auto-fill fixes (Steps from clicks, Ticket ID from your note/URL) and background auto-update.",
-  "updated_on": "2026-06-30"
+  "version": "1.4.6",
+  "notes": "Fix: manual edits to Summary / Steps / Expected / Actual are no longer overwritten. The AI formatting pass runs asynchronously after a Jam/notes fill; it now skips any field you've edited while it was running, so your typed content is what gets created.",
+  "updated_on": "2026-07-01"
 }
