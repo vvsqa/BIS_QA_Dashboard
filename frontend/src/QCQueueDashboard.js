@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE } from './api';
 import AppSidebar from './AppSidebar';
 import { TicketFlow } from './TicketSpeed';
+import TicketEstimatePanel from './TicketEstimatePanel';
 import './dashboard.css';
 
 const SCORE_COLORS = {
@@ -435,6 +436,7 @@ export default function QCQueueDashboard() {
   const [monthlySummary, setMonthlySummary] = useState(null);
     const [cardFilter, setCardFilter] = useState(null); // null or 'unassigned'|'assigned_not_started'|'in_progress'|'on_hold'|'qc_failed'
   const [expandedTicket, setExpandedTicket] = useState(null);
+  const [estimatePopup, setEstimatePopup] = useState(null);   // ticket object for the QA-estimate modal
   const [searchFilter, setSearchFilter] = useState('');
   const [listPriorityFilter, setListPriorityFilter] = useState('');
   const [listModuleFilter, setListModuleFilter] = useState('');
@@ -1041,7 +1043,7 @@ export default function QCQueueDashboard() {
                 })()}</td>
                 <td><span className={`qcq-platform-badge qcq-platform-${(t.platform || 'Web').toLowerCase()}`}>{t.platform || 'Web'}</span></td>
                 <td>{t.qc_tester ? t.qc_tester : <span className="qcq-unassigned">Unassigned</span>}</td>
-                <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}>{(() => {
+                <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }}><span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>{(() => {
                   const chip = (label, color, bg, extra) => (
                     <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '3px 9px', borderRadius: 11, fontSize: '0.72rem', fontWeight: 600, lineHeight: 1, background: bg, color, ...(extra || {}) }}>{label}</span>
                   );
@@ -1077,7 +1079,11 @@ export default function QCQueueDashboard() {
                       title="Queue this ticket for test-plan generation" onClick={e => { e.stopPropagation(); generateTestPlan(t.ticket_id); }}>Generate</button>;
                   }
                   return <span style={{ color: 'var(--text-muted)' }}>–</span>;
-                })()}</td>
+                })()}{(t.status || '').startsWith('QC Testing') && (
+                  <button title="QA estimate — activity/time split-up + PM comment for the initial estimate"
+                    onClick={e => { e.stopPropagation(); setEstimatePopup(t); }}
+                    style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 24, height: 22, borderRadius: 7, cursor: 'pointer', fontSize: '0.82rem', background: 'var(--bg-secondary)', border: '1px solid var(--border-color)', color: 'var(--text-secondary)' }}>⏱</button>
+                )}</span></td>
                 <td style={{ textAlign: 'center', whiteSpace: 'nowrap' }} onClick={e => e.stopPropagation()}>{t.has_test_plan ? (() => {
                   const rs = reviewState[t.ticket_id] || {};
                   const status = rs.review_status || t.review_status || 'Draft';
@@ -1979,6 +1985,24 @@ export default function QCQueueDashboard() {
         )}
 
         </main>
+
+      {/* QA estimate modal — the QA Estimation "Plan" step, inline at the queue */}
+      {estimatePopup && (
+        <div onClick={() => setEstimatePopup(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.66)', backdropFilter: 'blur(2px)',
+            zIndex: 100000, display: 'flex', alignItems: 'flex-start', justifyContent: 'center', overflowY: 'auto', padding: '4vh 12px' }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ width: 'min(760px, 97vw)', background: 'var(--bg-card, #1e293b)', border: '1px solid var(--border-color, #334155)',
+              borderRadius: 12, padding: 16 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+              <strong style={{ fontSize: '0.95rem', color: 'var(--text-primary)' }}>⏱ QA Estimate</strong>
+              <button onClick={() => setEstimatePopup(null)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-muted, #94a3b8)', fontSize: '1.1rem', cursor: 'pointer' }}>✕</button>
+            </div>
+            <TicketEstimatePanel ticketId={estimatePopup.ticket_id} qaMember={estimatePopup.qc_tester || ''} />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
