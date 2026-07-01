@@ -7705,13 +7705,24 @@ def _discussion_tickets(db, emp_rec, is_dev, start_iso, end_iso, window_ends_tod
     return rows
 
 
+# AI talking points are slow (~20-25s on the Claude CLI), so the discussion page loads with the
+# instant rule-based narrative and fetches the AI version separately (/discussion/ai-insights),
+# cached here so repeat views — and the main page after the first fetch — are instant.
+_DISCUSSION_AI_CACHE = {}          # ckey -> (epoch, narrative_dict)
+_DISCUSSION_AI_TTL = 6 * 3600      # 6h
+
+
+def _discussion_ckey(employee_id, period, offset, from_date, to_date):
+    return f"{employee_id}:{period}:{offset}:{from_date}:{to_date}"
+
+
 @app.get("/employees/{employee_id}/discussion")
 def employee_discussion(employee_id: str,
                         period: str = Query("month", regex="^(month|quarter)$"),
                         offset: int = Query(0, ge=0, le=240),
                         from_date: Optional[str] = Query(None, alias="from"),
                         to_date: Optional[str] = Query(None, alias="to"),
-                        use_ai: bool = Query(True)):
+                        use_ai: bool = Query(False)):
     """Rank-FREE 1-on-1 discussion view for ONE employee over a month / quarter / custom range:
     the SAME full leaderboard detail (minus position), period-over-period trend, AI talking points, and a
     categorized per-ticket breakdown. period+offset, or a custom from/to that overrides them."""
@@ -7722,7 +7733,19 @@ def employee_discussion(employee_id: str,
         raise HTTPException(status_code=404, detail="Employee has no performance activity in this range.")
     rm = emp.get("raw_metrics", {}) or {}
     pinfo = data.get("period", {}) or {}
-    narrative = _appraisal_narrative(emp, pinfo.get("label"), use_ai=use_ai)
+    # Fast path: serve a cached AI narrative if we have a fresh one, else the instant rule-based
+    # version (the frontend then lazily calls /discussion/ai-insights to fill in AI). use_ai=true
+    # forces the (slow) blocking AI generation for callers that explicitly want it.
+    import time as _t
+    _ckey = _discussion_ckey(employee_id, period, offset, from_date, to_date)
+    _hit = _DISCUSSION_AI_CACHE.get(_ckey)
+    if use_ai:
+        narrative = _appraisal_narrative(emp, pinfo.get("label"), use_ai=True)
+        _DISCUSSION_AI_CACHE[_ckey] = (_t.time(), narrative)
+    elif _hit and (_t.time() - _hit[0]) < _DISCUSSION_AI_TTL:
+        narrative = _hit[1]
+    else:
+        narrative = _appraisal_narrative(emp, pinfo.get("label"), use_ai=False)
     # Prior comparable period for the trend (offset+1 for month/quarter; equal-length shift for custom).
     prev_emp = prev_rm = None
     try:
@@ -7761,6 +7784,29 @@ def employee_discussion(employee_id: str,
         "talking_points": narrative,
         "tickets": tickets,
     }
+
+
+@app.get("/employees/{employee_id}/discussion/ai-insights")
+def employee_discussion_ai(employee_id: str,
+                           period: str = Query("month", regex="^(month|quarter)$"),
+                           offset: int = Query(0, ge=0, le=240),
+                           from_date: Optional[str] = Query(None, alias="from"),
+                           to_date: Optional[str] = Query(None, alias="to")):
+    """AI talking points for the 1-on-1 discussion, generated separately so the page renders fast.
+    Cached per employee+period (6h) — the frontend calls this after the page loads and swaps them in."""
+    import time as _t
+    ckey = _discussion_ckey(employee_id, period, offset, from_date, to_date)
+    hit = _DISCUSSION_AI_CACHE.get(ckey)
+    if hit and (_t.time() - hit[0]) < _DISCUSSION_AI_TTL:
+        return {"talking_points": hit[1], "cached": True}
+    data = get_performance_leaderboard(period=period, offset=offset, team="all",
+                                       from_date=from_date, to_date=to_date)
+    emp, _ = _find_emp_in_leaderboard(data, employee_id)
+    if not emp:
+        raise HTTPException(status_code=404, detail="Employee has no performance activity in this range.")
+    narrative = _appraisal_narrative(emp, (data.get("period") or {}).get("label"), use_ai=True)
+    _DISCUSSION_AI_CACHE[ckey] = (_t.time(), narrative)
+    return {"talking_points": narrative, "cached": False}
 
 
 @app.get("/employees/{employee_id}/appraisal-report")

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { API_BASE, downloadFile } from './api';
 import { EmployeeBreakdown, monthOptions, quarterOptions } from './EmployeePerformance';
 import './dashboard.css';
@@ -36,6 +36,7 @@ export function DiscussionPanel() {
   const [error, setError] = useState('');
   const [pdfBusy, setPdfBusy] = useState(false);
   const [pdfErr, setPdfErr] = useState('');
+  const [aiLoading, setAiLoading] = useState(false);
 
   const customValid = kind !== 'custom' || (cFrom && cTo && cFrom <= cTo);
 
@@ -78,20 +79,43 @@ export function DiscussionPanel() {
     if (empId && !teamList.some(e => e.employee_id === empId)) setEmpId('');
   }, [teamKey, board]);  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load the discussion detail for the selected employee.
+  // Load the discussion detail for the selected employee. The page renders immediately with the
+  // fast rule-based talking points, then the (slow) AI insights are fetched separately and swapped
+  // in — so selecting a person no longer blocks ~30s on the Claude CLI.
+  const discReq = useRef(0);
   const loadDisc = useCallback(async () => {
     if (!empId || !customValid) { setDisc(null); return; }
-    setLoadingDisc(true); setError('');
+    const myReq = ++discReq.current;
+    setLoadingDisc(true); setError(''); setAiLoading(false);
     try {
-      const res = await fetch(`${API_BASE}/employees/${empId}/discussion?${periodQS().toString()}`);
+      const qs = periodQS().toString();
+      const res = await fetch(`${API_BASE}/employees/${empId}/discussion?${qs}`);
       if (!res.ok) {
         let detail = `HTTP ${res.status}`;
         try { detail = (await res.json()).detail || detail; } catch { /* non-JSON */ }
         throw new Error(detail);
       }
-      setDisc(await res.json());
-    } catch (e) { setError(e.message); setDisc(null); }
-    finally { setLoadingDisc(false); }
+      const data = await res.json();
+      if (myReq !== discReq.current) return;          // a newer selection superseded this one
+      setDisc(data);
+      setLoadingDisc(false);
+      // Lazily upgrade rule-based talking points to AI insights (non-blocking).
+      if (data?.talking_points?.source !== 'ai') {
+        setAiLoading(true);
+        try {
+          const ar = await fetch(`${API_BASE}/employees/${empId}/discussion/ai-insights?${qs}`);
+          if (ar.ok) {
+            const aj = await ar.json();
+            if (myReq === discReq.current && aj?.talking_points) {
+              setDisc(prev => (prev ? { ...prev, talking_points: aj.talking_points } : prev));
+            }
+          }
+        } catch { /* keep the rule-based version */ }
+        finally { if (myReq === discReq.current) setAiLoading(false); }
+      }
+    } catch (e) {
+      if (myReq === discReq.current) { setError(e.message); setDisc(null); setLoadingDisc(false); }
+    }
   }, [empId, periodQS, customValid]);
 
   useEffect(() => { loadDisc(); }, [loadDisc]);
@@ -205,7 +229,9 @@ export function DiscussionPanel() {
           {/* TALKING POINTS */}
           {tp && (
             <div style={card}>
-              <h4 style={H4}>Talking points {tp.source === 'ai' ? '· AI' : ''}</h4>
+              <h4 style={H4}>Talking points {tp.source === 'ai' ? '· AI'
+                : aiLoading ? <span style={{ fontWeight: 500, textTransform: 'none', letterSpacing: 0, color: 'var(--text-muted)' }}>· ✨ generating AI insights…</span>
+                : ''}</h4>
               {tp.overall && <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: 0 }}>{tp.overall}</p>}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
                 <div>
