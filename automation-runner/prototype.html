@@ -171,6 +171,7 @@
     <div class="tab" data-tab="ui" onclick="showTab('ui')"><span class="ic">🖱️</span> UI Automation <span class="badge">3,556</span></div>
     <div class="tab" data-tab="api" onclick="showTab('api')"><span class="ic">🔌</span> API Automation <span class="badge">142</span></div>
     <div class="tab" data-tab="data" onclick="showTab('data')"><span class="ic">🧪</span> Data Generation</div>
+    <div class="tab" data-tab="buggen" onclick="showTab('buggen')"><span class="ic">🐞</span> Bug Generator <span class="badge">212</span></div>
     <div class="tab" data-tab="backlog" onclick="showTab('backlog')"><span class="ic">🎯</span> Backlog <span class="badge">1,240</span></div>
     <div class="tab" data-tab="maint" onclick="showTab('maint')"><span class="ic">🩺</span> Maintenance <span class="badge">576</span></div>
     <div class="tab" data-tab="reviews" onclick="showTab('reviews')"><span class="ic">✅</span> Reviews <span class="badge">4</span></div>
@@ -306,6 +307,9 @@
   <!-- ===================== REVIEWS (Lead / Manager) ===================== -->
   <section id="t-reviews" class="hide"></section>
 
+  <!-- ===================== BUG GENERATOR (tool) ===================== -->
+  <section id="t-buggen" class="hide"></section>
+
 </div>
 
 <!-- ===================== LIVE ACTIVITY MODAL (concurrency) ===================== -->
@@ -353,8 +357,6 @@
 // total, auto(mated cases), exec(utions), aExec(automated executions), saved(hours),
 // maint(cases needing maintenance), bugs(found via automation), smoke/reg counts, by(contributors)
 const MODULES = [
-  {m:'Bug Generator', tool:true, total:7, auto:7, exec:0, aExec:0, saved:184, maint:0, bugs:212, smoke:0, reg:0, by:['V','Va','Vi'],
-   subs:['Single bug (Jam / notes / case)','Bulk creation','Run-based case failure','TestRail fail / create-case','Parent task creation','Pending Retests','Impact / usage stats']},
   {m:'Forms', total:6579, auto:1973, exec:10287, aExec:3210, saved:1016, maint:96, bugs:58, smoke:120, reg:980, by:['V','Va','Vi']},
   {m:'Online Course', total:3427, auto:376, exec:4560, aExec:980, saved:166, maint:41, bugs:22, smoke:44, reg:210, by:['Va']},
   {m:'Reporting', total:3011, auto:150, exec:7109, aExec:1180, saved:66, maint:18, bugs:9, smoke:18, reg:160, by:['Vi']},
@@ -473,10 +475,11 @@ function methodColor(m){return {POST:'#34d399',GET:'#60a5fa',PUT:'#f59e0b',DELET
 /* ---------------- render: tabs ---------------- */
 function showTab(t){
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===t));
-  ['overview','mywork','ui','api','data','backlog','maint','reviews'].forEach(x=>document.getElementById('t-'+x).classList.toggle('hide',x!==t));
+  ['overview','mywork','ui','api','data','backlog','maint','reviews','buggen'].forEach(x=>document.getElementById('t-'+x).classList.toggle('hide',x!==t));
   if(t==='mywork') renderMyWork();
   if(t==='backlog') renderBacklog();
   if(t==='maint') renderMaintenance();
+  if(t==='buggen') renderBugGen();
   if(t==='reviews') renderReviews();
 }
 function setEnv(){const v=document.getElementById('envSel').value;const p=document.getElementById('envSel');
@@ -510,12 +513,11 @@ function renderModuleTable(){
   const tb=document.querySelector('#modTable tbody');if(!tb)return;tb.innerHTML='';
   const sel=document.getElementById('fMod');if(sel&&sel.options.length<=1){MODULES.forEach(m=>{const o=document.createElement('option');o.text=m.m;sel.add(o)})}
   const fMod=document.getElementById('fMod').value;
-  const _r=MODULES.filter(m=>fMod==='All Modules'||m.m===fMod);
-  [..._r.filter(m=>!m.tool), ..._r.filter(m=>m.tool)].forEach(m=>{
+  MODULES.filter(m=>fMod==='All Modules'||m.m===fMod).forEach(m=>{
     const p=pct(m.auto,m.total),u=pct(m.aExec,m.exec);
     const tr=document.createElement('tr');tr.className='mod';
     tr.onclick=()=>{showTab('ui');openModuleInTree(m.m)};
-    tr.innerHTML=`<td class="b">${m.tool?('🐞 '+m.m+' <span class="chip" style="color:#f472b6;font-size:9px">TOOL</span>'):m.m}</td><td>${nf(m.total)}</td><td>${nf(m.auto)}</td>
+    tr.innerHTML=`<td class="b">${m.m}</td><td>${nf(m.total)}</td><td>${nf(m.auto)}</td>
       <td><div class="row" style="gap:6px"><div class="bar" style="width:54px"><i style="width:${p}%"></i></div><span class="muted">${p}%</span></div></td>
       <td>${nf(m.total-m.auto)}</td><td>${nf(m.exec)}</td><td>${nf(m.aExec)}</td><td class="muted">${u}%</td>
       <td>${m.maint?`<span class="chip" style="color:#fbbf24">${m.maint}</span>`:'<span class="faint">0</span>'}</td>
@@ -593,18 +595,11 @@ function renderUITree(){
   let html=`<button class="btn green sm" style="width:100%;justify-content:center;margin-bottom:8px" onclick="newAutomation()">＋ New automation</button>`;
   html+=`<input placeholder="🔍  Search modules / cases" oninput="filterTree(this.value)" style="width:100%;height:32px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:8px;padding:0 10px;margin-bottom:8px;font-size:12.5px"/>`;
   html+=`<div id="selBar" class="hide" style="background:rgba(34,211,238,.10);border:1px solid rgba(34,211,238,.4);border-radius:9px;padding:8px 10px;margin-bottom:10px;font-size:12px"></div>`;
-  const grpHdr=(t)=>`<div style="margin:12px 0 6px;font-size:10px;letter-spacing:.09em;color:var(--muted);font-weight:800;border-top:1px solid var(--line);padding-top:9px">${t}</div>`;
-  const prodMod=m=>{
+  html+=MODULES.map(m=>{
     const cs=CASES[m.m]||[];
     return `<div class="modwrap" data-mod="${m.m}"><div class="tnode" onclick="this.nextElementSibling.classList.toggle('hide')">▸ ${m.m} <span class="muted" style="font-weight:400;font-size:11px">${m.auto}/${m.total}</span></div>`+
       `<div class="hide">`+cs.map(c=>`<div class="tcase" id="c-${c.id}"><input type="checkbox" id="cb-${c.id}" onclick="toggleSel(event,'${m.m}',${c.id})"/><span style="display:flex;align-items:center;gap:8px;flex:1;cursor:pointer" onclick="selectCase('${m.m}',${c.id})"><span class="badge2 ${c.st}">${c.st==='auto'?'AUTO':c.st==='prog'?'WIP':'MAN'}</span> C${c.id} · ${c.t}</span></div>`).join('')+`</div></div>`;
-  };
-  const toolMod=m=>  // tool module (e.g. Bug Generator) — expands to its feature submodules, not test cases
-    `<div class="modwrap" data-mod="${m.m}" style="border-left:2px solid #f472b6;border-radius:0 8px 8px 0;background:rgba(244,114,182,.05)"><div class="tnode" onclick="this.nextElementSibling.classList.toggle('hide')">▸ 🐞 ${m.m} <span class="muted" style="font-weight:400;font-size:11px">${m.subs.length} submodules</span></div>`+
-      `<div class="hide">`+m.subs.map(s=>`<div class="tcase"><span style="display:flex;align-items:center;gap:8px;flex:1"><span class="badge2" style="background:#7c2d54;color:#fbcfe8">SUB</span> ${s}</span></div>`).join('')+`</div></div>`;
-  const prods=MODULES.filter(m=>!m.tool), tools=MODULES.filter(m=>m.tool);
-  html+=grpHdr('🧩 PRODUCT MODULES')+prods.map(prodMod).join('');
-  if(tools.length) html+=grpHdr('🧰 TOOLS')+tools.map(toolMod).join('');
+  }).join('');
   tr.innerHTML=html;updateSelBar();
 }
 function openModuleInTree(m){renderUITree();const node=document.querySelector('#uiTree .modwrap[data-mod="'+m+'"]');if(node){node.querySelector('.tnode').click();node.scrollIntoView({block:'nearest'});const first=(CASES[m]||[])[0];if(first)selectCase(m,first.id)}}
@@ -1044,6 +1039,39 @@ function renderReviews(){
           <div class="row" style="justify-content:space-between;margin:7px 0"><span class="muted">Engineer hours saved</span><span class="b" style="color:#34d399">86 h</span></div>
           <div class="row" style="justify-content:space-between;margin:7px 0"><span class="muted">Coverage growth</span><span class="b" style="color:#22d3ee">+1.8%</span></div>
         </div>
+      </div>
+    </div>`;
+}
+/* ---------------- bug generator (tool tab) ---------------- */
+const BG_FEATURES=[
+  {ic:'📝',t:'Single bug',d:'From a Jam recording, notes, or a TestRail case — AI polishes it into a clean, structured Redmine bug.'},
+  {ic:'📚',t:'Bulk creation',d:'One Jam / notes / case-id list → many bugs at once, each editable, with a live progress bar and links grouped by ticket.'},
+  {ic:'🧪',t:'Run-based case failure',d:'Enter a TestRail Run ID → multi-select its cases → a bug per case, and each case is marked Failed in the run.'},
+  {ic:'🔗',t:'TestRail fail / create-case',d:'Fail the matched case in the right run, or create a new case from the bug and add it to the plan.'},
+  {ic:'🗂',t:'Parent task creation',d:'Find-or-create the Redmine parent task named by the ticket id (auto id) so bugs nest under it — single & bulk.'},
+  {ic:'↻',t:'Pending Retests',d:'Bugs you reported that dev released back (Released to QA / Reopened), grouped by ticket — one click to open.'},
+  {ic:'📊',t:'Impact / usage stats',d:'Bugs filed, time saved vs manual, per-tester adoption, by input source, week over week.'},
+];
+const BG_BYTESTER=[['Kavyagayathry S',72,'#3b82f6'],['Vishnu VS',58,'#a78bfa'],['Varsha Dcruz P',44,'#34d399'],['Vivek V Nair',26,'#22d3ee'],['Reshma R',12,'#f59e0b']];
+const BG_RECENT=[
+  {id:5002,t:'Move/Copy widget popup buttons overlap',tk:19794,src:'combo',ago:'2h'},
+  {id:5001,t:'Reporting dashboard hamburger icon misaligned',tk:20222,src:'bulk',ago:'3h'},
+  {id:4998,t:'Redirect toggle label not translated',tk:18872,src:'jam',ago:'5h'},
+  {id:4995,t:'Certificate radio resets after reload',tk:19148,src:'case',ago:'1d'},
+];
+function renderBugGen(){
+  const K=[['Bugs filed (tool)','212','#3b82f6'],['~ Hours saved','184 h','#f59e0b'],['This week','38','#34d399'],['Avg time / bug','~2.4 min','#22d3ee'],['Testers using','6','#a78bfa'],['TestRail cases failed','96','#ef4444']];
+  const mx=Math.max(...BG_BYTESTER.map(x=>x[1]));
+  const srcClr={jam:'#a78bfa',bulk:'#22d3ee',combo:'#34d399',case:'#f59e0b',notes:'#9fb0c9'};
+  document.getElementById('t-buggen').innerHTML=`
+    <div class="card" style="margin-bottom:14px"><div class="row"><div><h3>🐞 Bug Generator</h3><div class="hint">A local per-user tool: turn a Jam recording, notes, or a TestRail case into a clean Redmine bug in seconds — single or bulk — and fail the matching TestRail cases.</div></div><div class="sp"></div><span class="pill">v1.4.8 · auto-updating</span></div>
+      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:14px">${K.map(([l,v,c])=>`<div class="kpi"><div class="accent" style="background:${c}"></div><div class="big" style="font-size:21px">${v}</div><div class="lbl">${l}</div></div>`).join('')}</div></div>
+    <div class="grid" style="grid-template-columns:1.5fr 1fr">
+      <div class="card"><h3>Capabilities</h3>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px">${BG_FEATURES.map(f=>`<div style="background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:11px 12px"><div class="row" style="gap:8px;margin-bottom:4px"><span style="font-size:16px">${f.ic}</span><b style="font-size:13px">${f.t}</b></div><div class="muted" style="font-size:11.5px;line-height:1.5">${f.d}</div></div>`).join('')}</div></div>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="card"><h3>Adoption (bugs filed)</h3>${BG_BYTESTER.map(([n,v,c])=>`<div class="row" style="margin:8px 0;font-size:12px;gap:8px"><span style="width:112px" class="muted">${n}</span><div class="bar" style="flex:1;height:9px"><i style="width:${v/mx*100}%;background:${c}"></i></div><span class="b" style="width:26px;text-align:right">${v}</span></div>`).join('')}</div>
+        <div class="card"><h3>Recent bugs</h3><table class="rt" style="width:100%"><tbody>${BG_RECENT.map(b=>`<tr class="item"><td class="id">#${b.id}</td><td class="sub" title="${b.t}">${b.t}</td><td><span class="chip" style="color:${srcClr[b.src]||'#9fb0c9'}">${b.src}</span></td><td class="st muted">tkt ${b.tk} · ${b.ago}</td></tr>`).join('')}</tbody></table></div>
       </div>
     </div>`;
 }
