@@ -660,7 +660,7 @@ function nf(n){return Math.round(n).toLocaleString()}
 function donutSVG(segs,centerTxt,subTxt){
   const tot=segs.reduce((s,x)=>s+x[0],0)||1, R=52, C=2*Math.PI*R; let off=0;
   const arcs=segs.map(([v,col])=>{const len=C*v/tot;const el=`<circle cx="70" cy="70" r="${R}" fill="none" stroke="${col}" stroke-width="16" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`;off+=len;return el;}).join('');
-  return `<svg width="128" height="128" viewBox="0 0 140 140"><circle cx="70" cy="70" r="${R}" fill="none" stroke="#26324d" stroke-width="16"/>${arcs}<text x="70" y="66" text-anchor="middle" font-size="23" font-weight="800" fill="#e7edf7">${centerTxt}</text><text x="70" y="86" text-anchor="middle" font-size="10.5" fill="#9fb0c9">${subTxt}</text></svg>`;
+  return `<svg width="128" height="128" viewBox="0 0 140 140"><circle cx="70" cy="70" r="${R}" fill="none" stroke="var(--chip)" stroke-width="16"/>${arcs}<text x="70" y="66" text-anchor="middle" font-size="23" font-weight="800" style="fill:var(--txt)">${centerTxt}</text><text x="70" y="86" text-anchor="middle" font-size="10.5" style="fill:var(--muted)">${subTxt}</text></svg>`;
 }
 /* ----- theme ----- */
 function setTheme(v){document.documentElement.dataset.theme=v;const t=document.getElementById('themeToggle');if(t)t.textContent=(v==='light'?'☀️ Light':'🌙 Dark');
@@ -672,14 +672,16 @@ function animateCount(el,to,dur,fmt){
   (function step(t){let p=Math.min(1,(t-t0)/(dur||1100));p=1-Math.pow(1-p,3);el.textContent=fmt(to*p);if(p<1)requestAnimationFrame(step);})(t0);
 }
 function growBars(sel){requestAnimationFrame(()=>document.querySelectorAll(sel).forEach(i=>i.style.width=(i.dataset.w||0)+'%'));}
-function ringSVG(pctVal){
+function ringSVG(pctVal,uid,c1,c2){
+  uid=uid||'cov'; c1=c1||'#22d3ee'; c2=c2||'#34d399';
   const R=54,C=2*Math.PI*R, off=C*(1-Math.max(0,Math.min(100,pctVal))/100);
   return `<svg width="128" height="128" viewBox="0 0 132 132">
     <circle cx="66" cy="66" r="${R}" fill="none" stroke="var(--chip)" stroke-width="13"/>
-    <circle class="covArc" data-off="${off.toFixed(1)}" cx="66" cy="66" r="${R}" fill="none" stroke="url(#covg)" stroke-width="13" stroke-linecap="round"
+    <circle class="ring-${uid}" data-off="${off.toFixed(1)}" cx="66" cy="66" r="${R}" fill="none" stroke="url(#g-${uid})" stroke-width="13" stroke-linecap="round"
       stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${C.toFixed(1)}" transform="rotate(-90 66 66)" style="transition:stroke-dashoffset 1.35s cubic-bezier(.2,.7,.2,1)"/>
-    <defs><linearGradient id="covg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#34d399"/></linearGradient></defs></svg>`;
+    <defs><linearGradient id="g-${uid}" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs></svg>`;
 }
+function animateRing(uid){requestAnimationFrame(()=>{const a=document.querySelector('.ring-'+(uid||'cov'));if(a)a.style.strokeDashoffset=a.dataset.off;});}
 
 /* ----- dashboard ----- */
 function renderDiscovery(){ renderHero(); renderExec(); renderROI(); renderContribs30(); renderEffort(); renderModuleTable(); }
@@ -714,7 +716,7 @@ function renderHero(){
     subCard('🖐','#f59e0b','Manual (remaining)',manual,'not yet automated',manual/totalCases*100);
   document.querySelectorAll('#dashHero [data-c],#dashSub [data-c]').forEach(n=>animateCount(n,+n.dataset.c,1200));
   animateCount(document.getElementById('covPctBig'),cov,1350,v=>Math.round(v)+'%');
-  requestAnimationFrame(()=>{const a=document.querySelector('.covArc');if(a)a.style.strokeDashoffset=a.dataset.off;});
+  animateRing('cov');
   growBars('#dashHero .mini>i');growBars('#dashSub .mini>i');
 }
 
@@ -854,41 +856,95 @@ function renderModuleTable(){
     tb.appendChild(tr);
   });
 }
+function mwEffortSVG(){
+  const days=EFFORT.days, av=EFFORT.auto.V, mv=EFFORT.maint.V;
+  const tot=days.map((_,i)=>av[i]+mv[i]), mx=Math.max(...tot)||1;
+  const W=760,H=215,padL=12,padR=12,padT=24,padB=26, gap=(W-padL-padR)/days.length, bw=Math.min(30,gap*0.6);
+  let rects='',labels='';
+  days.forEach((d,i)=>{const cx=padL+i*gap+gap/2; let y=H-padB;
+    [['#22d3ee',av[i]],['#f59e0b',mv[i]]].forEach(([col,v])=>{if(v<=0)return;const hh=v/mx*(H-padT-padB);y-=hh;rects+=`<rect x="${(cx-bw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${hh.toFixed(1)}" fill="${col}" rx="2"/>`;});
+    labels+=`<text x="${cx.toFixed(1)}" y="${(y-6).toFixed(1)}" text-anchor="middle" font-size="10" font-weight="800" style="fill:var(--txt)">${tot[i]}</text>`;
+    labels+=`<text x="${cx.toFixed(1)}" y="${H-9}" text-anchor="middle" font-size="9" style="fill:var(--muted)">${d}</text>`;});
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}" style="display:block"><g class="effbars">${rects}</g>${labels}</svg>
+    <div class="legend" style="margin-top:6px"><span><i style="background:#22d3ee"></i>Automation · <b>${av.reduce((a,b)=>a+b,0)}</b></span><span><i style="background:#f59e0b"></i>Maintenance · <b>${mv.reduce((a,b)=>a+b,0)}</b></span></div>`;
+}
 function renderMyWork(){
-  const me=CONTRIB[0];
-  const myCases=[{id:217089,m:'Classroom Calendar',t:'Schedule event via Add Event modal',st:'auto',cat:'Smoke'},{id:254548,m:'Forms',t:'Copy a Slide element to the Content Library',st:'auto',cat:'Regression'},{id:208581,m:'Forms',t:'Create a Secure Form with SIN field',st:'prog',cat:'Smoke'}];
-  const myRuns=[['C217089','Staging','pass','7.4s'],['C254548','Pre','pass','6.1s'],['C259306','Staging','fail','11.2s']];
+  const me=CONTRIB[0], teamCum=CONTRIB.reduce((s,c)=>s+c.cum,0), share=me.cum/teamCum*100;
+  const auto14=EFFORT.auto.V.reduce((a,b)=>a+b,0), maint14=EFFORT.maint.V.reduce((a,b)=>a+b,0), bugAct=me.bugs30;
+  const MY_MODULES=[['Forms',420],['User Management',210],['Classroom Calendar',150],['Reporting Dashboard',120],['E-Commerce',90],['Training Record Mgmt',78]];
+  const mmx=Math.max(...MY_MODULES.map(x=>x[1]));
+  const myCases=[{id:217089,m:'Classroom Calendar',t:'Schedule event via Add Event modal',st:'auto',cat:'Smoke'},{id:254548,m:'Forms',t:'Copy a Slide element to the Content Library',st:'auto',cat:'Regression'},{id:219560,m:'User Management',t:'Create user with Client Admin role',st:'auto',cat:'Smoke'},{id:208581,m:'Forms',t:'Create a Secure Form with SIN field',st:'prog',cat:'Smoke'}];
+  const myRuns=[['C217089','Staging','pass','7.4s'],['C254548','Pre','pass','6.1s'],['C219560','Staging','pass','8.9s'],['C259306','Staging','fail','11.2s']];
+  const myPRs=[{br:'feat/vishnu',cases:'C217089 · C254548',st:'in review',c:'#fbbf24',note:'awaiting lead review'},{br:'feat/vishnu-cc',cases:'C217091',st:'approved',c:'#34d399',note:'queued to merge into pre_main'}];
+  const mix=[[auto14,'#22d3ee'],[maint14,'#f59e0b'],[bugAct,'#ef4444']], mixTot=auto14+maint14+bugAct;
   document.getElementById('t-mywork').innerHTML=`
-   <div class="card" style="margin-bottom:14px"><div class="row">
-     <div class="logo" style="width:42px;height:42px;font-size:16px">VS</div>
-     <div><h2 style="margin:0;font-size:18px">Vishnu VS</h2><div class="muted" style="font-size:12px">Automation Engineer · branch <b>feat/vishnu</b> · synced with pre_main</div></div>
-     <div class="sp"></div><button class="btn ghost sm" onclick="toast('git fetch + reset to origin/pre_main')">↻ Sync pre_main</button></div>
-     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:14px">
-       <div class="kpi"><div class="accent" style="background:#34d399"></div><div class="big">${me.cum}</div><div class="lbl">Cases I automated</div></div>
-       <div class="kpi"><div class="accent" style="background:#22d3ee"></div><div class="big">+${me.wk}</div><div class="lbl">This week</div></div>
-       <div class="kpi"><div class="accent" style="background:#ef4444"></div><div class="big">${me.bugs}</div><div class="lbl">Bugs I caught</div></div>
-       <div class="kpi"><div class="accent" style="background:#f59e0b"></div><div class="big">2</div><div class="lbl">Open PRs to pre_main</div></div>
-       <div class="kpi"><div class="accent" style="background:#a78bfa"></div><div class="big">86%</div><div class="lbl">My data-ready cases</div></div>
-     </div></div>
-   <div class="grid" style="grid-template-columns:1.4fr 1fr">
-     <div class="card"><h3>My daily scripting — last 14 days</h3><div id="mwBars"></div></div>
-     <div class="card"><h3>My open PRs to pre_main</h3>
-       <table style="font-size:12.5px"><thead><tr><th>Branch</th><th>Cases</th><th>Status</th></tr></thead><tbody>
-        <tr><td class="b">feat/vishnu</td><td>C217089, C254548</td><td><span class="chip" style="color:#fbbf24">● in review</span></td></tr>
-        <tr><td class="b">feat/vishnu-cc</td><td>C217091</td><td><span class="chip" style="color:#34d399">✓ approved</span></td></tr>
-       </tbody></table>
-       <div class="hint" style="margin-top:8px">The app only pushes <b>feat/vishnu*</b>; a lead merges to pre_main.</div></div></div>
-   <div class="grid" style="grid-template-columns:1.25fr 1fr;margin-top:14px">
-     <div class="card"><h3>Cases I've automated / in progress</h3>
-       <table style="font-size:12.5px"><thead><tr><th>Case</th><th>Module</th><th>Category</th><th>Status</th><th></th></tr></thead><tbody>
-       ${myCases.map(c=>`<tr><td class="b">C${c.id}</td><td>${c.m}</td><td><span class="chip ${c.cat==='Smoke'?'smoke':'reg'}">${c.cat}</span></td><td><span class="badge2 ${c.st}">${c.st==='auto'?'AUTO':'WIP'}</span></td><td><button class="runbtn" onclick="showTab('ui');openModuleInTree('${c.m}')">open ▸</button></td></tr>`).join('')}</tbody></table></div>
-     <div class="card"><h3>My recent runs</h3>
-       <table style="font-size:12.5px"><thead><tr><th>Case</th><th>Env</th><th>Result</th><th>Time</th></tr></thead><tbody>
-       ${myRuns.map(r=>`<tr><td class="b">${r[0]}</td><td>${r[1]}</td><td><span class="status ${r[2]}">${r[2]==='pass'?'✓ pass':'✗ fail'}</span></td><td class="muted">${r[3]}</td></tr>`).join('')}</tbody></table>
-       <div class="hint" style="margin-top:8px">Data readiness 86% — <a href="#" onclick="openSettings();return false">configure my-data.json</a></div></div></div>`;
-  const days=DAILY.days,w=520,h=140,gap=w/days.length,bw=gap*0.55,mx=Math.max(...DAILY.V);
-  let bars='';days.forEach((d,i)=>{const x=i*gap+gap*0.2,hh=DAILY.V[i]/mx*(h-30);bars+=`<rect x="${x}" y="${h-20-hh}" width="${bw}" height="${hh}" rx="2" fill="#22d3ee"/><text x="${x+bw/2}" y="${h-6}" text-anchor="middle" font-size="8.5" fill="#6b7c9c">${d}</text>`;});
-  const mb=document.getElementById('mwBars');if(mb)mb.innerHTML=`<svg width="100%" viewBox="0 0 ${w} ${h}">${bars}</svg>`;
+    <!-- profile -->
+    <div class="card" style="margin-bottom:14px"><div class="row">
+      <div class="av2" style="width:48px;height:48px;font-size:17px;background:linear-gradient(135deg,#22d3ee,#7c3aed);color:#fff">VS</div>
+      <div><h2 style="margin:0;font-size:19px">Vishnu VS</h2><div class="muted" style="font-size:12px">Automation Engineer · branch <b>feat/vishnu</b> · <span style="color:#34d399">● synced with pre_main</span></div></div>
+      <div class="sp"></div><button class="btn ghost sm" onclick="toast('git fetch + reset to origin/pre_main')">↻ Sync pre_main</button></div></div>
+
+    <!-- hero + stats -->
+    <div class="dash-sec">
+      <div class="hero">
+        <div class="hcard" style="animation-delay:.02s"><div class="glow" style="background:#34d399"></div>
+          <div class="cap"><span class="dotic" style="background:#34d399">🤖</span>Cases I've automated</div>
+          <div class="num" data-c="${me.cum}">0</div>
+          <div class="foot">all-time · <b>+${me.d30}</b> in the last 30 days</div>
+          <div class="mini"><i data-w="100" style="background:linear-gradient(90deg,#10b981,#34d399)"></i></div></div>
+        <div class="hcard" style="animation-delay:.10s"><div class="glow" style="background:#22d3ee"></div>
+          <div class="cap"><span class="dotic" style="background:#22d3ee">▶</span>Automated runs (30d)</div>
+          <div class="num" data-c="${me.runs30}">0</div>
+          <div class="foot">executions you triggered this month</div>
+          <div class="mini"><i data-w="100" style="background:linear-gradient(90deg,#3b82f6,#22d3ee)"></i></div></div>
+        <div class="hcard cov" style="animation-delay:.18s"><div class="glow" style="background:#7c3aed"></div>
+          <div>${ringSVG(share,'my','#22d3ee','#7c3aed')}</div>
+          <div><div class="cap">My share of team automation</div>
+            <div class="num" id="mySharePct" style="font-size:34px;margin-top:8px">0%</div>
+            <div class="foot"><b>${nf(me.cum)}</b> of <b>${nf(teamCum)}</b> team cases</div></div></div>
+      </div>
+      <div class="mrow" id="mwStats" style="margin-top:14px">
+        <div class="stat"><div class="accent" style="background:#22d3ee"></div><div class="v" data-c="${me.d30}" data-plus="1">0</div><div class="l">📈 Automated this 30 days</div></div>
+        <div class="stat"><div class="accent" style="background:#ef4444"></div><div class="v" data-c="${me.bugs}">0</div><div class="l">🐞 Bugs I caught · ${me.bugs30} in 30d</div></div>
+        <div class="stat"><div class="accent" style="background:#f59e0b"></div><div class="v" data-c="2">0</div><div class="l">🔀 Open PRs to pre_main</div></div>
+        <div class="stat"><div class="accent" style="background:#a78bfa"></div><div class="v" data-c="86" data-pct="1">0</div><div class="l">🗄 My data-ready cases</div></div>
+      </div>
+    </div>
+
+    <!-- effort + work mix -->
+    <div class="dash-sec"><div class="grid" style="grid-template-columns:1.5fr 1fr">
+      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">📅 My daily effort — last 14 days</h2><span class="sub">automation vs maintenance</span></div><div id="mwEffort">${mwEffortSVG()}</div></div>
+      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🧭 My work mix</h2><span class="sub">last 14 days</span></div>
+        <div class="row" style="gap:12px">${donutSVG(mix,nf(mixTot),'actions')}
+          <div class="legend" style="flex-direction:column;gap:8px">
+            <div><i style="background:#22d3ee"></i>Automation · <b>${auto14}</b></div>
+            <div><i style="background:#f59e0b"></i>Maintenance · <b>${maint14}</b></div>
+            <div><i style="background:#ef4444"></i>Bug reports · <b>${bugAct}</b></div></div></div></div>
+    </div></div>
+
+    <!-- modules + PRs -->
+    <div class="dash-sec"><div class="grid" style="grid-template-columns:1fr 1fr">
+      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🧩 Modules I've automated most</h2></div>
+        <div id="mwModules">${MY_MODULES.map(([m,v])=>`<div class="row" style="margin:9px 0;font-size:12.5px;gap:10px"><span style="width:150px;flex:none" class="b">${m}</span><div class="bar" style="flex:1;height:10px"><i class="mwbar" data-w="${(v/mmx*100).toFixed(1)}" style="width:0;transition:width 1.05s cubic-bezier(.2,.7,.2,1);background:linear-gradient(90deg,#7c3aed,#22d3ee)"></i></div><span style="width:36px;text-align:right;flex:none" class="b">${v}</span></div>`).join('')}</div></div>
+      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🔀 My open PRs to pre_main</h2></div>
+        <div style="display:flex;flex-direction:column;gap:10px">${myPRs.map(p=>`<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--panel2)"><div class="row"><span class="b">⎇ ${p.br}</span><div class="sp"></div><span class="chip" style="color:${p.c}">● ${p.st}</span></div><div class="muted" style="font-size:12px;margin-top:5px">${p.cases}</div><div class="hint" style="margin-top:3px">${p.note}</div></div>`).join('')}</div>
+        <div class="hint" style="margin-top:10px">The app only pushes <b>feat/vishnu*</b>; a lead merges to pre_main.</div></div>
+    </div></div>
+
+    <!-- cases + runs -->
+    <div class="dash-sec"><div class="grid" style="grid-template-columns:1.25fr 1fr">
+      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">📝 Cases I've automated / in progress</h2></div>
+        <table style="font-size:12.5px"><thead><tr><th>Case</th><th>Module</th><th>Category</th><th>Status</th><th></th></tr></thead><tbody>
+        ${myCases.map(c=>`<tr><td class="b">C${c.id}</td><td>${c.m}</td><td><span class="chip ${c.cat==='Smoke'?'smoke':'reg'}">${c.cat}</span></td><td><span class="badge2 ${c.st}">${c.st==='auto'?'AUTO':'WIP'}</span></td><td><button class="runbtn" onclick="showTab('ui');openModuleInTree('${c.m}')">open ▸</button></td></tr>`).join('')}</tbody></table></div>
+      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">▶ My recent runs</h2></div>
+        <table style="font-size:12.5px"><thead><tr><th>Case</th><th>Env</th><th>Result</th><th>Time</th></tr></thead><tbody>
+        ${myRuns.map(r=>`<tr><td class="b">${r[0]}</td><td>${r[1]}</td><td><span class="status ${r[2]}">${r[2]==='pass'?'✓ pass':'✗ fail'}</span></td><td class="muted">${r[3]}</td></tr>`).join('')}</tbody></table>
+        <div class="hint" style="margin-top:8px">Data readiness 86% — <a href="#" onclick="openSettings();return false">configure my-data.json</a></div></div>
+    </div></div>`;
+  document.querySelectorAll('#t-mywork [data-c]').forEach(n=>animateCount(n,+n.dataset.c,1200,n.dataset.pct?(x=>Math.round(x)+'%'):n.dataset.plus?(x=>'+'+nf(x)):nf));
+  animateCount(document.getElementById('mySharePct'),share,1350,v=>Math.round(v)+'%');
+  animateRing('my');
+  growBars('#t-mywork .mini>i');growBars('#mwModules .mwbar');
 }
 
 /* ---------------- UI automation ---------------- */
