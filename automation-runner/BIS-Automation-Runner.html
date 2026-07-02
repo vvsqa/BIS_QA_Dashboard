@@ -233,16 +233,15 @@
       <span class="ver">PROTOTYPE v1.0</span>
     </div>
     <div class="hdr-right">
-      <select class="pill env" id="envSel" onchange="setEnv()">
+      <select class="pill env" id="envSel" data-badge="env" onchange="setEnv()">
         <option value="Staging">⬤ Staging</option>
         <option value="Pre">⬤ Pre-Prod</option>
         <option value="Live">⬤ Live</option>
       </select>
-      <span class="pill" title="Your working branch — the only branch the app pushes"><span class="dot"></span>⎇ feat/vishnu</span>
-      <span class="pill" title="pre_main fetched before every run">↻ pre_main: up to date</span>
-      <span class="pill" onclick="openActivity()" title="See who's running what across the team right now"><span class="dot"></span>Live · <span id="liveN">2</span> running</span>
+      <span class="pill" id="pillBranch" data-badge="branch" title="Your working branch — the only branch the app pushes"><span class="dot"></span>⎇ feat/vishnu</span>
+      <span class="pill" id="pillSync" data-badge="sync" title="pre_main fetched before every run">↻ pre_main: up to date</span>
+      <span class="pill" id="pillLive" data-badge="live" onclick="openActivity()" title="See who's running what across the team right now"><span class="dot"></span>Live · <span id="liveN">2</span> running</span>
       <span class="pill" id="themeToggle" onclick="toggleTheme()" title="Switch light / dark">🌙 Dark</span>
-      <span class="pill" onclick="openSetup()">🧩 Setup</span>
       <span class="pill" onclick="openSettings()">⚙ Settings</span>
     </div>
   </header>
@@ -466,6 +465,16 @@
       <select onchange="setTheme(this.value)"><option value="dark">Dark</option><option value="light">Light</option><option value="midnight">Midnight</option><option value="forest">Forest</option></select></div></div>
     <label>Private data file</label><input value="%APPDATA%\bis-automation-runner\my-data.json"/>
     <div class="hint" style="margin-top:6px">Per-env URLs + role accounts are configured internally per environment. Concrete values stay only on this machine.</div>
+    <div style="margin-top:14px;border-top:1px dashed var(--line);padding-top:12px">
+      <div class="k muted" style="font-size:11px;text-transform:uppercase;letter-spacing:.4px;margin-bottom:8px">Session context</div>
+      <div class="row" style="gap:8px;flex-wrap:wrap">
+        <span class="pill" title="Your working branch — the only branch the app pushes"><span class="dot"></span>⎇ feat/vishnu</span>
+        <span class="pill" title="pre_main fetched before every run">↻ pre_main: up to date</span>
+        <span class="pill" onclick="closeSettings();openActivity()"><span class="dot"></span>Live · 2 running</span>
+        <span class="pill" onclick="closeSettings();openSetup()">🧩 Run first-run setup</span>
+      </div>
+      <div class="hint" style="margin-top:6px">Your branch, pre_main sync and live team runs. These also surface as header badges on the modules where they apply.</div>
+    </div>
     <div class="row" style="margin-top:16px"><div class="sp"></div><button class="btn" onclick="closeSettings();toast('Settings saved')">Save</button></div>
   </div>
 </div>
@@ -623,6 +632,23 @@ function showTab(t){
   if(t==='maint') renderMaintenance();
   if(t==='buggen') renderBugGen();
   if(t==='reviews') renderReviews();
+  updateHeader(t);
+}
+// which header badges are relevant per module (rest live in Settings ▸ Session context)
+const HEADER_BADGES={
+  overview:[],                               // read-only dashboard — no run context needed
+  mywork:['env','sync','live'],              // you run your own cases
+  ui:['env','branch','sync','live'],         // run + author + push to your branch
+  api:['env','branch','sync','live'],
+  data:['env','live'],                       // generate against an environment
+  buggen:['env'],                            // bugs are filed against an environment
+  backlog:[],                                // planning view
+  maint:['env','sync','live'],               // re-runs to confirm fixes
+  reviews:['branch','sync'],                 // PR approvals into pre_main
+};
+function updateHeader(t){
+  const show=HEADER_BADGES[t]||[];
+  document.querySelectorAll('.hdr-right [data-badge]').forEach(el=>el.classList.toggle('hide',!show.includes(el.dataset.badge)));
 }
 function setEnv(){const v=document.getElementById('envSel').value;const p=document.getElementById('envSel');
   p.classList.toggle('live',v==='Live');toast('Environment → '+v);}
@@ -1582,7 +1608,7 @@ function renderActivity(){
 }
 
 /* init */
-renderDiscovery();renderUITree();renderAPITree();renderBacklog();
+renderDiscovery();renderUITree();renderAPITree();renderBacklog();updateHeader('overview');
 ['fMod','fCat','fBy','fReuse'].forEach(id=>{const e=document.getElementById(id);if(e)e.addEventListener('change',renderModuleTable);});
 </script>
 </body>
