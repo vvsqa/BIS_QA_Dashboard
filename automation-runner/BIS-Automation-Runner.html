@@ -953,7 +953,7 @@ function renderMyWork(){
 
     <!-- contribution over time + work mix -->
     <div class="dash-sec">
-      <div class="sec-head" style="margin:0 0 6px"><h2 style="font-size:13px" class="sp">📈 Cases automated & contributed over time</h2>
+      <div class="sec-head" style="margin:0 0 6px"><h2 style="font-size:13px" class="sp">📈 My scripting & contribution trend</h2>
         <div class="seg" id="mwPer">
           <button data-p="30d" onclick="mwPeriod('30d')">30d</button>
           <button data-p="90d" onclick="mwPeriod('90d')">90d</button>
@@ -961,12 +961,13 @@ function renderMyWork(){
           <button data-p="12m" onclick="mwPeriod('12m')">12m</button></div></div>
       <div class="grid" style="grid-template-columns:1.5fr 1fr">
         <div class="card"><div id="mwTrend">${mwTrendSVG()}</div></div>
-        <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🧭 My work mix</h2><span class="sub">last 14 days</span></div>
-          <div class="row" style="gap:12px">${donutSVG(mix,nf(mixTot),'actions')}
-            <div class="legend" style="flex-direction:column;gap:8px">
-              <div><i style="background:#22d3ee"></i>Automation · <b>${auto14}</b></div>
-              <div><i style="background:#f59e0b"></i>Maintenance · <b>${maint14}</b></div>
-              <div><i style="background:#ef4444"></i>Bug reports · <b>${me.bugs30}</b></div></div></div></div>
+        <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🧭 My work mix</h2><span class="sub">last 14 days · ${nf(mixTot)} actions</span></div>
+          <div class="row" style="gap:16px">${donutSVG(mix,nf(mixTot),'actions')}
+            <div style="flex:1;display:flex;flex-direction:column;gap:12px;min-width:150px">
+              ${[['Automation','#22d3ee',auto14],['Maintenance','#f59e0b',maint14],['Bug reports','#ef4444',me.bugs30]].map(([l,c,v])=>`
+                <div><div style="display:flex;align-items:center;gap:9px;font-size:12.5px;margin-bottom:4px"><i style="width:11px;height:11px;border-radius:3px;background:${c};flex:none"></i><span style="flex:1">${l}</span><b>${v}</b><span class="muted" style="width:40px;text-align:right">${Math.round(v/mixTot*100)}%</span></div>
+                <div class="bar" style="height:6px"><i class="mixbar" data-w="${(v/mixTot*100).toFixed(1)}" style="width:0;transition:width 1s cubic-bezier(.2,.7,.2,1);background:${c}"></i></div></div>`).join('')}
+            </div></div></div>
       </div>
     </div>
 
@@ -999,7 +1000,7 @@ function renderMyWork(){
   document.querySelectorAll('#t-mywork [data-c]').forEach(n=>animateCount(n,+n.dataset.c,1200,n.dataset.pct?(x=>Math.round(x)+'%'):n.dataset.plus?(x=>'+'+nf(x)):nf));
   animateCount(document.getElementById('mySharePct'),share,1350,v=>Math.round(v)+'%');
   animateRing('my');
-  growBars('#t-mywork .mini>i');growBars('#mwModTable .mwbar');
+  growBars('#t-mywork .mini>i');growBars('#mwModTable .mwbar');growBars('#t-mywork .mixbar');
 }
 
 /* ---------------- UI automation ---------------- */
