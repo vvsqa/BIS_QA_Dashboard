@@ -1953,6 +1953,7 @@ function anSave(){
   if(!a.stability){const pct=80+seed%18;const hist=[];for(let i=0;i<12;i++)hist.push((seed>>i&1)||i%6!==0?1:0);a.stability={pct,runs:15+seed%50,history:hist};}
 }));})();
 let API_MODE='execute', API_DETAIL=null, API_TAB='create', API_REPORT='plain', AP_ASSERTS=[], AP_CFG=[];
+let API_AUTH={mode:'auto',role:'Instructor',user:'',token:''};
 const API_SEQ=[];
 let API_TESTS=[
   {id:'Create User',m:'Users',method:'POST',status:'healthy',runs:40,created:'Jun 10',edited:'Jun 19',last:'2h ago · pass'},
@@ -1991,7 +1992,7 @@ function apiRow(a){const inSeq=API_SEQ.some(s=>s.id===a.id);
     <span style="flex:1;cursor:pointer;min-width:0" onclick="selectAPI('${a.id}')"><span class="apipath">${a.path}</span><div class="hint" style="font-size:10.5px">${a.name}</div></span></div>`;
 }
 function apiFilter(q){q=(q||'').trim().toLowerCase();document.querySelectorAll('#apiCatalog .modwrap').forEach(w=>{const body=w.querySelector('.mbody');let any=false;body.querySelectorAll('.srcrow').forEach(r=>{const ok=!q||r.textContent.toLowerCase().includes(q);r.style.display=ok?'':'none';if(ok)any=true;});w.style.display=any?'':'none';});}
-function apiSeqToggle(id){const i=API_SEQ.findIndex(s=>s.id===id);if(i>=0)API_SEQ.splice(i,1);else API_SEQ.push({id});renderAPISeq();apiRefreshChecks();if(API_DETAIL===id)selectAPI(id,true);}
+function apiSeqToggle(id){const i=API_SEQ.findIndex(s=>s.id===id);if(i>=0)API_SEQ.splice(i,1);else{const a=findAPI(id);API_SEQ.push({id,inputs:(a&&a.fields||[]).map(x=>x.slice())});}renderAPISeq();apiRefreshChecks();if(API_DETAIL===id)selectAPI(id,true);}
 function apiSeqRemove(id){const i=API_SEQ.findIndex(s=>s.id===id);if(i>=0)API_SEQ.splice(i,1);renderAPISeq();apiRefreshChecks();if(API_DETAIL===id)selectAPI(id,true);}
 function apiSeqMove(i,dir){const j=i+dir;if(j<0||j>=API_SEQ.length)return;const t=API_SEQ[i];API_SEQ[i]=API_SEQ[j];API_SEQ[j]=t;renderAPISeq();}
 function apiRefreshChecks(){document.querySelectorAll('#apiCatalog input[type=checkbox]').forEach(cb=>{const row=cb.closest('[data-aid]');if(row)cb.checked=API_SEQ.some(s=>s.id===row.dataset.aid);});}
@@ -2029,22 +2030,54 @@ function renderAPIDrawer(){
     <div class="drawer-h"><h2 style="margin:0;font-size:17px">▶ Configure &amp; Run</h2><span class="chip" style="margin-left:6px">${n} request${n>1?'s':''}</span><div class="sp"></div><button class="art" onclick="closeRunDrawer()">✕</button></div>
     <div class="drawer-b">
       <div class="dsec"><div class="lbl">Environment</div><select id="apEnv">${['Staging','Pre','Live'].map(e=>`<option ${e===env?'selected':''}>${e}</option>`).join('')}</select></div>
-      <div class="dsec"><div class="lbl">Auth</div><select><option>Bearer token (resolved per env)</option><option>Basic</option><option>None</option></select><select style="margin-top:8px"><option>as Instructor</option><option>as Client Admin</option><option>as Security Admin</option></select></div>
-      <div class="dsec"><div class="lbl">Test data / variables</div><select><option>repo defaults</option><option>my-data.json</option></select><div class="hint" style="margin-top:6px">Captured values (<span class="var">{{userId}}</span> …) chain automatically between steps.</div></div>
+      <div class="dsec"><div class="lbl">Authentication <span style="text-transform:none;color:var(--faint)">— applied to the whole sequence</span></div>
+        <div class="radio" id="apAuthR">
+          <label class="${API_AUTH.mode==='auto'?'on':''}" onclick="apiAuth('auto')"><span class="rt">Auto-fetch &amp; reuse</span><span class="hint">login once → capture {{authToken}} → send on every request</span></label>
+          <label class="${API_AUTH.mode==='paste'?'on':''}" onclick="apiAuth('paste')"><span class="rt">Paste a token</span><span class="hint">use a bearer token you provide</span></label></div>
+        <div id="apAuthBody" style="margin-top:8px">${apiAuthBody()}</div></div>
+      <div class="dsec"><div class="lbl">Request data <span style="text-transform:none;color:var(--faint)">— provide your own values (optional)</span></div>
+        <div class="hint" style="margin-bottom:8px">Defaults are filled from each API. Edit any value to send your own data — this only changes the request payload, not the API or its automation. Captured values (<span class="var">{{userId}}</span> …) chain automatically.</div>
+        <div id="apSeqCfg"></div></div>
       <div class="dsec"><div class="lbl">Reporting target</div><div class="radio" id="apReport">
         <label class="${API_REPORT==='plain'?'on':''}" onclick="apiSetReport('plain')"><span class="rt">Plain (exploratory)</span><span class="hint">Won't fail · won't report</span></label>
         <label class="${API_REPORT==='testrail'?'on':''}" onclick="apiSetReport('testrail')"><span class="rt">TestRail run</span><span class="hint">Writes results</span></label></div>
         <div id="apRunId" class="${API_REPORT==='testrail'?'':'hide'}" style="margin-top:8px"><input placeholder="Run ID"/></div></div>
-      <div class="dsec"><div class="lbl">Sequence (${n})</div>${API_SEQ.map((s,i)=>{const a=findAPI(s.id);return `<div class="hint">${i+1}. ${a.method} ${a.path}</div>`;}).join('')}</div>
       <button class="btn green" style="width:100%;justify-content:center" onclick="apiRunSeq()">▶ Run sequence</button><div id="apRunArea"></div>
     </div>`;
+  renderApiSeqCfg();
 }
+function apiAuthBody(){
+  if(API_AUTH.mode==='paste') return `<div class="ctl" style="padding:5px 10px;gap:6px"><span class="muted" style="font-size:11px;min-width:44px">Bearer</span><input value="${API_AUTH.token}" oninput="API_AUTH.token=this.value" placeholder="paste bearer token…" style="flex:1;height:30px"/></div>`;
+  return `<div class="injstep" style="flex-direction:column;align-items:stretch;gap:0;padding:0;overflow:hidden">
+    <div class="row" style="gap:9px;padding:9px 11px"><span class="ic" style="background:#3b82f6">🔑</span><div style="flex:1"><div class="b" style="font-size:12.5px">Login → capture token</div><div class="hint">POST /api/v1/auth/login · captures <span class="var">{{authToken}}</span>, sent as the Bearer on every request</div></div></div>
+    <div style="border-top:1px solid var(--line);padding:9px 11px;background:rgba(255,255,255,.02)"><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">
+      <div class="ctl" style="padding:4px 8px;gap:6px"><span class="muted" style="font-size:11px;min-width:40px">role</span><select onchange="API_AUTH.role=this.value" style="flex:1;height:28px">${['Instructor','Client Admin','Security Admin','Learner'].map(r=>`<option ${r===API_AUTH.role?'selected':''}>${r}</option>`).join('')}</select></div>
+      <div class="ctl" style="padding:4px 8px;gap:6px"><span class="muted" style="font-size:11px;min-width:40px">user</span><input value="${API_AUTH.user}" oninput="API_AUTH.user=this.value" placeholder="auto (per env)" style="flex:1;height:28px"/></div>
+    </div></div></div>`;
+}
+function apiAuth(m){API_AUTH.mode=m;document.querySelectorAll('#apAuthR label').forEach((l,i)=>l.classList.toggle('on',(i===0)===(m==='auto')));document.getElementById('apAuthBody').innerHTML=apiAuthBody();}
+function renderApiSeqCfg(){const el=document.getElementById('apSeqCfg');if(!el)return;
+  el.innerHTML=API_SEQ.map((s,i)=>{const a=findAPI(s.id);const cap=apiCaptured(a);const inputs=s.inputs||[];
+    return `<div class="injstep" style="flex-direction:column;align-items:stretch;gap:0;padding:0;overflow:hidden;margin-bottom:8px;border-left:3px solid ${methodColor(a.method)}">
+      <div class="row" style="gap:9px;padding:9px 11px;cursor:pointer" onclick="apiCfgToggle(${i})"><span class="stepnum">${i+1}</span><span class="mbadge" style="background:${methodColor(a.method)}">${a.method}</span>
+        <div style="flex:1;min-width:0"><div class="apipath b">${a.path}</div><div class="hint">${a.name}${cap?' · captures <span class="var">{{'+cap+'}}</span>':''}</div></div><span class="x">${s.open?'▾':'⚙'}</span></div>
+      ${s.open?`<div style="border-top:1px solid var(--line);padding:9px 11px;background:rgba(255,255,255,.02)">
+        ${inputs.length?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">${inputs.map((kv,j)=>`<div class="ctl" style="padding:4px 8px;gap:6px"><span class="muted" style="min-width:52px;font-size:11px">${kv[0]}</span><input value="${kv[1]}" oninput="apiCfgInputVal(${i},${j},this.value)" style="flex:1;height:28px"/></div>`).join('')}</div>`:'<div class="hint">no inputs — nothing to provide</div>'}
+        ${cap?`<div class="hint" style="margin-top:6px">Response captured as <span class="var">{{${cap}}}</span> for later requests.</div>`:''}
+      </div>`:''}</div>`;}).join('');
+}
+function apiCfgToggle(i){API_SEQ[i].open=!API_SEQ[i].open;renderApiSeqCfg();}
+function apiCfgInputVal(i,j,v){API_SEQ[i].inputs[j][1]=v;}
 function apiSetReport(v){API_REPORT=v;document.querySelectorAll('#apReport label').forEach((l,i)=>l.classList.toggle('on',(i===0)===(v==='plain')));document.getElementById('apRunId').classList.toggle('hide',v!=='testrail');}
 function apiRunSeq(){
   const env=document.getElementById('apEnv').value;const area=document.getElementById('apRunArea');area.innerHTML='<div class="log" id="aplog" style="margin-top:14px"></div>';const l=document.getElementById('aplog');
-  const seq=[];API_SEQ.forEach(s=>{const a=findAPI(s.id);const cap=apiCaptured(a);seq.push(['dim','→ '+a.method+' '+a.path+' (ENV='+env+')']);seq.push(['ok','✓ '+a.code+' · '+a.ms+'ms · assertions passed'+(cap?' · captured {{'+cap+'}}':'')]);});
+  const seq=[];
+  if(API_AUTH.mode==='auto'){seq.push(['dim','→ POST /api/v1/auth/login (as '+API_AUTH.role+', ENV='+env+')']);seq.push(['ok','✓ 200 OK · captured {{authToken}} — sent as Bearer on every request']);}
+  else{seq.push(['info','▸ using your pasted bearer token on every request']);}
+  API_SEQ.forEach(s=>{const a=findAPI(s.id);const cap=apiCaptured(a);const data=(s.inputs||[]).filter(kv=>kv[0]!=='id').map(kv=>kv[0]+'='+kv[1]).join(', ');
+    seq.push(['dim','→ '+a.method+' '+a.path+' (auth ✓'+(data?', '+data:'')+')']);seq.push(['ok','✓ '+a.code+' · '+a.ms+'ms · assertions passed'+(cap?' · captured {{'+cap+'}}':'')]);});
   seq.push(API_REPORT==='plain'?['info','▸ Plain run — validated, not reported']:['info','▸ Reported '+API_SEQ.length+' results to TestRail']);
-  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,300)}else{const d=document.createElement('div');d.className='ok';d.style.marginTop='8px';d.textContent='● '+API_SEQ.length+' request'+(API_SEQ.length>1?'s':'')+' passed';l.appendChild(d);toast('Sequence complete');}})();
+  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,260)}else{const d=document.createElement('div');d.className='ok';d.style.marginTop='8px';d.textContent='● '+API_SEQ.length+' request'+(API_SEQ.length>1?'s':'')+' passed'+(API_AUTH.mode==='auto'?' · one login, reused':'');l.appendChild(d);toast('Sequence complete');}})();
 }
 /* ---- Automate & Manage (API) ---- */
 function renderAPIAuthor(){
