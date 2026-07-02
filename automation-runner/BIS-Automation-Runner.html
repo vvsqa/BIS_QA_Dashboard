@@ -293,14 +293,7 @@
       <span class="ver">PROTOTYPE v1.0</span>
     </div>
     <div class="hdr-right">
-      <select class="pill env" id="envSel" data-badge="env" onchange="setEnv()">
-        <option value="Staging">⬤ Staging</option>
-        <option value="Pre">⬤ Pre-Prod</option>
-        <option value="Live">⬤ Live</option>
-      </select>
-      <span class="pill" id="pillBranch" data-badge="branch" title="Your working branch — the only branch the app pushes"><span class="dot"></span>⎇ feat/vishnu</span>
-      <span class="pill" id="pillSync" data-badge="sync" title="pre_main fetched before every run">↻ pre_main: up to date</span>
-      <span class="pill" id="pillLive" data-badge="live" onclick="openActivity()" title="See who's running what across the team right now"><span class="dot"></span>Live · <span id="liveN">2</span> running</span>
+      <select id="envSel" style="display:none"><option value="Staging">Staging</option><option value="Pre">Pre</option><option value="Live">Live</option></select>
       <button class="syncbtn" onclick="syncPreMain()" title="Fetch origin/pre_main — the base branch every run starts from"><span class="ic">↻</span> Sync pre_main</button>
       <span class="pill" id="themeToggle" onclick="toggleTheme()" title="Switch light / dark">🌙 Dark</span>
       <span class="pill" onclick="openSettings()">⚙ Settings</span>
@@ -1297,6 +1290,8 @@ function runFromDrawer(){
 }
 /* ================= AUTHOR & MANAGE (no-code, AI-first) ================= */
 let AUTHOR_TAB='create', AC_VP=[], AC_DC=[], AC_INPUT='describe', AC_BUILT=false, AC_FIXED=false, AC_CODE=false;
+let AUTHOR_SRC='module', AC_DETAIL=null, AUTH_NEWCOUNT=0;
+const AUTHOR_CART=new Map();
 let MY_SCRIPTED=[
   {id:254548,t:'Copy a Slide element to the Content Library',m:'Forms',status:'healthy',runs:42,created:'Jun 12',edited:'Jun 20',last:'2h ago · pass'},
   {id:217089,t:'Schedule event via Add Event modal',m:'Classroom Calendar',status:'flaky',runs:31,created:'May 28',edited:'Jun 18',last:'5h ago · pass (1 retry)',issue:'Intermittent timing on the calendar animation — needs a stable wait'},
@@ -1323,33 +1318,87 @@ function authorTab(t){
     : 'Everything you automated — history, edit, remove, or request a merge.';
   const el=document.getElementById('authBody');
   el.innerHTML = t==='create'?acHTML() : t==='maintain'?amHTML() : mcHTML();
-  if(t==='create'){acInput(AC_INPUT);renderVP();renderDC();}
+  if(t==='create'){authSetSrc(AUTHOR_SRC);renderAuthCart();acInput(AC_INPUT);renderVP();renderDC();if(AC_DETAIL)authShowDetail(AC_DETAIL);}
 }
 /* ---- Create (no-code AI authoring) ---- */
 function acHTML(){
-  if(!AC_VP.length) AC_VP=['The "Copied to Content Library" message appears','The library slide count goes up by 1'];
-  return `<div class="grid" style="grid-template-columns:1.35fr 1fr;align-items:start">
-    <div>
-      <div class="card" style="margin-bottom:14px"><div class="seclbl" style="margin-top:0">① What do you want to test?</div>
-        <div class="row" style="gap:8px;margin-bottom:8px"><select id="acMod" style="flex:1"><option>Forms</option>${MODULES.slice(1).map(m=>`<option>${m.m}</option>`).join('')}</select>
-          <select id="acCat" style="width:130px"><option>Smoke</option><option>Regression</option><option>Sanity</option></select></div>
-        <div class="seg" style="margin-bottom:8px"><button class="${AC_INPUT==='describe'?'on':''}" onclick="acInput('describe')">✍️ Describe it</button><button class="${AC_INPUT==='record'?'on':''}" onclick="acInput('record')">⏺ Record it</button></div>
-        <div id="acInputArea"></div></div>
-      <div class="card" style="margin-bottom:14px"><div class="row"><div class="seclbl" style="margin:0">② What should it check?</div><div class="sp"></div><span class="hint">plain English — no code</span></div>
-        <div id="acVP" style="margin-top:8px"></div>
-        <div class="row" style="gap:6px;margin-top:8px"><input id="acVPin" placeholder="e.g. the total updates without a page refresh" style="flex:1" onkeydown="if(event.key==='Enter')acAddVP()"/><button class="btn ghost sm" onclick="acAddVP()">+ add check</button></div></div>
-      <div class="card"><div class="row"><div class="seclbl" style="margin:0">③ What data does it need?</div><div class="sp"></div><span class="hint">AI can create it during the run</span></div>
-        <div id="acDC" style="margin-top:8px"></div>
-        <div class="row" style="gap:6px;margin-top:8px"><select id="acDCpick" style="flex:1">${injOptions()}</select><button class="btn ghost sm" onclick="acAddDC()">+ create this data</button></div></div>
+  if(!AC_VP.length) AC_VP=['The expected result in the test case holds','No console / network errors'];
+  return `<div class="wb">
+    <div class="wbrail">
+      <div class="seg" id="authSrcSeg" style="display:flex;width:100%">
+        <button data-s="module" onclick="authSetSrc('module')" style="flex:1">Module</button>
+        <button data-s="ids" onclick="authSetSrc('ids')" style="flex:1">Case&nbsp;IDs</button>
+        <button data-s="plan" onclick="authSetSrc('plan')" style="flex:1">Plan</button>
+        <button data-s="ticket" onclick="authSetSrc('ticket')" style="flex:1">Ticket</button>
+      </div>
+      <div class="hint" style="margin:9px 0 2px">Not-yet-automated cases — pick, search, or bulk-add.</div>
+      <div id="authSrcBody"></div>
     </div>
     <div>
-      <div class="card"><div class="seclbl" style="margin-top:0">Build</div>
-        <button class="btn ai" style="width:100%;justify-content:center" onclick="acBuild()">✦ Let AI build the test</button>
-        <div class="hint" style="margin-top:8px">You describe it in words; AI writes and verifies the automation. You never have to touch code.</div>
-        <div id="acGen" style="margin-top:12px"></div>
-        <div id="acResult"></div></div>
+      <div class="cart"><div id="authCart"></div></div>
+      <div id="authDetail"></div>
+      <div class="card" style="margin-top:14px"><div class="row"><div class="seclbl" style="margin:0">Refine (optional)</div><div class="sp"></div><span class="hint">AI uses each case's TestRail steps; add anything extra</span></div>
+        <div class="seg" style="margin:8px 0"><button class="${AC_INPUT==='describe'?'on':''}" onclick="acInput('describe')">✍️ Notes</button><button class="${AC_INPUT==='record'?'on':''}" onclick="acInput('record')">⏺ Record</button></div>
+        <div id="acInputArea"></div>
+        <div class="seclbl">Extra checks</div><div id="acVP"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><input id="acVPin" placeholder="add a check" style="flex:1" onkeydown="if(event.key==='Enter')acAddVP()"/><button class="btn ghost sm" onclick="acAddVP()">+ add</button></div>
+        <div class="seclbl">Data needed</div><div id="acDC"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><select id="acDCpick" style="flex:1">${injOptions()}</select><button class="btn ghost sm" onclick="acAddDC()">+ create this data</button></div></div>
+      <div class="card" style="margin-top:14px"><button class="btn ai" style="width:100%;justify-content:center" onclick="acBuild()">✦ Let AI build the test</button>
+        <div class="hint" style="margin-top:8px">You pick the cases; AI writes and verifies the automation from their TestRail steps — no code.</div>
+        <div id="acGen" style="margin-top:12px"></div><div id="acResult"></div></div>
     </div></div>`;
 }
+/* not-automated case picker (module / ids / plan / ticket) */
+function authSetSrc(s){AUTHOR_SRC=s;document.querySelectorAll('#authSrcSeg button').forEach(b=>b.classList.toggle('on',b.dataset.s===s));
+  const b=document.getElementById('authSrcBody');if(b)b.innerHTML=s==='module'?authSrcModule():s==='ids'?authSrcIds():s==='plan'?authSrcPlan():authSrcTicket();}
+function authCaseRow(c,m){const inCart=AUTHOR_CART.has(String(c.id));
+  return `<div class="srcrow ${AC_DETAIL===String(c.id)?'pick':''}" data-acid="${c.id}"><input type="checkbox" ${inCart?'checked':''} onclick="event.stopPropagation();authCartToggle(${c.id})" style="width:auto"/>
+    <span class="badge2 ${c.st==='prog'?'prog':'man'}">${c.st==='prog'?'WIP':'MAN'}</span>
+    <span style="flex:1;cursor:pointer" onclick="authShowDetail('${c.id}')">C${c.id} · ${c.t}</span></div>`;
+}
+function authSrcModule(){return `<input placeholder="🔍 filter" oninput="authFilter(this.value)" style="width:100%;margin:8px 0"/><div class="srclist" id="authSrcList">${MODULES.map(m=>{const cs=(CASES[m.m]||[]).filter(c=>c.st!=='auto');if(!cs.length)return '';return `<div class="modwrap" data-mod="${m.m}"><div class="srcrow" style="font-weight:700" onclick="this.parentElement.querySelector('.mbody').classList.toggle('hide')">▸ ${m.m}<span class="muted" style="font-weight:400;margin-left:auto">${cs.length} manual</span></div><div class="mbody hide">${cs.map(c=>authCaseRow(c,m.m)).join('')}</div></div>`;}).join('')}</div>`;}
+function authFilter(q){q=(q||'').trim().toLowerCase();document.querySelectorAll('#authSrcList .modwrap').forEach(w=>{const body=w.querySelector('.mbody');let any=false;body.querySelectorAll('.srcrow').forEach(r=>{const ok=!q||r.textContent.toLowerCase().includes(q);r.style.display=ok?'':'none';if(ok)any=true;});if(q){body.classList.remove('hide');w.style.display=any?'':'none';}else{body.classList.add('hide');w.style.display='';body.querySelectorAll('.srcrow').forEach(r=>r.style.display='');}});}
+function authSrcIds(){return `<input placeholder="🔍 id or title" oninput="authIdsSearch(this.value)" style="width:100%;margin:8px 0"/><div class="srclist" id="authIdsRes"><div class="hint" style="padding:8px">Type to find not-automated cases…</div></div>`;}
+function authIdsSearch(q){q=(q||'').trim().toLowerCase();const el=document.getElementById('authIdsRes');if(!el)return;if(!q){el.innerHTML='<div class="hint" style="padding:8px">Type to find not-automated cases…</div>';return;}const res=allCasesFlat().filter(c=>c.st!=='auto'&&(String(c.id).includes(q)||c.t.toLowerCase().includes(q))).slice(0,40);el.innerHTML=res.length?res.map(c=>authCaseRow(c,c.module)).join(''):'<div class="hint" style="padding:8px">No match.</div>';}
+function authSrcPlan(){return `<div class="row" style="gap:6px;margin:8px 0"><input id="authPlanId" placeholder="Plan ID" style="flex:1"/><button class="btn ghost sm" onclick="authLoadPlan()">Load</button></div><div class="hint" style="margin-bottom:8px">try <a href="#" onclick="document.getElementById('authPlanId').value='3526';authLoadPlan();return false">3526</a> · <a href="#" onclick="document.getElementById('authPlanId').value='3610';authLoadPlan();return false">3610</a></div><div id="authPlanBody"></div>`;}
+function authLoadPlan(){const id=(document.getElementById('authPlanId').value||'').trim();const p=PLANS[id];const b=document.getElementById('authPlanBody');if(!p){b.innerHTML='<div class="empty">No plan '+id+'</div>';return;}
+  const ids=new Set();p.runs.forEach(r=>r.cases.forEach(c=>ids.add(c)));const manual=[...ids].map(findCase).filter(c=>c&&c.st!=='auto');
+  b.innerHTML=`<div class="row" style="margin:2px 0 6px"><b style="font-size:12.5px">${p.name}</b></div><div class="row" style="margin-bottom:8px"><span class="hint">${manual.length} not-automated in this plan</span>${manual.length?`<button class="btn sm" style="margin-left:auto" onclick="authCartAddMany([${manual.map(c=>c.id)}])">+ Add all</button>`:''}</div><div class="srclist">${manual.map(c=>authCaseRow(c,c.module)).join('')||'<div class="hint" style="padding:8px">Every case in this plan is already automated 🎉</div>'}</div>`;}
+function authSrcTicket(){return `<div class="row" style="gap:6px;margin:8px 0"><input id="authTicketId" placeholder="Ticket ID" style="flex:1"/><button class="btn ghost sm" onclick="authLoadTicket()">Load</button></div><div class="hint" style="margin-bottom:8px">try <a href="#" onclick="document.getElementById('authTicketId').value='20912';authLoadTicket();return false">20912</a> · <a href="#" onclick="document.getElementById('authTicketId').value='19704';authLoadTicket();return false">19704</a></div><div id="authTicketBody"></div>`;}
+function authLoadTicket(){const id=(document.getElementById('authTicketId').value||'').trim();const b=document.getElementById('authTicketBody');const manual=allCasesFlat().filter(c=>String(c.ticket)===id&&c.st!=='auto');
+  if(!manual.length){b.innerHTML='<div class="empty">No not-automated cases for ticket '+id+'</div>';return;}
+  b.innerHTML=`<div class="row" style="margin-bottom:8px"><span class="hint">${manual.length} not-automated for #${id}</span><button class="btn sm" style="margin-left:auto" onclick="authCartAddMany([${manual.map(c=>c.id)}])">+ Add all</button></div><div class="srclist">${manual.map(c=>authCaseRow(c,c.module)).join('')}</div>`;}
+/* authoring cart + supporting data */
+function renderAuthCart(){
+  const el=document.getElementById('authCart');if(!el)return;const n=AUTHOR_CART.size;
+  const head=`<div class="row" style="margin-bottom:10px"><h3 style="margin:0">✦ Cases to automate</h3>${n?`<span class="chip" style="margin-left:8px">${n}</span>`:''}<div class="sp"></div><button class="btn ghost sm" onclick="authAddNew()">＋ brand-new case</button>${n?'<a href="#" onclick="authCartClear();return false" class="hint" style="margin-left:8px">clear</a>':''}</div>`;
+  if(!n){el.innerHTML=head+`<div class="empty">No cases yet.<br><span class="hint">Pick not-automated cases on the left (single or bulk), or start a brand-new case.</span></div>`;return;}
+  el.innerHTML=head+[...AUTHOR_CART.values()].map(x=>`<div class="cartrow"><span class="badge2 ${x.isNew?'new':x.st==='prog'?'prog':'man'}">${x.isNew?'NEW':x.st==='prog'?'WIP':'MAN'}</span>
+    <div style="flex:1;cursor:pointer;min-width:0" onclick="authShowDetail('${x.id}')"><div class="b">${x.isNew?'New case':'C'+x.id+' · '+x.t}</div><div class="hint">${x.module}</div></div>
+    <span class="x" onclick="authCartRemove('${x.id}')">✕</span></div>`).join('');
+}
+function authCartToggle(id){id=String(id);const c=findCase(+id);if(!c)return;if(AUTHOR_CART.has(id))AUTHOR_CART.delete(id);else{AUTHOR_CART.set(id,{id,t:c.t,module:c.module,st:c.st});authShowDetail(id);}renderAuthCart();authRefreshChecks();}
+function authCartAddMany(ids){ids.forEach(id=>{id=String(id);const c=findCase(+id);if(c)AUTHOR_CART.set(id,{id,t:c.t,module:c.module,st:c.st});});renderAuthCart();authRefreshChecks();toast('Added '+ids.length+' cases to automate');}
+function authCartRemove(id){AUTHOR_CART.delete(String(id));renderAuthCart();authRefreshChecks();}
+function authCartClear(){AUTHOR_CART.clear();renderAuthCart();authRefreshChecks();}
+function authRefreshChecks(){document.querySelectorAll('#authSrcBody input[type=checkbox]').forEach(cb=>{const row=cb.closest('[data-acid]');if(row)cb.checked=AUTHOR_CART.has(row.dataset.acid);});}
+function authAddNew(){const id='new-'+(++AUTH_NEWCOUNT);AUTHOR_CART.set(id,{id,t:'New case',module:'Forms',isNew:true});renderAuthCart();authShowDetail(id);}
+function authShowDetail(id){AC_DETAIL=String(id);const el=document.getElementById('authDetail');const x=AUTHOR_CART.get(String(id));
+  document.querySelectorAll('#authSrcBody .srcrow').forEach(r=>r.classList.toggle('pick',r.dataset.acid===String(id)));
+  if(!el)return;
+  if(x&&x.isNew){el.innerHTML=`<div class="detail"><div class="seclbl" style="margin-top:0">Brand-new case</div><div class="row" style="gap:8px"><select onchange="authSetNewMod('${id}',this.value)" style="flex:1">${MODULES.map(m=>`<option ${m.m===x.module?'selected':''}>${m.m}</option>`).join('')}</select><select style="width:130px"><option>Smoke</option><option>Regression</option></select></div><div class="hint" style="margin-top:8px">No TestRail case behind this — describe it in the Notes and AI builds it from scratch.</div></div>`;return;}
+  const c=findCase(+id);if(!c){el.innerHTML='';return;}
+  el.innerHTML=`<div class="detail"><div class="row"><div><div class="muted" style="font-size:12px">${c.module} · supporting data from TestRail</div><h2 style="margin:2px 0;font-size:16px">C${c.id} · ${c.t}</h2></div><div class="sp"></div><span class="badge2 ${c.st}">${c.st==='prog'?'IN PROGRESS':'NOT AUTOMATED'}</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:8px">
+      <div><div class="seclbl">Preconditions</div>${c.pre.map(p=>`<div class="vpt"><span class="ck" style="color:var(--acc2)">•</span><span>${p}</span></div>`).join('')}
+        <div class="seclbl">Steps</div><ol style="margin:0;padding-left:18px;font-size:12.5px">${c.steps.map(s=>`<li style="margin:3px 0">${s}</li>`).join('')}</ol></div>
+      <div><div class="seclbl">Expected / verification points</div>${c.verify.map(v=>`<div class="vpt"><span class="ck">✓</span><span>${v}</span></div>`).join('')}
+        <div class="row" style="margin-top:12px">${AUTHOR_CART.has(String(id))?`<button class="btn ghost sm" onclick="authCartRemove('${id}')">− Remove</button>`:`<button class="btn sm" onclick="authCartToggle(${id})">+ Add to automate</button>`}</div>
+        <div class="hint" style="margin-top:8px">AI turns these into a reliable automated test. Add extra checks or data on the left.</div></div>
+    </div></div>`;
+}
+function authSetNewMod(id,m){const x=AUTHOR_CART.get(String(id));if(x){x.module=m;renderAuthCart();}}
 function acInput(v){AC_INPUT=v;
   document.querySelectorAll('#authBody .seg button').forEach(b=>{if(b.textContent.includes('Describe'))b.classList.toggle('on',v==='describe');if(b.textContent.includes('Record'))b.classList.toggle('on',v==='record');});
   const a=document.getElementById('acInputArea');if(!a)return;
@@ -1373,20 +1422,22 @@ function acAddDC(){const v=document.getElementById('acDCpick').value;const [type
 function acRemoveDC(i){AC_DC.splice(i,1);renderDC();}
 function acBuild(){
   AC_BUILT=false;AC_FIXED=false;
+  const cases=[...AUTHOR_CART.values()], n=cases.length||1;
   const ga=document.getElementById('acGen');ga.innerHTML='<div class="log" id="aclog"></div>';const l=document.getElementById('aclog');
-  const first=(document.getElementById('acDesc')&&document.getElementById('acDesc').value.split('\n')[0])||'your description';
-  const seq=[['dim','✦ AI is building your test — no code needed'],['info','▸ Understanding: '+first.slice(0,60)],['info','▸ Finding the right on-screen elements'],['info','▸ Adding your '+AC_VP.length+' check'+(AC_VP.length>1?'s':'')+(AC_DC.length?' + '+AC_DC.length+' data step':'')],['ok','✓ Test built and dry-verified']];
-  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,400)}else{AC_BUILT=true;acResult();toast('AI built your test');}})();
+  const seq=[['dim','✦ AI is building '+n+' test'+(n>1?'s':'')+' — no code needed'],['info','▸ Reading each case\'s TestRail steps, preconditions & expected results'],['info','▸ Finding the right on-screen elements'],['info','▸ Adding your checks'+(AC_DC.length?' + '+AC_DC.length+' data step'+(AC_DC.length>1?'s':''):'')]];
+  (cases.length?cases:[{isNew:true,t:'New case'}]).forEach(c=>seq.push(['ok','✓ built '+(c.isNew?'new case':'C'+c.id)+' — verified']));
+  seq.push(['ok','✓ All '+n+' built & dry-verified']);
+  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,360)}else{AC_BUILT=true;acResult();toast('AI built '+n+' test'+(n>1?'s':''));}})();
 }
 function acResult(){
-  const el=document.getElementById('acResult');const steps=(document.getElementById('acDesc')?document.getElementById('acDesc').value.split('\n').filter(x=>/^\d/.test(x.trim())):[]);
+  const cases=[...AUTHOR_CART.values()], el=document.getElementById('acResult');
+  const disp=cases.length?cases:[{isNew:true,id:'new',t:'New case'}];
   el.innerHTML=`<div style="border-top:1px dashed var(--line);margin-top:12px;padding-top:12px">
-    <div class="row"><span class="status pass">✓ AI built &amp; verified it</span><div class="sp"></div><a href="#" onclick="acToggleCode();return false" class="hint" id="acCodeLink">view generated code (advanced) ▸</a></div>
-    <div class="seclbl">The test, in plain steps</div>
-    <ol style="margin:0;padding-left:18px;font-size:12.5px">${(steps.length?steps:['Open the page','Do the action','Confirm the result']).map(s=>`<li style="margin:3px 0">${s.replace(/^\d+\.\s*/,'')}</li>`).join('')}</ol>
-    <div class="seclbl">Checks</div>${AC_VP.map(v=>`<div class="vpt"><span class="ck">✓</span><span>${v}</span></div>`).join('')}
-    <div id="acCodeBox" class="hide" style="margin-top:8px"><div class="pre">import { test, expect } from '@playwright/test';\n\ntest('Copy slide to Content Library @C-new', async ({ page }) =&gt; {\n  await loginAs('Instructor');\n  await page.goto('/content-library');\n  await page.getByRole('button', { name: 'Copy to Library' }).click();\n  await expect(page.getByText('Copied to Content Library')).toBeVisible();\n});</div><div class="hint" style="margin-top:4px">You never need to read or edit this — AI maintains it. Shown for the curious.</div></div>
-    <div class="row" style="margin-top:12px;gap:8px"><button class="btn" onclick="acTestRun()">▶ Test run</button><button class="btn green" onclick="acSave()">💾 Save to my cases</button></div>
+    <div class="row"><span class="status pass">✓ AI built &amp; verified ${disp.length}</span><div class="sp"></div><a href="#" onclick="acToggleCode();return false" class="hint" id="acCodeLink">view generated code (advanced) ▸</a></div>
+    <table style="font-size:12.5px;margin-top:8px"><tbody>${disp.map(c=>`<tr><td class="b">${c.isNew?'NEW':'C'+c.id}</td><td>${c.t}</td><td class="muted" style="font-family:Consolas,monospace;font-size:11px">specs/${c.isNew?'new':'C'+c.id}.spec.ts</td><td><span class="status pass">✓</span></td></tr>`).join('')}</tbody></table>
+    <div class="seclbl">Checks applied to each</div>${AC_VP.map(v=>`<div class="vpt"><span class="ck">✓</span><span>${v}</span></div>`).join('')}
+    <div id="acCodeBox" class="hide" style="margin-top:8px"><div class="pre">import { test, expect } from '@playwright/test';\n\ntest('C${disp[0].isNew?'-new':disp[0].id} @generated', async ({ page }) =&gt; {\n  await loginAs('Instructor');\n  // …AI-generated & AI-maintained. You never edit this.\n  await expect(page.getByText('expected result')).toBeVisible();\n});</div><div class="hint" style="margin-top:4px">You never need to read or edit this — AI maintains it. Shown for the curious.</div></div>
+    <div class="row" style="margin-top:12px;gap:8px"><button class="btn" onclick="acTestRun()">▶ Test run</button><button class="btn green" onclick="acSaveAll()">💾 Save to my cases</button><button class="btn ghost" onclick="toast('Committed to feat/vishnu · PR opened to pre_main')">⎇ Commit to my branch</button></div>
     <div id="acRun"></div></div>`;
 }
 function acToggleCode(){AC_CODE=!AC_CODE;document.getElementById('acCodeBox').classList.toggle('hide',!AC_CODE);document.getElementById('acCodeLink').textContent=(AC_CODE?'hide code ▾':'view generated code (advanced) ▸');}
@@ -1403,10 +1454,15 @@ function acTestRun(){
   }})();
 }
 function acFix(){AC_FIXED=true;toast('AI updated the test');acTestRun();}
-function acSave(){if(!AC_BUILT){toast('Build the test first');return;}
-  const mod=document.getElementById('acMod').value, nid=260000+Math.floor(Math.abs(hash(''+AC_VP.join()))%9000);
-  MY_SCRIPTED.unshift({id:nid,t:(document.getElementById('acDesc')?document.getElementById('acDesc').value.split('\n')[0].replace(/^As an? [^,]+,\s*/i,''):'New case').slice(0,48),m:mod,status:AC_FIXED?'healthy':'healthy',runs:1,created:'just now',edited:'—',last:'just now · pass'});
-  toast('Saved C'+nid+' to My cases — commit it to push to your branch');authorTab('cases');
+function acSaveAll(){if(!AC_BUILT){toast('Build the test first');return;}
+  const cases=[...AUTHOR_CART.values()];
+  (cases.length?cases:[{isNew:true,id:'new',t:'New case',module:'Forms'}]).forEach(c=>{
+    const nid=c.isNew?260000+Math.floor(Math.abs(hash(c.id+c.t))%9000):+c.id;
+    MY_SCRIPTED.unshift({id:nid,t:c.t,m:c.module||'Forms',status:'healthy',runs:1,created:'just now',edited:'—',last:'just now · pass'});
+    if(!c.isNew){const raw=findCaseRaw(+c.id);if(raw){raw.st='auto';raw.scripted=true;}}
+  });
+  toast('Saved '+(cases.length||1)+' to My cases — commit to push to your branch');
+  AUTHOR_CART.clear();AC_DETAIL=null;authorTab('cases');
 }
 /* ---- Maintain (no-code healing) ---- */
 function amHTML(){
