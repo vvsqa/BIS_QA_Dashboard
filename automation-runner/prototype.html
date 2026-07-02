@@ -43,6 +43,12 @@
   .pill.live .dot{background:var(--red);box-shadow:0 0 8px var(--red)}
   select.pill{appearance:none;padding-right:26px;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);
     background-position:calc(100% - 14px) 14px,calc(100% - 9px) 14px;background-size:5px 5px;background-repeat:no-repeat}
+  .syncbtn{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 14px;border-radius:10px;cursor:pointer;font-size:12.5px;font-weight:800;
+    color:#062a20;background:linear-gradient(135deg,#34d399,#22d3ee);border:none;box-shadow:0 4px 14px rgba(52,211,153,.35)}
+  .syncbtn:hover{filter:brightness(1.07)}
+  .syncbtn .ic{display:inline-block;font-size:14px}
+  .syncbtn.spin .ic{animation:spin .8s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
 
   /* ---------- tabs ---------- */
   .tabs{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}
@@ -249,6 +255,7 @@
       <span class="pill" id="pillBranch" data-badge="branch" title="Your working branch — the only branch the app pushes"><span class="dot"></span>⎇ feat/vishnu</span>
       <span class="pill" id="pillSync" data-badge="sync" title="pre_main fetched before every run">↻ pre_main: up to date</span>
       <span class="pill" id="pillLive" data-badge="live" onclick="openActivity()" title="See who's running what across the team right now"><span class="dot"></span>Live · <span id="liveN">2</span> running</span>
+      <button class="syncbtn" onclick="syncPreMain()" title="Fetch origin/pre_main — the base branch every run starts from"><span class="ic">↻</span> Sync pre_main</button>
       <span class="pill" id="themeToggle" onclick="toggleTheme()" title="Switch light / dark">🌙 Dark</span>
       <span class="pill" onclick="openSettings()">⚙ Settings</span>
     </div>
@@ -651,13 +658,14 @@ function showTab(t){
   updateHeader(t);
 }
 // which header badges are relevant per module (rest live in Settings ▸ Session context)
+// env selector only appears where you execute against a chosen environment (UI/API/Data/Maintenance)
 const HEADER_BADGES={
-  overview:[],                               // read-only dashboard — no run context needed
-  mywork:['env','sync','live'],              // you run your own cases
+  overview:[],                               // read-only dashboard
+  mywork:['sync','live'],                    // personal analytics — no env execution here
   ui:['env','branch','sync','live'],         // run + author + push to your branch
   api:['env','branch','sync','live'],
   data:['env','live'],                       // generate against an environment
-  buggen:['env'],                            // bugs are filed against an environment
+  buggen:[],                                 // bug environment is picked inside the form
   backlog:[],                                // planning view
   maint:['env','sync','live'],               // re-runs to confirm fixes
   reviews:['branch','sync'],                 // PR approvals into pre_main
@@ -668,6 +676,11 @@ function updateHeader(t){
 }
 function setEnv(){const v=document.getElementById('envSel').value;const p=document.getElementById('envSel');
   p.classList.toggle('live',v==='Live');toast('Environment → '+v);}
+function syncPreMain(){
+  const btns=document.querySelectorAll('.syncbtn');btns.forEach(b=>b.classList.add('spin'));
+  toast('↻ Fetching origin/pre_main …');
+  setTimeout(()=>{btns.forEach(b=>b.classList.remove('spin'));toast('✓ pre_main up to date — runs will start from the latest base');},1400);
+}
 
 /* ---------------- render: overview ---------------- */
 function pct(a,t){return t?Math.round(a/t*100):0}
@@ -908,8 +921,7 @@ function renderMyWork(){
     <!-- profile -->
     <div class="card" style="margin-bottom:14px"><div class="row">
       <div class="av2" style="width:48px;height:48px;font-size:17px;background:linear-gradient(135deg,#22d3ee,#7c3aed);color:#fff">VS</div>
-      <div><h2 style="margin:0;font-size:19px">Vishnu VS</h2></div>
-      <div class="sp"></div><button class="btn ghost sm" onclick="toast('git fetch + reset to origin/pre_main')">↻ Sync pre_main</button></div></div>
+      <div><h2 style="margin:0;font-size:19px">Vishnu VS</h2></div></div></div>
 
     <!-- hero + stats -->
     <div class="dash-sec">
