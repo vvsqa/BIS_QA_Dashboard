@@ -1459,8 +1459,12 @@ function authShowDetail(id){AC_DETAIL=String(id);const el=document.getElementByI
   document.querySelectorAll('#authSrcBody .srcrow').forEach(r=>r.classList.toggle('pick',r.dataset.acid===String(id)));
   if(!el)return;
   if(x&&x.isNew){el.innerHTML=`<div class="detail"><div class="seclbl" style="margin-top:0">Brand-new case</div><div class="row" style="gap:8px"><select onchange="authSetNewMod('${id}',this.value)" style="flex:1">${MODULES.map(m=>`<option ${m.m===x.module?'selected':''}>${m.m}</option>`).join('')}</select><select style="width:130px"><option>Smoke</option><option>Regression</option></select></div><div class="hint" style="margin-top:8px">No TestRail case behind this — describe it in the Notes and AI builds it from scratch.</div></div>`;return;}
-  const c=findCase(+id);if(!c){el.innerHTML='';return;}
-  el.innerHTML=`<div class="detail"><div class="row"><div><div class="muted" style="font-size:12px">${c.module} · supporting data from TestRail</div><h2 style="margin:2px 0;font-size:16px">C${c.id} · ${c.t}</h2></div><div class="sp"></div><span class="badge2 ${c.st}">${c.st==='prog'?'IN PROGRESS':'NOT AUTOMATED'}</span></div>
+  const c=findCase(+id);
+  if(!c){ if(!x){el.innerHTML='';return;}
+    el.innerHTML=`<div class="detail"><div class="row"><div><div class="muted" style="font-size:12px">${x.module} · automation candidate (from backlog)</div><h2 style="margin:2px 0;font-size:16px">${x.t}</h2></div><div class="sp"></div>${x.wip?`<span class="badge2 prog">🚧 WIP · ${x.wip.split(' ')[0]}</span>`:'<span class="badge2 man">NOT AUTOMATED</span>'}</div>
+      ${x.wip?`<div class="hint" style="margin:8px 0;color:#fbbf24">⚠ ${x.wip} has already started automating this — coordinate before you both script it.</div>`:''}
+      <div class="hint" style="margin-top:8px">No TestRail steps linked yet — describe it in <b>Notes</b> below, add checks & data on the left, then <b>Let AI build</b> and complete the script. It saves to My cases when done.</div></div>`;return;}
+  el.innerHTML=`<div class="detail"><div class="row"><div><div class="muted" style="font-size:12px">${c.module} · supporting data from TestRail</div><h2 style="margin:2px 0;font-size:16px">C${c.id} · ${c.t}</h2></div><div class="sp"></div><span class="badge2 ${c.st}">${c.st==='prog'?'🚧 WIP · in progress':'NOT AUTOMATED'}</span></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:8px">
       <div><div class="seclbl">Preconditions</div>${c.pre.map(p=>`<div class="vpt"><span class="ck" style="color:var(--acc2)">•</span><span>${p}</span></div>`).join('')}
         <div class="seclbl">Steps</div><ol style="margin:0;padding-left:18px;font-size:12.5px">${c.steps.map(s=>`<li style="margin:3px 0">${s}</li>`).join('')}</ol></div>
@@ -2299,7 +2303,7 @@ function blByCase(){
   return `<div class="card"><div class="hint" style="margin-bottom:8px">Individual cases ranked by payback — reuse × criticality × <b>manual execution volume</b>. Tick to automate as a batch, or <b>Take</b> a case to claim it — ${taken} already claimed by teammates.</div>
    <div style="overflow:auto"><table style="font-size:12.5px"><thead><tr><th style="width:26px"></th><th>Rank</th><th>Case</th><th>Module</th><th>Reuse</th><th>Criticality</th><th>Manual runs</th><th>Why automate</th><th>Est. saved</th><th>Status</th></tr></thead><tbody>
    ${BACKLOG.map((c,i)=>{const claimed=c.claimedBy, mine=claimed==='Vishnu VS';
-     const status=claimed?(mine?`<span class="chip" style="color:#22d3ee">✦ you're on it</span>`:`<span class="chip" style="color:#fbbf24">🔒 ${claimed.split(' ')[0]} is automating</span>`):`<button class="runbtn" onclick="blClaim(${c.id})">✋ Take</button>`;
+     const status=claimed?(mine?`<button class="runbtn" onclick="blTakeToScript(${c.id})">✎ script</button>`:`<span class="chip" style="color:#fbbf24">🔒 ${claimed.split(' ')[0]} is automating</span>`):`<button class="runbtn" onclick="blTakeToScript(${c.id})">✋ Take &amp; script</button>`;
      return `<tr style="${claimed&&!mine?'opacity:.6':''}"><td>${claimed?'':`<input type="checkbox" ${BL_SEL.has(c.id)?'checked':''} onclick="blToggle(${c.id})"/>`}</td><td class="b">${i+1}</td><td class="b">C${c.id}</td><td>${c.m}</td>
        <td><span class="chip" style="color:${reuseColor(c.reuse)}">${c.reuse}</span></td><td class="muted">${c.crit}</td>
        <td><div class="row" style="gap:6px"><div class="bar" style="width:46px"><i style="width:${(c.exec/mx*100).toFixed(0)}%;background:linear-gradient(90deg,#7c3aed,#22d3ee)"></i></div><span class="b">${nf(c.exec)}</span><span class="hint">×</span></div></td>
@@ -2308,6 +2312,13 @@ function blByCase(){
    <div class="hint" style="margin-top:10px">🔒 = a teammate has taken it — it's hidden from batch-select so no one duplicates. ✋ Take claims it for you and flags it for the team.</div></div>`;
 }
 function blClaim(id){const c=BACKLOG.find(x=>x.id===id);if(c){c.claimedBy='Vishnu VS';BL_SEL.delete(id);blRenderBody();blUpdateBtn();toast('You took C'+id+' to automate — flagged for the team so no one duplicates');}}
+function blTakeToScript(id){const c=BACKLOG.find(x=>x.id===id);if(!c)return;
+  const wipBy=(c.claimedBy&&c.claimedBy!=='Vishnu VS')?c.claimedBy:null;
+  if(!c.claimedBy) c.claimedBy='Vishnu VS'; BL_SEL.delete(id);
+  AUTHOR_CART.set(String(id),{id:String(id),t:'C'+id+' · '+c.m+' candidate',module:c.m,st:'man',ext:true,wip:wipBy});
+  showTab('ui');uiMode('author');authorTab('create');authShowDetail(String(id));
+  toast(wipBy?('⚠ '+wipBy.split(' ')[0]+' is already automating C'+id+' — coordinate first'):('Added C'+id+' to your scripting cart — script it & complete it'));
+}
 function blWhy(c){return c.exec>1200?'run '+nf(c.exec)+'× — big manual drag':c.crit==='High'?'business-critical path':c.reuse==='Critical'?'reused everywhere':'frequent regression';}
 function blAutomateModule(m){showTab('ui');uiMode('author');authorTab('create');authSetSrc('module');const w=document.querySelector('#authSrcList .modwrap[data-mod="'+m+'"]');if(w)w.querySelector('.mbody').classList.remove('hide');toast('Opening '+m+' not-automated cases to automate');}
 function blAutomateTicket(id){showTab('ui');uiMode('author');authorTab('create');authSetSrc('ticket');setTimeout(()=>{const i=document.getElementById('authTicketId');if(i){i.value=id;authLoadTicket();}},60);toast('Loading ticket #'+id+' cases to automate');}
@@ -2382,6 +2393,13 @@ const BG_RECENT=[
   {id:4995,t:'Certificate radio resets after reload',tk:19148,src:'case',ago:'1d'},
 ];
 const BG_SEV=['Critical','Major','Minor','Trivial'],BG_TYPE=['Functional / Logic','UI / UX','Workflow / State','Data Integrity','Performance'],BG_ENV=['Staging','Pre-production','Live'];
+// every filed bug gets an auto-generated regression test; on "Released to QA" it auto-runs in the released env
+let BG_RETESTS=[
+  {id:4998,t:'Redirect toggle label not translated',tk:18872,status:'released',env:'Staging',result:'pass'},
+  {id:4995,t:'Certificate radio resets after reload',tk:19148,status:'released',env:'Pre-production',result:'fail'},
+  {id:5001,t:'Reporting dashboard hamburger icon misaligned',tk:20222,status:'in_progress',env:null,result:null},
+  {id:5002,t:'Move/Copy widget popup buttons overlap',tk:19794,status:'open',env:null,result:null},
+];
 const BG_TREND=[18,24,29,26,33,38];
 const BG_SRC=[['Jam',86,'#a78bfa'],['TestRail case',58,'#f59e0b'],['Notes',34,'#9fb0c9'],['Bulk',22,'#22d3ee'],['Combo',12,'#34d399']];
 let BG_VIEW='dash',BG_NEXTID=5003,BG_BULK=[];
@@ -2389,9 +2407,9 @@ const bg$=id=>document.getElementById(id);
 const bgOpts=(a,s)=>a.map(v=>`<option ${v===s?'selected':''}>${v}</option>`).join('');
 function bgView(v){BG_VIEW=v;renderBugGen();}
 function renderBugGen(){
-  const nav=[['dash','📊 Dashboard'],['create','📝 Create bug'],['bulk','📚 Bulk / run failure']]
+  const nav=[['dash','📊 Dashboard'],['create','📝 Create bug'],['bulk','📚 Bulk / run failure'],['retest','↻ Retests']]
     .map(([v,l])=>`<button class="btn ${BG_VIEW===v?'':'ghost'} sm" onclick="bgView('${v}')">${l}</button>`).join('');
-  const body=BG_VIEW==='create'?bgCreateView():BG_VIEW==='bulk'?bgBulkView():bgDashboardView();
+  const body=BG_VIEW==='create'?bgCreateView():BG_VIEW==='bulk'?bgBulkView():BG_VIEW==='retest'?bgRetestView():bgDashboardView();
   document.getElementById('t-buggen').innerHTML=`
     <div class="card" style="margin-bottom:14px"><div class="row"><div><h3>🐞 Bug Generator</h3><div class="hint">A local per-user tool: turn a Jam recording, notes, or a TestRail case into a clean Redmine bug in seconds — single or bulk — and fail the matching TestRail cases.</div></div><div class="sp"></div><span class="pill">v1.4.8 · auto-updating</span></div>
       <div class="row" style="gap:8px;margin-top:12px">${nav}<div class="sp"></div><span class="chip" style="color:#f59e0b">● interactive demo</span></div></div>
@@ -2435,6 +2453,39 @@ function bgDashboardView(){
 function bgDashAnimate(){
   document.querySelectorAll('#t-buggen [data-c]').forEach(n=>animateCount(n,+n.dataset.c,1200,n.dataset.pct?(x=>Math.round(x)+'%'):n.dataset.plus?(x=>'+'+nf(x)):(x=>nf(x)+(n.dataset.suf||''))));
   growBars('#t-buggen .mini>i');growBars('#t-buggen .bgbar');
+}
+/* ---- Auto-retest: bugs → auto-generated regression test → auto-run on release-to-QA ---- */
+function bgRetestView(){
+  const released=BG_RETESTS.filter(r=>r.result).length, pending=BG_RETESTS.filter(r=>!r.result).length;
+  return `<div class="card" style="margin-bottom:14px"><div class="row"><div><h3 style="margin:0">↻ Auto-retest of my bugs</h3>
+    <div class="hint">Every bug you file is auto-fetched and turned into a regression test. When dev marks it <b>Released to QA</b>, that test runs automatically in the <b>released environment</b> — you just review the result and confirm the fix.</div></div>
+    <div class="sp"></div><span class="chip" style="color:#34d399">${released} auto-run</span><span class="chip" style="color:#f59e0b">${pending} pending</span></div></div>
+    <div id="bgRetestList">${BG_RETESTS.map((r,i)=>bgRetestCard(r,i)).join('')}</div>`;
+}
+function bgRetestCard(r,i){
+  const st={open:['#f59e0b','Dev working'],in_progress:['#3b82f6','Building retest…'],released:['#a78bfa','Released to QA'],pass:['#34d399','Fix confirmed'],reopened:['#ef4444','Reopened']}[r.status];
+  const resBadge=r.result==='pass'?'<span class="status pass">✓ Automated retest passed — issue appears fixed</span>':r.result==='fail'?'<span class="status fail">✗ Automated retest failed — issue still reproduces</span>':'';
+  const active=r.status==='released'||r.status==='pass'||r.status==='reopened';
+  return `<div class="card" style="margin-bottom:10px"><div class="row" style="gap:8px"><span class="b" style="color:var(--acc2)">#${r.id}</span><span style="flex:1">${r.t}</span><span class="chip" style="color:${st[0]}">● ${st[1]}</span><span class="muted" style="font-size:11px;white-space:nowrap">tkt ${r.tk}</span></div>
+    ${active?`<div style="border-top:1px solid var(--line);margin-top:10px;padding-top:10px">
+      <div class="row" style="gap:10px;flex-wrap:wrap">${resBadge}<span class="muted" style="font-size:12px">auto-ran in <b>${r.env}</b> on release</span><div class="sp"></div>
+        ${r.result?`<button class="art" onclick="toast('Opened trace + screenshot')">🧭 trace</button><button class="art" onclick="toast('Opened video.webm')">🎞 video</button>`:''}</div>
+      <div class="row" style="gap:8px;margin-top:10px;flex-wrap:wrap">
+        ${r.result==='pass'&&r.status!=='pass'?`<button class="btn green sm" onclick="bgRetestConfirm(${i})">✓ Confirm fixed &amp; close</button>`:''}
+        ${r.result==='fail'?`<button class="btn sm" style="background:linear-gradient(135deg,#ef4444,#f59e0b)" onclick="bgRetestReopen(${i})">↺ Reopen bug</button>`:''}
+        <span class="hint" style="margin-left:4px">confirm in another env:</span>
+        <select id="bgEnv-${i}" style="height:30px;width:auto">${BG_ENV.map(e=>`<option ${e===r.env?'selected':''}>${e}</option>`).join('')}</select>
+        <button class="btn ghost sm" onclick="bgRetestRun(${i})">▶ Run here</button></div>
+      <div id="bgRetestRun-${i}"></div></div>`
+    :`<div class="hint" style="margin-top:8px">${r.status==='in_progress'?'⚙ AI is building the regression test from your bug report…':'⏳ Waiting for dev to release the fix to QA — the retest runs automatically the moment it lands.'}</div>`}
+   </div>`;
+}
+function bgRetestConfirm(i){BG_RETESTS[i].status='pass';toast('Confirmed fixed — bug #'+BG_RETESTS[i].id+' closed, TestRail case marked Passed');bgView('retest');}
+function bgRetestReopen(i){BG_RETESTS[i].status='reopened';toast('Reopened #'+BG_RETESTS[i].id+' — dev notified, case marked Failed');bgView('retest');}
+function bgRetestRun(i){const env=bg$('bgEnv-'+i).value;const r=BG_RETESTS[i];const box=document.getElementById('bgRetestRun-'+i);box.innerHTML='<div class="log" id="bgrr'+i+'" style="margin-top:10px"></div>';const l=document.getElementById('bgrr'+i);
+  const pass=r.result!=='fail';
+  const seq=[['dim','$ playwright test --grep @bug'+r.id+' (ENV='+env+')'],['info','▸ replaying the reported reproduction steps'],pass?['ok','✓ expected behaviour — issue is fixed in '+env]:['fail','✗ issue still reproduces in '+env]];
+  let k=0;(function t(){if(k<seq.length){const[c,x]=seq[k++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,340)}else{toast('Retest complete in '+env+' — '+(pass?'fixed ✓':'still failing ✗'));}})();
 }
 function bgCreateView(){
   return `<div class="grid" style="grid-template-columns:1fr 1fr">
