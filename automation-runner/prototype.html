@@ -415,15 +415,16 @@
 
   <!-- ===================== API AUTOMATION ===================== -->
   <section id="t-api" class="hide">
-    <div class="card" style="margin-bottom:12px">
-      <div class="row"><h3 style="margin:0">API catalog</h3><span class="muted" style="font-size:12px">from a Postman / OpenAPI collection</span><div class="sp"></div>
-        <button class="btn green sm" onclick="apiNew()">＋ New API case</button>
-        <button class="btn ghost sm" onclick="toast('Import a Postman / OpenAPI collection')">⤓ Import collection</button></div>
+    <div class="row" style="margin-bottom:14px">
+      <div class="seg" id="apiModeToggle">
+        <button class="on" data-m="execute" onclick="apiMode('execute')">▶ Execute</button>
+        <button data-m="author" onclick="apiMode('author')">✦ Automate &amp; Manage</button>
+      </div>
+      <div class="sp"></div>
+      <span class="hint" id="apiModeHint"></span>
     </div>
-    <div class="split">
-      <div class="tree" id="apiTree"></div>
-      <div class="panel" id="apiPanel"><div class="muted" style="padding:30px;text-align:center">Select an API to configure and run.</div></div>
-    </div>
+    <div id="apiExec"></div>
+    <div id="apiAuthor" class="hide"></div>
   </section>
 
   <!-- ===================== DATA GENERATION ===================== -->
@@ -758,6 +759,7 @@ function showTab(t){
   ['overview','mywork','ui','api','data','backlog','maint','reviews','buggen'].forEach(x=>document.getElementById('t-'+x).classList.toggle('hide',x!==t));
   if(t==='overview') renderDiscovery();
   if(t==='ui') renderUITab();
+  if(t==='api') renderAPITab();
   if(t==='mywork') renderMyWork();
   if(t==='backlog') renderBacklog();
   if(t==='maint') renderMaintenance();
@@ -1821,6 +1823,166 @@ function anSave(){
     else{(APIS[grp]=APIS[grp]||[]).push({id:'new'+Date.now(),name,method:m,path:u,body:'{ … }',fields:[['name','John Doe']],pre:['Auth token'],resp:'{ "id": 88213 }',code:'201 Created',ms:142,created:'user #88213'});renderAPITree();toast('Saved to repo · PR opened to pre_main');}})();
 }
 
+/* ================= API AUTOMATION WORKBENCH (automate existing APIs) ================= */
+(function enrichAPIs(){Object.keys(APIS).forEach(g=>APIS[g].forEach(a=>{const seed=Math.abs(hash(a.id+a.path));
+  if(!a.asserts){a.asserts=['Status is '+a.code];if(a.resp.includes('id'))a.asserts.push('Response contains an id');a.asserts.push('Responds in < '+(a.ms+200)+'ms');if(a.created&&a.created!=='—')a.asserts.push('Creates: '+a.created);}
+  if(!a.owner)a.owner=['V','Va','Vi'][seed%3];
+  if(!a.stability){const pct=80+seed%18;const hist=[];for(let i=0;i<12;i++)hist.push((seed>>i&1)||i%6!==0?1:0);a.stability={pct,runs:15+seed%50,history:hist};}
+}));})();
+let API_MODE='execute', API_DETAIL=null, API_TAB='create', API_REPORT='plain', AP_ASSERTS=[];
+const API_SEQ=[];
+let API_TESTS=[
+  {id:'Create User',m:'Users',method:'POST',status:'healthy',runs:40,created:'Jun 10',edited:'Jun 19',last:'2h ago · pass'},
+  {id:'Submit Form',m:'Forms',method:'POST',status:'flaky',runs:22,created:'Jun 2',edited:'—',last:'6h ago · pass (1 retry)',issue:'Occasionally returns 202 before processing finishes — needs a poll on the result'},
+  {id:'Export Report',m:'Reports',method:'POST',status:'failing',runs:9,created:'Jun 20',edited:'Jun 24',last:'3h ago · fail',issue:'Schema changed — "fileId" was renamed to "exportId"'},
+];
+const API_OTHERS={id:'List Users',m:'Users',method:'GET',owner:'Varsha',status:'healthy',runs:31,created:'May 22',last:'1d ago · pass'};
+function findAPI(id){let a;Object.values(APIS).forEach(g=>g.forEach(x=>{if(x.id===id)a=x}));return a;}
+function apiCaptured(a){return (a.created&&a.created!=='—')?a.created.replace(/[^a-zA-Z]/g,'')+'Id':null;}
+function renderAPITab(){
+  const ex=document.getElementById('apiExec'),au=document.getElementById('apiAuthor');if(!ex)return;
+  ex.classList.toggle('hide',API_MODE!=='execute');au.classList.toggle('hide',API_MODE!=='author');
+  document.querySelectorAll('#apiModeToggle button').forEach(b=>b.classList.toggle('on',b.dataset.m===API_MODE));
+  document.getElementById('apiModeHint').textContent=API_MODE==='execute'?'Pick endpoints → chain them → configure & run. We automate existing APIs — we never create endpoints.':'Add checks to an existing API and save it as an automated test. Manage & maintain your API tests.';
+  if(API_MODE==='execute')renderAPIExec();else renderAPIAuthor();
+}
+function apiMode(m){API_MODE=m;renderAPITab();}
+function renderAPIExec(){
+  document.getElementById('apiExec').innerHTML=`<div class="wb">
+    <div class="wbrail"><input placeholder="🔍 filter endpoints" oninput="apiFilter(this.value)" style="width:100%;margin-bottom:8px"/>
+      <div class="hint" style="margin-bottom:6px">from your Postman / OpenAPI collection · <a href="#" onclick="toast('Import a Postman / OpenAPI collection');return false">import</a></div>
+      <div class="srclist" id="apiCatalog">${apiCatalogHTML()}</div></div>
+    <div><div class="cart"><div id="apiSeq"></div></div><div id="apiDetail"></div></div></div>`;
+  renderAPISeq(); if(API_DETAIL) selectAPI(API_DETAIL,true);
+}
+function apiCatalogHTML(){return Object.keys(APIS).map(g=>`<div class="modwrap"><div class="srcrow" style="font-weight:700" onclick="this.parentElement.querySelector('.mbody').classList.toggle('hide')">▸ ${g}<span class="muted" style="font-weight:400;margin-left:auto">${APIS[g].length}</span></div><div class="mbody">${APIS[g].map(a=>apiRow(a)).join('')}</div></div>`).join('');}
+function apiRow(a){const inSeq=API_SEQ.some(s=>s.id===a.id);
+  return `<div class="srcrow ${API_DETAIL===a.id?'pick':''}" data-aid="${a.id}"><input type="checkbox" ${inSeq?'checked':''} onclick="event.stopPropagation();apiSeqToggle('${a.id}')" style="width:auto"/>
+    <span class="stab"><span class="dot" style="background:${stabColor(a.stability.pct)}"></span></span>
+    <span class="badge2" style="background:${methodColor(a.method)};color:#06121f;min-width:44px;text-align:center">${a.method}</span>
+    <span style="flex:1;cursor:pointer;font-family:Consolas,monospace;font-size:11.5px" onclick="selectAPI('${a.id}')">${a.path}</span></div>`;
+}
+function apiFilter(q){q=(q||'').trim().toLowerCase();document.querySelectorAll('#apiCatalog .modwrap').forEach(w=>{const body=w.querySelector('.mbody');let any=false;body.querySelectorAll('.srcrow').forEach(r=>{const ok=!q||r.textContent.toLowerCase().includes(q);r.style.display=ok?'':'none';if(ok)any=true;});w.style.display=any?'':'none';});}
+function apiSeqToggle(id){const i=API_SEQ.findIndex(s=>s.id===id);if(i>=0)API_SEQ.splice(i,1);else API_SEQ.push({id});renderAPISeq();apiRefreshChecks();if(API_DETAIL===id)selectAPI(id,true);}
+function apiSeqRemove(id){const i=API_SEQ.findIndex(s=>s.id===id);if(i>=0)API_SEQ.splice(i,1);renderAPISeq();apiRefreshChecks();if(API_DETAIL===id)selectAPI(id,true);}
+function apiSeqMove(i,dir){const j=i+dir;if(j<0||j>=API_SEQ.length)return;const t=API_SEQ[i];API_SEQ[i]=API_SEQ[j];API_SEQ[j]=t;renderAPISeq();}
+function apiRefreshChecks(){document.querySelectorAll('#apiCatalog input[type=checkbox]').forEach(cb=>{const row=cb.closest('[data-aid]');if(row)cb.checked=API_SEQ.some(s=>s.id===row.dataset.aid);});}
+function renderAPISeq(){
+  const el=document.getElementById('apiSeq');if(!el)return;const n=API_SEQ.length;
+  if(!n){el.innerHTML=`<div class="row" style="margin-bottom:4px"><h3 style="margin:0">🔗 Request sequence</h3></div><div class="empty">No requests yet.<br><span class="hint">Tick endpoints on the left. Chain them — each response can feed the next.</span></div>`;return;}
+  el.innerHTML=`<div class="row" style="margin-bottom:10px"><h3 style="margin:0">🔗 Request sequence</h3><span class="chip" style="margin-left:8px">${n}</span><div class="sp"></div><a href="#" onclick="API_SEQ.length=0;renderAPISeq();apiRefreshChecks();return false" class="hint">clear</a></div>
+    ${API_SEQ.map((s,i)=>{const a=findAPI(s.id);const cap=apiCaptured(a);return `<div class="cartrow"><span class="b" style="width:18px;color:var(--acc2)">${i+1}</span>
+      <span class="badge2" style="background:${methodColor(a.method)};color:#06121f;min-width:44px;text-align:center">${a.method}</span>
+      <div style="flex:1;cursor:pointer;min-width:0" onclick="selectAPI('${a.id}')"><div class="b" style="font-family:Consolas,monospace;font-size:11.5px">${a.path}</div><div class="hint">${a.name}${cap?' · captures <span class="var">{{'+cap+'}}</span>':''}</div></div>
+      <span class="x" style="cursor:pointer" onclick="apiSeqMove(${i},-1)">↑</span><span class="x" style="cursor:pointer" onclick="apiSeqMove(${i},1)">↓</span><span class="x" onclick="apiSeqRemove('${a.id}')">✕</span></div>`;}).join('')}
+    <div class="cartbar"><button class="btn" style="flex:1;justify-content:center" onclick="apiOpenDrawer()">▶ Configure &amp; Run (${n})</button></div>`;
+}
+function selectAPI(id,keep){
+  API_DETAIL=id;const a=findAPI(id);const el=document.getElementById('apiDetail');if(!el||!a)return;const s=a.stability;const inSeq=API_SEQ.some(x=>x.id===id);
+  el.innerHTML=`<div class="detail">
+    <div class="row"><h2 style="margin:0;font-size:17px"><span class="chip" style="color:${methodColor(a.method)}">${a.method}</span> <span style="font-family:Consolas,monospace">${a.path}</span></h2><div class="sp"></div><span class="muted">${a.name}</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:10px">
+      <div><div class="seclbl" style="margin-top:0">Prerequisites</div>${a.pre.map(p=>`<div class="vpt"><span class="ck" style="color:var(--acc2)">•</span><span>${p}</span></div>`).join('')}
+        ${a.body?`<div class="seclbl">Request body</div><div class="pre" style="max-height:140px">${a.body.replace(/</g,'&lt;')}</div>`:''}
+        <div class="seclbl">Params</div>${a.fields.map(([k,v])=>`<div class="hint"><code>${k}</code> = ${v}</div>`).join('')}</div>
+      <div><div class="seclbl" style="margin-top:0">Assertions</div>${a.asserts.map(v=>`<div class="vpt"><span class="ck">✓</span><span>${v}</span></div>`).join('')}
+        <div class="seclbl">Example response</div><div class="pre" style="max-height:120px">${a.resp.replace(/</g,'&lt;')}</div>
+        <div class="seclbl">Reliability</div><div class="row" style="gap:12px;align-items:center">${sparkline(s.history)}<span style="font-size:20px;font-weight:900;color:${stabColor(s.pct)}">${s.pct}%</span></div>
+        <div class="hint" style="margin-top:4px">${s.runs} runs · ~${a.ms}ms · ${a.code}</div>
+        <div class="row" style="margin-top:10px">${inSeq?`<button class="btn ghost sm" onclick="apiSeqRemove('${id}')">− Remove from sequence</button>`:`<button class="btn sm" onclick="apiSeqToggle('${id}')">+ Add to sequence</button>`}</div></div>
+    </div></div>`;
+  document.querySelectorAll('#apiCatalog .srcrow').forEach(r=>r.classList.toggle('pick',r.dataset.aid===id));
+  if(!keep)el.scrollIntoView({block:'nearest'});
+}
+function apiOpenDrawer(){if(!API_SEQ.length){toast('Add at least one request');return;}renderAPIDrawer();document.getElementById('runScrim').classList.add('on');document.getElementById('runDrawer').classList.add('on');}
+function renderAPIDrawer(){
+  const n=API_SEQ.length,env=document.getElementById('envSel').value;
+  document.getElementById('runDrawerBody').innerHTML=`
+    <div class="drawer-h"><h2 style="margin:0;font-size:17px">▶ Configure &amp; Run</h2><span class="chip" style="margin-left:6px">${n} request${n>1?'s':''}</span><div class="sp"></div><button class="art" onclick="closeRunDrawer()">✕</button></div>
+    <div class="drawer-b">
+      <div class="dsec"><div class="lbl">Environment</div><select id="apEnv">${['Staging','Pre','Live'].map(e=>`<option ${e===env?'selected':''}>${e}</option>`).join('')}</select></div>
+      <div class="dsec"><div class="lbl">Auth</div><select><option>Bearer token (resolved per env)</option><option>Basic</option><option>None</option></select><select style="margin-top:8px"><option>as Instructor</option><option>as Client Admin</option><option>as Security Admin</option></select></div>
+      <div class="dsec"><div class="lbl">Test data / variables</div><select><option>repo defaults</option><option>my-data.json</option></select><div class="hint" style="margin-top:6px">Captured values (<span class="var">{{userId}}</span> …) chain automatically between steps.</div></div>
+      <div class="dsec"><div class="lbl">Reporting target</div><div class="radio" id="apReport">
+        <label class="${API_REPORT==='plain'?'on':''}" onclick="apiSetReport('plain')"><span class="rt">Plain (exploratory)</span><span class="hint">Won't fail · won't report</span></label>
+        <label class="${API_REPORT==='testrail'?'on':''}" onclick="apiSetReport('testrail')"><span class="rt">TestRail run</span><span class="hint">Writes results</span></label></div>
+        <div id="apRunId" class="${API_REPORT==='testrail'?'':'hide'}" style="margin-top:8px"><input placeholder="Run ID"/></div></div>
+      <div class="dsec"><div class="lbl">Sequence (${n})</div>${API_SEQ.map((s,i)=>{const a=findAPI(s.id);return `<div class="hint">${i+1}. ${a.method} ${a.path}</div>`;}).join('')}</div>
+      <button class="btn green" style="width:100%;justify-content:center" onclick="apiRunSeq()">▶ Run sequence</button><div id="apRunArea"></div>
+    </div>`;
+}
+function apiSetReport(v){API_REPORT=v;document.querySelectorAll('#apReport label').forEach((l,i)=>l.classList.toggle('on',(i===0)===(v==='plain')));document.getElementById('apRunId').classList.toggle('hide',v!=='testrail');}
+function apiRunSeq(){
+  const env=document.getElementById('apEnv').value;const area=document.getElementById('apRunArea');area.innerHTML='<div class="log" id="aplog" style="margin-top:14px"></div>';const l=document.getElementById('aplog');
+  const seq=[];API_SEQ.forEach(s=>{const a=findAPI(s.id);const cap=apiCaptured(a);seq.push(['dim','→ '+a.method+' '+a.path+' (ENV='+env+')']);seq.push(['ok','✓ '+a.code+' · '+a.ms+'ms · assertions passed'+(cap?' · captured {{'+cap+'}}':'')]);});
+  seq.push(API_REPORT==='plain'?['info','▸ Plain run — validated, not reported']:['info','▸ Reported '+API_SEQ.length+' results to TestRail']);
+  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,300)}else{const d=document.createElement('div');d.className='ok';d.style.marginTop='8px';d.textContent='● '+API_SEQ.length+' request'+(API_SEQ.length>1?'s':'')+' passed';l.appendChild(d);toast('Sequence complete');}})();
+}
+/* ---- Automate & Manage (API) ---- */
+function renderAPIAuthor(){
+  document.getElementById('apiAuthor').innerHTML=`<div class="row" style="margin-bottom:12px"><div class="seg" id="apiSub">
+      <button data-t="create" onclick="apiAuthorTab('create')">✦ Automate an API</button>
+      <button data-t="cases" onclick="apiAuthorTab('cases')">📚 My API tests</button>
+      <button data-t="maintain" onclick="apiAuthorTab('maintain')">🩺 Maintain</button>
+    </div><div class="sp"></div><button class="btn ghost sm" onclick="toast('Import a Postman / OpenAPI collection')">⤓ Import collection</button></div>
+    <div id="apiAuthorBody"></div>`;
+  apiAuthorTab(API_TAB);
+}
+function apiAuthorTab(t){API_TAB=t;document.querySelectorAll('#apiSub button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  document.getElementById('apiAuthorBody').innerHTML = t==='create'?apiCreateHTML():t==='cases'?apiCasesHTML():apiMaintainHTML();
+  if(t==='create'){const first=Object.values(APIS)[0][0];apiPickShow(first.id);}
+}
+function apiCreateHTML(){
+  const all=[];Object.keys(APIS).forEach(g=>APIS[g].forEach(a=>all.push(a)));
+  return `<div class="grid" style="grid-template-columns:1.35fr 1fr;align-items:start">
+    <div><div class="card" style="margin-bottom:14px"><div class="seclbl" style="margin-top:0">① Pick the API to automate</div>
+      <div class="hint" style="margin-bottom:8px">We don't create endpoints — choose one from your imported collection and add checks.</div>
+      <select id="apPick" onchange="apiPickShow(this.value)" style="width:100%">${all.map(a=>`<option value="${a.id}">${a.method} ${a.path} — ${a.name}</option>`).join('')}</select>
+      <div id="apReq" style="margin-top:10px"></div></div>
+      <div class="card"><div class="row"><div class="seclbl" style="margin:0">② What should the response satisfy?</div><div class="sp"></div><span class="hint">plain checks — no code</span></div>
+        <div id="apAsserts" style="margin-top:8px"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><input id="apAin" placeholder="e.g. response has a non-empty id" style="flex:1" onkeydown="if(event.key==='Enter')apAddAssert()"/><button class="btn ghost sm" onclick="apAddAssert()">+ add check</button></div></div></div>
+    <div class="card"><div class="seclbl" style="margin-top:0">Verify &amp; save</div>
+      <button class="btn" style="width:100%;justify-content:center" onclick="apiVerify()">▶ Send &amp; verify</button>
+      <div class="hint" style="margin-top:8px">Sends the request to the selected environment and checks your assertions. No code to write.</div>
+      <div id="apVerify" style="margin-top:12px"></div></div></div>`;
+}
+function apiPickShow(id){const a=findAPI(id);if(!a)return;AP_ASSERTS=a.asserts.slice();
+  const el=document.getElementById('apReq');if(el)el.innerHTML=`<div class="ctl" style="padding:8px 10px"><span class="badge2" style="background:${methodColor(a.method)};color:#06121f;min-width:44px;text-align:center">${a.method}</span><span style="font-family:Consolas,monospace;font-size:12px">${a.path}</span></div>${a.body?`<div class="hint" style="margin-top:6px">Body</div><div class="pre" style="max-height:120px">${a.body.replace(/</g,'&lt;')}</div>`:''}`;
+  renderAsserts();
+}
+function renderAsserts(){const el=document.getElementById('apAsserts');if(!el)return;el.innerHTML=AP_ASSERTS.map((v,i)=>`<div class="vpt"><span class="ck">✓</span><span style="flex:1">${v}</span><span class="x" style="cursor:pointer;color:var(--faint)" onclick="apRemoveAssert(${i})">✕</span></div>`).join('')||'<div class="hint">no checks yet</div>';}
+function apAddAssert(){const i=document.getElementById('apAin');if(i&&i.value.trim()){AP_ASSERTS.push(i.value.trim());i.value='';renderAsserts();}}
+function apRemoveAssert(i){AP_ASSERTS.splice(i,1);renderAsserts();}
+function apiVerify(){const a=findAPI(document.getElementById('apPick').value);const el=document.getElementById('apVerify');el.innerHTML='<div class="log" id="apvlog"></div>';const l=document.getElementById('apvlog');
+  const seq=[['dim','→ '+a.method+' '+a.path],['info','▸ '+a.code+' · '+a.ms+'ms'],...AP_ASSERTS.map(x=>['ok','✓ '+x])];
+  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,320)}else{
+    el.innerHTML+=`<div class="row" style="margin-top:10px"><span class="status pass">✓ ${AP_ASSERTS.length}/${AP_ASSERTS.length} checks passed</span><div class="sp"></div><button class="btn green sm" onclick="apiSaveTest()">💾 Save as automated test</button></div>`;toast('Verified — ready to save');}})();
+}
+function apiSaveTest(){const a=findAPI(document.getElementById('apPick').value);API_TESTS.unshift({id:a.name,m:'Users',method:a.method,status:'healthy',runs:1,created:'just now',edited:'—',last:'just now · pass'});toast('Saved as automated API test — commit to push to your branch');apiAuthorTab('cases');}
+function apiCasesHTML(){
+  const rows=API_TESTS.map(c=>apiCaseRow(c,true)).join('')+apiCaseRow(API_OTHERS,false);
+  return `<div class="card"><div class="row" style="margin-bottom:6px"><h3 style="margin:0">📚 My API tests</h3><span class="chip" style="margin-left:8px">${API_TESTS.length}</span><div class="sp"></div><span class="hint">edit / remove your own · others → copy &amp; edit → request merge</span></div>
+    <div style="overflow:auto"><table style="font-size:12.5px"><thead><tr><th>Test</th><th>Method</th><th>Group</th><th>Status</th><th>Runs</th><th>Created</th><th>Last edited</th><th>Last run</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+function apiCaseRow(c,mine){const stc={healthy:'#34d399',flaky:'#fbbf24',failing:'#ef4444'}[c.status];
+  return `<tr><td class="b">${c.id}</td><td><span class="chip" style="color:${methodColor(c.method)}">${c.method}</span></td><td>${c.m}</td><td><span class="chip" style="color:${stc}">● ${c.status}</span></td><td>${c.runs}</td><td class="muted">${c.created}</td><td class="muted">${c.edited||'—'}</td><td class="muted">${c.last}</td>
+    <td style="white-space:nowrap">${mine?`<button class="runbtn" onclick="apiAuthorTab('create')">✎ edit</button> <button class="runbtn" onclick="toast('PR opened: feat/vishnu → pre_main')">⇪ merge</button> <button class="runbtn" style="color:#fca5a5" onclick="apiRemoveTest('${c.id}')">🗑</button>`:`<span class="hint" title="Owned by ${c.owner}">🔒 ${c.owner}'s</span> <button class="runbtn" onclick="toast('Copied to your branch — edit then Request merge')">⧉ copy &amp; edit</button>`}</td></tr>`;
+}
+function apiRemoveTest(id){API_TESTS=API_TESTS.filter(c=>c.id!==id);toast('Removed '+id);apiAuthorTab('cases');}
+function apiMaintainHTML(){const need=API_TESTS.filter(c=>c.status!=='healthy');
+  return `<div class="card"><div class="row"><h3 style="margin:0">🩺 API tests that need attention</h3><span class="chip" style="margin-left:8px;color:${need.length?'#fbbf24':'#34d399'}">${need.length}</span><div class="sp"></div><span class="hint">AI heals broken assertions &amp; schema drift</span></div>
+    <div style="margin-top:12px">${need.length?need.map(c=>`<div style="border:1px solid var(--line);border-radius:12px;padding:13px 14px;margin-bottom:10px;background:var(--panel2)">
+      <div class="row"><span class="badge2 ${c.status==='failing'?'man':'prog'}">${c.status.toUpperCase()}</span><span class="b" style="margin-left:8px">${c.id}</span><span class="chip" style="margin-left:8px;color:${methodColor(c.method)}">${c.method}</span><div class="sp"></div><span class="hint">${c.last}</span></div>
+      <div class="hint" style="margin:8px 0"><b style="color:#fbbf24">Why:</b> ${c.issue||''}</div>
+      <div class="row" style="gap:8px"><button class="btn sm" onclick="apiHeal('${c.id}')">🔧 Auto-fix with AI</button><button class="btn ghost sm" onclick="toast('Re-sending to verify')">▶ Re-verify</button></div>
+      <div id="apheal-${c.id.replace(/\\s/g,'')}"></div></div>`).join(''):'<div class="empty">🎉 All your API tests are healthy.</div>'}</div></div>`;
+}
+function apiHeal(id){const c=API_TESTS.find(x=>x.id===id);const box=document.getElementById('apheal-'+id.replace(/\s/g,''));box.innerHTML='<div class="log" id="ahlog"></div>';const l=document.getElementById('ahlog');
+  const seq=[['dim','✦ AI analysing…'],['info','▸ '+(c.issue||'')],['ok','✓ Updated the assertion / added a poll'],['dim','$ re-sending'],['ok','✓ Passed — healthy again']];
+  let i=0;(function t(){if(i<seq.length){const[cl,x]=seq[i++];const d=document.createElement('div');d.className=cl;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,360)}else{c.status='healthy';c.last='just now · pass';c.edited='just now';toast(id+' healed ✓');setTimeout(()=>apiAuthorTab('maintain'),700);}})();
+}
+
 /* ---------------- data generation ---------------- */
 function dgMode(m){document.getElementById('dgSingle').classList.toggle('on',m==='single');document.getElementById('dgBulk').classList.toggle('on',m==='bulk');
   document.getElementById('dgCountWrap').classList.toggle('hide',m==='single');}
@@ -2179,7 +2341,7 @@ function renderActivity(){
 }
 
 /* init */
-renderDiscovery();renderUITab();renderAPITree();renderBacklog();updateHeader('overview');
+renderDiscovery();renderUITab();renderAPITab();renderBacklog();updateHeader('overview');
 ['fMod','fCat','fBy','fReuse'].forEach(id=>{const e=document.getElementById(id);if(e)e.addEventListener('change',renderModuleTable);});
 </script>
 </body>
