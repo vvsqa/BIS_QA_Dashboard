@@ -2319,32 +2319,59 @@ const BG_RECENT=[
   {id:4995,t:'Certificate radio resets after reload',tk:19148,src:'case',ago:'1d'},
 ];
 const BG_SEV=['Critical','Major','Minor','Trivial'],BG_TYPE=['Functional / Logic','UI / UX','Workflow / State','Data Integrity','Performance'],BG_ENV=['Staging','Pre-production','Live'];
-let BG_VIEW='overview',BG_NEXTID=5003,BG_BULK=[];
+const BG_TREND=[18,24,29,26,33,38];
+const BG_SRC=[['Jam',86,'#a78bfa'],['TestRail case',58,'#f59e0b'],['Notes',34,'#9fb0c9'],['Bulk',22,'#22d3ee'],['Combo',12,'#34d399']];
+let BG_VIEW='dash',BG_NEXTID=5003,BG_BULK=[];
 const bg$=id=>document.getElementById(id);
 const bgOpts=(a,s)=>a.map(v=>`<option ${v===s?'selected':''}>${v}</option>`).join('');
 function bgView(v){BG_VIEW=v;renderBugGen();}
 function renderBugGen(){
-  const nav=[['overview','📊 Overview'],['create','📝 Create bug'],['bulk','📚 Bulk / run failure']]
+  const nav=[['dash','📊 Dashboard'],['create','📝 Create bug'],['bulk','📚 Bulk / run failure']]
     .map(([v,l])=>`<button class="btn ${BG_VIEW===v?'':'ghost'} sm" onclick="bgView('${v}')">${l}</button>`).join('');
-  const body=BG_VIEW==='create'?bgCreateView():BG_VIEW==='bulk'?bgBulkView():bgOverviewView();
+  const body=BG_VIEW==='create'?bgCreateView():BG_VIEW==='bulk'?bgBulkView():bgDashboardView();
   document.getElementById('t-buggen').innerHTML=`
     <div class="card" style="margin-bottom:14px"><div class="row"><div><h3>🐞 Bug Generator</h3><div class="hint">A local per-user tool: turn a Jam recording, notes, or a TestRail case into a clean Redmine bug in seconds — single or bulk — and fail the matching TestRail cases.</div></div><div class="sp"></div><span class="pill">v1.4.8 · auto-updating</span></div>
       <div class="row" style="gap:8px;margin-top:12px">${nav}<div class="sp"></div><span class="chip" style="color:#f59e0b">● interactive demo</span></div></div>
     ${body}`;
+  if(BG_VIEW==='dash') bgDashAnimate();
 }
-function bgOverviewView(){
-  const K=[['Bugs filed (tool)','212','#3b82f6'],['~ Hours saved','184 h','#f59e0b'],['This week','38','#34d399'],['Avg time / bug','~2.4 min','#22d3ee'],['Testers using','6','#a78bfa'],['TestRail cases failed','96','#ef4444']];
-  const mx=Math.max(...BG_BYTESTER.map(x=>x[1]));
-  const srcClr={jam:'#a78bfa',bulk:'#22d3ee',combo:'#34d399',case:'#f59e0b',notes:'#9fb0c9'};
-  return `<div class="card" style="margin-bottom:14px"><div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px">${K.map(([l,v,c])=>`<div class="kpi"><div class="accent" style="background:${c}"></div><div class="big" style="font-size:21px">${v}</div><div class="lbl">${l}</div></div>`).join('')}</div></div>
-    <div class="grid" style="grid-template-columns:1.5fr 1fr">
-      <div class="card"><h3>Capabilities</h3>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:8px">${BG_FEATURES.map(f=>`<div style="background:var(--panel2);border:1px solid var(--line);border-radius:11px;padding:11px 12px"><div class="row" style="gap:8px;margin-bottom:4px"><span style="font-size:16px">${f.ic}</span><b style="font-size:13px">${f.t}</b></div><div class="muted" style="font-size:11.5px;line-height:1.5">${f.d}</div></div>`).join('')}</div></div>
-      <div style="display:flex;flex-direction:column;gap:14px">
-        <div class="card"><h3>Adoption (bugs filed)</h3>${BG_BYTESTER.map(([n,v,c])=>`<div class="row" style="margin:8px 0;font-size:12px;gap:8px"><span style="width:112px" class="muted">${n}</span><div class="bar" style="flex:1;height:9px"><i style="width:${v/mx*100}%;background:${c}"></i></div><span class="b" style="width:26px;text-align:right">${v}</span></div>`).join('')}</div>
-        <div class="card"><h3>Recent bugs</h3><div id="bgRecent" style="display:flex;flex-direction:column">${BG_RECENT.map(b=>`<div class="row" style="font-size:12px;gap:8px;padding:5px 0;border-bottom:1px solid var(--line)"><span class="b" style="color:var(--acc2)">#${b.id}</span><span style="flex:1" title="${b.t}">${b.t}</span><span class="chip" style="color:${srcClr[b.src]||'#9fb0c9'}">${b.src}</span><span class="muted" style="font-size:11px;white-space:nowrap">tkt ${b.tk} · ${b.ago}</span></div>`).join('')}</div></div>
-      </div>
-    </div>`;
+function bgTrendSVG(){
+  const d=BG_TREND,W=780,H=200,padL=26,padR=12,padT=22,padB=28,gap=(W-padL-padR)/d.length,bw=Math.min(46,gap*0.5),mx=Math.max(...d);
+  let rects='',texts='';d.forEach((v,i)=>{const cx=padL+i*gap+gap/2,hh=v/mx*(H-padT-padB),y=H-padB-hh;
+    rects+=`<rect x="${(cx-bw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw}" height="${hh.toFixed(1)}" rx="3" fill="url(#bgg)"/>`;
+    texts+=`<text x="${cx.toFixed(1)}" y="${(y-5).toFixed(1)}" text-anchor="middle" font-size="10.5" font-weight="800" style="fill:var(--txt)">${v}</text><text x="${cx.toFixed(1)}" y="${H-10}" text-anchor="middle" font-size="9.5" style="fill:var(--muted)">W${i+1}</text>`;});
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}" style="display:block"><defs><linearGradient id="bgg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#3b82f6"/><stop offset="1" stop-color="#22d3ee"/></linearGradient></defs><g class="effbars">${rects}</g>${texts}</svg>`;
+}
+function bgDashboardView(){
+  const mx=Math.max(...BG_BYTESTER.map(x=>x[1])), srcClr={jam:'#a78bfa',bulk:'#22d3ee',combo:'#34d399',case:'#f59e0b',notes:'#9fb0c9'}, srcTot=BG_SRC.reduce((a,x)=>a+x[1],0);
+  return `
+   <div class="hero" style="margin-bottom:14px">
+     <div class="hcard"><div class="glow" style="background:#3b82f6"></div><div class="cap"><span class="dotic" style="background:#3b82f6">🐞</span>Bugs filed with the tool</div><div class="num" data-c="212">0</div><div class="foot">across 6 testers · this quarter</div><div class="mini"><i data-w="100" style="background:linear-gradient(90deg,#3b82f6,#22d3ee)"></i></div></div>
+     <div class="hcard"><div class="glow" style="background:#f59e0b"></div><div class="cap"><span class="dotic" style="background:#f59e0b">⏱️</span>Time saved vs manual</div><div class="num" data-c="184" data-suf=" h">0 h</div><div class="foot">≈ ${Math.round(184/8)} tester-days reclaimed</div><div class="mini"><i data-w="82" style="background:linear-gradient(90deg,#f59e0b,#fbbf24)"></i></div></div>
+     <div class="hcard"><div class="glow" style="background:#ef4444"></div><div class="cap"><span class="dotic" style="background:#ef4444">🧪</span>TestRail cases failed</div><div class="num" data-c="96">0</div><div class="foot">auto-marked Failed from bug runs</div><div class="mini"><i data-w="45" style="background:linear-gradient(90deg,#ef4444,#f59e0b)"></i></div></div>
+   </div>
+   <div class="mrow" style="margin-bottom:14px">
+     <div class="stat"><div class="accent" style="background:#34d399"></div><div class="v" data-c="38" data-plus="1">0</div><div class="l">📈 Filed this week</div></div>
+     <div class="stat"><div class="accent" style="background:#22d3ee"></div><div class="v">~2.4 min</div><div class="l">⚡ Avg time / bug</div></div>
+     <div class="stat"><div class="accent" style="background:#a78bfa"></div><div class="v" data-c="6">0</div><div class="l">👥 Testers using</div></div>
+     <div class="stat"><div class="accent" style="background:#f59e0b"></div><div class="v" data-c="46" data-suf="%">0</div><div class="l">🗂 Nested under parent tasks</div></div>
+   </div>
+   <div class="grid" style="grid-template-columns:1.5fr 1fr;margin-bottom:14px">
+     <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">📈 Bugs filed — last 6 weeks</h2><span class="sub">steady week-over-week growth</span></div>${bgTrendSVG()}</div>
+     <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🧭 By input source</h2></div>
+       <div class="row" style="gap:14px">${donutSVG(BG_SRC.map(x=>[x[1],x[2]]),srcTot,'bugs')}
+         <div class="legend" style="flex-direction:column;gap:8px">${BG_SRC.map(x=>`<div><i style="background:${x[2]}"></i>${x[0]} · <b>${x[1]}</b></div>`).join('')}</div></div></div>
+   </div>
+   <div class="grid" style="grid-template-columns:1fr 1fr">
+     <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🏅 Bugs filed by tester</h2></div>
+       ${BG_BYTESTER.map(([n,v,c])=>`<div class="row" style="margin:9px 0;font-size:12.5px;gap:10px"><span style="width:130px;flex:none" class="muted">${n}</span><div class="bar" style="flex:1;height:10px"><i class="bgbar" data-w="${(v/mx*100).toFixed(1)}" style="width:0;transition:width 1s cubic-bezier(.2,.7,.2,1);background:${c}"></i></div><span class="b" style="width:28px;text-align:right">${v}</span></div>`).join('')}</div>
+     <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🐞 Recent bugs</h2></div>
+       <div style="display:flex;flex-direction:column">${BG_RECENT.map(b=>`<div class="row" style="font-size:12px;gap:8px;padding:6px 0;border-bottom:1px solid var(--line)"><span class="b" style="color:var(--acc2)">#${b.id}</span><span style="flex:1" title="${b.t}">${b.t}</span><span class="chip" style="color:${srcClr[b.src]||'#9fb0c9'}">${b.src}</span><span class="muted" style="font-size:11px;white-space:nowrap">tkt ${b.tk} · ${b.ago}</span></div>`).join('')}</div></div>
+   </div>`;
+}
+function bgDashAnimate(){
+  document.querySelectorAll('#t-buggen [data-c]').forEach(n=>animateCount(n,+n.dataset.c,1200,n.dataset.pct?(x=>Math.round(x)+'%'):n.dataset.plus?(x=>'+'+nf(x)):(x=>nf(x)+(n.dataset.suf||''))));
+  growBars('#t-buggen .mini>i');growBars('#t-buggen .bgbar');
 }
 function bgCreateView(){
   return `<div class="grid" style="grid-template-columns:1fr 1fr">
