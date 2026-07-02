@@ -220,6 +220,14 @@
   .clead .cnt span{display:block;font-size:10.5px;color:var(--muted);white-space:nowrap}
   .effbars{transform-box:view-box;transform-origin:center bottom;animation:growbar .65s cubic-bezier(.2,.7,.2,1) both}
   @keyframes growbar{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+  .flow{display:flex;align-items:stretch;flex-wrap:nowrap;gap:0}
+  .flowbox{flex:1;background:var(--panel2);border:1px solid var(--line);border-radius:13px;padding:13px 14px;animation:rise .5s cubic-bezier(.2,.75,.25,1) both}
+  .flowbox .fv{font-size:25px;font-weight:900;letter-spacing:-.5px}
+  .flowbox .fl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px;font-weight:700;margin-bottom:2px}
+  .flowbox .fs{font-size:11px;color:var(--faint);margin-top:3px}
+  .flowbox.contrib{border-color:rgba(52,211,153,.5);background:linear-gradient(160deg,rgba(52,211,153,.12),var(--panel2))}
+  .flowarrow{display:flex;align-items:center;padding:0 14px;color:var(--faint);font-size:20px}
+  @media(max-width:760px){.flow{flex-wrap:wrap}.flowarrow{transform:rotate(90deg);padding:6px 0;width:100%;justify-content:center}}
 </style>
 </head>
 <body>
@@ -533,6 +541,14 @@ const EFFORT = {
   maint:{ V:[2,1,3,2,1,2,1,3,2,1,2,2,1,3], Va:[3,2,1,4,2,3,2,1,3,2,4,1,2,2], Vi:[1,2,2,1,3,1,2,2,1,3,1,2,2,1], R:[0,1,1,0,1,1,0,1,1,0,1,0,1,1] },
 };
 let EFFORT_VIEW='auto';
+// my cases: automated on my branch vs contributed (merged to pre_main), per period
+const MY_TREND={
+  '30d':{labels:['W-4','W-3','W-2','W-1'], auto:[62,55,58,50], contrib:[46,50,52,48]},
+  '90d':{labels:['Apr','May','Jun'], auto:[210,195,180], contrib:[180,178,170]},
+  '6m' :{labels:['Feb','Mar','Apr','May','Jun','Jul'], auto:[240,225,210,200,190,175], contrib:[205,200,192,182,176,170]},
+  '12m':{labels:['Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar','Apr','May','Jun','Jul'], auto:[95,105,112,120,118,125,130,128,122,118,115,110], contrib:[80,92,100,108,110,116,120,120,116,112,110,106]},
+};
+let MY_PERIOD='6m';
 // automation backlog — not-automated cases ranked by ROI (reuse × criticality × executions)
 const BACKLOG = [
   {id:221009,m:'Forms',cat:'Regression',reuse:'Critical',crit:'High',exec:1842,save:8.2},
@@ -856,27 +872,38 @@ function renderModuleTable(){
     tb.appendChild(tr);
   });
 }
-function mwEffortSVG(){
-  const days=EFFORT.days, av=EFFORT.auto.V, mv=EFFORT.maint.V;
-  const tot=days.map((_,i)=>av[i]+mv[i]), mx=Math.max(...tot)||1;
-  const W=760,H=215,padL=12,padR=12,padT=24,padB=26, gap=(W-padL-padR)/days.length, bw=Math.min(30,gap*0.6);
-  let rects='',labels='';
-  days.forEach((d,i)=>{const cx=padL+i*gap+gap/2; let y=H-padB;
-    [['#22d3ee',av[i]],['#f59e0b',mv[i]]].forEach(([col,v])=>{if(v<=0)return;const hh=v/mx*(H-padT-padB);y-=hh;rects+=`<rect x="${(cx-bw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${hh.toFixed(1)}" fill="${col}" rx="2"/>`;});
-    labels+=`<text x="${cx.toFixed(1)}" y="${(y-6).toFixed(1)}" text-anchor="middle" font-size="10" font-weight="800" style="fill:var(--txt)">${tot[i]}</text>`;
-    labels+=`<text x="${cx.toFixed(1)}" y="${H-9}" text-anchor="middle" font-size="9" style="fill:var(--muted)">${d}</text>`;});
-  return `<svg width="100%" viewBox="0 0 ${W} ${H}" style="display:block"><g class="effbars">${rects}</g>${labels}</svg>
-    <div class="legend" style="margin-top:6px"><span><i style="background:#22d3ee"></i>Automation · <b>${av.reduce((a,b)=>a+b,0)}</b></span><span><i style="background:#f59e0b"></i>Maintenance · <b>${mv.reduce((a,b)=>a+b,0)}</b></span></div>`;
+function mwTrendSVG(){
+  const d=MY_TREND[MY_PERIOD], n=d.labels.length;
+  const W=780,H=232,padL=16,padR=16,padT=26,padB=30, grp=(W-padL-padR)/n, bw=Math.min(16,grp*0.28);
+  const mx=Math.max(...d.auto,...d.contrib)||1;
+  let rects='',texts='';
+  d.labels.forEach((lb,i)=>{const gx=padL+i*grp+grp/2;
+    [['#22d3ee',d.auto[i],-bw*0.62],['#34d399',d.contrib[i],bw*0.62]].forEach(([col,v,dx])=>{
+      const hh=v/mx*(H-padT-padB), x=gx+dx-bw/2, y=H-padB-hh;
+      rects+=`<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${hh.toFixed(1)}" fill="${col}" rx="2"/>`;
+      texts+=`<text x="${(gx+dx).toFixed(1)}" y="${(y-4).toFixed(1)}" text-anchor="middle" font-size="9" font-weight="700" style="fill:var(--muted)">${v}</text>`;});
+    texts+=`<text x="${gx.toFixed(1)}" y="${H-11}" text-anchor="middle" font-size="10" style="fill:var(--muted)">${lb}</text>`;});
+  const tA=d.auto.reduce((a,b)=>a+b,0), tC=d.contrib.reduce((a,b)=>a+b,0);
+  return `<svg width="100%" viewBox="0 0 ${W} ${H}" style="display:block"><g class="effbars">${rects}</g>${texts}</svg>
+    <div class="legend" style="margin-top:6px"><span><i style="background:#22d3ee"></i>Automated (my branch) · <b>${tA}</b></span><span><i style="background:#34d399"></i>Contributed to pre_main · <b>${tC}</b></span><span class="sp"></span><span class="muted">${Math.round(tC/tA*100)}% merged</span></div>`;
 }
+function mwPeriod(p){MY_PERIOD=p;document.querySelectorAll('#mwPer button').forEach(b=>b.classList.toggle('on',b.dataset.p===p));document.getElementById('mwTrend').innerHTML=mwTrendSVG();}
 function renderMyWork(){
   const me=CONTRIB[0], teamCum=CONTRIB.reduce((s,c)=>s+c.cum,0), share=me.cum/teamCum*100;
-  const auto14=EFFORT.auto.V.reduce((a,b)=>a+b,0), maint14=EFFORT.maint.V.reduce((a,b)=>a+b,0), bugAct=me.bugs30;
-  const MY_MODULES=[['Forms',420],['User Management',210],['Classroom Calendar',150],['Reporting Dashboard',120],['E-Commerce',90],['Training Record Mgmt',78]];
-  const mmx=Math.max(...MY_MODULES.map(x=>x[1]));
+  const auto14=EFFORT.auto.V.reduce((a,b)=>a+b,0), maint14=EFFORT.maint.V.reduce((a,b)=>a+b,0);
+  // contribution model: authored on my branch → open PRs in review → merged to pre_main (= contribution)
+  const MY={commits:428, prsOpened:103, prsMerged:96, prsOpen:2, authored:me.cum+75, inReview:75, contributed:me.cum, executions:24800, maint:34, dataReady:86};
+  const MY_MOD=[
+    {m:'Forms',c:420,ex:9800,bugs:26,mnt:14},{m:'User Management',c:210,ex:4200,bugs:12,mnt:6},
+    {m:'Classroom Calendar',c:150,ex:3100,bugs:9,mnt:5},{m:'Reporting Dashboard',c:120,ex:2600,bugs:8,mnt:4},
+    {m:'E-Commerce',c:90,ex:1900,bugs:5,mnt:3},{m:'Training Record Mgmt',c:78,ex:1500,bugs:4,mnt:2},
+  ];
+  const sumC=MY_MOD.reduce((s,x)=>s+x.c,0), sumEx=MY_MOD.reduce((s,x)=>s+x.ex,0), sumB=MY_MOD.reduce((s,x)=>s+x.bugs,0), sumM=MY_MOD.reduce((s,x)=>s+x.mnt,0);
+  const mcx=Math.max(...MY_MOD.map(x=>x.c));
+  const mix=[[auto14,'#22d3ee'],[maint14,'#f59e0b'],[me.bugs30,'#ef4444']], mixTot=auto14+maint14+me.bugs30;
   const myCases=[{id:217089,m:'Classroom Calendar',t:'Schedule event via Add Event modal',st:'auto',cat:'Smoke'},{id:254548,m:'Forms',t:'Copy a Slide element to the Content Library',st:'auto',cat:'Regression'},{id:219560,m:'User Management',t:'Create user with Client Admin role',st:'auto',cat:'Smoke'},{id:208581,m:'Forms',t:'Create a Secure Form with SIN field',st:'prog',cat:'Smoke'}];
   const myRuns=[['C217089','Staging','pass','7.4s'],['C254548','Pre','pass','6.1s'],['C219560','Staging','pass','8.9s'],['C259306','Staging','fail','11.2s']];
   const myPRs=[{br:'feat/vishnu',cases:'C217089 · C254548',st:'in review',c:'#fbbf24',note:'awaiting lead review'},{br:'feat/vishnu-cc',cases:'C217091',st:'approved',c:'#34d399',note:'queued to merge into pre_main'}];
-  const mix=[[auto14,'#22d3ee'],[maint14,'#f59e0b'],[bugAct,'#ef4444']], mixTot=auto14+maint14+bugAct;
   document.getElementById('t-mywork').innerHTML=`
     <!-- profile -->
     <div class="card" style="margin-bottom:14px"><div class="row">
@@ -888,14 +915,14 @@ function renderMyWork(){
     <div class="dash-sec">
       <div class="hero">
         <div class="hcard" style="animation-delay:.02s"><div class="glow" style="background:#34d399"></div>
-          <div class="cap"><span class="dotic" style="background:#34d399">🤖</span>Cases I've automated</div>
-          <div class="num" data-c="${me.cum}">0</div>
-          <div class="foot">all-time · <b>+${me.d30}</b> in the last 30 days</div>
-          <div class="mini"><i data-w="100" style="background:linear-gradient(90deg,#10b981,#34d399)"></i></div></div>
+          <div class="cap"><span class="dotic" style="background:#34d399">✓</span>Cases contributed</div>
+          <div class="num" data-c="${MY.contributed}">0</div>
+          <div class="foot">merged into pre_main · <b>+${me.d30}</b> in the last 30 days</div>
+          <div class="mini"><i data-w="${(MY.contributed/MY.authored*100).toFixed(1)}" style="background:linear-gradient(90deg,#10b981,#34d399)"></i></div></div>
         <div class="hcard" style="animation-delay:.10s"><div class="glow" style="background:#22d3ee"></div>
-          <div class="cap"><span class="dotic" style="background:#22d3ee">▶</span>Automated runs (30d)</div>
-          <div class="num" data-c="${me.runs30}">0</div>
-          <div class="foot">executions you triggered this month</div>
+          <div class="cap"><span class="dotic" style="background:#22d3ee">▶</span>My cases' executions</div>
+          <div class="num" data-c="${MY.executions}">0</div>
+          <div class="foot">times my cases have run · <b>${nf(me.runs30)}</b> in 30d</div>
           <div class="mini"><i data-w="100" style="background:linear-gradient(90deg,#3b82f6,#22d3ee)"></i></div></div>
         <div class="hcard cov" style="animation-delay:.18s"><div class="glow" style="background:#7c3aed"></div>
           <div>${ringSVG(share,'my','#22d3ee','#7c3aed')}</div>
@@ -904,28 +931,56 @@ function renderMyWork(){
             <div class="foot"><b>${nf(me.cum)}</b> of <b>${nf(teamCum)}</b> team cases</div></div></div>
       </div>
       <div class="mrow" id="mwStats" style="margin-top:14px">
-        <div class="stat"><div class="accent" style="background:#22d3ee"></div><div class="v" data-c="${me.d30}" data-plus="1">0</div><div class="l">📈 Automated this 30 days</div></div>
-        <div class="stat"><div class="accent" style="background:#ef4444"></div><div class="v" data-c="${me.bugs}">0</div><div class="l">🐞 Bugs I caught · ${me.bugs30} in 30d</div></div>
-        <div class="stat"><div class="accent" style="background:#f59e0b"></div><div class="v" data-c="2">0</div><div class="l">🔀 Open PRs to pre_main</div></div>
-        <div class="stat"><div class="accent" style="background:#a78bfa"></div><div class="v" data-c="86" data-pct="1">0</div><div class="l">🗄 My data-ready cases</div></div>
+        <div class="stat"><div class="accent" style="background:#a78bfa"></div><div class="v" data-c="${MY.commits}">0</div><div class="l">🧾 Commits pushed</div></div>
+        <div class="stat"><div class="accent" style="background:#34d399"></div><div class="v" data-c="${MY.prsMerged}">0</div><div class="l">🔀 PRs merged · of ${MY.prsOpened}</div></div>
+        <div class="stat"><div class="accent" style="background:#ef4444"></div><div class="v" data-c="${me.bugs}">0</div><div class="l">🐞 Bugs from my cases · ${me.bugs30} in 30d</div></div>
+        <div class="stat"><div class="accent" style="background:#f59e0b"></div><div class="v" data-c="${MY.maint}">0</div><div class="l">🩺 Maintenance on my cases</div></div>
       </div>
     </div>
 
-    <!-- effort + work mix -->
-    <div class="dash-sec"><div class="grid" style="grid-template-columns:1.5fr 1fr">
-      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">📅 My daily effort — last 14 days</h2><span class="sub">automation vs maintenance</span></div><div id="mwEffort">${mwEffortSVG()}</div></div>
-      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🧭 My work mix</h2><span class="sub">last 14 days</span></div>
-        <div class="row" style="gap:12px">${donutSVG(mix,nf(mixTot),'actions')}
-          <div class="legend" style="flex-direction:column;gap:8px">
-            <div><i style="background:#22d3ee"></i>Automation · <b>${auto14}</b></div>
-            <div><i style="background:#f59e0b"></i>Maintenance · <b>${maint14}</b></div>
-            <div><i style="background:#ef4444"></i>Bug reports · <b>${bugAct}</b></div></div></div></div>
+    <!-- contribution pipeline -->
+    <div class="dash-sec"><div class="card">
+      <div class="sec-head" style="margin:0 0 12px"><h2 style="font-size:13px">🔗 My contribution pipeline</h2><span class="sub">everyone pushes to their own branch — a case counts as a contribution only once it's merged to pre_main</span></div>
+      <div class="flow">
+        <div class="flowbox" style="animation-delay:.02s"><div class="fl">Authored · feat/vishnu</div><div class="fv" data-c="${MY.authored}">0</div><div class="fs">cases automated on my branch</div></div>
+        <div class="flowarrow">→</div>
+        <div class="flowbox" style="animation-delay:.10s"><div class="fl">In review</div><div class="fv" data-c="${MY.inReview}">0</div><div class="fs">${MY.prsOpen} open PRs awaiting a lead</div></div>
+        <div class="flowarrow">→</div>
+        <div class="flowbox contrib" style="animation-delay:.18s"><div class="fl" style="color:#34d399">Contributed · pre_main</div><div class="fv" data-c="${MY.contributed}">0</div><div class="fs">merged — counts toward my total</div></div>
+      </div>
+      <div class="row" style="margin-top:12px;gap:10px"><span class="chip">🧾 ${MY.commits} commits</span><span class="chip">🔀 ${MY.prsMerged}/${MY.prsOpened} PRs merged</span><span class="chip">📤 ${MY.prsOpen} open PRs</span><span class="chip">✓ ${Math.round(MY.contributed/MY.authored*100)}% of my cases merged</span></div>
     </div></div>
 
-    <!-- modules + PRs -->
-    <div class="dash-sec"><div class="grid" style="grid-template-columns:1fr 1fr">
-      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🧩 Modules I've automated most</h2></div>
-        <div id="mwModules">${MY_MODULES.map(([m,v])=>`<div class="row" style="margin:9px 0;font-size:12.5px;gap:10px"><span style="width:150px;flex:none" class="b">${m}</span><div class="bar" style="flex:1;height:10px"><i class="mwbar" data-w="${(v/mmx*100).toFixed(1)}" style="width:0;transition:width 1.05s cubic-bezier(.2,.7,.2,1);background:linear-gradient(90deg,#7c3aed,#22d3ee)"></i></div><span style="width:36px;text-align:right;flex:none" class="b">${v}</span></div>`).join('')}</div></div>
+    <!-- contribution over time + work mix -->
+    <div class="dash-sec">
+      <div class="sec-head" style="margin:0 0 6px"><h2 style="font-size:13px" class="sp">📈 Cases automated & contributed over time</h2>
+        <div class="seg" id="mwPer">
+          <button data-p="30d" onclick="mwPeriod('30d')">30d</button>
+          <button data-p="90d" onclick="mwPeriod('90d')">90d</button>
+          <button class="on" data-p="6m" onclick="mwPeriod('6m')">6m</button>
+          <button data-p="12m" onclick="mwPeriod('12m')">12m</button></div></div>
+      <div class="grid" style="grid-template-columns:1.5fr 1fr">
+        <div class="card"><div id="mwTrend">${mwTrendSVG()}</div></div>
+        <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🧭 My work mix</h2><span class="sub">last 14 days</span></div>
+          <div class="row" style="gap:12px">${donutSVG(mix,nf(mixTot),'actions')}
+            <div class="legend" style="flex-direction:column;gap:8px">
+              <div><i style="background:#22d3ee"></i>Automation · <b>${auto14}</b></div>
+              <div><i style="background:#f59e0b"></i>Maintenance · <b>${maint14}</b></div>
+              <div><i style="background:#ef4444"></i>Bug reports · <b>${me.bugs30}</b></div></div></div></div>
+      </div>
+    </div>
+
+    <!-- per-module contribution + PRs -->
+    <div class="dash-sec"><div class="grid" style="grid-template-columns:1.35fr 1fr">
+      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🧩 My contribution by module</h2><span class="sub">merged cases · executions · bugs · maintenance</span></div>
+        <table style="font-size:12.5px"><thead><tr><th>Module</th><th>Contributed</th><th>Executions</th><th>Bugs</th><th>Maint</th></tr></thead><tbody id="mwModTable">
+        ${MY_MOD.map(x=>`<tr><td class="b">${x.m}</td>
+          <td><div class="row" style="gap:8px"><div class="bar" style="width:56px;height:9px"><i class="mwbar" data-w="${(x.c/mcx*100).toFixed(1)}" style="width:0;transition:width 1s cubic-bezier(.2,.7,.2,1);background:linear-gradient(90deg,#7c3aed,#22d3ee)"></i></div><span class="b">${x.c}</span></div></td>
+          <td class="muted">${nf(x.ex)}</td>
+          <td>${x.bugs?`<span class="chip" style="color:#fca5a5">${x.bugs}</span>`:'<span class="faint">0</span>'}</td>
+          <td>${x.mnt?`<span class="chip" style="color:#fbbf24">${x.mnt}</span>`:'<span class="faint">0</span>'}</td></tr>`).join('')}
+        <tr><td class="muted">Other modules</td><td class="muted b">${nf(MY.contributed-sumC)}</td><td class="muted">${nf(MY.executions-sumEx)}</td><td class="muted">${me.bugs-sumB}</td><td class="muted">${MY.maint-sumM}</td></tr>
+        </tbody></table></div>
       <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🔀 My open PRs to pre_main</h2></div>
         <div style="display:flex;flex-direction:column;gap:10px">${myPRs.map(p=>`<div style="border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--panel2)"><div class="row"><span class="b">⎇ ${p.br}</span><div class="sp"></div><span class="chip" style="color:${p.c}">● ${p.st}</span></div><div class="muted" style="font-size:12px;margin-top:5px">${p.cases}</div><div class="hint" style="margin-top:3px">${p.note}</div></div>`).join('')}</div>
         <div class="hint" style="margin-top:10px">The app only pushes <b>feat/vishnu*</b>; a lead merges to pre_main.</div></div>
@@ -944,7 +999,7 @@ function renderMyWork(){
   document.querySelectorAll('#t-mywork [data-c]').forEach(n=>animateCount(n,+n.dataset.c,1200,n.dataset.pct?(x=>Math.round(x)+'%'):n.dataset.plus?(x=>'+'+nf(x)):nf));
   animateCount(document.getElementById('mySharePct'),share,1350,v=>Math.round(v)+'%');
   animateRing('my');
-  growBars('#t-mywork .mini>i');growBars('#mwModules .mwbar');
+  growBars('#t-mywork .mini>i');growBars('#mwModTable .mwbar');
 }
 
 /* ---------------- UI automation ---------------- */
