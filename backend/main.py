@@ -7827,8 +7827,10 @@ def appraisal_report(employee_id: str,
                      hide_rank: bool = Query(False, description="omit leaderboard rank — for 1-on-1 discussion PDFs")):
     """Per-employee QA appraisal PDF over a date range (default: start of this month → today).
     hide_rank=true produces the rank-free 'discussion' variant used in 1-on-1s."""
-    fd = from_date or date.today().replace(day=1).isoformat()
-    td = to_date or date.today().isoformat()
+    # Accept both 'YYYY-MM-DD' and full ISO datetimes ('2026-06-01T00:00:00') — the discussion page
+    # passes period.start/end which are datetime ISO strings; keep only the date part.
+    fd = (from_date or date.today().replace(day=1).isoformat())[:10]
+    td = (to_date or date.today().isoformat())[:10]
     data = get_performance_leaderboard(period="month", offset=0, team="all", from_date=fd, to_date=td)
     emp, team_list = _find_emp_in_leaderboard(data, employee_id)
     if not emp:
@@ -7860,9 +7862,11 @@ def get_performance_leaderboard(
     try:
         # Custom date range (for appraisal reports) overrides the calendar period and is never frozen.
         if from_date and to_date:
-            start_date = datetime.combine(date.fromisoformat(from_date), datetime.min.time())
-            end_date = datetime.combine(date.fromisoformat(to_date), datetime.max.time())
-            label = f"{from_date} → {to_date}"
+            # Accept date-only or full ISO datetime strings (keep just the date part).
+            _fd, _td = from_date[:10], to_date[:10]
+            start_date = datetime.combine(date.fromisoformat(_fd), datetime.min.time())
+            end_date = datetime.combine(date.fromisoformat(_td), datetime.max.time())
+            label = f"{_fd} → {_td}"
             period_ended = False
         else:
             start_date, end_date, label = get_period_range(period, offset)
