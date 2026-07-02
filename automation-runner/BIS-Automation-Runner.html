@@ -202,16 +202,24 @@
   .accel{display:flex;align-items:center;gap:12px;padding:9px 4px;border-bottom:1px solid var(--line)}
   .accel:last-child{border-bottom:none}
   .accel .rk{width:24px;height:24px;border-radius:8px;display:grid;place-items:center;font-weight:900;font-size:12px;flex:none;color:#06121f}
-  .accel .nm{font-weight:700;width:150px;flex:none}
-  .accel .track{flex:1;height:10px;border-radius:6px;background:var(--chip);overflow:hidden}
+  .accel{display:grid;grid-template-columns:26px minmax(140px,180px) 1fr 210px;align-items:center;gap:14px;padding:9px 4px;border-bottom:1px solid var(--line)}
+  .accel .nm{font-weight:700}
+  .accel .track{height:10px;border-radius:6px;background:var(--chip);overflow:hidden}
   .accel .track>i{display:block;height:100%;border-radius:6px;width:0;transition:width 1.1s cubic-bezier(.2,.7,.2,1)}
-  .accel .mt{width:150px;flex:none;text-align:right;font-size:11.5px;color:var(--muted)}
-  .clead{display:flex;align-items:center;gap:12px;padding:11px 6px;border-bottom:1px solid var(--line)}
+  .accel .mt{text-align:right;font-size:11.5px;color:var(--muted);white-space:nowrap}
+  .clead{display:grid;grid-template-columns:30px 40px minmax(150px,215px) 1fr 128px;align-items:center;gap:14px;padding:12px 8px;border-bottom:1px solid var(--line)}
   .clead:last-child{border-bottom:none}
-  .clead .rk{font-size:16px;width:26px;text-align:center;flex:none}
-  .clead .av2{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:900;color:#06121f;flex:none}
-  .clead .track{flex:1;height:12px;border-radius:7px;background:var(--chip);overflow:hidden}
+  .clead .rk{font-size:16px;text-align:center}
+  .clead .av2{width:36px;height:36px;border-radius:50%;display:grid;place-items:center;font-weight:900;color:#06121f}
+  .clead .nm{font-weight:700;line-height:1.2}
+  .clead .sub2{font-size:11px;color:var(--faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+  .clead .track{height:12px;border-radius:7px;background:var(--chip);overflow:hidden}
   .clead .track>i{display:block;height:100%;border-radius:7px;width:0;transition:width 1.15s cubic-bezier(.2,.7,.2,1)}
+  .clead .cnt{text-align:right;line-height:1.15}
+  .clead .cnt b{font-size:19px;font-weight:900}
+  .clead .cnt span{display:block;font-size:10.5px;color:var(--muted);white-space:nowrap}
+  .effbars{transform-box:view-box;transform-origin:center bottom;animation:growbar .65s cubic-bezier(.2,.7,.2,1) both}
+  @keyframes growbar{from{transform:scaleY(0)}to{transform:scaleY(1)}}
 </style>
 </head>
 <body>
@@ -292,8 +300,19 @@
 
     <!-- Section 4 — Contributors -->
     <div class="dash-sec">
-      <div class="sec-head"><h2>🏅 Top automation contributors</h2><span class="sub">last 30 days</span></div>
+      <div class="sec-head"><h2>🏅 Top automation contributors</h2><span class="sub">ranked by all-time cases automated · with 30-day activity</span></div>
       <div class="card"><div id="dashContrib"></div></div>
+      <div class="card" style="margin-top:14px">
+        <div class="sec-head" style="margin:0 0 10px"><h2 style="font-size:13px">📅 Daily effort — automation vs maintenance</h2><span class="sub">per contributor · last 14 days</span>
+          <div class="sp"></div>
+          <div class="seg" id="effToggle">
+            <button class="on" data-v="auto" onclick="effortView('auto')">Automation</button>
+            <button data-v="maint" onclick="effortView('maint')">Maintenance</button>
+            <button data-v="combined" onclick="effortView('combined')">Combined</button>
+          </div>
+        </div>
+        <div id="effChart"></div>
+      </div>
     </div>
 
     <!-- Section 5 — Module metrics -->
@@ -498,6 +517,13 @@ const EXEC_TREND = {
          auto:[300,500,700,900,1100,1300,1500,1700,1900,2100,2300,2500]},
 };
 let EXEC_PERIOD='6m';
+// daily automation vs maintenance effort per contributor (last 14 days) — count = actions/day
+const EFFORT = {
+  days:['Jun16','17','18','19','20','23','24','25','26','27','30','Jul1','2','3'],
+  auto:{ V:[6,8,5,9,7,4,10,8,6,9,7,5,8,6], Va:[12,9,14,8,11,7,13,9,12,10,8,11,9,7], Vi:[4,6,3,7,5,8,6,5,7,4,6,5,7,9], R:[2,3,1,2,4,2,3,1,2,3,2,4,3,2] },
+  maint:{ V:[2,1,3,2,1,2,1,3,2,1,2,2,1,3], Va:[3,2,1,4,2,3,2,1,3,2,4,1,2,2], Vi:[1,2,2,1,3,1,2,2,1,3,1,2,2,1], R:[0,1,1,0,1,1,0,1,1,0,1,0,1,1] },
+};
+let EFFORT_VIEW='auto';
 // automation backlog — not-automated cases ranked by ROI (reuse × criticality × executions)
 const BACKLOG = [
   {id:221009,m:'Forms',cat:'Regression',reuse:'Critical',crit:'High',exec:1842,save:8.2},
@@ -630,7 +656,7 @@ function ringSVG(pctVal){
 }
 
 /* ----- dashboard ----- */
-function renderDiscovery(){ renderHero(); renderExec(); renderROI(); renderContribs30(); renderModuleTable(); }
+function renderDiscovery(){ renderHero(); renderExec(); renderROI(); renderContribs30(); renderEffort(); renderModuleTable(); }
 
 function subCard(ic,col,cap,val,sh,wpct){
   return `<div class="subcard"><div class="top"><span class="ic" style="background:${col}">${ic}</span><span class="cap">${cap}</span></div>
@@ -743,20 +769,46 @@ function renderROI(){
     <div class="accel"><span class="rk" style="background:${medal[i]}">${i+1}</span>
       <span class="nm">${s.m}</span>
       <div class="track"><i data-w="${(s.score/mx*100).toFixed(1)}" style="background:linear-gradient(90deg,#7c3aed,#22d3ee)"></i></div>
-      <span class="mt"><b style="color:var(--txt)">${s.saved}h</b> saved · 🐞${s.bugs} · ${nf(s.aExec)} runs</span></div>`).join('');
+      <span class="mt"><b style="color:var(--txt)">${nf(s.saved)}h</b> saved · 🐞 ${s.bugs} · ${nf(s.aExec)} runs</span></div>`).join('');
   growBars('#roiModules .track>i');
 }
 
 function renderContribs30(){
-  const rows=[...CONTRIB].sort((a,b)=>b.d30-a.d30), mx=Math.max(...rows.map(c=>c.d30))||1, medal=['🥇','🥈','🥉'];
+  const rows=[...CONTRIB].sort((a,b)=>b.cum-a.cum), mx=Math.max(...rows.map(c=>c.cum))||1, medal=['🥇','🥈','🥉'];
   document.getElementById('dashContrib').innerHTML=rows.map((c,i)=>`
-    <div class="clead"><span class="rk">${medal[i]||('#'+(i+1))}</span>
+    <div class="clead">
+      <span class="rk">${medal[i]||('#'+(i+1))}</span>
       <span class="av2" style="background:${c.color}">${c.k}</span>
-      <div style="width:170px;flex:none"><div class="b">${c.n}</div><div class="hint">${nf(c.runs30)} automated runs · 🐞 ${c.bugs30} bugs (30d)</div></div>
-      <div class="track"><i data-w="${(c.d30/mx*100).toFixed(1)}" style="background:${c.color}"></i></div>
-      <span style="width:140px;flex:none;text-align:right;font-size:12px;color:var(--muted)"><b style="color:var(--txt)">${c.d30}</b> cases automated</span></div>`).join('');
+      <div><div class="nm">${c.n}</div><div class="sub2">+${c.d30} in 30d · ${nf(c.runs30)} runs · 🐞 ${c.bugs30}</div></div>
+      <div class="track"><i data-w="${(c.cum/mx*100).toFixed(1)}" style="background:${c.color}"></i></div>
+      <div class="cnt"><b>${nf(c.cum)}</b><span>cases automated</span></div>
+    </div>`).join('');
   growBars('#dashContrib .track>i');
 }
+
+function renderEffort(){
+  const el=document.getElementById('effChart'); if(!el)return;
+  const days=EFFORT.days, keys=['V','Va','Vi','R'];
+  const col={V:'#22d3ee',Va:'#a78bfa',Vi:'#34d399',R:'#f59e0b'}, name={V:'Vishnu',Va:'Varsha',Vi:'Vivek',R:'Reshma'};
+  const val=(k,i)=> EFFORT_VIEW==='combined' ? EFFORT.auto[k][i]+EFFORT.maint[k][i] : EFFORT[EFFORT_VIEW][k][i];
+  const dayTot=days.map((_,i)=>keys.reduce((s,k)=>s+val(k,i),0)), mx=Math.max(...dayTot)||1;
+  const W=940,H=250,padL=16,padR=16,padT=26,padB=28;
+  const gap=(W-padL-padR)/days.length, bw=Math.min(34,gap*0.6);
+  let rects='',labels='';
+  days.forEach((d,i)=>{
+    const cx=padL+i*gap+gap/2; let y=H-padB;
+    keys.forEach(k=>{const v=val(k,i); if(v<=0)return; const hh=(v/mx)*(H-padT-padB); y-=hh;
+      rects+=`<rect x="${(cx-bw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${hh.toFixed(1)}" fill="${col[k]}" rx="2"><title>${name[k]} · ${d}: ${v}</title></rect>`;});
+    labels+=`<text x="${cx.toFixed(1)}" y="${(y-6).toFixed(1)}" text-anchor="middle" font-size="10.5" font-weight="800" style="fill:var(--txt)">${dayTot[i]}</text>`;
+    labels+=`<text x="${cx.toFixed(1)}" y="${H-10}" text-anchor="middle" font-size="9.5" style="fill:var(--muted)">${d}</text>`;
+  });
+  const grand=dayTot.reduce((a,b)=>a+b,0), metric=EFFORT_VIEW==='auto'?'automation':EFFORT_VIEW==='maint'?'maintenance':'combined';
+  el.innerHTML=`<svg width="100%" viewBox="0 0 ${W} ${H}" style="display:block"><g class="effbars">${rects}</g>${labels}</svg>
+    <div class="legend" style="margin-top:8px">${keys.map(k=>{const t=days.reduce((s,_,i)=>s+val(k,i),0);
+      return `<span><i style="background:${col[k]}"></i>${name[k]} · <b>${t}</b></span>`;}).join('')}
+      <span class="sp"></span><span class="muted">Total ${metric} effort: <b>${grand}</b> actions / 14 days</span></div>`;
+}
+function effortView(v){EFFORT_VIEW=v;document.querySelectorAll('#effToggle button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));renderEffort();}
 function renderModuleTable(){
   const tb=document.querySelector('#modTable tbody');if(!tb)return;tb.innerHTML='';
   const sel=document.getElementById('fMod');if(sel&&sel.options.length<=1){MODULES.forEach(m=>{const o=document.createElement('option');o.text=m.m;sel.add(o)})}
