@@ -2401,8 +2401,8 @@ const BG_RECENT=[
 const BG_SEV=['Critical','Major','Minor','Trivial'],BG_TYPE=['Functional / Logic','UI / UX','Workflow / State','Data Integrity','Performance'],BG_ENV=['Staging','Pre-production','Live'];
 // every filed bug gets an auto-generated regression test; on "Released to QA" it auto-runs in the released env
 let BG_RETESTS=[
-  {id:4998,t:'Redirect toggle label not translated',tk:18872,status:'released',env:'Staging',result:'pass'},
-  {id:4995,t:'Certificate radio resets after reload',tk:19148,status:'released',env:'Pre-production',result:'fail'},
+  {id:4998,t:'Redirect toggle label not translated',tk:18872,status:'released',env:'Staging',result:'pass',prereq:'a form with the redirect toggle enabled',fields:[['formId',''],['locale','fr-CA']],dataMode:'auto'},
+  {id:4995,t:'Certificate radio resets after reload',tk:19148,status:'released',env:'Pre-production',result:'fail',prereq:'a course with a custom default certificate',fields:[['courseId',''],['certId','']],dataMode:'auto'},
   {id:5001,t:'Reporting dashboard hamburger icon misaligned',tk:20222,status:'in_progress',env:null,result:null},
   {id:5002,t:'Move/Copy widget popup buttons overlap',tk:19794,status:'open',env:null,result:null},
 ];
@@ -2482,16 +2482,39 @@ function bgRetestCard(r,i){
         <span class="hint" style="margin-left:4px">confirm in another env:</span>
         <select id="bgEnv-${i}" style="height:30px;width:auto">${BG_ENV.map(e=>`<option ${e===r.env?'selected':''}>${e}</option>`).join('')}</select>
         <button class="btn ghost sm" onclick="bgRetestRun(${i})">▶ Run here</button></div>
+      ${bgRetestData(r,i)}
       <div id="bgRetestRun-${i}"></div></div>`
     :`<div class="hint" style="margin-top:8px">${r.status==='in_progress'?'⚙ AI is building the regression test from your bug report…':'⏳ Waiting for dev to release the fix to QA — the retest runs automatically the moment it lands.'}</div>`}
    </div>`;
 }
+function bgRetestData(r,i){
+  if(!r.prereq) return '';
+  return `<div style="border:1px solid var(--line);border-radius:11px;padding:10px 12px;margin-top:9px;background:var(--panel2)">
+    <div class="hint">🧩 This retest needs <b>${r.prereq}</b> — in another environment it may not exist yet.</div>
+    <div class="row" style="gap:8px;margin-top:7px"><span class="hint">Data:</span>
+      <select id="bgData-${i}" onchange="bgDataMode(${i},this.value)" style="height:30px;width:auto">
+        <option value="auto" ${r.dataMode==='auto'?'selected':''}>Auto-create it before running</option>
+        <option value="provide" ${r.dataMode==='provide'?'selected':''}>I'll provide the data</option></select></div>
+    <div id="bgDataFields-${i}" class="${r.dataMode==='provide'?'':'hide'}" style="margin-top:8px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">${(r.fields||[]).map((kv,j)=>`<div class="ctl" style="padding:4px 8px;gap:6px"><span class="muted" style="min-width:58px;font-size:11px">${kv[0]}</span><input value="${kv[1]}" oninput="bgDataInput(${i},${j},this.value)" placeholder="id / value" style="flex:1;height:28px"/></div>`).join('')}</div>
+      <div class="hint" style="margin-top:5px">Point the retest at data that already exists in the target env.</div></div>
+  </div>`;
+}
+function bgDataMode(i,v){BG_RETESTS[i].dataMode=v;const el=document.getElementById('bgDataFields-'+i);if(el)el.classList.toggle('hide',v!=='provide');}
+function bgDataInput(i,j,v){BG_RETESTS[i].fields[j][1]=v;}
 function bgRetestConfirm(i){BG_RETESTS[i].status='pass';toast('Confirmed fixed — bug #'+BG_RETESTS[i].id+' closed, TestRail case marked Passed');bgView('retest');}
 function bgRetestReopen(i){BG_RETESTS[i].status='reopened';toast('Reopened #'+BG_RETESTS[i].id+' — dev notified, case marked Failed');bgView('retest');}
-function bgRetestRun(i){const env=bg$('bgEnv-'+i).value;const r=BG_RETESTS[i];const box=document.getElementById('bgRetestRun-'+i);box.innerHTML='<div class="log" id="bgrr'+i+'" style="margin-top:10px"></div>';const l=document.getElementById('bgrr'+i);
-  const pass=r.result!=='fail';
-  const seq=[['dim','$ playwright test --grep @bug'+r.id+' (ENV='+env+')'],['info','▸ replaying the reported reproduction steps'],pass?['ok','✓ expected behaviour — issue is fixed in '+env]:['fail','✗ issue still reproduces in '+env]];
-  let k=0;(function t(){if(k<seq.length){const[c,x]=seq[k++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,340)}else{toast('Retest complete in '+env+' — '+(pass?'fixed ✓':'still failing ✗'));}})();
+function bgRetestRun(i){const r=BG_RETESTS[i];const env=bg$('bgEnv-'+i).value;const box=document.getElementById('bgRetestRun-'+i);box.innerHTML='<div class="log" id="bgrr'+i+'" style="margin-top:10px"></div>';const l=document.getElementById('bgrr'+i);
+  const crossEnv=env!==r.env, pass=r.result!=='fail';
+  const seq=[['dim','$ git fetch origin && reset --hard origin/pre_main'],['info','✓ pre_main up to date']];
+  if(r.prereq){
+    if(r.dataMode==='provide'){const data=(r.fields||[]).filter(kv=>kv[1]).map(kv=>kv[0]+'='+kv[1]).join(', ');seq.push(['info','▸ using data you provided'+(data?': '+data:' (none — will look it up)')+' in '+env]);}
+    else{seq.push(['dim','$ seeding prerequisites in '+env+'…']);seq.push(['ok','✓ created '+r.prereq+' in '+env+' — captured ids']);}
+  }
+  seq.push(['dim','$ playwright test --grep @bug'+r.id+' (ENV='+env+')']);
+  seq.push(['info','▸ replaying the reported reproduction steps'+(crossEnv?' in '+env:'')]);
+  seq.push(pass?['ok','✓ expected behaviour — issue is fixed in '+env]:['fail','✗ issue still reproduces in '+env]);
+  let k=0;(function t(){if(k<seq.length){const[c,x]=seq[k++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,320)}else{toast('Retest complete in '+env+' — '+(pass?'fixed ✓':'still failing ✗'));}})();
 }
 function bgCreateView(){
   return `<div class="grid" style="grid-template-columns:1fr 1fr">
