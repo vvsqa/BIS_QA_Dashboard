@@ -156,7 +156,7 @@ export default function TicketEstimatePanel({ ticketId, qaMember, onSaved }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch(`${API_BASE}/qa-estimation/${ticketId}`);
+      const r = await fetch(`${API_BASE}/qa-estimation/${ticketId}?light=true`);
       const d = r.ok ? await r.json() : null;
       setDetail(d);
       if (!qaMember) setMember(d?.qc_tester || d?.thread?.qa_member || '');

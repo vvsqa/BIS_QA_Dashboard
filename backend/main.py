@@ -7063,9 +7063,14 @@ def _build_employee_metrics(db, employee, start_date, end_date, is_dev, is_manag
         total_hours = round(sum(_eff_hours(e) for e in timesheet_entries), 1)
         timesheet_entries_count = len(timesheet_entries)
 
-    # Calculate working days in period
+    # Calculate working days in period — capped at TODAY for an in-progress period so utilization
+    # isn't understated mid-month (you can only log days that have passed). Past periods are unaffected.
     if start_date:
-        working_days = sum(1 for i in range((end_date - start_date).days + 1)
+        _cap_end = end_date
+        _now_cmp = datetime.now() if hasattr(end_date, 'hour') else date.today()
+        if end_date and _now_cmp < end_date:
+            _cap_end = _now_cmp
+        working_days = sum(1 for i in range((_cap_end - start_date).days + 1)
                          if (start_date + timedelta(days=i)).weekday() < 5)
     else:
         working_days = 250  # Approximate yearly working days
@@ -21389,9 +21394,11 @@ def qa_estimation_plan_template(ticket_id: Optional[int] = Query(None)):
 
 
 @app.get("/qa-estimation/{ticket_id}")
-def qa_estimation_detail(ticket_id: int):
+def qa_estimation_detail(ticket_id: int, light: bool = Query(False)):
     """Full thread + round history + ALL relevant QA details (signals: expected/actual/time/diligence,
-    complexity, bugs, cycles, test-case history) for the planning/review panel."""
+    complexity, bugs, cycles, test-case history) for the planning/review panel.
+    light=true → ticket basics + thread + rounds only (fast path for the QC-queue Estimate popup;
+    skips the heavy signals / TestRail / doc-confidence / redmine aggregation)."""
     import ticket_review as TR
     db: Session = SessionLocal()
     try:
@@ -21401,6 +21408,14 @@ def qa_estimation_detail(ticket_id: int):
                   .order_by(TicketEstimationRound.round_no.asc()).all())
         t = db.query(TicketTracking).filter(TicketTracking.ticket_id == ticket_id).first()
         member = (thread.qa_member if thread else None) or _resolve_qc_tester(db, ticket_id) or ""
+        if light:
+            _mod = (t.subdepartment if t else "") or ""
+            return {"ticket_id": ticket_id, "title": (t.title if t else ""),
+                    "current_status": (t.status if t else None), "qc_tester": (t.qc_tester if t else None),
+                    "module": _mod,
+                    "test_type": (thread.test_type if (thread and thread.test_type) else _ticket_test_type(_mod, getattr(t, "platform", None))),
+                    "thread": _estimation_thread_dict(thread) if thread else None,
+                    "rounds": [_estimation_round_dict(r) for r in rounds]}
         try:
             signals = TR.get_ticket_review_signals(db, ticket_id, member)
         except Exception:
