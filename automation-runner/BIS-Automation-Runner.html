@@ -140,6 +140,78 @@
   @media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}.split{grid-template-columns:1fr}.meta{grid-template-columns:1fr 1fr}}
   #t-buggen input:not([type=checkbox]),#t-buggen select{width:100%;height:34px;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:0 10px;font-size:12.5px}
   #t-buggen label{display:block;font-size:11px;color:var(--muted);margin:0 0 3px;font-weight:600}
+
+  /* ---------- LIGHT THEME ---------- */
+  [data-theme="light"]{
+    --bg:#e9eef6; --bg2:#f4f8fd; --panel:#ffffff; --panel2:#f5f8fc; --card:#ffffff;
+    --line:#e1e8f2; --line2:#cfdae9; --txt:#101d31; --muted:#54627d; --faint:#8493ad; --chip:#eef3fb;
+  }
+  [data-theme="light"] body{background:
+    radial-gradient(1200px 600px at 80% -10%, rgba(124,58,237,.09), transparent 60%),
+    radial-gradient(900px 500px at -10% 10%, rgba(34,211,238,.10), transparent 55%), var(--bg)}
+  [data-theme="light"] header{background:linear-gradient(180deg,#ffffff,#f6f9fd);box-shadow:0 8px 26px rgba(30,55,100,.10)}
+  [data-theme="light"] .tab{background:#ffffff}
+  [data-theme="light"] .card,[data-theme="light"] .kpi,[data-theme="light"] .tree,[data-theme="light"] .panel,
+  [data-theme="light"] .hcard,[data-theme="light"] .subcard,[data-theme="light"] .stat,[data-theme="light"] .roi-w{box-shadow:0 6px 20px rgba(30,55,100,.07)}
+  [data-theme="light"] .log,[data-theme="light"] .pre{background:#0d1424}
+
+  /* ---------- DASHBOARD ---------- */
+  .dash-sec{margin-bottom:20px}
+  .sec-head{display:flex;align-items:center;gap:10px;margin:0 2px 12px}
+  .sec-head h2{font-size:15px;margin:0;font-weight:800;letter-spacing:.2px}
+  .sec-head .sub{font-size:11.5px;color:var(--faint)}
+  .hero{display:grid;grid-template-columns:1.1fr 1.1fr 1fr;gap:14px}
+  .hcard,.subcard,.stat,.roi-w{animation:rise .55s cubic-bezier(.2,.75,.25,1) both}
+  .hcard{position:relative;overflow:hidden;border-radius:18px;padding:18px 20px;border:1px solid var(--line);
+    background:linear-gradient(160deg,var(--panel),var(--bg2))}
+  .hcard .cap{font-size:11px;text-transform:uppercase;letter-spacing:.7px;color:var(--muted);font-weight:800;display:flex;align-items:center;gap:8px}
+  .hcard .cap .dotic{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-size:14px;color:#06121f}
+  .hcard .num{font-size:42px;font-weight:900;line-height:1.02;margin-top:12px;letter-spacing:-1px}
+  .hcard .foot{font-size:12px;color:var(--muted);margin-top:8px}
+  .hcard .glow{position:absolute;right:-40px;bottom:-50px;width:200px;height:200px;border-radius:50%;filter:blur(34px);opacity:.20;pointer-events:none}
+  .hcard.cov{display:flex;align-items:center;gap:18px}
+  .mini{height:9px;border-radius:6px;background:var(--chip);overflow:hidden;margin-top:14px}
+  .mini>i{display:block;height:100%;border-radius:6px;width:0;transition:width 1.2s cubic-bezier(.2,.7,.2,1)}
+  .subsplit{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:14px}
+  .subcard{border-radius:16px;padding:15px 16px;border:1px solid var(--line);position:relative;overflow:hidden;
+    background:linear-gradient(160deg,var(--panel),var(--bg2))}
+  .subcard .top{display:flex;align-items:center;gap:9px}
+  .subcard .ic{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:15px;color:#06121f;flex:none}
+  .subcard .cap{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-weight:800}
+  .subcard .num{font-size:27px;font-weight:800;margin-top:10px}
+  .subcard .sh{font-size:11.5px;color:var(--faint);margin-top:2px}
+  @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
+
+  .mrow{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .stat{border:1px solid var(--line);border-radius:14px;padding:14px 16px;position:relative;overflow:hidden;background:linear-gradient(160deg,var(--panel),var(--bg2))}
+  .stat .v{font-size:25px;font-weight:800;letter-spacing:-.5px}
+  .stat .l{font-size:11.5px;color:var(--muted);margin-top:4px;display:flex;align-items:center;gap:6px}
+  .stat .accent{position:absolute;top:0;left:0;right:0;height:3px}
+
+  .lc-path{fill:none;stroke-width:2.8;stroke-linecap:round;stroke-linejoin:round}
+  .lc-draw{animation:draw 1.5s ease forwards}
+  @keyframes draw{to{stroke-dashoffset:0}}
+
+  .roi{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .roi-w{border:1px solid var(--line);border-radius:18px;padding:20px;position:relative;overflow:hidden;background:linear-gradient(160deg,var(--panel),var(--bg2))}
+  .roi-w .cap{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:800;display:flex;align-items:center;gap:9px}
+  .roi-w .cap .ic{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:17px;color:#06121f;flex:none}
+  .roi-w .big{font-size:38px;font-weight:900;margin-top:12px;letter-spacing:-1px}
+  .roi-w .sub{font-size:12px;color:var(--muted);margin-top:6px}
+  .roi-w .glow{position:absolute;right:-30px;top:-40px;width:170px;height:170px;border-radius:50%;filter:blur(30px);opacity:.18}
+  .accel{display:flex;align-items:center;gap:12px;padding:9px 4px;border-bottom:1px solid var(--line)}
+  .accel:last-child{border-bottom:none}
+  .accel .rk{width:24px;height:24px;border-radius:8px;display:grid;place-items:center;font-weight:900;font-size:12px;flex:none;color:#06121f}
+  .accel .nm{font-weight:700;width:150px;flex:none}
+  .accel .track{flex:1;height:10px;border-radius:6px;background:var(--chip);overflow:hidden}
+  .accel .track>i{display:block;height:100%;border-radius:6px;width:0;transition:width 1.1s cubic-bezier(.2,.7,.2,1)}
+  .accel .mt{width:150px;flex:none;text-align:right;font-size:11.5px;color:var(--muted)}
+  .clead{display:flex;align-items:center;gap:12px;padding:11px 6px;border-bottom:1px solid var(--line)}
+  .clead:last-child{border-bottom:none}
+  .clead .rk{font-size:16px;width:26px;text-align:center;flex:none}
+  .clead .av2{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;font-weight:900;color:#06121f;flex:none}
+  .clead .track{flex:1;height:12px;border-radius:7px;background:var(--chip);overflow:hidden}
+  .clead .track>i{display:block;height:100%;border-radius:7px;width:0;transition:width 1.15s cubic-bezier(.2,.7,.2,1)}
 </style>
 </head>
 <body>
@@ -161,6 +233,7 @@
       <span class="pill" title="Your working branch — the only branch the app pushes"><span class="dot"></span>⎇ feat/vishnu</span>
       <span class="pill" title="pre_main fetched before every run">↻ pre_main: up to date</span>
       <span class="pill" onclick="openActivity()" title="See who's running what across the team right now"><span class="dot"></span>Live · <span id="liveN">2</span> running</span>
+      <span class="pill" id="themeToggle" onclick="toggleTheme()" title="Switch light / dark">🌙 Dark</span>
       <span class="pill" onclick="openSetup()">🧩 Setup</span>
       <span class="pill" onclick="openSettings()">⚙ Settings</span>
     </div>
@@ -168,7 +241,7 @@
 
   <!-- ===================== TABS ===================== -->
   <div class="tabs">
-    <div class="tab on" data-tab="overview" onclick="showTab('overview')"><span class="ic">📊</span> Discovery</div>
+    <div class="tab on" data-tab="overview" onclick="showTab('overview')"><span class="ic">📊</span> Dashboard</div>
     <div class="tab" data-tab="mywork" onclick="showTab('mywork')"><span class="ic">👤</span> My Work</div>
     <div class="tab" data-tab="ui" onclick="showTab('ui')"><span class="ic">🖱️</span> UI Automation <span class="badge">3,556</span></div>
     <div class="tab" data-tab="api" onclick="showTab('api')"><span class="ic">🔌</span> API Automation <span class="badge">142</span></div>
@@ -179,41 +252,67 @@
     <div class="tab" data-tab="reviews" onclick="showTab('reviews')"><span class="ic">✅</span> Reviews <span class="badge">4</span></div>
   </div>
 
-  <!-- ===================== OVERVIEW / DISCOVERY ===================== -->
+  <!-- ===================== DASHBOARD (home) ===================== -->
   <section id="t-overview">
-    <div class="card" style="margin-bottom:14px">
-      <div class="row">
-        <div><h3>Automation overview</h3></div>
+
+    <!-- Section 1 — Coverage -->
+    <div class="dash-sec">
+      <div class="sec-head"><h2>📊 Automation coverage</h2><span class="sub">live from TestRail · all products</span>
         <div class="sp"></div>
+        <select class="pill" id="dashScope" onchange="renderDiscovery()"><option>All modules</option></select>
+      </div>
+      <div id="dashHero" class="hero"></div>
+      <div id="dashSub" class="subsplit"></div>
+    </div>
+
+    <!-- Section 2 — Executions -->
+    <div class="dash-sec">
+      <div class="sec-head"><h2>📈 Execution trend</h2><span class="sub">manual vs automated — converging as coverage grows</span>
+        <div class="sp"></div>
+        <div class="seg" id="execPer">
+          <button data-p="30d" onclick="execPeriod('30d')">30d</button>
+          <button data-p="90d" onclick="execPeriod('90d')">90d</button>
+          <button class="on" data-p="6m" onclick="execPeriod('6m')">6m</button>
+          <button data-p="12m" onclick="execPeriod('12m')">12m</button>
+        </div>
+      </div>
+      <div class="card"><div id="execChart"></div></div>
+      <div class="mrow" id="execStats" style="margin-top:14px"></div>
+    </div>
+
+    <!-- Section 3 — ROI -->
+    <div class="dash-sec">
+      <div class="sec-head"><h2>💰 Return on automation</h2><span class="sub">what the investment has returned so far</span></div>
+      <div class="roi" id="roiTop"></div>
+      <div class="card" style="margin-top:14px">
+        <div class="sec-head" style="margin:0 0 6px"><h2 style="font-size:13px">🚀 Modules accelerated most by automation</h2><span class="sub">ranked by execution time saved · bugs caught</span></div>
+        <div id="roiModules" style="margin-top:6px"></div>
+      </div>
+    </div>
+
+    <!-- Section 4 — Contributors -->
+    <div class="dash-sec">
+      <div class="sec-head"><h2>🏅 Top automation contributors</h2><span class="sub">last 30 days</span></div>
+      <div class="card"><div id="dashContrib"></div></div>
+    </div>
+
+    <!-- Section 5 — Module metrics -->
+    <div class="dash-sec">
+      <div class="sec-head"><h2>🧩 Module-level metrics</h2><div class="sp"></div>
         <div class="filters">
           <select id="fMod"><option>All Modules</option></select>
           <select id="fCat"><option>All Categories</option><option>Smoke</option><option>Regression</option><option>Sanity</option></select>
           <select id="fBy"><option>All Engineers</option><option>Vishnu VS</option><option>Varsha Dcruz P</option><option>Vivek V Nair</option></select>
-          <select id="fReuse"><option>All Reuse</option><option>Critical</option><option>High</option><option>Medium</option><option>Low</option></select>
         </div>
       </div>
-      <div id="kpiStrip" style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:14px"></div>
-    </div>
-
-    <div class="grid" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
-      <div class="card"><h3>Coverage (cases)</h3><div id="donutCov"></div></div>
-      <div class="card"><h3>Execution utilisation</h3><div id="donutExec"></div></div>
-      <div class="card"><h3>Maintenance health</h3><div id="maintChart"></div></div>
-      <div class="card"><h3>Contributors (top)</h3><div id="contributors"></div></div>
-    </div>
-
-    <div class="grid" style="grid-template-columns:1.55fr 1fr;margin-bottom:14px">
-      <div class="card"><h3>Daily scripting contributions — last 14 days</h3><div id="contribBars"></div></div>
-      <div class="card"><h3>Bugs found via automation</h3><div id="bugsChart"></div></div>
-    </div>
-
-    <div class="card">
-      <div class="row"><h3 style="margin:0">Module breakdown — every metric, module by module</h3><div class="sp"></div><span class="hint">click a row to open its cases ▸</span></div>
-      <div style="overflow:auto;margin-top:8px">
-        <table id="modTable">
-          <thead><tr><th>Module</th><th>Total</th><th>Auto</th><th>% Auto</th><th>Manual</th><th>Exec</th><th>Auto exec</th><th>Util%</th><th>Maint</th><th>Bugs</th><th>Saved</th><th>Smoke</th><th>Reg</th><th>By</th><th></th></tr></thead>
-          <tbody></tbody>
-        </table>
+      <div class="card">
+        <div class="row" style="margin-bottom:4px"><span class="hint">click a row to open its cases ▸</span></div>
+        <div style="overflow:auto;margin-top:6px">
+          <table id="modTable">
+            <thead><tr><th>Module</th><th>Total</th><th>Auto</th><th>% Auto</th><th>Manual</th><th>Exec</th><th>Auto exec</th><th>Util%</th><th>Maint</th><th>Bugs</th><th>Saved</th><th>Smoke</th><th>Reg</th><th>By</th><th></th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </section>
@@ -345,7 +444,7 @@
     <label>Your working branch (only branch the app pushes)</label><input value="feat/vishnu"/>
     <div class="row" style="gap:10px"><div style="flex:1"><label>TestRail email</label><input value="vishnu.vs@…"/></div><div style="flex:1"><label>TestRail API key</label><input type="password" value="••••••••••3kQ"/></div></div>
     <div class="row" style="gap:10px"><div style="flex:1"><label>GitHub PAT (for PRs)</label><input type="password" value="••••••••ghp"/></div><div style="flex:1"><label>Theme</label>
-      <select onchange="document.documentElement.dataset.theme=this.value"><option value="dark">Dark</option><option value="midnight">Midnight</option><option value="forest">Forest</option></select></div></div>
+      <select onchange="setTheme(this.value)"><option value="dark">Dark</option><option value="light">Light</option><option value="midnight">Midnight</option><option value="forest">Forest</option></select></div></div>
     <label>Private data file</label><input value="%APPDATA%\bis-automation-runner\my-data.json"/>
     <div class="hint" style="margin-top:6px">Per-env URLs + role accounts are configured internally per environment. Concrete values stay only on this machine.</div>
     <div class="row" style="margin-top:16px"><div class="sp"></div><button class="btn" onclick="closeSettings();toast('Settings saved')">Save</button></div>
@@ -378,13 +477,27 @@ const MODULES = [
 // daily scripting contributions (last 14 days), per engineer
 const DAILY = { days:['Jun16','17','18','19','20','23','24','25','26','27','30','Jul1','2','3'],
   V:[6,8,5,9,7,4,10,8,6,9,7,5,8,6], Va:[12,9,14,8,11,7,13,9,12,10,8,11,9,7], Vi:[4,6,3,7,5,8,6,5,7,4,6,5,7,9] };
+// cum = all-time cases automated; d30 = automated in last 30 days; bugs30 = bugs caught by their automation in last 30 days; runs30 = automated executions they ran in 30 days
 const CONTRIB = [
-  {n:'Vishnu VS', k:'V', cum:1380, wk:200, bugs:71, color:'#22d3ee'},
-  {n:'Varsha Dcruz P', k:'Va', cum:443, wk:223, bugs:54, color:'#a78bfa'},
-  {n:'Vivek V Nair', k:'Vi', cum:366, wk:92, bugs:42, color:'#34d399'},
+  {n:'Vishnu VS', k:'V', cum:1380, wk:200, d30:212, bugs:71, bugs30:24, runs30:1840, color:'#22d3ee'},
+  {n:'Varsha Dcruz P', k:'Va', cum:443, wk:223, d30:246, bugs:54, bugs30:21, runs30:1310, color:'#a78bfa'},
+  {n:'Vivek V Nair', k:'Vi', cum:366, wk:92, d30:104, bugs:42, bugs30:11, runs30:720, color:'#34d399'},
+  {n:'Reshma R', k:'R', cum:88, wk:34, d30:52, bugs:9, bugs30:5, runs30:190, color:'#f59e0b'},
 ];
 // maintenance health across automated cases (sums to the automated total 3,556 — keep consistent)
 const MAINT = [['Healthy',2980,'#34d399'],['WIP',214,'#3b82f6'],['Maintenance',261,'#f59e0b'],['Obsolete',101,'#ef4444']];
+// API-automated cases (Postman/OpenAPI collection) — counted alongside UI-automated cases
+const API_AUTO = 142;
+// execution trend per period — manual falls as automated rises; lines project toward parity
+const EXEC_TREND = {
+  '30d':{labels:['W-4','W-3','W-2','W-1','This wk'], manual:[1240,1180,1120,1060,1000], auto:[420,500,590,690,800]},
+  '90d':{labels:['Apr','May','Jun'],               manual:[4300,3950,3600],           auto:[1400,1900,2400]},
+  '6m' :{labels:['Feb','Mar','Apr','May','Jun','Jul'], manual:[5100,4700,4300,3900,3500,3100], auto:[600,920,1240,1560,1880,2200]},
+  '12m':{labels:['Aug','Sep','Oct','Nov','Dec','Jan','Feb','Mar','Apr','May','Jun','Jul'],
+         manual:[6000,5750,5500,5250,5000,4750,4500,4250,4000,3750,3500,3250],
+         auto:[300,500,700,900,1100,1300,1500,1700,1900,2100,2300,2500]},
+};
+let EXEC_PERIOD='6m';
 // automation backlog — not-automated cases ranked by ROI (reuse × criticality × executions)
 const BACKLOG = [
   {id:221009,m:'Forms',cat:'Regression',reuse:'Critical',crit:'High',exec:1842,save:8.2},
@@ -478,6 +591,7 @@ function methodColor(m){return {POST:'#34d399',GET:'#60a5fa',PUT:'#f59e0b',DELET
 function showTab(t){
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===t));
   ['overview','mywork','ui','api','data','backlog','maint','reviews','buggen'].forEach(x=>document.getElementById('t-'+x).classList.toggle('hide',x!==t));
+  if(t==='overview') renderDiscovery();
   if(t==='mywork') renderMyWork();
   if(t==='backlog') renderBacklog();
   if(t==='maint') renderMaintenance();
@@ -496,20 +610,152 @@ function donutSVG(segs,centerTxt,subTxt){
   const arcs=segs.map(([v,col])=>{const len=C*v/tot;const el=`<circle cx="70" cy="70" r="${R}" fill="none" stroke="${col}" stroke-width="16" stroke-dasharray="${len} ${C-len}" stroke-dashoffset="${-off}" transform="rotate(-90 70 70)"/>`;off+=len;return el;}).join('');
   return `<svg width="128" height="128" viewBox="0 0 140 140"><circle cx="70" cy="70" r="${R}" fill="none" stroke="#26324d" stroke-width="16"/>${arcs}<text x="70" y="66" text-anchor="middle" font-size="23" font-weight="800" fill="#e7edf7">${centerTxt}</text><text x="70" y="86" text-anchor="middle" font-size="10.5" fill="#9fb0c9">${subTxt}</text></svg>`;
 }
-function renderDiscovery(){
-  const totalCases=sum(m=>m.total),automated=sum(m=>m.auto),manual=totalCases-automated;
-  const exec=sum(m=>m.exec),aExec=sum(m=>m.aExec),mExec=exec-aExec;
-  const saved=sum(m=>m.saved),maint=sum(m=>m.maint),bugs=sum(m=>m.bugs);
-  const cov=pct(automated,totalCases),util=pct(aExec,exec);
-  const K=[['Total cases',nf(totalCases),'#3b82f6'],['Automated',nf(automated),'#34d399'],['Coverage',cov+'%','#22d3ee'],['Manual',nf(manual),'#a78bfa'],
-    ['Total executions',nf(exec),'#3b82f6'],['Automated execs',nf(aExec),'#34d399'],['Manual execs',nf(mExec),'#a78bfa'],['Utilisation',util+'%','#22d3ee'],
-    ['Time saved',nf(saved)+' h','#f59e0b'],['Maintenance req',nf(maint),'#f59e0b'],['Bugs via automation',nf(bugs),'#ef4444'],['Contributors','3','#7c3aed']];
-  document.getElementById('kpiStrip').innerHTML=K.map(([l,v,c])=>`<div class="kpi"><div class="accent" style="background:${c}"></div><div class="big" style="font-size:21px">${v}</div><div class="lbl">${l}</div></div>`).join('');
-  document.getElementById('donutCov').innerHTML=`<div class="row" style="gap:10px"><div>${donutSVG([[automated,'#34d399'],[manual,'#a78bfa']],cov+'%','automated')}</div>
-    <div class="legend" style="flex-direction:column;gap:7px"><div><i style="background:#34d399"></i>Automated · <b>${nf(automated)}</b></div><div><i style="background:#a78bfa"></i>Manual · <b>${nf(manual)}</b></div></div></div>`;
-  document.getElementById('donutExec').innerHTML=`<div class="row" style="gap:10px"><div>${donutSVG([[aExec,'#22d3ee'],[mExec,'#475569']],util+'%','utilised')}</div>
-    <div class="legend" style="flex-direction:column;gap:7px"><div><i style="background:#22d3ee"></i>Automated · <b>${nf(aExec)}</b></div><div><i style="background:#475569"></i>Manual · <b>${nf(mExec)}</b></div><div class="hint">${nf(exec)} total executions</div></div></div>`;
-  renderMaint();renderContributors();renderContribBars();renderBugs();renderModuleTable();
+/* ----- theme ----- */
+function setTheme(v){document.documentElement.dataset.theme=v;const t=document.getElementById('themeToggle');if(t)t.textContent=(v==='light'?'☀️ Light':'🌙 Dark');
+  if(!document.getElementById('t-overview').classList.contains('hide'))renderDiscovery();}
+function toggleTheme(){setTheme(document.documentElement.dataset.theme==='light'?'dark':'light');}
+/* ----- animation helpers ----- */
+function animateCount(el,to,dur,fmt){
+  if(!el)return; fmt=fmt||nf; const t0=performance.now();
+  (function step(t){let p=Math.min(1,(t-t0)/(dur||1100));p=1-Math.pow(1-p,3);el.textContent=fmt(to*p);if(p<1)requestAnimationFrame(step);})(t0);
+}
+function growBars(sel){requestAnimationFrame(()=>document.querySelectorAll(sel).forEach(i=>i.style.width=(i.dataset.w||0)+'%'));}
+function ringSVG(pctVal){
+  const R=54,C=2*Math.PI*R, off=C*(1-Math.max(0,Math.min(100,pctVal))/100);
+  return `<svg width="128" height="128" viewBox="0 0 132 132">
+    <circle cx="66" cy="66" r="${R}" fill="none" stroke="var(--chip)" stroke-width="13"/>
+    <circle class="covArc" data-off="${off.toFixed(1)}" cx="66" cy="66" r="${R}" fill="none" stroke="url(#covg)" stroke-width="13" stroke-linecap="round"
+      stroke-dasharray="${C.toFixed(1)}" stroke-dashoffset="${C.toFixed(1)}" transform="rotate(-90 66 66)" style="transition:stroke-dashoffset 1.35s cubic-bezier(.2,.7,.2,1)"/>
+    <defs><linearGradient id="covg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#34d399"/></linearGradient></defs></svg>`;
+}
+
+/* ----- dashboard ----- */
+function renderDiscovery(){ renderHero(); renderExec(); renderROI(); renderContribs30(); renderModuleTable(); }
+
+function subCard(ic,col,cap,val,sh,wpct){
+  return `<div class="subcard"><div class="top"><span class="ic" style="background:${col}">${ic}</span><span class="cap">${cap}</span></div>
+    <div class="num" data-c="${val}">0</div><div class="sh">${sh}</div>
+    <div class="mini"><i data-w="${wpct.toFixed(1)}" style="background:linear-gradient(90deg,${col},#ffffff22)"></i></div></div>`;
+}
+function renderHero(){
+  const totalCases=sum(m=>m.total), uiAuto=sum(m=>m.auto), apiAuto=API_AUTO, automated=uiAuto+apiAuto;
+  const manual=totalCases-automated, cov=totalCases?automated/totalCases*100:0;
+  document.getElementById('dashHero').innerHTML=`
+    <div class="hcard" style="animation-delay:.02s"><div class="glow" style="background:#3b82f6"></div>
+      <div class="cap"><span class="dotic" style="background:#3b82f6">🧪</span>Total test cases</div>
+      <div class="num" data-c="${totalCases}">0</div>
+      <div class="foot">across ${MODULES.length} product modules · sourced from TestRail</div>
+      <div class="mini"><i data-w="100" style="background:linear-gradient(90deg,#3b82f6,#22d3ee)"></i></div></div>
+    <div class="hcard" style="animation-delay:.10s"><div class="glow" style="background:#34d399"></div>
+      <div class="cap"><span class="dotic" style="background:#34d399">🤖</span>Total automated</div>
+      <div class="num" data-c="${automated}">0</div>
+      <div class="foot">UI <b>${nf(uiAuto)}</b> + API <b>${nf(apiAuto)}</b> cases automated</div>
+      <div class="mini"><i data-w="${(automated/totalCases*100).toFixed(1)}" style="background:linear-gradient(90deg,#10b981,#34d399)"></i></div></div>
+    <div class="hcard cov" style="animation-delay:.18s"><div class="glow" style="background:#22d3ee"></div>
+      <div id="covRing">${ringSVG(cov)}</div>
+      <div><div class="cap">Automation achieved</div>
+        <div class="num" id="covPctBig" style="font-size:36px;margin-top:8px">0%</div>
+        <div class="foot">of all <b>${nf(totalCases)}</b> cases are automated</div></div></div>`;
+  document.getElementById('dashSub').innerHTML=
+    subCard('🖱️','#22d3ee','UI automated',uiAuto,'Playwright end-to-end',uiAuto/automated*100)+
+    subCard('🔌','#a78bfa','API automated',apiAuto,'Postman / OpenAPI',apiAuto/automated*100)+
+    subCard('🖐','#f59e0b','Manual (remaining)',manual,'not yet automated',manual/totalCases*100);
+  document.querySelectorAll('#dashHero [data-c],#dashSub [data-c]').forEach(n=>animateCount(n,+n.dataset.c,1200));
+  animateCount(document.getElementById('covPctBig'),cov,1350,v=>Math.round(v)+'%');
+  requestAnimationFrame(()=>{const a=document.querySelector('.covArc');if(a)a.style.strokeDashoffset=a.dataset.off;});
+  growBars('#dashHero .mini>i');growBars('#dashSub .mini>i');
+}
+
+function renderExec(){
+  const exec=sum(m=>m.exec),aExec=sum(m=>m.aExec),mExec=exec-aExec,util=exec?aExec/exec*100:0;
+  const S=[['▦','Total executions',exec,'#3b82f6',0],['🖐','Manual executions',mExec,'#a78bfa',0],
+           ['🤖','Automated executions',aExec,'#34d399',0],['⚡','Automation utilisation',util,'#22d3ee',1]];
+  document.getElementById('execStats').innerHTML=S.map(([ic,l,v,c,p])=>
+    `<div class="stat"><div class="accent" style="background:${c}"></div><div class="v" data-c="${v}" data-pct="${p}">0</div><div class="l">${ic} ${l}</div></div>`).join('');
+  document.querySelectorAll('#execStats .v').forEach(n=>animateCount(n,+n.dataset.c,1200,n.dataset.pct==='1'?(x=>Math.round(x)+'%'):nf));
+  drawExecChart();
+}
+function execPeriod(p){EXEC_PERIOD=p;document.querySelectorAll('#execPer button').forEach(b=>b.classList.toggle('on',b.dataset.p===p));drawExecChart();}
+function drawExecChart(){ lineChart(document.getElementById('execChart'), EXEC_TREND[EXEC_PERIOD]); }
+function endTag(p,label,val,col,dir){
+  const ny=dir<0?(p[1]-15):(p[1]+12), vy=dir<0?(p[1]-3):(p[1]+24);
+  return `<text x="${(p[0]+9).toFixed(1)}" y="${ny.toFixed(1)}" font-size="11.5" font-weight="800" style="fill:${col}">${label}</text>
+    <text x="${(p[0]+9).toFixed(1)}" y="${vy.toFixed(1)}" font-size="11" style="fill:var(--muted)">${nf(val)}</text>`;
+}
+function lineChart(el,d){
+  if(!el)return;
+  const W=940,H=310,padL=56,padR=124,padT=26,padB=36, n=d.labels.length;
+  const lastM=d.manual[n-1],lastA=d.auto[n-1];
+  // smooth projection: average slope across the whole series (stable vs last-two-point noise)
+  const slM=(d.manual[n-1]-d.manual[0])/(n-1), slA=(d.auto[n-1]-d.auto[0])/(n-1);
+  let cross=null,maxX=n-1;
+  if(slA>slM){const k=(lastM-lastA)/(slA-slM); if(k>0.15&&k<10){cross={x:(n-1)+k,y:lastA+k*slA};maxX=(n-1)+k;}}
+  const maxY=Math.max(...d.manual,...d.auto,cross?cross.y:0)*1.14||1;
+  const X=i=>padL+(i/maxX)*(W-padL-padR), Y=v=>padT+(1-v/maxY)*(H-padT-padB);
+  let grid='',yl='';
+  for(let g=0;g<=4;g++){const v=maxY*g/4,y=Y(v);grid+=`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W-padR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/>`;yl+=`<text x="${padL-10}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="11" style="fill:var(--faint)">${nf(v)}</text>`;}
+  let xl='';d.labels.forEach((lb,i)=>{xl+=`<text x="${X(i).toFixed(1)}" y="${H-12}" text-anchor="middle" font-size="11" style="fill:var(--muted)">${lb}</text>`;});
+  function series(arr,col){
+    const pts=arr.map((v,i)=>[X(i),Y(v)]);
+    const dpath='M'+pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' L');
+    let len=0;for(let i=1;i<pts.length;i++)len+=Math.hypot(pts[i][0]-pts[i-1][0],pts[i][1]-pts[i-1][1]);
+    const area=dpath+` L${pts[n-1][0].toFixed(1)},${Y(0).toFixed(1)} L${pts[0][0].toFixed(1)},${Y(0).toFixed(1)} Z`;
+    const dots=pts.map(p=>`<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3.4" fill="${col}"/>`).join('');
+    return {dpath,area,len:len.toFixed(0),dots,end:pts[n-1]};
+  }
+  const M=series(d.manual,'#a78bfa'),A=series(d.auto,'#34d399');
+  let proj='';
+  if(cross){const cx=X(cross.x),cy=Y(cross.y);
+    proj=`<line x1="${M.end[0].toFixed(1)}" y1="${M.end[1].toFixed(1)}" x2="${cx.toFixed(1)}" y2="${cy.toFixed(1)}" stroke="#a78bfa" stroke-width="2" stroke-dasharray="5 5" opacity=".6"/>
+      <line x1="${A.end[0].toFixed(1)}" y1="${A.end[1].toFixed(1)}" x2="${cx.toFixed(1)}" y2="${cy.toFixed(1)}" stroke="#34d399" stroke-width="2" stroke-dasharray="5 5" opacity=".6"/>
+      <line x1="${cx.toFixed(1)}" y1="${padT}" x2="${cx.toFixed(1)}" y2="${H-padB}" stroke="var(--line2)" stroke-width="1" stroke-dasharray="3 4"/>
+      <circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="5.5" fill="none" stroke="#22d3ee" stroke-width="2.5"/>
+      <text x="${cx.toFixed(1)}" y="${padT-5}" text-anchor="middle" font-size="10.5" font-weight="800" style="fill:#22d3ee">projected parity</text>`;
+  }
+  el.innerHTML=`<svg width="100%" viewBox="0 0 ${W} ${H}" style="display:block">
+    <defs><linearGradient id="agrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#34d399" stop-opacity=".28"/><stop offset="1" stop-color="#34d399" stop-opacity="0"/></linearGradient></defs>
+    ${grid}${yl}${xl}
+    <path d="${A.area}" fill="url(#agrad)"/>
+    ${proj}
+    <path class="lc-path lc-draw" d="${M.dpath}" stroke="#a78bfa" style="stroke-dasharray:${M.len};stroke-dashoffset:${M.len}"/>
+    <path class="lc-path lc-draw" d="${A.dpath}" stroke="#34d399" style="stroke-dasharray:${A.len};stroke-dashoffset:${A.len}"/>
+    ${M.dots}${A.dots}
+    ${endTag(M.end,'Manual',lastM,'#a78bfa',-1)}${endTag(A.end,'Automated',lastA,'#34d399',1)}
+  </svg>
+  <div class="legend" style="margin-top:8px"><span><i style="background:#a78bfa"></i>Manual executions</span><span><i style="background:#34d399"></i>Automated executions</span>${cross?'<span><i style="background:#22d3ee"></i>projected parity — where automation overtakes manual</span>':''}</div>`;
+}
+
+function renderROI(){
+  const saved=sum(m=>m.saved), bugs=sum(m=>m.bugs), aExec=sum(m=>m.aExec);
+  document.getElementById('roiTop').innerHTML=`
+    <div class="roi-w"><div class="glow" style="background:#f59e0b"></div>
+      <div class="cap"><span class="ic" style="background:#f59e0b">⏱️</span>Execution time saved by automation</div>
+      <div class="big" data-c="${saved}" data-suf=" h">0 h</div>
+      <div class="sub">≈ <b>${Math.round(saved/8)}</b> tester-days · <b>${(saved/40).toFixed(1)}</b> tester-weeks reclaimed — across <b>${nf(aExec)}</b> automated executions</div></div>
+    <div class="roi-w"><div class="glow" style="background:#ef4444"></div>
+      <div class="cap"><span class="ic" style="background:#ef4444">🐞</span>Bugs caught by automated runs</div>
+      <div class="big" data-c="${bugs}" data-suf="">0</div>
+      <div class="sub">defects surfaced by automated executions before they reached manual QA</div></div>`;
+  document.querySelectorAll('#roiTop .big').forEach(n=>animateCount(n,+n.dataset.c,1300,v=>nf(v)+(n.dataset.suf||'')));
+  const scored=[...MODULES].map(m=>({m:m.m,score:m.saved+m.bugs*3,saved:m.saved,bugs:m.bugs,aExec:m.aExec})).sort((a,b)=>b.score-a.score).slice(0,6);
+  const mx=Math.max(...scored.map(s=>s.score))||1, medal=['#ffd36b','#cdd6e6','#e6a15b','#3b82f6','#3b82f6','#3b82f6'];
+  document.getElementById('roiModules').innerHTML=scored.map((s,i)=>`
+    <div class="accel"><span class="rk" style="background:${medal[i]}">${i+1}</span>
+      <span class="nm">${s.m}</span>
+      <div class="track"><i data-w="${(s.score/mx*100).toFixed(1)}" style="background:linear-gradient(90deg,#7c3aed,#22d3ee)"></i></div>
+      <span class="mt"><b style="color:var(--txt)">${s.saved}h</b> saved · 🐞${s.bugs} · ${nf(s.aExec)} runs</span></div>`).join('');
+  growBars('#roiModules .track>i');
+}
+
+function renderContribs30(){
+  const rows=[...CONTRIB].sort((a,b)=>b.d30-a.d30), mx=Math.max(...rows.map(c=>c.d30))||1, medal=['🥇','🥈','🥉'];
+  document.getElementById('dashContrib').innerHTML=rows.map((c,i)=>`
+    <div class="clead"><span class="rk">${medal[i]||('#'+(i+1))}</span>
+      <span class="av2" style="background:${c.color}">${c.k}</span>
+      <div style="width:170px;flex:none"><div class="b">${c.n}</div><div class="hint">${nf(c.runs30)} automated runs · 🐞 ${c.bugs30} bugs (30d)</div></div>
+      <div class="track"><i data-w="${(c.d30/mx*100).toFixed(1)}" style="background:${c.color}"></i></div>
+      <span style="width:140px;flex:none;text-align:right;font-size:12px;color:var(--muted)"><b style="color:var(--txt)">${c.d30}</b> cases automated</span></div>`).join('');
+  growBars('#dashContrib .track>i');
 }
 function renderModuleTable(){
   const tb=document.querySelector('#modTable tbody');if(!tb)return;tb.innerHTML='';
@@ -529,28 +775,6 @@ function renderModuleTable(){
       <td><button class="runbtn" onclick="event.stopPropagation();showTab('ui');openModuleInTree('${m.m}')">▸</button></td>`;
     tb.appendChild(tr);
   });
-}
-function renderContributors(){
-  const mx=Math.max(...CONTRIB.map(c=>c.cum));
-  document.getElementById('contributors').innerHTML=CONTRIB.map(c=>`
-    <div style="margin:9px 0"><div class="row" style="font-size:12px;gap:7px"><span class="av ${c.k}">${c.k}</span><span class="b">${c.n}</span><div class="sp"></div><span class="muted">+${c.wk} wk · 🐞${c.bugs}</span></div>
-      <div class="row" style="gap:8px;margin-top:4px"><div class="bar" style="flex:1;height:10px"><i style="width:${c.cum/mx*100}%;background:${c.color}"></i></div><span class="b" style="width:44px;text-align:right">${c.cum}</span></div></div>`).join('');
-}
-function renderContribBars(){
-  const days=DAILY.days,w=580,h=160,gap=w/days.length,bw=gap*0.58;
-  const tot=days.map((_,i)=>DAILY.V[i]+DAILY.Va[i]+DAILY.Vi[i]),mx=Math.max(...tot);
-  let bars='';days.forEach((d,i)=>{let x=i*gap+gap*0.2,y=h-20;[['#22d3ee',DAILY.V[i]],['#a78bfa',DAILY.Va[i]],['#34d399',DAILY.Vi[i]]].forEach(([col,v])=>{const hh=(v/mx)*(h-34);y-=hh;bars+=`<rect x="${x}" y="${y}" width="${bw}" height="${hh}" fill="${col}" rx="2"/>`;});bars+=`<text x="${x+bw/2}" y="${h-6}" text-anchor="middle" font-size="8.5" fill="#6b7c9c">${d}</text>`;});
-  document.getElementById('contribBars').innerHTML=`<svg width="100%" viewBox="0 0 ${w} ${h}">${bars}</svg>
-    <div class="legend" style="margin-top:2px"><span><i style="background:#22d3ee"></i>Vishnu</span><span><i style="background:#a78bfa"></i>Varsha</span><span><i style="background:#34d399"></i>Vivek</span></div>`;
-}
-function renderMaint(){
-  document.getElementById('maintChart').innerHTML=`<div class="row" style="gap:10px"><div>${donutSVG(MAINT.map(x=>[x[1],x[2]]),nf(MAINT[1][1]+MAINT[2][1]+MAINT[3][1]),'need work')}</div>
-    <div class="legend" style="flex-direction:column;gap:6px">${MAINT.map(x=>`<div><i style="background:${x[2]}"></i>${x[0]} · <b>${x[1]}</b></div>`).join('')}</div></div>`;
-}
-function renderBugs(){
-  const tot=sum(m=>m.bugs),top=[...MODULES].sort((a,b)=>b.bugs-a.bugs).slice(0,6),mx=Math.max(...top.map(m=>m.bugs));
-  document.getElementById('bugsChart').innerHTML=`<div class="row" style="align-items:baseline;gap:10px"><div style="font-size:30px;font-weight:800;color:#fca5a5">${tot}</div><span class="muted">bugs caught by automated runs</span></div>
-    <div style="margin-top:8px">${top.map(m=>`<div class="row" style="margin:5px 0;font-size:12px"><span style="width:130px" class="muted">${m.m}</span><div class="bar" style="flex:1;height:9px"><i style="width:${m.bugs/mx*100}%;background:linear-gradient(90deg,#ef4444,#f59e0b)"></i></div><span class="b" style="width:30px;text-align:right">${m.bugs}</span></div>`).join('')}</div>`;
 }
 function renderMyWork(){
   const me=CONTRIB[0];
