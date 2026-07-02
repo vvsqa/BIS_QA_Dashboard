@@ -429,32 +429,12 @@
 
   <!-- ===================== DATA GENERATION ===================== -->
   <section id="t-data" class="hide">
-    <div class="card">
-      <div class="row">
-        <h3 style="margin:0">Generate test data</h3><span class="muted" style="font-size:12px">via app APIs / UI flows — never direct DB</span>
-        <div class="sp"></div>
-        <div class="seg"><button class="on" id="dgSingle" onclick="dgMode('single')">Single</button><button id="dgBulk" onclick="dgMode('bulk')">Bulk</button></div>
-      </div>
-      <div class="row" style="margin-top:14px">
-        <div><div class="k muted" style="font-size:11px">Template</div>
-          <select class="pill" id="dgTpl"><option>User Accounts (Instructor)</option><option>Companies</option><option>Forms + assets</option><option>Course enrolments</option><option>Classroom events</option></select></div>
-        <div><div class="k muted" style="font-size:11px">Environment</div><select class="pill" id="dgEnv"><option>Staging</option><option>Pre</option><option>Live</option></select></div>
-        <div id="dgCountWrap"><div class="k muted" style="font-size:11px">Count</div><input class="pill" id="dgCount" value="50" style="width:90px"/></div>
-        <div><div class="k muted" style="font-size:11px">Role mix</div><select class="pill"><option>80% Instructor / 20% Student</option><option>All Instructor</option><option>All Student</option></select></div>
-        <div style="align-self:flex-end"><button class="btn green" onclick="runDataGen()">▶ Generate via API</button></div>
-      </div>
-      <div id="dgProg" class="hide" style="margin-top:16px">
-        <div class="row"><span class="b" id="dgLabel">Generating…</span><div class="sp"></div><span class="muted" id="dgCounter">0 / 50</span></div>
-        <div class="pbar" style="margin-top:8px"><i id="dgFill" style="width:0%"></i></div>
-      </div>
-      <div id="dgResult" class="hide" style="margin-top:16px">
-        <div class="row"><span class="status pass">✓ Created <span id="dgDone">50</span> records</span><div class="sp"></div>
-          <button class="art" onclick="toast('Saved ids to my private data file')">💾 Save to my data file</button>
-          <button class="art" onclick="toast('Exported ids.csv')">⤓ export ids.csv</button></div>
-        <div class="pre" id="dgRows" style="margin-top:10px"></div>
-        <div class="hint" id="dgFoot" style="margin-top:8px"></div>
-      </div>
-    </div>
+    <div class="row" style="margin-bottom:14px"><div class="seg" id="dgSub">
+      <button class="on" data-t="generate" onclick="dgTab('generate')">⚡ Generate</button>
+      <button data-t="recipes" onclick="dgTab('recipes')">🧩 Recipes</button>
+      <button data-t="history" onclick="dgTab('history')">🕘 History</button>
+    </div><div class="sp"></div><span class="hint">via app APIs / UI flows with your own account — never direct DB</span></div>
+    <div id="dgBody"></div>
   </section>
 
   <!-- ===================== MAINTENANCE ===================== -->
@@ -760,6 +740,7 @@ function showTab(t){
   if(t==='overview') renderDiscovery();
   if(t==='ui') renderUITab();
   if(t==='api') renderAPITab();
+  if(t==='data') renderDataTab();
   if(t==='mywork') renderMyWork();
   if(t==='backlog') renderBacklog();
   if(t==='maint') renderMaintenance();
@@ -1983,24 +1964,88 @@ function apiHeal(id){const c=API_TESTS.find(x=>x.id===id);const box=document.get
   let i=0;(function t(){if(i<seq.length){const[cl,x]=seq[i++];const d=document.createElement('div');d.className=cl;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,360)}else{c.status='healthy';c.last='just now · pass';c.edited='just now';toast(id+' healed ✓');setTimeout(()=>apiAuthorTab('maintain'),700);}})();
 }
 
-/* ---------------- data generation ---------------- */
-function dgMode(m){document.getElementById('dgSingle').classList.toggle('on',m==='single');document.getElementById('dgBulk').classList.toggle('on',m==='bulk');
-  document.getElementById('dgCountWrap').classList.toggle('hide',m==='single');}
-function runDataGen(){
-  const bulk=document.getElementById('dgBulk').classList.contains('on');
-  const n=bulk?parseInt(document.getElementById('dgCount').value||'50'):1;
-  const prog=document.getElementById('dgProg'),res=document.getElementById('dgResult');
-  prog.classList.remove('hide');res.classList.add('hide');
-  let i=0;const fill=document.getElementById('dgFill'),ctr=document.getElementById('dgCounter');
-  (function t(){i=Math.min(n,i+Math.ceil(n/20));fill.style.width=(i/n*100)+'%';ctr.textContent=i+' / '+n;
-    if(i<n)setTimeout(t,80);else{prog.classList.add('hide');res.classList.remove('hide');document.getElementById('dgDone').textContent=n;
-      const tpl=document.getElementById('dgTpl').value;
-      let rows='';for(let k=0;k<Math.min(n,8);k++){rows+=`#${String(201+k).padStart(5,'0')}  john.dw${k+1}@example.com  ${k%5===4?'Student':'Instructor'}  ✓ created\n`}
-      if(n>8)rows+=`… +${n-8} more\n`;
-      document.getElementById('dgRows').textContent=rows;
-      document.getElementById('dgFoot').textContent='Completed in 1m 42s · API calls '+n+' · Success '+n+' · Failed 0';
-      toast('Generated '+n+' record'+(n>1?'s':'')+' via API');}})();
+/* ---------------- data generation (Generate / Recipes / History) ---------------- */
+let DATA_TAB='generate', DG_TPL='users', DG_BULK=true;
+const DG_TEMPLATES=[
+  {k:'users',name:'User accounts',ic:'👤',creates:'users',opt:'roleMix'},
+  {k:'companies',name:'Companies',ic:'🏢',creates:'companies',opt:'seats'},
+  {k:'courses',name:'Courses + slides',ic:'📚',creates:'courses',opt:'slides'},
+  {k:'enrol',name:'Course enrolments',ic:'🎓',creates:'enrolments',opt:'course'},
+  {k:'events',name:'Classroom events',ic:'📅',creates:'events',opt:'none'},
+  {k:'forms',name:'Forms + assets',ic:'📝',creates:'forms',opt:'none'},
+];
+const DG_RECIPES=[
+  {name:'Company with 25 instructors',steps:[['Company + seats',1],['Instructor users',25]],desc:'A fresh company and its instructors, ready to teach.'},
+  {name:'Class of 30 learners enrolled',steps:[['Company + seats',1],['Learner users',30],['Course + slides',1],['Enrol learners',30]],desc:'End-to-end: company → learners → course → enrolments.'},
+  {name:'Forms regression set',steps:[['Instructor user',1],['Forms + assets',10]],desc:'An instructor plus 10 forms with assets for regression.'},
+];
+let DG_HISTORY=[
+  {id:9012,name:'User accounts',count:50,env:'Staging',when:'today 09:14'},
+  {id:9008,name:'Company + 25 instructors (recipe)',count:26,env:'Staging',when:'yesterday'},
+  {id:9001,name:'Course enrolments',count:120,env:'Pre',when:'2 days ago'},
+];
+function renderDataTab(){dgTab(DATA_TAB);}
+function dgTab(t){DATA_TAB=t;document.querySelectorAll('#dgSub button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  document.getElementById('dgBody').innerHTML = t==='generate'?dgGenHTML():t==='recipes'?dgRecipesHTML():dgHistoryHTML();}
+function dgOptHTML(){const t=DG_TEMPLATES.find(x=>x.k===DG_TPL);
+  const opts={roleMix:['80% Instructor / 20% Learner','All Instructor','All Learner'],seats:['25 seats','100 seats','Unlimited'],slides:['3 slides each','10 slides each'],course:['New course','Existing course']}[t.opt];
+  if(!opts)return '<div></div>';
+  const lbl={roleMix:'Role mix',seats:'Seats',slides:'Slides',course:'Course'}[t.opt];
+  return `<div class="ctl" style="padding:7px 10px"><span class="muted">${lbl}</span><select style="flex:1">${opts.map(o=>`<option>${o}</option>`).join('')}</select></div>`;
 }
+function dgGenHTML(){
+  return `<div class="grid" style="grid-template-columns:1.3fr 1fr;align-items:start">
+   <div class="card"><div class="seclbl" style="margin-top:0">① Pick what to generate</div>
+     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">${DG_TEMPLATES.map(t=>`<div class="runcard ${DG_TPL===t.k?'pick':''}" style="text-align:center" onclick="dgPick('${t.k}')"><div style="font-size:22px">${t.ic}</div><div class="b" style="font-size:12.5px;margin-top:4px">${t.name}</div></div>`).join('')}</div>
+     <div class="seclbl">② Options</div>
+     <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px">
+       <div class="ctl" style="padding:7px 10px"><span class="muted">Environment</span><select style="flex:1"><option>Staging</option><option>Pre</option><option>Live</option></select></div>
+       <div class="ctl" style="padding:7px 10px"><span class="muted">Mode</span><div class="seg" style="flex:1"><button class="${DG_BULK?'':'on'}" id="dgS" onclick="dgSetMode('single')" style="flex:1">Single</button><button class="${DG_BULK?'on':''}" id="dgB" onclick="dgSetMode('bulk')" style="flex:1">Bulk</button></div></div>
+       <div class="ctl ${DG_BULK?'':'hide'}" style="padding:7px 10px" id="dgCountWrap2"><span class="muted">Count</span><input id="dgCount" value="50" style="flex:1"/></div>
+       ${dgOptHTML()}
+     </div>
+     <button class="btn green" style="width:100%;justify-content:center;margin-top:14px" onclick="dgGenerate()">▶ Generate via API</button>
+     <div class="hint" style="margin-top:6px">Uses the app's public APIs (or UI flows) with your own account — never touches the database directly.</div>
+     <div id="dgProg" class="hide" style="margin-top:14px"><div class="row"><span class="b">Generating…</span><div class="sp"></div><span class="muted" id="dgCounter">0 / 0</span></div><div class="pbar" style="margin-top:8px"><i id="dgFill" style="width:0%"></i></div></div>
+   </div>
+   <div class="card"><div class="seclbl" style="margin-top:0">Result</div><div id="dgResult"><div class="empty">Nothing generated yet.<br><span class="hint">Pick a template and Generate.</span></div></div></div>
+  </div>`;
+}
+function dgPick(k){DG_TPL=k;dgTab('generate');}
+function dgSetMode(m){DG_BULK=(m==='bulk');document.getElementById('dgS').classList.toggle('on',!DG_BULK);document.getElementById('dgB').classList.toggle('on',DG_BULK);document.getElementById('dgCountWrap2').classList.toggle('hide',!DG_BULK);}
+function dgGenerate(){
+  const n=DG_BULK?parseInt((document.getElementById('dgCount')||{}).value||'50'):1;const t=DG_TEMPLATES.find(x=>x.k===DG_TPL);
+  const prog=document.getElementById('dgProg');prog.classList.remove('hide');
+  let i=0;const fill=document.getElementById('dgFill'),ctr=document.getElementById('dgCounter');
+  (function tk(){i=Math.min(n,i+Math.ceil(n/20));fill.style.width=(i/n*100)+'%';ctr.textContent=i+' / '+n;if(i<n)setTimeout(tk,70);else{prog.classList.add('hide');
+    DG_HISTORY.unshift({id:9000+Math.floor(Math.abs(hash(t.name+n+i))%999),name:t.name,count:n,env:'Staging',when:'just now'});
+    dgShowResult(t,n);toast('Generated '+n+' '+t.creates+' via API');}})();
+}
+function dgShowResult(t,n){
+  let rows='';for(let k=0;k<Math.min(n,8);k++){rows+= t.k==='users'?`#${88200+k}  john.dw${k+1}@example.com  ${k%5===4?'Learner':'Instructor'}  ✓ created\n`:`#${88200+k}  ${t.creates.replace(/s$/,'')} ${k+1}  ✓ created\n`;}
+  if(n>8)rows+='… +'+(n-8)+' more\n';
+  document.getElementById('dgResult').innerHTML=`<div class="row"><span class="status pass">✓ Created ${n} ${t.creates}</span></div>
+    <div class="pre" style="margin-top:10px">${rows}</div><div class="hint" style="margin-top:6px">Done in 1m 12s · API calls ${n} · success ${n} · failed 0</div>
+    <div class="row" style="gap:8px;margin-top:12px;flex-wrap:wrap"><button class="btn ghost sm" onclick="toast('Saved ids to my-data.json')">💾 Save to my data file</button><button class="btn ghost sm" onclick="toast('Exported ids.csv')">⤓ Export CSV</button><button class="btn ghost sm" onclick="toast('Pushed data file to feat/vishnu')">⎇ Push to my branch</button><button class="btn sm" onclick="toast('Available as {{${t.creates}}} to inject into a run')">🔗 Use in a run</button></div>`;
+}
+function dgRecipesHTML(){
+  return `<div class="card"><div class="row"><h3 style="margin:0">🧩 Recipes</h3><div class="sp"></div><span class="hint">chain generators — build a whole scenario in one go; captured ids flow to later steps</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:12px">${DG_RECIPES.map((r,i)=>`<div class="runcard" style="cursor:default"><div class="b">${r.name}</div><div class="hint" style="margin:6px 0">${r.desc}</div>
+      <div>${r.steps.map((s,j)=>`<div class="hint">${j+1}. ${s[0]}${s[1]>1?' × '+s[1]:''}</div>`).join('')}</div>
+      <button class="btn sm" style="margin-top:10px;width:100%;justify-content:center" onclick="dgRunRecipe(${i})">▶ Run recipe</button><div id="rec-${i}"></div></div>`).join('')}
+      <div class="runcard" style="cursor:pointer;display:grid;place-items:center;text-align:center;color:var(--faint)" onclick="toast('Add generator steps in order to build a recipe')"><div><div style="font-size:22px">＋</div><div class="b" style="font-size:12.5px;margin-top:4px">Build your own</div></div></div>
+    </div></div>`;
+}
+function dgRunRecipe(i){const r=DG_RECIPES[i];const box=document.getElementById('rec-'+i);box.innerHTML='<div class="log" id="reclog" style="margin-top:8px"></div>';const l=document.getElementById('reclog');
+  const seq=[];r.steps.forEach(s=>{seq.push(['dim','→ '+s[0]+(s[1]>1?' × '+s[1]:'')]);seq.push(['ok','✓ created '+s[1]+' · captured ids']);});seq.push(['ok','● recipe complete']);
+  let k=0;(function t(){if(k<seq.length){const[c,x]=seq[k++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,300)}else{const total=r.steps.reduce((a,s)=>a+s[1],0);DG_HISTORY.unshift({id:9000+Math.floor(Math.abs(hash(r.name+k))%999),name:r.name+' (recipe)',count:total,env:'Staging',when:'just now'});toast('Recipe complete · '+total+' records');}})();
+}
+function dgHistoryHTML(){
+  return `<div class="card"><div class="row"><h3 style="margin:0">🕘 Generated datasets</h3><span class="chip" style="margin-left:8px">${DG_HISTORY.length}</span><div class="sp"></div><span class="hint">reuse, export, or load as your data file</span></div>
+    <div style="overflow:auto;margin-top:10px"><table style="font-size:12.5px"><thead><tr><th>Dataset</th><th>Count</th><th>Env</th><th>When</th><th>Status</th><th>Actions</th></tr></thead><tbody>${DG_HISTORY.map(h=>`<tr><td class="b">#${h.id} · ${h.name}</td><td>${h.count}</td><td>${h.env}</td><td class="muted">${h.when}</td><td><span class="chip" style="color:#34d399">● ready</span></td>
+      <td style="white-space:nowrap"><button class="runbtn" onclick="toast('Viewing ids for #${h.id}')">view ids</button> <button class="runbtn" onclick="toast('Loaded #${h.id} as my-data.json')">reuse</button> <button class="runbtn" onclick="toast('Exported #${h.id}.csv')">export</button> <button class="runbtn" style="color:#fca5a5" onclick="dgDelHist(${h.id})">🗑</button></td></tr>`).join('')}</tbody></table></div></div>`;
+}
+function dgDelHist(id){DG_HISTORY=DG_HISTORY.filter(h=>h.id!==id);dgTab('history');}
 
 /* ---------------- misc ---------------- */
 function openSettings(){document.getElementById('settings').classList.add('on')}
