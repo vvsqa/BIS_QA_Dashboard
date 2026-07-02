@@ -307,7 +307,7 @@
     </div>
     <div class="hdr-right">
       <select id="envSel" style="display:none"><option value="Staging">Staging</option><option value="Pre">Pre</option><option value="Live">Live</option></select>
-      <button class="syncbtn" onclick="syncPreMain()" title="Pull the latest shared base (pre_main) before you run or script"><span class="ic">↻</span> Sync latest</button>
+      <button class="syncbtn" onclick="syncPreMain()" title="Pull the latest shared base (pre_main) before you run or script"><span class="ic">↻</span> Sync</button>
       <span class="pill" id="themeToggle" onclick="toggleTheme()" title="Switch light / dark">🌙 Dark</span>
       <span class="pill" onclick="openSettings()">⚙ Settings</span>
     </div>
@@ -1150,10 +1150,10 @@ function renderUITab(){
   document.getElementById('uiModeHint').textContent = UI_MODE==='execute'
     ? 'Find automated cases → add to the run cart → configure & run.'
     : 'Describe what to test in plain English — AI writes it. No code needed.';
-  if(UI_MODE==='execute') renderExec(); else renderAuthor();
+  if(UI_MODE==='execute') renderUIExec(); else renderAuthor();
 }
 function uiMode(m){UI_MODE=m;renderUITab();}
-function renderExec(){
+function renderUIExec(){
   const el=document.getElementById('uiExec');
   el.innerHTML=`<div class="wb">
     <div class="wbrail">
