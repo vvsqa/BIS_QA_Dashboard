@@ -7443,8 +7443,10 @@ def _appraisal_narrative(emp, period_label, use_ai=True):
     if ea is not None and abs(100 - ea) > 25:
         areas.append(f"Estimate accuracy is off ({ea}%) — when planning, break a ticket into test phases and "
                      f"compare against similar past tickets so the estimate better matches the real effort.")
-    if (rm.get("present_days") or 0) and (rm.get("working_days") or 0) and rm["present_days"] / rm["working_days"] < 0.7:
-        areas.append(f"Attendance is low ({rm['present_days']}/{rm['working_days']} days present) — keep timesheet "
+    # Only assess attendance once enough working days have ELAPSED (working_days is elapsed-so-far for an
+    # in-progress period) — early in a month a 1/2 ratio isn't a real signal and members can only log past days.
+    if (rm.get("present_days") or 0) and (rm.get("working_days") or 0) >= 5 and rm["present_days"] / rm["working_days"] < 0.7:
+        areas.append(f"Attendance is low ({rm['present_days']}/{rm['working_days']} days present so far) — keep timesheet "
                      f"and leave entries complete and plan known leave ahead so delivery stays predictable.")
     if rm.get("manager_note_net", 0) > 0:
         strengths.append(f"Positive manager feedback (+{rm['manager_note_net']} diligence).")
@@ -7497,6 +7499,9 @@ def _appraisal_narrative(emp, period_label, use_ai=True):
                   "concentration is EXPECTED and reflects their ownership role; do NOT flag it as a pacing, diversity, or "
                   "over-concentration weakness. Only treat concentration as a concern when it is NOT an owned module. "
                   "Credit delivering within reviewed estimates and handling manager-reviewed tickets as positives. "
+                  "Attendance/present-days are measured only against working days ELAPSED so far (members can only "
+                  "log days that have passed) — do NOT flag low attendance early in a period when few working days "
+                  "have elapsed; only raise it when there is a meaningful sample. "
                   "For STRENGTHS: be specific and tie each to concrete evidence/numbers. "
                   "For AREAS TO IMPROVE: make each one genuinely ACTIONABLE so the person understands exactly what to change "
                   "and how — for each area: (a) state the specific observation with the number, (b) briefly say why it matters, "
@@ -8171,6 +8176,15 @@ def get_performance_leaderboard(
             1 for i in range((end_date.date() - start_date.date()).days + 1)
             if (start_date.date() + timedelta(days=i)).weekday() < 5
         ) or 1
+        # For an IN-PROGRESS period, attendance/utilization must be measured against the working days
+        # that have ELAPSED so far (you can only log days that have passed) — not the full month. Early
+        # in a month, present/expected against the full 23 days is misleading. For ended periods this
+        # equals period_working_days.
+        _elapsed_end = min(end_date.date(), datetime.now().date())
+        elapsed_working_days = sum(
+            1 for i in range((_elapsed_end - start_date.date()).days + 1)
+            if (start_date.date() + timedelta(days=i)).weekday() < 5
+        ) or 1
 
         # ---- Ticket Review / Complexity preload (batched, no per-ticket N+1) ----
         import ticket_review as _TR
@@ -8313,8 +8327,9 @@ def get_performance_leaderboard(
                 total_logged = round(sum(daily_hours.values()), 1)
                 avg_hours_per_day = round(total_logged / present_days, 1) if present_days else 0
                 productive_hours = round(sum(_eh(e) for e in ets), 1)
-                expected_hours = period_working_days * 8
-                attendance_ratio = present_days / period_working_days
+                # Measure attendance/utilization against ELAPSED working days (fair for an in-progress month).
+                expected_hours = elapsed_working_days * 8
+                attendance_ratio = present_days / elapsed_working_days
                 prod_ratio = (productive_hours / expected_hours) if expected_hours else 0
                 presence = round(100 * min(1.0, 0.6 * attendance_ratio + 0.4 * min(1.0, prod_ratio)), 1)
                 # Ticket-focus: of the time actually WORKED (leave excluded), how much went to real
@@ -8521,7 +8536,7 @@ def get_performance_leaderboard(
                 if r["has_focus"]:
                     summary_lines.append(f"Ticket focus {r['ticket_focus']}% — {r['ticket_hours']}h on "
                                          f"tickets vs {r['task_hours']}h on other tasks")
-                summary_lines.append(f"{r['present_days']}/{period_working_days} days present "
+                summary_lines.append(f"{r['present_days']}/{elapsed_working_days} days present "
                                      f"({presence}% attendance) · avg {r['avg_hours_per_day']}h/day · "
                                      f"{r['productive_hours']}h productive")
                 if r["overrun_tickets"]:
@@ -8588,7 +8603,8 @@ def get_performance_leaderboard(
                         "ticket_hours": r["ticket_hours"],
                         "non_ticket_hours": r["task_hours"],
                         "present_days": r["present_days"],
-                        "working_days": period_working_days,
+                        "working_days": elapsed_working_days,        # working days ELAPSED so far (fair for in-progress)
+                        "period_working_days": period_working_days,  # full-period working days (reference)
                         "productive_hours": r["productive_hours"],
                         "avg_hours_per_day": r["avg_hours_per_day"],
                         "days_under_8": r["days_under_8"],
