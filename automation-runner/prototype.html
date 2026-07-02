@@ -49,6 +49,7 @@
   .syncbtn .ic{display:inline-block;font-size:14px}
   .syncbtn.spin .ic{animation:spin .8s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
+  .spin{display:inline-block;width:11px;height:11px;border:2px solid var(--line);border-top-color:#34d399;border-radius:50%;animation:spin .7s linear infinite;vertical-align:-1px}
 
   /* ---------- tabs ---------- */
   .tabs{display:flex;gap:8px;margin:14px 0;flex-wrap:wrap}
@@ -291,7 +292,10 @@
   .grp-h{display:flex;align-items:center;gap:8px;padding:9px 9px;border-radius:9px;cursor:pointer;font-weight:800;font-size:12.5px;margin-top:2px}
   .grp-h:hover{background:rgba(255,255,255,.04)}
   .grp-h .cnt{margin-left:auto;font-weight:700;font-size:11px;color:var(--muted);background:var(--chip);border-radius:999px;padding:1px 8px}
-  #t-ui select,#t-ui input:not([type=checkbox]){background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:0 10px;height:34px;font-size:12.5px}
+  /* global base for text inputs & selects so nothing renders as a plain white box */
+  input:not([type=checkbox]):not([type=radio]),select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:0 10px;height:34px;font-size:12.5px;font-family:inherit;outline:none}
+  input:not([type=checkbox]):not([type=radio]):focus,select:focus,textarea:focus{border-color:var(--acc2)}
+  select option{background:var(--panel);color:var(--txt)}
   .drawer select,.drawer input:not([type=checkbox]){width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:0 10px;height:34px;font-size:12.5px}
 </style>
 </head>
@@ -459,10 +463,9 @@
 
 <!-- ===================== LIVE ACTIVITY MODAL (concurrency) ===================== -->
 <div class="modal" id="activity">
-  <div class="sheet" style="width:min(760px,96vw)">
-    <div class="row"><h2 style="margin:0;font-size:18px">🟢 Live activity — who's running what</h2><div class="sp"></div><button class="art" onclick="closeActivity()">✕</button></div>
-    <div class="hint" style="margin:6px 0 10px">Concurrent sessions are coordinated centrally. Each user runs with <b>their own accounts</b> (no shared sessions); identical <b>case + environment</b> executions <b>auto-queue</b> so they never contend for the same data. Results go to per-run TestRail entries.</div>
-    <div id="activityBody"></div>
+  <div class="sheet" style="width:min(720px,96vw)">
+    <div class="row"><h2 style="margin:0;font-size:18px">🟢 Live activity <span class="muted" style="font-size:12px;font-weight:400">— who's running what, right now</span></h2><div class="sp"></div><button class="art" onclick="closeActivity()">✕</button></div>
+    <div id="activityBody" style="margin-top:12px"></div>
   </div>
 </div>
 
@@ -470,9 +473,9 @@
 <div class="modal" id="setup">
   <div class="sheet" style="width:min(680px,95vw)">
     <div class="row"><h2 style="margin:0;font-size:18px">🧩 First-run setup <span class="muted" style="font-size:12px;font-weight:400">— gets your environment ready</span></h2><div class="sp"></div><button class="art" onclick="closeSetup()">✕</button></div>
-    <div id="setupList" style="margin-top:12px"></div>
+    <div id="setupList" style="margin-top:14px"></div>
     <div class="k muted" style="font-size:11px;text-transform:uppercase;margin:14px 0 6px">Live setup log</div>
-    <div class="log" id="setupLog" style="min-height:120px"></div>
+    <div class="log" id="setupLog" style="min-height:110px"></div>
     <div class="row" style="margin-top:14px"><span class="hint">Installs are idempotent — already-present tools are skipped.</span><div class="sp"></div>
       <button class="btn" id="setupBtn" onclick="runSetup()">Finish setup</button></div>
   </div>
@@ -2324,7 +2327,10 @@ function blAutomateModule(m){showTab('ui');uiMode('author');authorTab('create');
 function blAutomateTicket(id){showTab('ui');uiMode('author');authorTab('create');authSetSrc('ticket');setTimeout(()=>{const i=document.getElementById('authTicketId');if(i){i.value=id;authLoadTicket();}},60);toast('Loading ticket #'+id+' cases to automate');}
 function blToggle(id){BL_SEL.has(id)?BL_SEL.delete(id):BL_SEL.add(id);blUpdateBtn();}
 function blUpdateBtn(){const b=document.getElementById('blBtn');if(!b)return;b.disabled=!BL_SEL.size;b.textContent='✦ Automate selected'+(BL_SEL.size?' ('+BL_SEL.size+')':'');}
-function backlogAutomate(){if(!BL_SEL.size)return;const n=BL_SEL.size;showTab('ui');uiMode('author');authorTab('create');toast('Queued '+n+' backlog case'+(n>1?'s':'')+' to automate');}
+function backlogAutomate(){if(!BL_SEL.size)return;const ids=[...BL_SEL];
+  ids.forEach(id=>{const c=BACKLOG.find(x=>x.id===id);if(c){if(!c.claimedBy)c.claimedBy='Vishnu VS';AUTHOR_CART.set(String(id),{id:String(id),t:'C'+id+' · '+c.m+' candidate',module:c.m,st:'man',ext:true});}});
+  BL_SEL.clear();showTab('ui');uiMode('author');authorTab('create');
+  toast('Added '+ids.length+' backlog case'+(ids.length>1?'s':'')+' to your scripting cart');}
 /* ---------------- reviews (lead / manager) ---------------- */
 const REVIEWS=[
   {pr:218,author:'Vishnu VS',init:'V',col:'#3b82f6',branch:'vishnu/forms-delta-submit',ui:6,api:2,m:'Forms',cat:'Regression',status:'awaiting',age:'2h',risk:'low',note:'Delta required-field cases + submit-validation API'},
@@ -2586,10 +2592,18 @@ function bgCreateAll(){
 function openSetup(){document.getElementById('setup').classList.add('on');renderSetup(false);document.getElementById('setupLog').innerHTML='';}
 function closeSetup(){document.getElementById('setup').classList.remove('on');}
 function renderSetup(done){
-  document.getElementById('setupList').innerHTML=SETUP_STEPS.map(([n,v],i)=>`
-    <div class="row" style="padding:9px 11px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;background:var(--panel2)">
-      <span class="b">${n}</span><span class="muted" style="margin-left:8px;font-size:12px">${v}</span><div class="sp"></div>
-      ${(done||i<4)?'<span class="chip" style="color:#34d399">✓ installed</span>':'<button class="btn ghost sm" style="background:rgba(245,158,11,.15);color:#fbbf24;border-color:rgba(245,158,11,.45)" onclick="runSetup()">Install</button>'}</div>`).join('');
+  const total=SETUP_STEPS.length, installed=done?total:4, pct=Math.round(installed/total*100);
+  const icons=['🔧','⬢','🎭','🤖','⎇'];
+  document.getElementById('setupList').innerHTML=`
+    <div class="row" style="gap:16px;margin-bottom:14px">
+      <div>${ringSVG(pct,'setup','#34d399','#22d3ee')}</div>
+      <div><div class="b" style="font-size:16px">${installed} of ${total} ready</div>
+        <div class="hint" style="margin-top:4px">${done?'Everything installed — you\'re good to go 🎉':'Toolchain detected. Finish to clone the repo & check out pre_main.'}</div></div></div>
+    ${SETUP_STEPS.map(([n,v],i)=>{const ok=done||i<4;return `<div class="row" style="padding:10px 12px;border:1px solid var(--line);border-radius:11px;margin-bottom:8px;background:var(--panel2)">
+      <span class="ic" style="width:28px;height:28px;border-radius:8px;display:grid;place-items:center;flex:none;background:${ok?'#34d399':'rgba(245,158,11,.2)'};color:${ok?'#06121f':'#fbbf24'};font-size:14px">${icons[i]||'●'}</span>
+      <div style="margin-left:4px"><span class="b">${n}</span><div class="hint">${v}</div></div><div class="sp"></div>
+      ${ok?'<span class="chip" style="color:#34d399">✓ installed</span>':'<span class="chip" style="color:#fbbf24">pending</span>'}</div>`;}).join('')}`;
+  animateRing('setup');
 }
 function runSetup(){
   const btn=document.getElementById('setupBtn');btn.disabled=true;btn.textContent='Installing…';
@@ -2707,14 +2721,25 @@ function openActivity(){document.getElementById('activity').classList.add('on');
 function closeActivity(){document.getElementById('activity').classList.remove('on');}
 function renderActivity(){
   const el=document.getElementById('activityBody'); if(!el)return;
-  const run=ACTIVITY.filter(a=>a.status==='running').length;
-  const ln=document.getElementById('liveN'); if(ln) ln.textContent=run;
-  el.innerHTML=`<table style="font-size:12.5px"><thead><tr><th>User</th><th>Case</th><th>Module</th><th>Environment</th><th>Status</th><th>Elapsed</th></tr></thead>
-    <tbody>${ACTIVITY.map(a=>`<tr><td><span class="av ${a.k}">${a.k}</span> <span class="b" style="margin-left:6px">${a.user}</span></td>
-      <td class="b">${a.case}</td><td>${a.module}</td><td>${a.env}</td>
-      <td>${a.status==='running'?'<span class="status pass">● running</span>':'<span class="chip" style="color:#fbbf24">⏳ queued</span>'}</td>
-      <td class="muted">${a.since}</td></tr>`).join('')}</tbody></table>
-    <div class="hint" style="margin-top:10px">Reshma is auto-queued behind Varsha on the same case+env (Forms · C254548 · Staging) — it will start automatically when Varsha's run releases.</div>`;
+  const running=ACTIVITY.filter(a=>a.status==='running').length, queued=ACTIVITY.filter(a=>a.status==='queued').length;
+  const users=new Set(ACTIVITY.map(a=>a.user)).size;
+  const ln=document.getElementById('liveN'); if(ln) ln.textContent=running;
+  const col={V:'#22d3ee',Va:'#a78bfa',Vi:'#34d399',R:'#f59e0b'};
+  el.innerHTML=`
+    <div class="mrow" style="grid-template-columns:repeat(4,1fr);margin-bottom:14px">
+      <div class="stat"><div class="accent" style="background:#34d399"></div><div class="v" data-c="${running}">0</div><div class="l">● Running now</div></div>
+      <div class="stat"><div class="accent" style="background:#f59e0b"></div><div class="v" data-c="${queued}">0</div><div class="l">⏳ Auto-queued</div></div>
+      <div class="stat"><div class="accent" style="background:#a78bfa"></div><div class="v" data-c="${users}">0</div><div class="l">👥 Testers active</div></div>
+      <div class="stat"><div class="accent" style="background:#22d3ee"></div><div class="v">7.4 s</div><div class="l">⚡ Avg run time</div></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:9px">${ACTIVITY.map(a=>`<div class="cartrow" style="border-left:3px solid ${a.status==='running'?'#34d399':'#f59e0b'}">
+      <span class="av2" style="width:32px;height:32px;font-size:12px;flex:none;background:${col[a.k]||'#64748b'}">${a.k}</span>
+      <div style="flex:1;min-width:0"><div class="b">${a.user}</div><div class="hint">${a.case} · ${a.module}</div></div>
+      <span class="chip">${a.env}</span>
+      ${a.status==='running'?`<span class="status pass" style="white-space:nowrap"><span class="spin"></span> running · ${a.since}</span>`:`<span class="chip" style="color:#fbbf24;white-space:nowrap">⏳ queued</span>`}
+    </div>`).join('')}</div>
+    <div class="hint" style="margin-top:12px">Everyone runs with <b>their own accounts</b> — never a shared session. Identical <b>case + environment</b> runs <b>auto-queue</b> so they don't contend for the same data (Reshma is queued behind Varsha on Forms · C254548 · Staging, and starts automatically when Varsha's run releases). Results go to per-run TestRail entries.</div>`;
+  document.querySelectorAll('#activityBody [data-c]').forEach(n=>animateCount(n,+n.dataset.c,700,nf));
 }
 
 /* init */
