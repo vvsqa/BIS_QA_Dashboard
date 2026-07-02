@@ -1312,11 +1312,154 @@ function runFromDrawer(){
   let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;log.appendChild(d);log.scrollTop=log.scrollHeight;setTimeout(t,280);}
     else{const d=document.createElement('div');d.className='ok';d.style.marginTop='8px';d.textContent='● '+cases.length+' case'+(cases.length>1?'s':'')+' passed'+(RUN_REPORT==='plain'?' · plain (not reported)':' · reported');log.appendChild(d);toast('Run complete');}})();
 }
-/* ----- Author & Manage mode (reuses the existing tree + authoring workspace for now) ----- */
+/* ================= AUTHOR & MANAGE (no-code, AI-first) ================= */
+let AUTHOR_TAB='create', AC_VP=[], AC_DC=[], AC_INPUT='describe', AC_BUILT=false, AC_FIXED=false, AC_CODE=false;
+let MY_SCRIPTED=[
+  {id:254548,t:'Copy a Slide element to the Content Library',m:'Forms',status:'healthy',runs:42,created:'Jun 12',edited:'Jun 20',last:'2h ago · pass'},
+  {id:217089,t:'Schedule event via Add Event modal',m:'Classroom Calendar',status:'flaky',runs:31,created:'May 28',edited:'Jun 18',last:'5h ago · pass (1 retry)',issue:'Intermittent timing on the calendar animation — needs a stable wait'},
+  {id:219560,t:'Create user with Client Admin role',m:'User Management',status:'healthy',runs:26,created:'May 30',edited:'—',last:'1d ago · pass'},
+  {id:220110,t:'Export Training Matrix to Excel',m:'Training Matrix',status:'failing',runs:8,created:'Jun 22',edited:'Jun 25',last:'3h ago · fail',issue:'The "Export" button label changed to "Export ▾" after the redesign — locator drift'},
+];
+const OTHERS_CASE={id:219561,t:'Bulk import users from CSV',m:'User Management',owner:'Vivek',status:'healthy',runs:33,created:'May 20',last:'1d ago · pass'};
 function renderAuthor(){
-  document.getElementById('uiAuthor').innerHTML=`<div class="split"><div class="tree" id="uiTree"></div><div class="panel" id="uiPanel"><div class="muted" style="padding:30px;text-align:center">Pick a case to author, or click ＋ New automation.<br>AI writes the test — no code needed.</div></div></div>`;
-  renderUITree();
+  document.getElementById('uiAuthor').innerHTML=`
+    <div class="row" style="margin-bottom:12px">
+      <div class="seg" id="authSub">
+        <button data-t="create" onclick="authorTab('create')">✦ Create</button>
+        <button data-t="maintain" onclick="authorTab('maintain')">🩺 Maintain</button>
+        <button data-t="cases" onclick="authorTab('cases')">📚 My cases</button>
+      </div><div class="sp"></div><span class="hint" id="authSubHint"></span></div>
+    <div id="authBody"></div>`;
+  authorTab(AUTHOR_TAB);
 }
+function authorTab(t){
+  AUTHOR_TAB=t;
+  document.querySelectorAll('#authSub button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  document.getElementById('authSubHint').textContent = t==='create'?'Plain English → AI writes the test. No code required.'
+    : t==='maintain'?'Fix flaky or broken cases with one click — AI heals them.'
+    : 'Everything you automated — history, edit, remove, or request a merge.';
+  const el=document.getElementById('authBody');
+  el.innerHTML = t==='create'?acHTML() : t==='maintain'?amHTML() : mcHTML();
+  if(t==='create'){acInput(AC_INPUT);renderVP();renderDC();}
+}
+/* ---- Create (no-code AI authoring) ---- */
+function acHTML(){
+  if(!AC_VP.length) AC_VP=['The "Copied to Content Library" message appears','The library slide count goes up by 1'];
+  return `<div class="grid" style="grid-template-columns:1.35fr 1fr;align-items:start">
+    <div>
+      <div class="card" style="margin-bottom:14px"><div class="seclbl" style="margin-top:0">① What do you want to test?</div>
+        <div class="row" style="gap:8px;margin-bottom:8px"><select id="acMod" style="flex:1"><option>Forms</option>${MODULES.slice(1).map(m=>`<option>${m.m}</option>`).join('')}</select>
+          <select id="acCat" style="width:130px"><option>Smoke</option><option>Regression</option><option>Sanity</option></select></div>
+        <div class="seg" style="margin-bottom:8px"><button class="${AC_INPUT==='describe'?'on':''}" onclick="acInput('describe')">✍️ Describe it</button><button class="${AC_INPUT==='record'?'on':''}" onclick="acInput('record')">⏺ Record it</button></div>
+        <div id="acInputArea"></div></div>
+      <div class="card" style="margin-bottom:14px"><div class="row"><div class="seclbl" style="margin:0">② What should it check?</div><div class="sp"></div><span class="hint">plain English — no code</span></div>
+        <div id="acVP" style="margin-top:8px"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><input id="acVPin" placeholder="e.g. the total updates without a page refresh" style="flex:1" onkeydown="if(event.key==='Enter')acAddVP()"/><button class="btn ghost sm" onclick="acAddVP()">+ add check</button></div></div>
+      <div class="card"><div class="row"><div class="seclbl" style="margin:0">③ What data does it need?</div><div class="sp"></div><span class="hint">AI can create it during the run</span></div>
+        <div id="acDC" style="margin-top:8px"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><select id="acDCpick" style="flex:1">${injOptions()}</select><button class="btn ghost sm" onclick="acAddDC()">+ create this data</button></div></div>
+    </div>
+    <div>
+      <div class="card"><div class="seclbl" style="margin-top:0">Build</div>
+        <button class="btn ai" style="width:100%;justify-content:center" onclick="acBuild()">✦ Let AI build the test</button>
+        <div class="hint" style="margin-top:8px">You describe it in words; AI writes and verifies the automation. You never have to touch code.</div>
+        <div id="acGen" style="margin-top:12px"></div>
+        <div id="acResult"></div></div>
+    </div></div>`;
+}
+function acInput(v){AC_INPUT=v;
+  document.querySelectorAll('#authBody .seg button').forEach(b=>{if(b.textContent.includes('Describe'))b.classList.toggle('on',v==='describe');if(b.textContent.includes('Record'))b.classList.toggle('on',v==='record');});
+  const a=document.getElementById('acInputArea');if(!a)return;
+  a.innerHTML = v==='describe'
+    ? `<textarea id="acDesc" style="min-height:120px">As an Instructor, copy a slide to the Content Library so it can be reused.
+1. Open the Slide Library
+2. Select the slide "Automation 101"
+3. Click "Copy to Library"
+4. Confirm the destination</textarea><div class="hint" style="margin-top:6px">Write it like you'd explain it to a teammate. AI turns it into a reliable test.</div>`
+    : `<div class="row"><button class="btn ghost" onclick="toast('Browser opened — drive the workflow; we capture it')">⏺ Open browser &amp; record</button><span class="muted" style="font-size:12px">click through it once — AI turns your clicks into a test</span></div><div class="hint" id="acRecOut" style="margin-top:10px">Nothing recorded yet.</div>`;
+}
+function renderVP(){const el=document.getElementById('acVP');if(!el)return;
+  el.innerHTML=AC_VP.map((v,i)=>`<div class="vpt"><span class="ck">✓</span><span style="flex:1">${v}</span><span class="x" style="cursor:pointer;color:var(--faint)" onclick="acRemoveVP(${i})">✕</span></div>`).join('')||'<div class="hint">no checks yet — add what should be true after the steps run</div>';}
+function acAddVP(){const i=document.getElementById('acVPin');if(i&&i.value.trim()){AC_VP.push(i.value.trim());i.value='';renderVP();}}
+function acRemoveVP(i){AC_VP.splice(i,1);renderVP();}
+function renderDC(){const el=document.getElementById('acDC');if(!el)return;
+  el.innerHTML=AC_DC.length?AC_DC.map((d,i)=>`<div class="injstep"><span class="ic" style="background:${d.type==='api'?'#a78bfa':'#34d399'}">${d.type==='api'?'🔌':'🧪'}</span><div style="flex:1"><div class="b" style="font-size:12.5px">${d.name}</div><div class="hint">available as <span class="var">{{${d.out}}}</span></div></div><span class="x" onclick="acRemoveDC(${i})">✕</span></div>`).join(''):'<div class="hint">no extra data — the test uses what already exists</div>';}
+function acAddDC(){const v=document.getElementById('acDCpick').value;const [type,id]=v.split(':');let name,out;
+  if(type==='api'){let a;Object.values(APIS).forEach(g=>g.forEach(x=>{if(x.id===id)a=x}));name=a.name;out=a.name.replace(/[^a-zA-Z]/g,'')+'Id';}else{const d=DATAGEN.find(x=>x.id===id);name=d.name;out=d.out;}
+  AC_DC.push({type,id,name,out});renderDC();}
+function acRemoveDC(i){AC_DC.splice(i,1);renderDC();}
+function acBuild(){
+  AC_BUILT=false;AC_FIXED=false;
+  const ga=document.getElementById('acGen');ga.innerHTML='<div class="log" id="aclog"></div>';const l=document.getElementById('aclog');
+  const first=(document.getElementById('acDesc')&&document.getElementById('acDesc').value.split('\n')[0])||'your description';
+  const seq=[['dim','✦ AI is building your test — no code needed'],['info','▸ Understanding: '+first.slice(0,60)],['info','▸ Finding the right on-screen elements'],['info','▸ Adding your '+AC_VP.length+' check'+(AC_VP.length>1?'s':'')+(AC_DC.length?' + '+AC_DC.length+' data step':'')],['ok','✓ Test built and dry-verified']];
+  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,400)}else{AC_BUILT=true;acResult();toast('AI built your test');}})();
+}
+function acResult(){
+  const el=document.getElementById('acResult');const steps=(document.getElementById('acDesc')?document.getElementById('acDesc').value.split('\n').filter(x=>/^\d/.test(x.trim())):[]);
+  el.innerHTML=`<div style="border-top:1px dashed var(--line);margin-top:12px;padding-top:12px">
+    <div class="row"><span class="status pass">✓ AI built &amp; verified it</span><div class="sp"></div><a href="#" onclick="acToggleCode();return false" class="hint" id="acCodeLink">view generated code (advanced) ▸</a></div>
+    <div class="seclbl">The test, in plain steps</div>
+    <ol style="margin:0;padding-left:18px;font-size:12.5px">${(steps.length?steps:['Open the page','Do the action','Confirm the result']).map(s=>`<li style="margin:3px 0">${s.replace(/^\d+\.\s*/,'')}</li>`).join('')}</ol>
+    <div class="seclbl">Checks</div>${AC_VP.map(v=>`<div class="vpt"><span class="ck">✓</span><span>${v}</span></div>`).join('')}
+    <div id="acCodeBox" class="hide" style="margin-top:8px"><div class="pre">import { test, expect } from '@playwright/test';\n\ntest('Copy slide to Content Library @C-new', async ({ page }) =&gt; {\n  await loginAs('Instructor');\n  await page.goto('/content-library');\n  await page.getByRole('button', { name: 'Copy to Library' }).click();\n  await expect(page.getByText('Copied to Content Library')).toBeVisible();\n});</div><div class="hint" style="margin-top:4px">You never need to read or edit this — AI maintains it. Shown for the curious.</div></div>
+    <div class="row" style="margin-top:12px;gap:8px"><button class="btn" onclick="acTestRun()">▶ Test run</button><button class="btn green" onclick="acSave()">💾 Save to my cases</button></div>
+    <div id="acRun"></div></div>`;
+}
+function acToggleCode(){AC_CODE=!AC_CODE;document.getElementById('acCodeBox').classList.toggle('hide',!AC_CODE);document.getElementById('acCodeLink').textContent=(AC_CODE?'hide code ▾':'view generated code (advanced) ▸');}
+function acTestRun(){
+  const el=document.getElementById('acRun');el.innerHTML='<div class="log" id="acrun"></div>';const l=document.getElementById('acrun');
+  const fail=!AC_FIXED;
+  const seq=[['dim','$ running your test on Staging'],['ok','✓ Opened Slide Library'],['ok','✓ Selected "Automation 101"'],fail?['fail','✗ Couldn\'t find the button "Copy to Library"']:['ok','✓ Clicked "Copy to Library"'],...(fail?[]:[['ok','✓ "Copied to Content Library" appeared'],['ok','✓ Slide count went up by 1']])];
+  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,340)}else{
+    if(fail){const d=document.createElement('div');d.style.marginTop='8px';d.innerHTML='<div class="fail">● Test failed — but AI knows why</div>';l.appendChild(d);
+      el.innerHTML+=`<div style="border:1px solid rgba(245,158,11,.4);background:rgba(245,158,11,.10);border-radius:11px;padding:12px;margin-top:10px">
+        <div class="b" style="color:#fbbf24">🔧 AI spotted the problem</div><div class="hint" style="margin:6px 0">The button was renamed from <b>"Copy to Library"</b> to <b>"Copy to Content Library"</b>. AI can fix the test for you — no code needed.</div>
+        <button class="btn sm" onclick="acFix()">🔧 Let AI fix it &amp; re-run</button></div>`;
+    } else {const d=document.createElement('div');d.className='ok';d.style.marginTop='8px';d.textContent='● PASSED in 6.9s — your test is working';l.appendChild(d);toast('Test passes — ready to save');}
+  }})();
+}
+function acFix(){AC_FIXED=true;toast('AI updated the test');acTestRun();}
+function acSave(){if(!AC_BUILT){toast('Build the test first');return;}
+  const mod=document.getElementById('acMod').value, nid=260000+Math.floor(Math.abs(hash(''+AC_VP.join()))%9000);
+  MY_SCRIPTED.unshift({id:nid,t:(document.getElementById('acDesc')?document.getElementById('acDesc').value.split('\n')[0].replace(/^As an? [^,]+,\s*/i,''):'New case').slice(0,48),m:mod,status:AC_FIXED?'healthy':'healthy',runs:1,created:'just now',edited:'—',last:'just now · pass'});
+  toast('Saved C'+nid+' to My cases — commit it to push to your branch');authorTab('cases');
+}
+/* ---- Maintain (no-code healing) ---- */
+function amHTML(){
+  const need=MY_SCRIPTED.filter(c=>c.status!=='healthy');
+  return `<div class="card"><div class="row"><h3 style="margin:0">🩺 Cases that need attention</h3><span class="chip" style="margin-left:8px;color:${need.length?'#fbbf24':'#34d399'}">${need.length}</span>
+      <div class="sp"></div><span class="hint">AI heals flaky &amp; broken cases — you don't touch code</span></div>
+    <div style="margin-top:12px">${need.length?need.map(c=>`<div id="am-${c.id}" style="border:1px solid var(--line);border-radius:12px;padding:13px 14px;margin-bottom:10px;background:var(--panel2)">
+      <div class="row"><span class="badge2 ${c.status==='failing'?'man':'prog'}">${c.status==='failing'?'FAILING':'FLAKY'}</span><span class="b" style="margin-left:8px">C${c.id} · ${c.t}</span><span class="hint" style="margin-left:8px">${c.m}</span><div class="sp"></div><span class="hint">${c.last}</span></div>
+      <div class="hint" style="margin:8px 0"><b style="color:#fbbf24">Why:</b> ${c.issue||'Needs a re-verify.'}</div>
+      <div class="row" style="gap:8px"><button class="btn sm" onclick="amFix(${c.id})">🔧 Auto-fix with AI</button><button class="btn ghost sm" onclick="toast('Re-running C${c.id} to verify')">▶ Re-verify</button>
+        <div class="sp"></div><span class="hint">config:</span><select style="height:30px"><option>Staging</option><option>Pre</option></select><select style="height:30px"><option>repo defaults</option><option>my-data.json</option></select></div>
+      <div id="amlog-${c.id}"></div></div>`).join(''):'<div class="empty">🎉 All your cases are healthy — nothing to maintain.</div>'}</div></div>`;
+}
+function amFix(id){
+  const c=MY_SCRIPTED.find(x=>x.id===id);const box=document.getElementById('amlog-'+id);box.innerHTML='<div class="log" id="amlog">'+'</div>';const l=document.getElementById('amlog');
+  const seq=[['dim','✦ AI analysing the failure…'],['info','▸ '+(c.issue||'re-checking the flow')],['ok','✓ Updated the affected step'],['dim','$ re-running to verify'],['ok','✓ Passed — case is healthy again']];
+  let i=0;(function t(){if(i<seq.length){const[cl,x]=seq[i++];const d=document.createElement('div');d.className=cl;d.textContent=x;l.appendChild(d);l.scrollTop=l.scrollHeight;setTimeout(t,380)}else{c.status='healthy';c.last='just now · pass';c.edited='just now';toast('C'+id+' healed by AI ✓');setTimeout(()=>authorTab('maintain'),700);}})();
+}
+/* ---- My cases (history + CRUD + permissions) ---- */
+function mcHTML(){
+  const rows=MY_SCRIPTED.map(c=>mcRow(c,true)).join('')+mcRow(OTHERS_CASE,false);
+  return `<div class="card"><div class="row" style="margin-bottom:6px"><h3 style="margin:0">📚 Cases I've automated</h3><span class="chip" style="margin-left:8px">${MY_SCRIPTED.length}</span>
+      <div class="sp"></div><span class="hint">edit / remove your own · others → copy &amp; edit → request merge</span></div>
+    <div style="overflow:auto"><table style="font-size:12.5px"><thead><tr><th>Case</th><th>Module</th><th>Status</th><th>Runs</th><th>Created</th><th>Last edited</th><th>Last run</th><th>Actions</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+}
+function mcRow(c,mine){
+  const stc={healthy:'#34d399',flaky:'#fbbf24',failing:'#ef4444'}[c.status];
+  return `<tr><td class="b">C${c.id} · ${c.t}</td><td>${c.m}</td><td><span class="chip" style="color:${stc}">● ${c.status}</span></td><td>${c.runs}</td><td class="muted">${c.created}</td><td class="muted">${c.edited||'—'}</td><td class="muted">${c.last}</td>
+    <td style="white-space:nowrap">${mine
+      ? `<button class="runbtn" onclick="mcEdit(${c.id})">✎ edit</button> <button class="runbtn" onclick="mcMerge(${c.id})">⇪ request merge</button> <button class="runbtn" onclick="mcRemove(${c.id})" style="color:#fca5a5">🗑</button>`
+      : `<span class="hint" title="Scripted by ${c.owner} — you can't edit it directly">🔒 ${c.owner}'s</span> <button class="runbtn" onclick="mcCopyEdit(${c.id})">⧉ copy &amp; edit</button>`}</td></tr>`;
+}
+function mcEdit(id){AUTHOR_TAB='create';toast('Opening C'+id+' to edit — your case, fully editable');authorTab('create');}
+function mcMerge(id){toast('PR opened: feat/vishnu → pre_main for C'+id+' (a lead reviews & merges)');}
+function mcRemove(id){MY_SCRIPTED=MY_SCRIPTED.filter(c=>c.id!==id);toast('Removed C'+id+' (only removed from your branch)');authorTab('cases');}
+function mcCopyEdit(id){const nid=260000+Math.floor(Math.abs(hash('copy'+id))%9000);MY_SCRIPTED.unshift({id:nid,t:OTHERS_CASE.t+' (my copy)',m:OTHERS_CASE.m,status:'healthy',runs:0,created:'just now',edited:'just now',last:'—'});toast('Copied to C'+nid+' on your branch — edit it, then Request merge');authorTab('cases');}
 
 function renderUITree(){
   const tr=document.getElementById('uiTree');
