@@ -447,35 +447,7 @@
   <section id="t-maint" class="hide"></section>
 
   <!-- ===================== BACKLOG / CANDIDATES ===================== -->
-  <section id="t-backlog" class="hide">
-    <div class="grid" style="grid-template-columns:1fr 320px;align-items:start">
-      <div class="card">
-        <div class="row" style="margin-bottom:6px"><h3 style="margin:0">Automation backlog — what to automate next</h3>
-          <span class="muted" style="font-size:12px"><b id="blCount">1,240</b> candidates · ranked by ROI</span>
-          <div class="sp"></div><button class="btn sm" id="blBtn" onclick="backlogAutomate()" disabled>✦ Automate selected</button></div>
-        <div class="hint" style="margin-bottom:8px">Not-automated cases scored by reuse frequency × business criticality × execution volume — highest payback first.</div>
-        <div style="overflow:auto">
-          <table id="blTable">
-            <thead><tr><th style="width:26px"></th><th>Rank</th><th>Case</th><th>Module</th><th>Category</th><th>Reuse</th><th>Criticality</th><th>Executions</th><th>Est. saved</th></tr></thead>
-            <tbody></tbody>
-          </table>
-        </div>
-        <div class="row" style="margin-top:10px"><span class="muted" style="font-size:12px">1–12 of 1,240</span><div class="sp"></div>
-          <span class="muted" style="font-size:12px">◂ 1 2 3 4 … 104 ▸</span></div>
-      </div>
-      <div class="card">
-        <h3>Candidates by module</h3>
-        <div id="blByMod"></div>
-        <div class="legend" style="flex-direction:column;gap:6px;margin-top:12px">
-          <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px">Reuse legend</div>
-          <div><i style="background:#ef4444"></i>Critical / Very High</div>
-          <div><i style="background:#f59e0b"></i>High</div>
-          <div><i style="background:#3b82f6"></i>Medium</div>
-          <div><i style="background:#34d399"></i>Low</div>
-        </div>
-      </div>
-    </div>
-  </section>
+  <section id="t-backlog" class="hide"></section>
 
   <!-- ===================== REVIEWS (Lead / Manager) ===================== -->
   <section id="t-reviews" class="hide"></section>
@@ -615,6 +587,17 @@ const BACKLOG = [
   {id:222119,m:'Folders',cat:'Smoke',reuse:'Medium',crit:'Low',exec:498,save:1.9},
 ];
 const BL_BYMOD=[['Forms',420],['Online Course',310],['User Management',210],['Reporting',180],['Classroom Calendar',120]];
+// upcoming / active workload per module (tickets heading into QC that will drive re-test load)
+const BL_WORKLOAD={'Forms':{up:7,cur:4},'Reporting Dashboard':{up:3,cur:2},'Online Course':{up:4,cur:1},'User Management':{up:2,cur:2},'Classroom Calendar':{up:3,cur:2},'Reporting':{up:2,cur:1},'E-Commerce':{up:1,cur:1}};
+// tickets with upcoming/active workload whose cases aren't automated yet
+const BL_TICKETS=[
+  {id:21140,m:'Forms',status:'Upcoming',when:'next sprint',cases:6,exec:0,save:9.4,note:'Secure Form delta — large release incoming, will be re-tested every build'},
+  {id:20912,m:'Forms',status:'In QC',when:'active',cases:4,exec:1842,save:7.3,note:'Slide Content Library — already re-run 1,842× manually'},
+  {id:21096,m:'Reporting Dashboard',status:'In QC',when:'this week',cases:5,exec:0,save:6.1,note:'New completion widgets — high regression surface'},
+  {id:21109,m:'Online Course',status:'Upcoming',when:'next sprint',cases:5,exec:0,save:5.2,note:'Advanced-tab rework'},
+  {id:19148,m:'Classroom Calendar',status:'In QC',when:'this week',cases:3,exec:640,save:3.8,note:'Master-cert default logic'},
+];
+let BL_VIEW='module';
 const SETUP_STEPS=[['Git','v2.45.1'],['Node.js ≥ 18','v20.12.2'],['Playwright (Chromium)','v1.44.0'],['Claude CLI','v1.0.9'],['Clone repo + checkout pre_main','BIS automation repo']];
 // TestRail runs → the automated cases added under that ticket/run (fetched by Run ID)
 const RUNS = {
@@ -2232,28 +2215,67 @@ function toast(m){const t=document.getElementById('toast');t.textContent=m;t.cla
 /* ---------------- backlog / candidates ---------------- */
 let BL_SEL=new Set();
 function reuseColor(r){return {Critical:'#ef4444','Very High':'#ef4444',High:'#f59e0b',Medium:'#3b82f6',Low:'#34d399'}[r]||'#9fb0c9';}
-function renderBacklog(){
-  const tb=document.querySelector('#blTable tbody');if(!tb)return;tb.innerHTML='';
-  BACKLOG.forEach((c,i)=>{
-    const tr=document.createElement('tr');tr.className='mod';
-    tr.innerHTML=`<td><input type="checkbox" ${BL_SEL.has(c.id)?'checked':''} onclick="blToggle(${c.id})"/></td>
-      <td class="b">${i+1}</td><td class="b">C${c.id}</td><td>${c.m}</td>
-      <td><span class="chip ${c.cat==='Smoke'?'smoke':'reg'}">${c.cat}</span></td>
-      <td><span class="chip" style="color:${reuseColor(c.reuse)}">${c.reuse}</span></td>
-      <td class="muted">${c.crit}</td><td>${c.exec.toLocaleString()}</td><td class="b" style="color:#34d399">${c.save}h</td>`;
-    tb.appendChild(tr);
-  });
-  const mx=Math.max(...BL_BYMOD.map(x=>x[1]));
-  document.getElementById('blByMod').innerHTML=BL_BYMOD.map(([m,v])=>`<div class="row" style="margin:6px 0;font-size:12px"><span style="width:120px" class="muted">${m}</span><div class="bar" style="flex:1;height:9px"><i style="width:${v/mx*100}%;background:linear-gradient(90deg,#7c3aed,#a78bfa)"></i></div><span class="b" style="width:34px;text-align:right">${v}</span></div>`).join('');
-  blUpdateBtn();
+function blMods(){
+  return MODULES.map(m=>{const manual=m.total-m.auto, cov=pct(m.auto,m.total), wl=BL_WORKLOAD[m.m]||{up:Math.abs(hash(m.m))%3,cur:Math.abs(hash(m.m+'c'))%2};
+    const score=Math.round((m.exec/1000)*3 + manual*0.02 + wl.up*6 + wl.cur*4 + (100-cov)*0.3);
+    return {m:m.m,manual,exec:m.exec,cov,up:wl.up,cur:wl.cur,saveable:Math.max(4,Math.round(manual*0.35)),score};
+  }).sort((a,b)=>b.score-a.score);
 }
+function renderBacklog(){
+  const el=document.getElementById('t-backlog');if(!el)return;const mods=blMods();
+  const totCand=mods.reduce((s,m)=>s+m.manual,0), totSave=mods.reduce((s,m)=>s+m.saveable,0);
+  const highN=mods.filter(m=>m.score>=60).length, avgCov=Math.round(mods.reduce((s,m)=>s+m.cov,0)/mods.length);
+  const nav=[['module','🧩 By module'],['ticket','🎫 By ticket'],['case','📝 By case']].map(([v,l])=>`<button class="btn ${BL_VIEW===v?'':'ghost'} sm" onclick="blView('${v}')">${l}</button>`).join('');
+  el.innerHTML=`
+    <div class="sec-head"><h2>🎯 Automation backlog — what to automate next</h2><span class="sub">ranked by execution volume, backlog size & upcoming workload — to add speed, coverage & value</span></div>
+    <div class="mrow" style="margin-bottom:14px">
+      <div class="stat"><div class="accent" style="background:#3b82f6"></div><div class="v" data-c="${totCand}">0</div><div class="l">🧩 Candidate cases</div></div>
+      <div class="stat"><div class="accent" style="background:#f59e0b"></div><div class="v" data-c="${totSave}" data-suf=" h">0</div><div class="l">⏱️ Est. hours saveable</div></div>
+      <div class="stat"><div class="accent" style="background:#ef4444"></div><div class="v" data-c="${highN}">0</div><div class="l">🔥 High-priority modules</div></div>
+      <div class="stat"><div class="accent" style="background:#22d3ee"></div><div class="v" data-c="${avgCov}" data-suf="%">0</div><div class="l">📊 Avg module coverage</div></div>
+    </div>
+    <div class="row" style="margin-bottom:12px">${nav}<div class="sp"></div><button class="btn sm" id="blBtn" onclick="backlogAutomate()" disabled>✦ Automate selected</button></div>
+    <div id="blBody"></div>`;
+  document.querySelectorAll('#t-backlog [data-c]').forEach(n=>animateCount(n,+n.dataset.c,1100,n.dataset.suf?(x=>nf(x)+n.dataset.suf):nf));
+  blRenderBody();blUpdateBtn();
+}
+function blView(v){BL_VIEW=v;renderBacklog();}
+function blRenderBody(){const el=document.getElementById('blBody');if(!el)return;el.innerHTML=BL_VIEW==='module'?blByModule():BL_VIEW==='ticket'?blByTicket():blByCase();}
+function blByModule(){
+  const mods=blMods();const mx=Math.max(...mods.map(m=>m.score))||1;
+  return `<div class="card"><div style="overflow:auto"><table style="font-size:12.5px"><thead><tr><th>Module</th><th>Not automated</th><th>Executions</th><th>Upcoming</th><th>Active</th><th>Coverage</th><th>Est. saved</th><th>Automation opportunity</th><th></th></tr></thead><tbody>
+    ${mods.map(m=>{const pr=m.score>=60?['High','#ef4444']:m.score>=35?['Medium','#f59e0b']:['Low','#34d399'];
+      return `<tr><td class="b">${m.m}</td><td>${nf(m.manual)}</td><td>${nf(m.exec)}</td><td>${m.up?`<span class="chip" style="color:#a78bfa">${m.up}</span>`:'<span class="faint">—</span>'}</td><td>${m.cur?`<span class="chip" style="color:#22d3ee">${m.cur}</span>`:'<span class="faint">—</span>'}</td>
+        <td><div class="row" style="gap:6px"><div class="bar" style="width:50px"><i style="width:${m.cov}%"></i></div><span class="muted">${m.cov}%</span></div></td>
+        <td class="b" style="color:#34d399">${m.saveable}h</td>
+        <td><div class="row" style="gap:8px"><div class="bar" style="width:80px;height:9px"><i style="width:${(m.score/mx*100).toFixed(0)}%;background:linear-gradient(90deg,#7c3aed,#22d3ee)"></i></div><span class="chip" style="color:${pr[1]}">${pr[0]}</span></div></td>
+        <td><button class="runbtn" onclick="blAutomateModule('${m.m}')">automate ▸</button></td></tr>`;}).join('')}
+    </tbody></table></div>
+    <div class="hint" style="margin-top:10px">💡 Opportunity = execution volume × backlog size × upcoming workload, minus current coverage. Automating the top modules frees the most manual effort and lifts coverage fastest.</div></div>`;
+}
+function blByTicket(){
+  return `<div class="card"><div class="hint" style="margin-bottom:10px">Tickets with upcoming or active workload whose cases aren't automated yet — automate <b>before</b> the re-test load hits.</div>
+   <div style="overflow:auto"><table style="font-size:12.5px"><thead><tr><th>Ticket</th><th>Module</th><th>Status</th><th>When</th><th>Not-automated</th><th>Executions</th><th>Est. saved</th><th></th></tr></thead><tbody>
+   ${BL_TICKETS.map(t=>`<tr><td class="b">#${t.id}</td><td>${t.m}</td><td><span class="chip" style="color:${t.status==='Upcoming'?'#a78bfa':'#22d3ee'}">${t.status}</span></td><td class="muted">${t.when}</td><td><span class="chip" style="color:#f59e0b">${t.cases}</span></td><td>${t.exec?nf(t.exec):'—'}</td><td class="b" style="color:#34d399">${t.save}h</td><td><button class="runbtn" onclick="blAutomateTicket(${t.id})">automate ▸</button></td></tr>
+     <tr><td></td><td colspan="7" class="muted" style="font-size:11.5px;padding:0 0 6px">${t.note}</td></tr>`).join('')}
+   </tbody></table></div></div>`;
+}
+function blByCase(){
+  const mx=Math.max(...BACKLOG.map(c=>c.exec))||1;
+  return `<div class="card"><div class="hint" style="margin-bottom:8px">Individual cases ranked by payback — reuse × criticality × execution volume. Tick to automate as a batch.</div>
+   <div style="overflow:auto"><table style="font-size:12.5px"><thead><tr><th style="width:26px"></th><th>Rank</th><th>Case</th><th>Module</th><th>Reuse</th><th>Criticality</th><th>Executions</th><th>Why automate</th><th>Est. saved</th></tr></thead><tbody>
+   ${BACKLOG.map((c,i)=>`<tr><td><input type="checkbox" ${BL_SEL.has(c.id)?'checked':''} onclick="blToggle(${c.id})"/></td><td class="b">${i+1}</td><td class="b">C${c.id}</td><td>${c.m}</td>
+     <td><span class="chip" style="color:${reuseColor(c.reuse)}">${c.reuse}</span></td><td class="muted">${c.crit}</td>
+     <td><div class="row" style="gap:6px"><div class="bar" style="width:48px"><i style="width:${(c.exec/mx*100).toFixed(0)}%;background:linear-gradient(90deg,#7c3aed,#22d3ee)"></i></div><span>${nf(c.exec)}</span></div></td>
+     <td class="hint">${blWhy(c)}</td><td class="b" style="color:#34d399">${c.save}h</td></tr>`).join('')}
+   </tbody></table></div></div>`;
+}
+function blWhy(c){return c.exec>1200?'run '+nf(c.exec)+'× — big manual drag':c.crit==='High'?'business-critical path':c.reuse==='Critical'?'reused everywhere':'frequent regression';}
+function blAutomateModule(m){showTab('ui');uiMode('author');authorTab('create');authSetSrc('module');const w=document.querySelector('#authSrcList .modwrap[data-mod="'+m+'"]');if(w)w.querySelector('.mbody').classList.remove('hide');toast('Opening '+m+' not-automated cases to automate');}
+function blAutomateTicket(id){showTab('ui');uiMode('author');authorTab('create');authSetSrc('ticket');setTimeout(()=>{const i=document.getElementById('authTicketId');if(i){i.value=id;authLoadTicket();}},60);toast('Loading ticket #'+id+' cases to automate');}
 function blToggle(id){BL_SEL.has(id)?BL_SEL.delete(id):BL_SEL.add(id);blUpdateBtn();}
 function blUpdateBtn(){const b=document.getElementById('blBtn');if(!b)return;b.disabled=!BL_SEL.size;b.textContent='✦ Automate selected'+(BL_SEL.size?' ('+BL_SEL.size+')':'');}
-function backlogAutomate(){
-  if(!BL_SEL.size)return;
-  AUTO_LIST=BACKLOG.filter(c=>BL_SEL.has(c.id)).map(c=>({id:c.id,t:c.m+' candidate',module:c.m}));
-  showTab('ui');renderAutomateWorkspace('Automate '+AUTO_LIST.length+' backlog case'+(AUTO_LIST.length>1?'s':''));
-}
+function backlogAutomate(){if(!BL_SEL.size)return;const n=BL_SEL.size;showTab('ui');uiMode('author');authorTab('create');toast('Queued '+n+' backlog case'+(n>1?'s':'')+' to automate');}
 /* ---------------- reviews (lead / manager) ---------------- */
 const REVIEWS=[
   {pr:218,author:'Vishnu VS',init:'V',col:'#3b82f6',branch:'vishnu/forms-delta-submit',ui:6,api:2,m:'Forms',cat:'Regression',status:'awaiting',age:'2h',risk:'low',note:'Delta required-field cases + submit-validation API'},
@@ -2284,22 +2306,25 @@ function renderReviews(){
       <td><span class="chip" style="color:${col}">${lbl}</span>${r.risk==='med'?' <span class="chip" style="color:#f59e0b">⚠ flaky</span>':''}</td>
       <td class="muted">${r.age}</td><td>${act}</td></tr>
       <tr><td></td><td colspan="7" class="muted" style="font-size:11.5px;padding:0 0 4px">${r.note}</td></tr>`;}).join('');
+  const S=[['📥','Open PRs',open.length,'#f59e0b',0],['🧩','Cases awaiting merge',awaitingCases,'#3b82f6',0],['✓','Approved this week',approvedWk,'#34d399',0],['⏱️','Avg review time','4.2 h','#22d3ee',1],['📈','Coverage Δ / mo','+1.8%','#7c3aed',1],['💰','Hours saved / mo','86 h','#34d399',1]];
   document.getElementById('t-reviews').innerHTML=`
-    <div class="card" style="margin-bottom:14px"><div class="row"><div><h3>Reviews — lead &amp; manager</h3><div class="hint">Approve engineers' own-branch automation into <b>pre_main</b>, and track contribution &amp; ROI.</div></div></div>
-      <div style="display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-top:14px">${K.map(([l,v,c])=>`<div class="kpi"><div class="accent" style="background:${c}"></div><div class="big" style="font-size:21px">${v}</div><div class="lbl">${l}</div></div>`).join('')}</div></div>
+    <div class="sec-head"><h2>✅ Reviews — approve automation into pre_main</h2><span class="sub">engineers push to their own branch; a lead reviews & merges to pre_main · track contribution & ROI</span></div>
+    <div class="mrow" style="grid-template-columns:repeat(6,1fr);margin-bottom:14px">${S.map(([ic,l,v,col,plain])=>`<div class="stat"><div class="accent" style="background:${col}"></div><div class="v" ${plain?'':`data-c="${v}"`}>${plain?v:0}</div><div class="l">${ic} ${l}</div></div>`).join('')}</div>
     <div class="grid" style="grid-template-columns:1.55fr 1fr">
-      <div class="card"><div class="row"><h3>PR review queue</h3><div class="sp"></div><span class="hint">user branch → pre_main · manual merge by a lead</span></div>
-        <table style="font-size:12.5px;margin-top:8px"><thead><tr><th>PR</th><th>Author / branch</th><th>Cases</th><th>Module</th><th>Cat</th><th>Status</th><th>Age</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="card"><div class="row"><h3 style="margin:0">🔀 PR review queue</h3><div class="sp"></div><span class="hint">user branch → pre_main · manual merge by a lead</span></div>
+        <div style="overflow:auto"><table style="font-size:12.5px;margin-top:8px"><thead><tr><th>PR</th><th>Author / branch</th><th>Cases</th><th>Module</th><th>Cat</th><th>Status</th><th>Age</th><th></th></tr></thead><tbody>${rows}</tbody></table></div></div>
       <div style="display:flex;flex-direction:column;gap:14px">
-        <div class="card"><h3>Contribution (cases in review)</h3>${contrib.map(([n,d])=>`<div class="row" style="margin:8px 0;font-size:12px;gap:8px">${ava(d.init,d.col)}<span style="width:92px" class="muted">${n}</span><div class="bar" style="flex:1;height:9px"><i style="width:${d.c/mx*100}%;background:linear-gradient(90deg,#22d3ee,#34d399)"></i></div><span class="b" style="width:28px;text-align:right">${d.c}</span></div>`).join('')}</div>
-        <div class="card"><h3>ROI this month</h3>
-          <div class="row" style="justify-content:space-between;margin:7px 0"><span class="muted">Cases merged to pre_main</span><span class="b">38</span></div>
-          <div class="row" style="justify-content:space-between;margin:7px 0"><span class="muted">Automated executions</span><span class="b">2,140</span></div>
-          <div class="row" style="justify-content:space-between;margin:7px 0"><span class="muted">Engineer hours saved</span><span class="b" style="color:#34d399">86 h</span></div>
-          <div class="row" style="justify-content:space-between;margin:7px 0"><span class="muted">Coverage growth</span><span class="b" style="color:#22d3ee">+1.8%</span></div>
+        <div class="card"><div class="sec-head" style="margin:0 0 6px"><h2 style="font-size:13px">🏅 Contribution in review</h2><span class="sub">cases pending merge</span></div>${contrib.map(([n,d])=>`<div class="row" style="margin:9px 0;font-size:12.5px;gap:9px">${ava(d.init,d.col)}<span style="width:100px;flex:none" class="muted">${n}</span><div class="bar" style="flex:1;height:10px"><i class="rvbar" data-w="${(d.c/mx*100).toFixed(1)}" style="width:0;transition:width 1s cubic-bezier(.2,.7,.2,1);background:linear-gradient(90deg,#22d3ee,#34d399)"></i></div><span class="b" style="width:26px;text-align:right">${d.c}</span></div>`).join('')}</div>
+        <div class="card"><div class="sec-head" style="margin:0 0 6px"><h2 style="font-size:13px">💰 ROI this month</h2></div>
+          <div class="row" style="justify-content:space-between;margin:8px 0"><span class="muted">Cases merged to pre_main</span><span class="b">38</span></div>
+          <div class="row" style="justify-content:space-between;margin:8px 0"><span class="muted">Automated executions</span><span class="b">2,140</span></div>
+          <div class="row" style="justify-content:space-between;margin:8px 0"><span class="muted">Engineer hours saved</span><span class="b" style="color:#34d399">86 h</span></div>
+          <div class="row" style="justify-content:space-between;margin:8px 0"><span class="muted">Coverage growth</span><span class="b" style="color:#22d3ee">+1.8%</span></div>
         </div>
       </div>
     </div>`;
+  document.querySelectorAll('#t-reviews [data-c]').forEach(n=>animateCount(n,+n.dataset.c,900,nf));
+  growBars('#t-reviews .rvbar');
 }
 /* ---------------- bug generator (tool tab) ---------------- */
 const BG_FEATURES=[
@@ -2550,23 +2575,37 @@ function maintAction(x){
 }
 function renderMaintenance(){
   const el=document.getElementById('t-maint'); if(!el)return;
-  const c={needs_triage:0,healing:0,awaiting_verify:0,deprecated:0,verified:0};
-  HEAL_QUEUE.forEach(x=>c[x.status]=(c[x.status]||0)+1);
+  const c={needs_triage:0,healing:0,awaiting_verify:0,deprecated:0,verified:0};HEAL_QUEUE.forEach(x=>c[x.status]=(c[x.status]||0)+1);
+  const needWork=MAINT[1][1]+MAINT[2][1]+MAINT[3][1];
+  const flaky=[['Forms',6,'#a78bfa'],['Reporting',4,'#f59e0b'],['Classroom Calendar',3,'#34d399'],['User Management',2,'#22d3ee']];const fmx=Math.max(...flaky.map(x=>x[1]));
   el.innerHTML=`
-    <div class="card" style="margin-bottom:14px"><div class="row"><div>
-      <h3 style="margin:0">Maintenance — failures, auto-heal &amp; human re-verify</h3>
-      <div class="muted" style="font-size:12px">Failed automated runs are triaged by Claude → <b>auto-heal</b> code/locator drift (ambiguous cases ask you) → a <b>human re-runs</b> to confirm the fix before it's marked healthy.</div></div></div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:14px">
-        <div class="kpi"><div class="accent" style="background:#f59e0b"></div><div class="big">${c.needs_triage}</div><div class="lbl">Needs triage</div></div>
-        <div class="kpi"><div class="accent" style="background:#3b82f6"></div><div class="big">${c.healing}</div><div class="lbl">Under auto-heal</div></div>
-        <div class="kpi"><div class="accent" style="background:#a78bfa"></div><div class="big">${c.awaiting_verify}</div><div class="lbl">Awaiting human verify</div></div>
-        <div class="kpi"><div class="accent" style="background:#ef4444"></div><div class="big">${c.deprecated}</div><div class="lbl">Deprecated</div></div>
-        <div class="kpi"><div class="accent" style="background:#34d399"></div><div class="big">${c.verified}</div><div class="lbl">Verified this week</div></div>
-      </div></div>
-    <div class="card"><div class="row" style="margin-bottom:8px"><h3 style="margin:0">Cases in maintenance</h3><span class="muted" style="font-size:12px">auto-heal handles code/locator drift; product changes become bugs; humans confirm every fix</span></div>
-      <table style="font-size:12.5px"><thead><tr><th>Case</th><th>Module</th><th>Status</th><th>Reason</th><th>Healed</th><th>Action</th></tr></thead>
-      <tbody>${HEAL_QUEUE.map(x=>{const[lbl,col]=MSTAT[x.status];return `<tr id="mrow-${x.id}"><td class="b">C${x.id}</td><td>${x.m}</td><td><span class="chip" style="color:${col}">${lbl}</span></td><td class="muted">${x.reason}</td><td class="muted">${x.healedOn}</td><td>${maintAction(x)}</td></tr>`;}).join('')}</tbody></table>
+    <div class="sec-head"><h2>🩺 Maintenance — keep automation green</h2><span class="sub">failures → Claude triage → auto-heal drift → a human re-runs to confirm before it's healthy</span></div>
+    <div class="mrow" style="grid-template-columns:repeat(5,1fr);margin-bottom:14px">
+      <div class="stat"><div class="accent" style="background:#f59e0b"></div><div class="v" data-c="${c.needs_triage}">0</div><div class="l">🔺 Needs triage</div></div>
+      <div class="stat"><div class="accent" style="background:#3b82f6"></div><div class="v" data-c="${c.healing}">0</div><div class="l">🩹 Under auto-heal</div></div>
+      <div class="stat"><div class="accent" style="background:#a78bfa"></div><div class="v" data-c="${c.awaiting_verify}">0</div><div class="l">👁 Awaiting verify</div></div>
+      <div class="stat"><div class="accent" style="background:#ef4444"></div><div class="v" data-c="${c.deprecated}">0</div><div class="l">🗑 Deprecated</div></div>
+      <div class="stat"><div class="accent" style="background:#34d399"></div><div class="v" data-c="${c.verified}">0</div><div class="l">✓ Verified this week</div></div>
+    </div>
+    <div class="grid" style="grid-template-columns:1fr 1fr 1fr;margin-bottom:14px">
+      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🍩 Automated-suite health</h2></div>
+        <div class="row" style="gap:14px">${donutSVG(MAINT.map(x=>[x[1],x[2]]),nf(needWork),'need work')}
+          <div class="legend" style="flex-direction:column;gap:7px">${MAINT.map(x=>`<div><i style="background:${x[2]}"></i>${x[0]} · <b>${nf(x[1])}</b></div>`).join('')}</div></div></div>
+      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🩹 Auto-heal performance</h2></div>
+        <div class="row" style="justify-content:space-between;margin:8px 0"><span class="muted">AI-healed without a human</span><span class="b" style="color:#34d399">78%</span></div>
+        <div class="bar" style="height:8px"><i style="width:78%;background:linear-gradient(90deg,#10b981,#34d399)"></i></div>
+        <div class="row" style="justify-content:space-between;margin:12px 0 0"><span class="muted">Avg time to heal</span><span class="b">6.4 min</span></div>
+        <div class="row" style="justify-content:space-between;margin:8px 0"><span class="muted">Healed this week</span><span class="b">31</span></div>
+        <div class="row" style="justify-content:space-between;margin:8px 0"><span class="muted">Escalated to a bug</span><span class="b" style="color:#fca5a5">5</span></div></div>
+      <div class="card"><div class="sec-head" style="margin:0 0 8px"><h2 style="font-size:13px">🔥 Flakiest modules</h2></div>
+        ${flaky.map(([n,v,col])=>`<div class="row" style="margin:9px 0;font-size:12.5px;gap:10px"><span style="width:130px;flex:none" class="muted">${n}</span><div class="bar" style="flex:1;height:9px"><i style="width:${v/fmx*100}%;background:${col}"></i></div><span class="b" style="width:22px;text-align:right">${v}</span></div>`).join('')}
+        <div class="hint" style="margin-top:8px">Repeated drift here → candidates for more stable locators.</div></div>
+    </div>
+    <div class="card"><div class="row" style="margin-bottom:8px"><h3 style="margin:0">Cases in maintenance</h3><span class="hint" style="margin-left:auto">auto-heal handles code/locator drift; product changes become bugs; humans confirm every fix</span></div>
+      <div style="overflow:auto"><table style="font-size:12.5px"><thead><tr><th>Case</th><th>Module</th><th>Status</th><th>Reason</th><th>Healed</th><th>Action</th></tr></thead>
+      <tbody>${HEAL_QUEUE.map(x=>{const[lbl,col]=MSTAT[x.status];return `<tr id="mrow-${x.id}"><td class="b">C${x.id}</td><td>${x.m}</td><td><span class="chip" style="color:${col}">${lbl}</span></td><td class="muted">${x.reason}</td><td class="muted">${x.healedOn}</td><td>${maintAction(x)}</td></tr>`;}).join('')}</tbody></table></div>
     </div>`;
+  document.querySelectorAll('#t-maint [data-c]').forEach(n=>animateCount(n,+n.dataset.c,900,nf));
 }
 function verifyHeal(id){
   toast('Re-running C'+id+' to confirm the fix…');
