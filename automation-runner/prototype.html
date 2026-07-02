@@ -1268,24 +1268,59 @@ function renderDrawer(){
 }
 function setReport(v){RUN_REPORT=v;document.querySelectorAll('#drReport label').forEach((l,i)=>l.classList.toggle('on',(i===0)===(v==='plain')));document.getElementById('drRunId').classList.toggle('hide',v!=='testrail');}
 function drDataChange(v){document.getElementById('drOwn').classList.toggle('hide',v!=='own');}
-function addInjection(){const v=document.getElementById('injPick').value;const [type,id]=v.split(':');let name,out;
-  if(type==='api'){let a;Object.values(APIS).forEach(g=>g.forEach(x=>{if(x.id===id)a=x}));name=a.name;out=(a.created&&a.created!=='—')?a.created.replace(/[^a-zA-Z]/g,'')+'Id':'apiResult';}
-  else{const d=DATAGEN.find(x=>x.id===id);name=d.name;out=d.out;}
-  INJECT_SEQ.push({type,id,name,out});renderInj();toast('Injected '+name+' → {{'+out+'}}');}
+/* an injected step = source + editable inputs (defaults) + named captured var + scope (run/each/case) */
+function injDefaults(type,id){
+  if(type==='api'){const a=findAPI(id);return {name:a.name,inputs:(a.fields||[]).map(f=>[f[0],f[1]]),out:apiCaptured(a)||(a.name.replace(/[^a-zA-Z]/g,'')+'Result')};}
+  const d=DATAGEN.find(x=>x.id===id);return {name:d.name,inputs:[['count','1'],['option',d.creates]],out:d.out};
+}
+function injScopeLabel(s){return s.scope==='run'?'run setup · once':s.scope==='each'?'before each case':('before C'+(s.caseId||'?'));}
+function injCard(s,i,cases){
+  return `<div class="injstep" style="flex-direction:column;align-items:stretch;gap:0;padding:0;overflow:hidden">
+    <div class="row" style="gap:9px;padding:10px 11px"><span class="ic" style="background:${s.type==='api'?'#a78bfa':'#34d399'}">${s.type==='api'?'🔌':'🧪'}</span>
+      <div style="flex:1;min-width:0;cursor:pointer" onclick="injToggle(${i})"><div class="b" style="font-size:12.5px">${s.name}</div><div class="hint"><span class="chip" style="font-size:9.5px;padding:1px 6px">${injScopeLabel(s)}</span> captures <span class="var">{{${s.out}}}</span></div></div>
+      <span class="x" style="cursor:pointer" title="configure" onclick="injToggle(${i})">${s.open?'▾':'⚙'}</span><span class="x" onclick="removeInj(${i})">✕</span></div>
+    ${s.open?`<div style="border-top:1px solid var(--line);padding:10px 11px;background:rgba(255,255,255,.02)">
+      <div class="lbl" style="font-size:10.5px">Applies to</div>
+      <select onchange="injScope(${i},this.value)" style="width:100%;margin-bottom:9px">
+        <option value="run" ${s.scope==='run'?'selected':''}>Whole run — once, before all cases</option>
+        <option value="each" ${s.scope==='each'?'selected':''}>Before each case — fresh data per case</option>
+        ${cases.map(c=>`<option value="case:${c.id}" ${(s.scope==='case'&&String(s.caseId)===String(c.id))?'selected':''}>Before C${c.id} · ${c.t.slice(0,26)}</option>`).join('')}
+      </select>
+      <div class="lbl" style="font-size:10.5px">Inputs <span style="text-transform:none;color:var(--faint)">— defaults shown; edit for specific data</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:9px">${s.inputs.map((kv,j)=>`<div class="ctl" style="padding:4px 8px;gap:6px"><span class="muted" style="min-width:50px;font-size:11px">${kv[0]}</span><input value="${kv[1]}" oninput="injInput(${i},${j},this.value)" style="flex:1;height:28px"/></div>`).join('')||'<div class="hint">no inputs</div>'}</div>
+      <div class="lbl" style="font-size:10.5px">Capture output as</div>
+      <div class="ctl" style="padding:4px 8px;gap:4px"><span class="var">{{</span><input value="${s.out}" oninput="injOut(${i},this.value)" style="flex:1;height:28px"/><span class="var">}}</span></div>
+      <div class="hint" style="margin-top:6px">Later cases reference it as <span class="var">{{${s.out}}}</span>.</div>
+    </div>`:''}</div>`;
+}
+function addInjection(){const v=document.getElementById('injPick').value;const [type,id]=v.split(':');const def=injDefaults(type,id);
+  INJECT_SEQ.forEach(s=>s.open=false);
+  INJECT_SEQ.push({type,id,name:def.name,inputs:def.inputs.map(x=>x.slice()),out:def.out,scope:'run',caseId:null,open:true});
+  renderInj();toast('Added '+def.name+' — set its data & scope');}
 function removeInj(i){INJECT_SEQ.splice(i,1);renderInj();}
-function renderInj(){const el=document.getElementById('injList');if(!el)return;
-  if(!INJECT_SEQ.length){el.innerHTML='<div class="hint">No injected steps — UI cases run on their own.</div>';return;}
-  el.innerHTML=INJECT_SEQ.map((s,i)=>`<div class="injstep"><span class="ic" style="background:${s.type==='api'?'#a78bfa':'#34d399'}">${s.type==='api'?'🔌':'🧪'}</span>
-    <div style="flex:1;min-width:0"><div class="b" style="font-size:12.5px">${s.name}</div><div class="hint">captures <span class="var">{{${s.out}}}</span> for later cases</div></div><span class="x" onclick="removeInj(${i})">✕</span></div>`).join('');
+function injToggle(i){INJECT_SEQ[i].open=!INJECT_SEQ[i].open;renderInj();}
+function injScope(i,v){if(v.indexOf('case:')===0){INJECT_SEQ[i].scope='case';INJECT_SEQ[i].caseId=v.split(':')[1];}else{INJECT_SEQ[i].scope=v;INJECT_SEQ[i].caseId=null;}renderInj();}
+function injInput(i,j,v){INJECT_SEQ[i].inputs[j][1]=v;}
+function injOut(i,v){INJECT_SEQ[i].out=v;}
+function renderInj(){const el=document.getElementById('injList');if(!el)return;const cases=[...EXEC_CART.values()];
+  if(!INJECT_SEQ.length){el.innerHTML='<div class="hint">No injected steps — UI cases run on their own. Add one to create data before the run, before each case, or before a specific case.</div>';return;}
+  el.innerHTML=INJECT_SEQ.map((s,i)=>injCard(s,i,cases)).join('');
 }
 function runFromDrawer(){
   const env=document.getElementById('drEnv').value, cases=[...EXEC_CART.values()];
+  const setup=INJECT_SEQ.filter(s=>s.scope==='run'), each=INJECT_SEQ.filter(s=>s.scope==='each');
+  const perCase=id=>INJECT_SEQ.filter(s=>s.scope==='case'&&String(s.caseId)===String(id));
   const area=document.getElementById('drRunArea');area.innerHTML=`<div class="log" id="drlog" style="margin-top:14px"></div>`;const log=document.getElementById('drlog');
   const seq=[['dim','$ git fetch origin && git reset --hard origin/pre_main'],['info','✓ pre_main up to date']];
-  INJECT_SEQ.forEach(s=>{seq.push(['info','▸ '+(s.type==='api'?'API':'data-gen')+': '+s.name]);seq.push(['ok','✓ captured {{'+s.out+'}}']);});
-  cases.forEach(x=>{seq.push(['dim','$ playwright test --grep @C'+x.id+' (ENV='+env+')']);seq.push(['ok','✓ C'+x.id+' passed'+(INJECT_SEQ.length?' · used injected data':'')]);});
+  setup.forEach(s=>{seq.push(['info','▸ setup ('+(s.type==='api'?'API':'data-gen')+'): '+s.name+' · '+s.inputs.map(kv=>kv[0]+'='+kv[1]).join(', ')]);seq.push(['ok','✓ captured {{'+s.out+'}} (shared by all cases)']);});
+  cases.forEach(x=>{
+    each.forEach(s=>{seq.push(['info','▸ before C'+x.id+' ('+s.name+'): fresh {{'+s.out+'}}']);});
+    perCase(x.id).forEach(s=>{seq.push(['info','▸ before C'+x.id+' ('+s.name+'): '+s.inputs.map(kv=>kv[0]+'='+kv[1]).join(', ')]);seq.push(['ok','✓ captured {{'+s.out+'}}']);});
+    const used=setup.length||each.length||perCase(x.id).length;
+    seq.push(['dim','$ playwright test --grep @C'+x.id+' (ENV='+env+')']);seq.push(['ok','✓ C'+x.id+' passed'+(used?' · used injected data':'')]);
+  });
   seq.push(RUN_REPORT==='plain'?['info','▸ Plain run — validated, not reported; no case failed']:['info','▸ Reported '+cases.length+' results to TestRail run #'+((document.querySelector('#drRunId input')||{}).value||'—')]);
-  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;log.appendChild(d);log.scrollTop=log.scrollHeight;setTimeout(t,280);}
+  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;log.appendChild(d);log.scrollTop=log.scrollHeight;setTimeout(t,240);}
     else{const d=document.createElement('div');d.className='ok';d.style.marginTop='8px';d.textContent='● '+cases.length+' case'+(cases.length>1?'s':'')+' passed'+(RUN_REPORT==='plain'?' · plain (not reported)':' · reported');log.appendChild(d);toast('Run complete');}})();
 }
 /* ================= AUTHOR & MANAGE (no-code, AI-first) ================= */
@@ -1414,12 +1449,27 @@ function renderVP(){const el=document.getElementById('acVP');if(!el)return;
   el.innerHTML=AC_VP.map((v,i)=>`<div class="vpt"><span class="ck">✓</span><span style="flex:1">${v}</span><span class="x" style="cursor:pointer;color:var(--faint)" onclick="acRemoveVP(${i})">✕</span></div>`).join('')||'<div class="hint">no checks yet — add what should be true after the steps run</div>';}
 function acAddVP(){const i=document.getElementById('acVPin');if(i&&i.value.trim()){AC_VP.push(i.value.trim());i.value='';renderVP();}}
 function acRemoveVP(i){AC_VP.splice(i,1);renderVP();}
-function renderDC(){const el=document.getElementById('acDC');if(!el)return;
-  el.innerHTML=AC_DC.length?AC_DC.map((d,i)=>`<div class="injstep"><span class="ic" style="background:${d.type==='api'?'#a78bfa':'#34d399'}">${d.type==='api'?'🔌':'🧪'}</span><div style="flex:1"><div class="b" style="font-size:12.5px">${d.name}</div><div class="hint">available as <span class="var">{{${d.out}}}</span></div></div><span class="x" onclick="acRemoveDC(${i})">✕</span></div>`).join(''):'<div class="hint">no extra data — the test uses what already exists</div>';}
-function acAddDC(){const v=document.getElementById('acDCpick').value;const [type,id]=v.split(':');let name,out;
-  if(type==='api'){let a;Object.values(APIS).forEach(g=>g.forEach(x=>{if(x.id===id)a=x}));name=a.name;out=a.name.replace(/[^a-zA-Z]/g,'')+'Id';}else{const d=DATAGEN.find(x=>x.id===id);name=d.name;out=d.out;}
-  AC_DC.push({type,id,name,out});renderDC();}
+function dcScopeLabel(d){return d.scope==='all'?'for every case':('for C'+(d.caseId||'?'));}
+function renderDC(){const el=document.getElementById('acDC');if(!el)return;const cases=[...AUTHOR_CART.values()].filter(x=>!x.isNew);
+  if(!AC_DC.length){el.innerHTML='<div class="hint">no extra data — the test uses what already exists</div>';return;}
+  el.innerHTML=AC_DC.map((d,i)=>`<div class="injstep" style="flex-direction:column;align-items:stretch;gap:0;padding:0;overflow:hidden">
+    <div class="row" style="gap:9px;padding:9px 11px"><span class="ic" style="background:${d.type==='api'?'#a78bfa':'#34d399'}">${d.type==='api'?'🔌':'🧪'}</span>
+      <div style="flex:1;min-width:0;cursor:pointer" onclick="dcToggle(${i})"><div class="b" style="font-size:12.5px">${d.name}</div><div class="hint"><span class="chip" style="font-size:9.5px;padding:1px 6px">${dcScopeLabel(d)}</span> as <span class="var">{{${d.out}}}</span></div></div>
+      <span class="x" style="cursor:pointer" onclick="dcToggle(${i})">${d.open?'▾':'⚙'}</span><span class="x" onclick="acRemoveDC(${i})">✕</span></div>
+    ${d.open?`<div style="border-top:1px solid var(--line);padding:9px 11px;background:rgba(255,255,255,.02)">
+      ${cases.length>1?`<div class="lbl" style="font-size:10.5px">Used by</div><select onchange="dcScope(${i},this.value)" style="width:100%;margin-bottom:9px"><option value="all" ${d.scope==='all'?'selected':''}>Every case being automated</option>${cases.map(c=>`<option value="${c.id}" ${String(d.caseId)===String(c.id)?'selected':''}>Only C${c.id} · ${c.t.slice(0,26)}</option>`).join('')}</select>`:''}
+      <div class="lbl" style="font-size:10.5px">Inputs <span style="text-transform:none;color:var(--faint)">— defaults shown; edit for specific data</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:9px">${d.inputs.map((kv,j)=>`<div class="ctl" style="padding:4px 8px;gap:6px"><span class="muted" style="min-width:50px;font-size:11px">${kv[0]}</span><input value="${kv[1]}" oninput="dcInput(${i},${j},this.value)" style="flex:1;height:28px"/></div>`).join('')||'<div class="hint">no inputs</div>'}</div>
+      <div class="lbl" style="font-size:10.5px">Capture as</div><div class="ctl" style="padding:4px 8px;gap:4px"><span class="var">{{</span><input value="${d.out}" oninput="dcOut(${i},this.value)" style="flex:1;height:28px"/><span class="var">}}</span></div>
+    </div>`:''}</div>`).join('');}
+function acAddDC(){const v=document.getElementById('acDCpick').value;const [type,id]=v.split(':');const def=injDefaults(type,id);
+  AC_DC.forEach(d=>d.open=false);
+  AC_DC.push({type,id,name:def.name,inputs:def.inputs.map(x=>x.slice()),out:def.out,scope:'all',caseId:null,open:true});renderDC();}
 function acRemoveDC(i){AC_DC.splice(i,1);renderDC();}
+function dcToggle(i){AC_DC[i].open=!AC_DC[i].open;renderDC();}
+function dcScope(i,v){if(v==='all'){AC_DC[i].scope='all';AC_DC[i].caseId=null;}else{AC_DC[i].scope='case';AC_DC[i].caseId=v;}renderDC();}
+function dcInput(i,j,v){AC_DC[i].inputs[j][1]=v;}
+function dcOut(i,v){AC_DC[i].out=v;}
 function acBuild(){
   AC_BUILT=false;AC_FIXED=false;
   const cases=[...AUTHOR_CART.values()], n=cases.length||1;
