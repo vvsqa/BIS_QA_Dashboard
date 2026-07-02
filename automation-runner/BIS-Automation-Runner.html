@@ -234,6 +234,52 @@
   .flowbox.contrib{border-color:rgba(52,211,153,.5);background:linear-gradient(160deg,rgba(52,211,153,.12),var(--panel2))}
   .flowarrow{display:flex;align-items:center;padding:0 14px;color:var(--faint);font-size:20px}
   @media(max-width:760px){.flow{flex-wrap:wrap}.flowarrow{transform:rotate(90deg);padding:6px 0;width:100%;justify-content:center}}
+
+  /* ---------- UI Automation workbench ---------- */
+  .wb{display:grid;grid-template-columns:340px 1fr;gap:14px;align-items:start}
+  .wbrail{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:12px;position:sticky;top:12px}
+  .srclist{max-height:520px;overflow:auto;margin-top:8px}
+  .srcrow{display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:9px;cursor:pointer;font-size:12.5px}
+  .srcrow:hover{background:rgba(255,255,255,.04)}
+  .srcrow.pick{background:rgba(34,211,238,.10);border:1px solid rgba(34,211,238,.35)}
+  .stab{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:700;white-space:nowrap}
+  .stab .dot{width:9px;height:9px;border-radius:50%;flex:none}
+  .spark{display:inline-flex;gap:2px;align-items:flex-end;height:16px}
+  .spark i{width:3px;border-radius:1px;display:block}
+  .runcard{border:1px solid var(--line);border-radius:12px;padding:11px 12px;margin-bottom:9px;cursor:pointer;background:var(--panel2)}
+  .runcard:hover{border-color:var(--acc)}
+  .runcard.pick{border-color:rgba(34,211,238,.55);background:linear-gradient(160deg,rgba(34,211,238,.10),var(--panel2))}
+  .cart{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;min-height:220px}
+  .cartrow{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);border-radius:11px;margin-bottom:8px;background:var(--panel2)}
+  .cartrow .x{margin-left:auto;color:var(--faint);cursor:pointer;font-weight:800;padding:2px 6px;border-radius:6px}
+  .cartrow .x:hover{color:#fca5a5;background:rgba(239,68,68,.12)}
+  .empty{border:1.5px dashed var(--line);border-radius:12px;padding:30px 16px;text-align:center;color:var(--faint)}
+  .cartbar{display:flex;align-items:center;gap:10px;margin-top:auto;padding-top:12px;border-top:1px solid var(--line)}
+  .detail{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px}
+  .detail .seclbl{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:800;margin:14px 0 6px}
+  .vpt{display:flex;align-items:flex-start;gap:8px;font-size:12.5px;padding:4px 0}
+  .vpt .ck{color:#34d399;flex:none;font-weight:800}
+
+  /* drawer */
+  .drawer-scrim{position:fixed;inset:0;background:rgba(2,6,16,.55);backdrop-filter:blur(2px);opacity:0;pointer-events:none;transition:.25s;z-index:55}
+  .drawer-scrim.on{opacity:1;pointer-events:auto}
+  .drawer{position:fixed;top:0;right:0;height:100%;width:min(560px,96vw);background:var(--panel);border-left:1px solid var(--line);
+    box-shadow:-20px 0 60px rgba(0,0,0,.45);transform:translateX(100%);transition:transform .3s cubic-bezier(.2,.7,.2,1);z-index:56;overflow:auto}
+  .drawer.on{transform:none}
+  .drawer-h{position:sticky;top:0;background:var(--panel);border-bottom:1px solid var(--line);padding:16px 18px;display:flex;align-items:center;gap:10px;z-index:2}
+  .drawer-b{padding:16px 18px}
+  .dsec{margin-bottom:16px}
+  .dsec .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);font-weight:800;margin-bottom:7px}
+  .radio{display:flex;gap:8px}
+  .radio label{flex:1;border:1px solid var(--line);border-radius:11px;padding:10px 12px;cursor:pointer;font-size:12.5px;background:var(--panel2)}
+  .radio label.on{border-color:var(--acc2);background:linear-gradient(160deg,rgba(34,211,238,.12),var(--panel2))}
+  .radio label .rt{font-weight:800;display:block;margin-bottom:2px}
+  .injstep{display:flex;align-items:center;gap:10px;padding:9px 11px;border:1px solid var(--line);border-radius:11px;margin-bottom:8px;background:var(--panel2)}
+  .injstep .ic{width:26px;height:26px;border-radius:8px;display:grid;place-items:center;font-size:14px;flex:none}
+  .injstep .var{font-family:Consolas,monospace;font-size:11px;color:#34d399;background:rgba(52,211,153,.12);border-radius:5px;padding:1px 6px}
+  .injstep .x{margin-left:auto;color:var(--faint);cursor:pointer;font-weight:800}
+  #t-ui select,#t-ui input:not([type=checkbox]){background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:0 10px;height:34px;font-size:12.5px}
+  .drawer select,.drawer input:not([type=checkbox]){width:100%;background:var(--panel2);border:1px solid var(--line);color:var(--txt);border-radius:9px;padding:0 10px;height:34px;font-size:12.5px}
 </style>
 </head>
 <body>
@@ -355,10 +401,16 @@
 
   <!-- ===================== UI AUTOMATION ===================== -->
   <section id="t-ui" class="hide">
-    <div class="split">
-      <div class="tree" id="uiTree"></div>
-      <div class="panel" id="uiPanel"><div class="muted" style="padding:30px;text-align:center">Select a case from a module on the left to run or automate it.</div></div>
+    <div class="row" style="margin-bottom:14px">
+      <div class="seg" id="uiModeToggle">
+        <button class="on" data-m="execute" onclick="uiMode('execute')">▶ Execute</button>
+        <button data-m="author" onclick="uiMode('author')">✦ Author &amp; Manage</button>
+      </div>
+      <div class="sp"></div>
+      <span class="hint" id="uiModeHint"></span>
     </div>
+    <div id="uiExec"></div>
+    <div id="uiAuthor" class="hide"></div>
   </section>
 
   <!-- ===================== API AUTOMATION ===================== -->
@@ -494,6 +546,10 @@
   </div>
 </div>
 
+<!-- ===================== CONFIGURE & RUN DRAWER (right slide-over) ===================== -->
+<div class="drawer-scrim" id="runScrim" onclick="closeRunDrawer()"></div>
+<div class="drawer" id="runDrawer"><div id="runDrawerBody"></div></div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -620,6 +676,57 @@ const CASES = {
 });
 function hash(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0}return h}
 
+/* ---- enrich every case: field-level detail + stability + ownership (for the UI Automation workbench) ---- */
+(function enrichCases(){
+  const owners=['V','Va','Vi'];
+  Object.keys(CASES).forEach(m=>CASES[m].forEach(c=>{
+    const seed=Math.abs(hash(m+c.id));
+    if(!c.pre) c.pre=['Logged in with a valid account','Target module reachable on the selected environment'];
+    if(!c.steps) c.steps=['Navigate to '+m,'Perform the primary action for "'+c.t+'"','Confirm the resulting state'];
+    if(!c.verify) c.verify=['Success toast is shown','No console/network errors','Persisted state matches the expected result'];
+    if(!c.owner) c.owner = c.by && c.by!=='—' ? c.by : owners[seed%3];
+    if(c.scripted===undefined) c.scripted = c.st==='auto';
+    if(!c.stability){
+      const pct = c.st==='auto' ? 82+seed%17 : 60+seed%25;   // automated cases are more reliable
+      const runs = c.st==='auto' ? 20+seed%60 : 2+seed%8;
+      const flaky = c.st==='auto' ? seed%4 : 0;
+      const hist=[]; for(let i=0;i<12;i++){ hist.push((seed>>i&1) || (i%5!==0) ? 1 : 0); }
+      c.stability={pct,runs,flaky,avgMs:(4+seed%9)*1000+ (seed%1000), history:hist, last:['2h','5h','1d','3d'][seed%4]+' ago'};
+    }
+  }));
+})();
+/* richer specifics for the hand-authored showcase cases */
+Object.assign(findCaseRaw(254548)||{}, {
+  pre:['Logged in as an Instructor','A course with at least one slide exists','Content Library is enabled for the company'],
+  steps:['Open the course → Slide Library','Select the slide "Automation 101"','Click "Copy to Library"','Confirm the destination in the dialog'],
+  verify:['"Copied to Content Library" toast appears','Content Library slide count increases by 1','Original slide remains in the course','No duplicate entry is created'],
+});
+Object.assign(findCaseRaw(219560)||{}, {
+  pre:['Logged in as a Client Admin','A company with available user seats exists'],
+  steps:['Open User Management → Add User','Fill name, email and select role "Client Admin"','Save the user','Open the new user\'s profile'],
+  verify:['User appears in the list with role Client Admin','Welcome email is queued','Audit trail records the creation'],
+});
+function findCaseRaw(cid){let f=null;Object.keys(CASES).forEach(m=>{const c=CASES[m].find(x=>x.id===cid);if(c)f=c;});return f;}
+
+/* test plans → their runs (each run knows total / automated / unexecuted automated cases) */
+const PLANS = {
+  '3526':{name:'19148 · Master Calendar Certificate', runs:[
+    {runId:'4801',name:'Staging_R1',env:'Staging',total:24,cases:[254548,254549,217089,219560,219561]},
+    {runId:'4802',name:'Pre_R1',env:'Pre',total:24,cases:[254548,217089,219560]},
+    {runId:'4803',name:'Live_R1',env:'Live',total:24,cases:[254548,254549,217089]},
+  ]},
+  '3610':{name:'20912 · Slide Content Library', runs:[
+    {runId:'4396',name:'Regression_R2',env:'Staging',total:18,cases:[254548,254549,254550,254551,254556]},
+    {runId:'4397',name:'Smoke_R1',env:'Pre',total:8,cases:[254548,254549,254550]},
+  ]},
+};
+/* injectable data-generator presets (produce data mid-run, captured as a variable) */
+const DATAGEN = [
+  {id:'d1',name:'Create Instructor account',creates:'1 Instructor user',out:'instructorId'},
+  {id:'d2',name:'Seed a course with 3 slides',creates:'course + 3 slides',out:'courseId'},
+  {id:'d3',name:'Create company + seats',creates:'company (25 seats)',out:'companyId'},
+];
+
 const APIS = {
   'Users':[
     {id:'u1',name:'Create User',method:'POST',path:'/api/v1/users',
@@ -650,6 +757,7 @@ function showTab(t){
   document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===t));
   ['overview','mywork','ui','api','data','backlog','maint','reviews','buggen'].forEach(x=>document.getElementById('t-'+x).classList.toggle('hide',x!==t));
   if(t==='overview') renderDiscovery();
+  if(t==='ui') renderUITab();
   if(t==='mywork') renderMyWork();
   if(t==='backlog') renderBacklog();
   if(t==='maint') renderMaintenance();
@@ -1018,6 +1126,198 @@ function renderMyWork(){
 /* ---------------- UI automation ---------------- */
 let curCase=null;
 let SELECTED=new Map(), AUTO_LIST=[];
+
+/* ================= UI AUTOMATION WORKBENCH (Execute mode) ================= */
+let UI_MODE='execute', EXEC_SOURCE='module', EXEC_DETAIL=null, PLAN_PICK=null, RUN_PLANCTX=null, RUN_REPORT='plain';
+const EXEC_CART=new Map(); let INJECT_SEQ=[];
+function renderUITab(){
+  const ex=document.getElementById('uiExec'), au=document.getElementById('uiAuthor');
+  if(!ex) return;
+  ex.classList.toggle('hide',UI_MODE!=='execute'); au.classList.toggle('hide',UI_MODE!=='author');
+  document.querySelectorAll('#uiModeToggle button').forEach(b=>b.classList.toggle('on',b.dataset.m===UI_MODE));
+  document.getElementById('uiModeHint').textContent = UI_MODE==='execute'
+    ? 'Find automated cases → add to the run cart → configure & run.'
+    : 'Describe what to test in plain English — AI writes it. No code needed.';
+  if(UI_MODE==='execute') renderExec(); else renderAuthor();
+}
+function uiMode(m){UI_MODE=m;renderUITab();}
+function renderExec(){
+  const el=document.getElementById('uiExec');
+  el.innerHTML=`<div class="wb">
+    <div class="wbrail">
+      <div class="seg" id="srcSeg" style="display:flex;width:100%">
+        <button data-s="module" onclick="setSource('module')" style="flex:1">Module</button>
+        <button data-s="ids" onclick="setSource('ids')" style="flex:1">Case&nbsp;IDs</button>
+        <button data-s="plan" onclick="setSource('plan')" style="flex:1">Plan</button>
+        <button data-s="run" onclick="setSource('run')" style="flex:1">Run</button>
+      </div>
+      <div id="srcBody"></div>
+    </div>
+    <div><div class="cart"><div id="execCart"></div></div><div id="execDetail"></div></div>
+  </div>`;
+  setSource(EXEC_SOURCE); renderCart(); if(EXEC_DETAIL) showDetail(EXEC_DETAIL,true);
+}
+function setSource(s){
+  EXEC_SOURCE=s;
+  document.querySelectorAll('#srcSeg button').forEach(b=>b.classList.toggle('on',b.dataset.s===s));
+  const b=document.getElementById('srcBody');
+  b.innerHTML = s==='module'?srcModule() : s==='ids'?srcIds() : s==='plan'?srcPlan() : srcRun();
+  if(s==='plan'&&PLAN_PICK) loadPlan();
+}
+function stabColor(p){return p>=85?'#34d399':p>=70?'#fbbf24':'#ef4444';}
+function stabText(c){const s=c.stability;return s.pct+'% stable · '+s.runs+' runs'+(s.flaky?' · '+s.flaky+' flaky':'');}
+function sparkline(h){return `<span class="spark">${h.map(v=>`<i style="height:${v?14:5}px;background:${v?'#34d399':'#ef4444'}"></i>`).join('')}</span>`;}
+function allCasesFlat(){const a=[];Object.keys(CASES).forEach(m=>CASES[m].forEach(c=>a.push(Object.assign({module:m},c))));return a;}
+function caseSrcRow(c,m){
+  if(c.st!=='auto') return `<div class="srcrow" onclick="showDetail(${c.id})"><span class="badge2 man">MAN</span><span style="flex:1;color:var(--faint)">C${c.id} · ${c.t}</span><span class="hint">not automated</span></div>`;
+  return `<div class="srcrow ${EXEC_DETAIL===c.id?'pick':''}" data-cid="${c.id}">
+    <input type="checkbox" ${EXEC_CART.has(c.id)?'checked':''} onclick="event.stopPropagation();cartToggle(${c.id})" style="width:auto"/>
+    <span class="stab"><span class="dot" style="background:${stabColor(c.stability.pct)}"></span>${c.stability.pct}%</span>
+    <span style="flex:1;cursor:pointer" onclick="showDetail(${c.id})">C${c.id} · ${c.t}</span></div>`;
+}
+function srcModule(){
+  return `<input placeholder="🔍 filter modules / cases" oninput="filterSrc(this.value)" style="width:100%;margin:10px 0"/>
+    <div class="srclist" id="srcListModule">${MODULES.map(m=>{const cs=CASES[m.m]||[];const auto=cs.filter(c=>c.st==='auto').length;
+      return `<div class="modwrap" data-mod="${m.m}"><div class="srcrow" style="font-weight:700" onclick="this.parentElement.querySelector('.mbody').classList.toggle('hide')">▸ ${m.m}<span class="muted" style="font-weight:400;margin-left:auto">${auto} auto</span></div>
+        <div class="mbody hide">${cs.map(c=>caseSrcRow(c,m.m)).join('')}</div></div>`;}).join('')}</div>`;
+}
+function filterSrc(q){q=(q||'').trim().toLowerCase();
+  document.querySelectorAll('#srcListModule .modwrap').forEach(w=>{const body=w.querySelector('.mbody');let any=false;
+    body.querySelectorAll('.srcrow').forEach(r=>{const ok=!q||r.textContent.toLowerCase().includes(q);r.style.display=ok?'':'none';if(ok)any=true;});
+    if(q){body.classList.remove('hide');w.style.display=any?'':'none';}else{body.classList.add('hide');w.style.display='';body.querySelectorAll('.srcrow').forEach(r=>r.style.display='');}});
+}
+function srcIds(){
+  return `<input placeholder="🔍 id or title · Enter to add exact id" oninput="idsSearch(this.value)" onkeydown="if(event.key==='Enter')idsEnter(this)" style="width:100%;margin:10px 0"/>
+    <div class="hint" style="margin-bottom:6px">e.g. <a href="#" onclick="var i=this.closest('#srcBody').querySelector('input');i.value='254548';idsSearch('254548');return false">254548</a></div>
+    <div class="srclist" id="idsResults"><div class="hint" style="padding:8px">Start typing to find automated cases…</div></div>`;
+}
+function idsSearch(q){q=(q||'').trim().toLowerCase();const el=document.getElementById('idsResults');if(!el)return;
+  if(!q){el.innerHTML='<div class="hint" style="padding:8px">Start typing to find automated cases…</div>';return;}
+  const res=allCasesFlat().filter(c=>c.st==='auto'&&(String(c.id).includes(q)||c.t.toLowerCase().includes(q))).slice(0,40);
+  el.innerHTML=res.length?res.map(c=>caseSrcRow(c,c.module)).join(''):'<div class="hint" style="padding:8px">No automated case matches.</div>';
+}
+function idsEnter(inp){const v=(inp.value||'').replace(/^[cC]/,'').trim();const c=allCasesFlat().find(x=>String(x.id)===v&&x.st==='auto');if(c){cartToggle(c.id,true);toast('Added C'+c.id);}else toast('No automated case with id '+v);}
+function srcPlan(){
+  return `<div class="row" style="gap:6px;margin:10px 0"><input id="planId" placeholder="Plan ID" value="${PLAN_PICK?PLAN_PICK.planId:''}" style="flex:1"/><button class="btn ghost sm" onclick="loadPlan()">Load</button></div>
+    <div class="hint" style="margin-bottom:8px">try <a href="#" onclick="document.getElementById('planId').value='3526';loadPlan();return false">3526</a> · <a href="#" onclick="document.getElementById('planId').value='3610';loadPlan();return false">3610</a></div>
+    <div id="planBody"></div>`;
+}
+function loadPlan(){
+  const id=(document.getElementById('planId').value||'').trim();const p=PLANS[id];const b=document.getElementById('planBody');
+  if(!p){b.innerHTML='<div class="empty">No plan '+id+'. Try 3526 or 3610.</div>';return;}
+  b.innerHTML=`<div class="hint" style="margin-bottom:8px">${p.name} — pick a run:</div>`+p.runs.map(r=>{const autos=r.cases.map(findCase).filter(c=>c&&c.st==='auto');
+    return `<div class="runcard ${PLAN_PICK&&PLAN_PICK.runId===r.runId?'pick':''}" onclick="pickRun('${id}','${r.runId}')">
+      <div class="row"><b>${r.name}</b><span class="chip" style="margin-left:auto">${r.env}</span></div>
+      <div class="row" style="gap:14px;margin-top:6px;font-size:11.5px"><span class="muted">${r.total} total</span><span style="color:#34d399">${autos.length} automated</span><span style="color:#fbbf24">${autos.length} unexecuted</span></div></div>`;}).join('')+`<div id="planCases"></div>`;
+}
+function pickRun(planId,runId){
+  PLAN_PICK={planId,runId};const p=PLANS[planId];const r=p.runs.find(x=>x.runId===runId);
+  document.querySelectorAll('#planBody .runcard').forEach((el,i)=>el.classList.toggle('pick',p.runs[i].runId===runId));
+  const autos=r.cases.map(findCase).filter(c=>c&&c.st==='auto');
+  RUN_PLANCTX={type:'plan',plan:planId,run:runId,env:r.env};
+  document.getElementById('planCases').innerHTML=`<div class="row" style="margin:12px 0 8px"><b style="font-size:12.5px">${autos.length} unexecuted automated</b><button class="btn sm" style="margin-left:auto" onclick="cartAddMany([${autos.map(c=>c.id)}],'plan ${planId}')">+ Add all automated</button></div>
+    <div class="srclist">${autos.map(c=>caseSrcRow(c,c.module)).join('')}</div>`;
+}
+function srcRun(){
+  return `<div class="row" style="gap:6px;margin:10px 0"><input id="runIdIn" placeholder="Run ID" style="flex:1"/><button class="btn ghost sm" onclick="loadRun()">Load</button></div>
+    <div class="hint" style="margin-bottom:8px">try <a href="#" onclick="document.getElementById('runIdIn').value='4396';loadRun();return false">4396</a></div><div id="runBody"></div>`;
+}
+function loadRun(){
+  const id=(document.getElementById('runIdIn').value||'').trim();const r=RUNS[id];const b=document.getElementById('runBody');
+  if(!r){b.innerHTML='<div class="empty">No run '+id+'. Try 4396 or 4397.</div>';return;}
+  const autos=r.cases.map(findCase).filter(c=>c&&c.st==='auto');RUN_PLANCTX={type:'run',run:id,env:document.getElementById('envSel').value};
+  b.innerHTML=`<div class="row" style="margin:4px 0 8px"><b style="font-size:12.5px">Run ${id} · ${autos.length} automated</b><button class="btn sm" style="margin-left:auto" onclick="cartAddMany([${autos.map(c=>c.id)}],'run ${id}')">+ Add all</button></div>
+    <div class="srclist">${autos.map(c=>caseSrcRow(c,c.module)).join('')}</div>`;
+}
+function cartToggle(id,forceAdd){const c=findCase(id);if(!c)return;if(EXEC_CART.has(id)&&!forceAdd)EXEC_CART.delete(id);else EXEC_CART.set(id,{id,t:c.t,module:c.module,src:EXEC_SOURCE});renderCart();refreshSrcChecks();if(EXEC_DETAIL===id)showDetail(id,true);}
+function cartAddMany(ids,src){ids.forEach(id=>{const c=findCase(id);if(c)EXEC_CART.set(id,{id,t:c.t,module:c.module,src});});renderCart();refreshSrcChecks();toast('Added '+ids.length+' cases to the run cart');}
+function cartRemove(id){EXEC_CART.delete(id);renderCart();refreshSrcChecks();if(EXEC_DETAIL===id)showDetail(id,true);}
+function cartClear(){EXEC_CART.clear();renderCart();refreshSrcChecks();}
+function refreshSrcChecks(){document.querySelectorAll('#srcBody input[type=checkbox]').forEach(cb=>{const row=cb.closest('[data-cid]');if(row)cb.checked=EXEC_CART.has(+row.dataset.cid);});}
+function renderCart(){
+  const el=document.getElementById('execCart');if(!el)return;const n=EXEC_CART.size;
+  if(!n){el.innerHTML=`<div class="row" style="margin-bottom:4px"><h3 style="margin:0">🧺 Run cart</h3></div><div class="empty">No cases yet.<br><span class="hint">Tick automated cases, search by id, or load a plan / run.</span></div>`;return;}
+  el.innerHTML=`<div class="row" style="margin-bottom:10px"><h3 style="margin:0">🧺 Run cart</h3><span class="chip" style="margin-left:8px">${n}</span><div class="sp"></div><a href="#" onclick="cartClear();return false" class="hint">clear</a></div>
+    ${[...EXEC_CART.values()].map(x=>{const c=findCase(x.id);return `<div class="cartrow"><span class="stab"><span class="dot" style="background:${stabColor(c.stability.pct)}"></span></span>
+      <div style="flex:1;cursor:pointer;min-width:0" onclick="showDetail(${x.id})"><div class="b">C${x.id} · ${x.t}</div><div class="hint">${x.module} · ${stabText(c)}</div></div>
+      <span class="chip" style="font-size:10px">${x.src}</span><span class="x" onclick="cartRemove(${x.id})">✕</span></div>`;}).join('')}
+    <div class="cartbar"><button class="btn" style="flex:1;justify-content:center" onclick="openRunDrawer()">▶ Configure &amp; Run (${n})</button></div>`;
+}
+function showDetail(id,keep){
+  EXEC_DETAIL=id;const c=findCase(id);const el=document.getElementById('execDetail');if(!el||!c)return;const s=c.stability;
+  el.innerHTML=`<div class="detail">
+    <div class="row"><div><div class="muted" style="font-size:12px">${c.module}</div><h2 style="margin:2px 0;font-size:17px">C${c.id} · ${c.t}</h2></div>
+      <div class="sp"></div><span class="badge2 ${c.st}">${c.st==='auto'?'AUTOMATED':c.st==='prog'?'IN PROGRESS':'NOT AUTOMATED'}</span></div>
+    <div class="meta" style="margin-top:10px"><div><div class="k">Category</div><div class="v"><span class="chip ${c.cat==='Smoke'?'smoke':'reg'}">${c.cat}</span></div></div>
+      <div><div class="k">Owner</div><div class="v">${PERSON[c.owner]||c.owner}</div></div><div><div class="k">Ticket</div><div class="v">${c.ticket?'#'+c.ticket:'—'}</div></div><div><div class="k">Reuse</div><div class="v">${c.reuse}</div></div></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:6px">
+      <div><div class="seclbl">Prerequisites</div>${c.pre.map(p=>`<div class="vpt"><span class="ck" style="color:var(--acc2)">•</span><span>${p}</span></div>`).join('')}
+        <div class="seclbl">Steps</div><ol style="margin:0;padding-left:18px;font-size:12.5px">${c.steps.map(st=>`<li style="margin:3px 0">${st}</li>`).join('')}</ol></div>
+      <div><div class="seclbl">Verification points</div>${c.verify.map(v=>`<div class="vpt"><span class="ck">✓</span><span>${v}</span></div>`).join('')}
+        <div class="seclbl">Reliability</div><div class="row" style="gap:12px;align-items:center">${sparkline(s.history)}<span style="font-size:20px;font-weight:900;color:${stabColor(s.pct)}">${s.pct}%</span></div>
+        <div class="hint" style="margin-top:6px">${s.runs} runs · ${s.flaky} flaky · ~${(s.avgMs/1000).toFixed(1)}s avg · last ${s.last}</div>
+        <div class="row" style="margin-top:10px">${c.st==='auto'?(EXEC_CART.has(id)?`<button class="btn ghost sm" onclick="cartRemove(${id})">− Remove from cart</button>`:`<button class="btn sm" onclick="cartToggle(${id},true)">+ Add to cart</button>`):`<button class="btn ghost sm" onclick="uiMode('author')">✦ Author this case</button>`}</div></div>
+    </div></div>`;
+  document.querySelectorAll('#srcBody .srcrow').forEach(r=>r.classList.toggle('pick', r.dataset.cid==String(id)));
+  if(!keep) el.scrollIntoView({block:'nearest'});
+}
+/* ----- Configure & Run drawer ----- */
+function openRunDrawer(){if(!EXEC_CART.size){toast('Add at least one case first');return;}if(RUN_PLANCTX&&RUN_PLANCTX.type)RUN_REPORT='testrail';renderDrawer();document.getElementById('runScrim').classList.add('on');document.getElementById('runDrawer').classList.add('on');}
+function closeRunDrawer(){document.getElementById('runScrim').classList.remove('on');document.getElementById('runDrawer').classList.remove('on');}
+function injOptions(){let o='<optgroup label="API cases">';Object.keys(APIS).forEach(g=>APIS[g].forEach(a=>{o+=`<option value="api:${a.id}">🔌 ${a.name}</option>`;}));o+='</optgroup><optgroup label="Data generators">';DATAGEN.forEach(d=>{o+=`<option value="data:${d.id}">🧪 ${d.name} → {{${d.out}}}</option>`;});return o+'</optgroup>';}
+function renderDrawer(){
+  const n=EXEC_CART.size, env=(RUN_PLANCTX&&RUN_PLANCTX.env)||document.getElementById('envSel').value;
+  const ctxRun=RUN_PLANCTX?(RUN_PLANCTX.type==='plan'?('plan '+RUN_PLANCTX.plan+' · run '+RUN_PLANCTX.run):('run '+RUN_PLANCTX.run)):null;
+  document.getElementById('runDrawerBody').innerHTML=`
+    <div class="drawer-h"><h2 style="margin:0;font-size:17px">▶ Configure &amp; Run</h2><span class="chip" style="margin-left:6px">${n} case${n>1?'s':''}</span><div class="sp"></div><button class="art" onclick="closeRunDrawer()">✕</button></div>
+    <div class="drawer-b">
+      <div class="dsec"><div class="lbl">Environment</div><select id="drEnv">${['Staging','Pre','Live'].map(e=>`<option ${e===env?'selected':''}>${e}</option>`).join('')}</select></div>
+      <div class="dsec"><div class="lbl">Test data</div>
+        <select id="drData" onchange="drDataChange(this.value)"><option value="repo">repo defaults</option><option value="mine">my-data.json</option><option value="own">Upload my own…</option></select>
+        <div id="drOwn" class="hide" style="margin-top:8px"><div class="row" style="gap:8px"><button class="btn ghost sm" onclick="toast('Downloaded sample-data.template.json')">⤓ Download sample format</button><button class="btn ghost sm" onclick="toast('Uploaded my-data.json · 42 rows')">⤴ Upload file</button></div>
+          <label class="hint" style="display:flex;gap:6px;align-items:center;margin-top:8px"><input type="checkbox" checked style="width:auto"> run locally only</label>
+          <label class="hint" style="display:flex;gap:6px;align-items:center;margin-top:4px"><input type="checkbox" style="width:auto"> also push data file to my branch</label></div></div>
+      <div class="dsec"><div class="lbl">Reporting target</div>
+        <div class="radio" id="drReport">
+          <label class="${RUN_REPORT==='plain'?'on':''}" onclick="setReport('plain')"><span class="rt">Plain (exploratory)</span><span class="hint">Won't fail cases · won't write results</span></label>
+          <label class="${RUN_REPORT==='testrail'?'on':''}" onclick="setReport('testrail')"><span class="rt">TestRail run</span><span class="hint">${ctxRun?('Writes to '+ctxRun):'Writes results'}</span></label></div>
+        <div id="drRunId" class="${RUN_REPORT==='testrail'?'':'hide'}" style="margin-top:8px"><input placeholder="Run ID" value="${(RUN_PLANCTX&&RUN_PLANCTX.run)||''}"/></div></div>
+      <div class="dsec"><div class="row" style="margin-bottom:7px"><div class="lbl" style="margin:0">Injection sequence</div><div class="sp"></div><span class="hint">run an API / data-gen case mid-flow</span></div>
+        <div id="injList"></div>
+        <div class="row" style="gap:6px;margin-top:8px"><select id="injPick" style="flex:1">${injOptions()}</select><button class="btn ghost sm" onclick="addInjection()">+ Insert</button></div></div>
+      <button class="btn green" style="width:100%;justify-content:center" onclick="runFromDrawer()">▶ Run ${n} case${n>1?'s':''}</button>
+      <div id="drRunArea"></div>
+    </div>`;
+  renderInj();
+}
+function setReport(v){RUN_REPORT=v;document.querySelectorAll('#drReport label').forEach((l,i)=>l.classList.toggle('on',(i===0)===(v==='plain')));document.getElementById('drRunId').classList.toggle('hide',v!=='testrail');}
+function drDataChange(v){document.getElementById('drOwn').classList.toggle('hide',v!=='own');}
+function addInjection(){const v=document.getElementById('injPick').value;const [type,id]=v.split(':');let name,out;
+  if(type==='api'){let a;Object.values(APIS).forEach(g=>g.forEach(x=>{if(x.id===id)a=x}));name=a.name;out=(a.created&&a.created!=='—')?a.created.replace(/[^a-zA-Z]/g,'')+'Id':'apiResult';}
+  else{const d=DATAGEN.find(x=>x.id===id);name=d.name;out=d.out;}
+  INJECT_SEQ.push({type,id,name,out});renderInj();toast('Injected '+name+' → {{'+out+'}}');}
+function removeInj(i){INJECT_SEQ.splice(i,1);renderInj();}
+function renderInj(){const el=document.getElementById('injList');if(!el)return;
+  if(!INJECT_SEQ.length){el.innerHTML='<div class="hint">No injected steps — UI cases run on their own.</div>';return;}
+  el.innerHTML=INJECT_SEQ.map((s,i)=>`<div class="injstep"><span class="ic" style="background:${s.type==='api'?'#a78bfa':'#34d399'}">${s.type==='api'?'🔌':'🧪'}</span>
+    <div style="flex:1;min-width:0"><div class="b" style="font-size:12.5px">${s.name}</div><div class="hint">captures <span class="var">{{${s.out}}}</span> for later cases</div></div><span class="x" onclick="removeInj(${i})">✕</span></div>`).join('');
+}
+function runFromDrawer(){
+  const env=document.getElementById('drEnv').value, cases=[...EXEC_CART.values()];
+  const area=document.getElementById('drRunArea');area.innerHTML=`<div class="log" id="drlog" style="margin-top:14px"></div>`;const log=document.getElementById('drlog');
+  const seq=[['dim','$ git fetch origin && git reset --hard origin/pre_main'],['info','✓ pre_main up to date']];
+  INJECT_SEQ.forEach(s=>{seq.push(['info','▸ '+(s.type==='api'?'API':'data-gen')+': '+s.name]);seq.push(['ok','✓ captured {{'+s.out+'}}']);});
+  cases.forEach(x=>{seq.push(['dim','$ playwright test --grep @C'+x.id+' (ENV='+env+')']);seq.push(['ok','✓ C'+x.id+' passed'+(INJECT_SEQ.length?' · used injected data':'')]);});
+  seq.push(RUN_REPORT==='plain'?['info','▸ Plain run — validated, not reported; no case failed']:['info','▸ Reported '+cases.length+' results to TestRail run #'+((document.querySelector('#drRunId input')||{}).value||'—')]);
+  let i=0;(function t(){if(i<seq.length){const[c,x]=seq[i++];const d=document.createElement('div');d.className=c;d.textContent=x;log.appendChild(d);log.scrollTop=log.scrollHeight;setTimeout(t,280);}
+    else{const d=document.createElement('div');d.className='ok';d.style.marginTop='8px';d.textContent='● '+cases.length+' case'+(cases.length>1?'s':'')+' passed'+(RUN_REPORT==='plain'?' · plain (not reported)':' · reported');log.appendChild(d);toast('Run complete');}})();
+}
+/* ----- Author & Manage mode (reuses the existing tree + authoring workspace for now) ----- */
+function renderAuthor(){
+  document.getElementById('uiAuthor').innerHTML=`<div class="split"><div class="tree" id="uiTree"></div><div class="panel" id="uiPanel"><div class="muted" style="padding:30px;text-align:center">Pick a case to author, or click ＋ New automation.<br>AI writes the test — no code needed.</div></div></div>`;
+  renderUITree();
+}
+
 function renderUITree(){
   const tr=document.getElementById('uiTree');
   let html=`<button class="btn green sm" style="width:100%;justify-content:center;margin-bottom:8px" onclick="newAutomation()">＋ New automation</button>`;
@@ -1030,7 +1330,11 @@ function renderUITree(){
   }).join('');
   tr.innerHTML=html;updateSelBar();
 }
-function openModuleInTree(m){renderUITree();const node=document.querySelector('#uiTree .modwrap[data-mod="'+m+'"]');if(node){node.querySelector('.tnode').click();node.scrollIntoView({block:'nearest'});const first=(CASES[m]||[])[0];if(first)selectCase(m,first.id)}}
+function openModuleInTree(m){
+  UI_MODE='execute';renderUITab();setSource('module');
+  const w=document.querySelector('#srcListModule .modwrap[data-mod="'+m+'"]');
+  if(w){w.querySelector('.mbody').classList.remove('hide');w.scrollIntoView({block:'nearest'});const first=(CASES[m]||[]).find(c=>c.st==='auto')||(CASES[m]||[])[0];if(first)showDetail(first.id,true);}
+}
 function filterTree(q){q=(q||'').trim().toLowerCase();
   document.querySelectorAll('#uiTree .modwrap').forEach(w=>{const body=w.children[1];let any=false;
     w.querySelectorAll('.tcase').forEach(tc=>{const ok=!q||tc.textContent.toLowerCase().includes(q);tc.style.display=ok?'':'none';if(ok)any=true;});
@@ -1732,7 +2036,7 @@ function renderActivity(){
 }
 
 /* init */
-renderDiscovery();renderUITree();renderAPITree();renderBacklog();updateHeader('overview');
+renderDiscovery();renderUITab();renderAPITree();renderBacklog();updateHeader('overview');
 ['fMod','fCat','fBy','fReuse'].forEach(id=>{const e=document.getElementById(id);if(e)e.addEventListener('change',renderModuleTable);});
 </script>
 </body>
